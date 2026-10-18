@@ -48,6 +48,11 @@ impl OverlayHub {
         }
         if let Ok(mut audio)=self.audio.try_lock(){audio.clear();}
     }
+    pub fn has_pending_speech(&self,bot_id:&str)->bool{
+        // Fail closed if the in-memory queue is unavailable. The generation
+        // lock alone no longer covers a reply once its audio is being prepared.
+        self.speech.lock().map(|entries|entries.iter().any(|entry|entry.bot_id==bot_id&&!entry.finished&&!entry.cancel.load(Ordering::Relaxed))).unwrap_or(true)
+    }
     pub fn say_profile(&self,app:&tauri::AppHandle,profile:&Value,id:&str,text:&str,speech_text:&str,emotion:&str,source:&str,user:&str,user_text:&str,emotes:&[Value],cancel:Arc<AtomicBool>)->Result<(),String> {
         let bot_id=profile["id"].as_str().ok_or("Bot-ID fehlt")?;
         let mut speech=self.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
@@ -83,7 +88,8 @@ fn belongs(event:&Value,bot_id:&str)->bool{
 pub async fn start(app:tauri::AppHandle)->Result<(),String> {
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e|e.to_string())?;
     app.state::<crate::AppState>().overlay.port.store(listener.local_addr().map_err(|e|e.to_string())?.port(),std::sync::atomic::Ordering::Relaxed);
-    let routes=Router::new().route("/events",get(events)).route("/speech/{id}",get(speech)).route("/playback",post(playback)).route("/assets/{name}",get(asset)).route("/",get(index)).route("/overlay",get(index)).route("/{*path}",get(frontend_asset)).with_state(app);
+    let control=post(crate::control_mcp::http).get(crate::control_mcp::no_stream).delete(crate::control_mcp::no_stream).layer(axum::extract::DefaultBodyLimit::max(crate::control_mcp::MAX_REQUEST_BYTES));
+    let routes=Router::new().route("/mcp",control).route("/events",get(events)).route("/speech/{id}",get(speech)).route("/emote-sound/{id}",get(emote_sound)).route("/emote-playback",post(emote_playback)).route("/playback",post(playback)).route("/assets/{name}",get(asset)).route("/",get(index)).route("/overlay",get(index)).route("/{*path}",get(frontend_asset)).with_state(app);
     tauri::async_runtime::spawn(async move {let _=axum::serve(listener,routes).await;});Ok(())
 }
 async fn playback(State(app):State<tauri::AppHandle>,Query(q):Query<Access>,Json(body):Json<Value>)->Response {
@@ -96,6 +102,29 @@ async fn playback(State(app):State<tauri::AppHandle>,Query(q):Query<Access>,Json
         Ok(result)=>Json(result).into_response(),
         Err(_)=>(StatusCode::CONFLICT,"Sprachausgabe ist nicht mehr gültig oder bereits beendet.").into_response(),
     }
+}
+async fn emote_playback(State(app):State<tauri::AppHandle>,Query(q):Query<Access>,Json(body):Json<Value>)->Response{
+    if !allowed(&app,&q){return StatusCode::UNAUTHORIZED.into_response();}
+    let Ok(bot_id)=requested_bot(&app,&q)else{return StatusCode::NOT_FOUND.into_response();};
+    if body["botId"].as_str()!=Some(bot_id.as_str())||body["output"]!="obs"{return StatusCode::BAD_REQUEST.into_response();}
+    let (Some(id),Some(playing))=(body["id"].as_str(),body["playing"].as_bool())else{return StatusCode::BAD_REQUEST.into_response();};
+    match report_emote_playback(&app,&bot_id,"obs",id,playing){Ok(result)=>Json(result).into_response(),Err(_)=>(StatusCode::CONFLICT,"Emote-Audiostatus ist für diesen Bot oder Ausgabemodus nicht gültig.").into_response()}
+}
+fn emote_playback_event(profile:&Value,output:&str,id:&str,playing:bool)->Result<Value,String>{
+    let bot_id=profile["id"].as_str().filter(|id|crate::storage::valid_id(id)).ok_or("Bot-ID fehlt oder ist ungültig")?;
+    if !matches!(output,"overlay"|"obs"){return Err("Emote-Audioausgabe muss overlay oder obs sein".into());}
+    let parsed=uuid::Uuid::parse_str(id).map_err(|_|"Emote-Audiostatus benötigt eine UUID")?;
+    if parsed.to_string()!=id{return Err("Emote-Audiostatus benötigt eine kanonische UUID".into());}
+    // Ends are accepted after reconfiguration, so an old output can release
+    // its wakeword block even when the operator has already selected a new one.
+    if playing&&profile["output"]["mode"].as_str()!=Some(output){return Err("Diese Emote-Audioausgabe ist für den Bot nicht mehr ausgewählt".into());}
+    Ok(json!({"botId":bot_id,"output":output,"id":id,"playing":playing}))
+}
+pub fn report_emote_playback(app:&tauri::AppHandle,bot_id:&str,output:&str,id:&str,playing:bool)->Result<Value,String>{
+    let profile=app.state::<crate::AppState>().store.bot_profile(bot_id)?;
+    let event=emote_playback_event(&profile,output,id,playing)?;
+    app.emit("cohost://emote-playback",event).map_err(|_|"Emote-Audiostatus konnte nicht übermittelt werden".to_owned())?;
+    Ok(json!({"accepted":true}))
 }
 pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,error:Option<&str>)->Result<Value,String>{
     let state=app.state::<crate::AppState>();
@@ -157,7 +186,9 @@ pub fn prepare_emote_profile(profile:&Value,id:&str,viewer:bool)->Result<Value,S
     let emote=profile["emotes"].as_array().and_then(|a|a.iter().find(|e|e["id"].as_str()==Some(id))).ok_or("Emote wurde im Charakterprofil nicht gefunden")?;
     if viewer&&emote["allowChat"].as_bool()!=Some(true){return Err("Dieses Emote ist für Zuschauer nicht freigegeben".into());}
     let action=emote["action"].as_str().filter(|s|!s.trim().is_empty()&&s.chars().count()<=128).ok_or("Emote-Aktion fehlt oder ist zu lang (maximal 128 Zeichen)")?;
-    Ok(json!({"botId":profile["id"],"id":id,"action":action,"nonce":uuid::Uuid::new_v4().to_string(),"duration":emote["duration"].as_f64().unwrap_or(2.5).clamp(0.2,15.0),"intensity":emote["intensity"].as_f64().unwrap_or(1.0).clamp(0.0,2.0)}))
+    let sound=if emote["sound"].is_null(){""}else{emote["sound"].as_str().ok_or("Emote-Sound muss eine Sound-ID sein")?};
+    if !crate::emote_audio::valid_sound_id(sound){return Err("Emote-Sound-ID ist ungültig".into());}
+    Ok(json!({"botId":profile["id"],"id":id,"action":action,"nonce":uuid::Uuid::new_v4().to_string(),"duration":emote["duration"].as_f64().unwrap_or(2.5).clamp(0.2,15.0),"intensity":emote["intensity"].as_f64().unwrap_or(1.0).clamp(0.0,2.0),"sound":sound,"soundVolume":emote["soundVolume"].as_f64().unwrap_or(0.7).clamp(0.0,1.0)}))
 }
 pub fn trigger_emote_profile(app:&tauri::AppHandle,profile:&Value,id:&str,viewer:bool)->Result<Value,String>{
     let payload=prepare_emote_profile(profile,id,viewer)?;
@@ -184,6 +215,13 @@ async fn speech(State(app):State<tauri::AppHandle>,Path(id):Path<String>,Query(q
         Ok(audio)=>Json(audio).into_response(),
         Err(error)=>(StatusCode::BAD_GATEWAY,error).into_response(),
     }
+}
+async fn emote_sound(State(app):State<tauri::AppHandle>,Path(id):Path<String>,Query(q):Query<Access>)->Response{
+    if !allowed(&app,&q){return StatusCode::UNAUTHORIZED.into_response();}
+    let Ok(bot_id)=requested_bot(&app,&q)else{return StatusCode::NOT_FOUND.into_response();};
+    let state=app.state::<crate::AppState>();
+    let result=state.store.bot_profile(&bot_id).and_then(|profile|crate::emote_audio::read(&state.store.root,&profile,&id));
+    match result{Ok(audio)=>([(header::CACHE_CONTROL,"no-store")],Json(audio)).into_response(),Err(_)=>(StatusCode::NOT_FOUND,"Sound ist für diesen Bot nicht verfügbar.").into_response()}
 }
 pub async fn speech_audio(app:&tauri::AppHandle,id:&str,bot_id:&str)->Result<Value,String>{
     let state=app.state::<crate::AppState>();
@@ -309,5 +347,33 @@ mod tests{
         assert!(event.get("hindsight").is_none());
         let presentation=entry.presentation_event();
         assert!(presentation.get("speechText").is_none());assert!(!presentation.to_string().contains("[crying]"));assert!(!presentation.to_string().contains("private_config_marker"));
+    }
+    #[test]
+    fn emote_sound_payload_uses_only_known_ids_and_keeps_viewer_grants(){
+        let mut profile=json!({"id":"nova","emotes":[{"id":"wave","action":"wave","allowChat":false,"sound":"builtin:wave","soundVolume":0.35}]});
+        assert!(prepare_emote_profile(&profile,"wave",true).is_err());
+        let event=prepare_emote_profile(&profile,"wave",false).unwrap();assert_eq!(event["sound"],"builtin:wave");assert_eq!(event["soundVolume"],0.35);assert_eq!(event["botId"],"nova");
+        profile["emotes"][0]["sound"]=json!("https://untrusted.invalid/sound.mp3");assert!(prepare_emote_profile(&profile,"wave",false).is_err());
+        profile["emotes"][0]["sound"]=json!("custom:../../../private.wav");assert!(prepare_emote_profile(&profile,"wave",false).is_err());
+    }
+    #[test]
+    fn external_emote_playback_rejects_invalid_ids_and_output_modes(){
+        let profile=json!({"id":"nova","output":{"mode":"obs"}});let id=uuid::Uuid::new_v4().to_string();
+        for output in ["studio","","other"]{assert!(emote_playback_event(&profile,output,&id,true).is_err());assert!(emote_playback_event(&profile,output,&id,false).is_err());}
+        for invalid in ["","../other","not-a-uuid"]{assert!(emote_playback_event(&profile,"obs",invalid,true).is_err());assert!(emote_playback_event(&profile,"obs",invalid,false).is_err());}
+        let event=emote_playback_event(&profile,"obs",&id,true).unwrap();assert_eq!(event,json!({"botId":"nova","output":"obs","id":id,"playing":true}));
+    }
+    #[test]
+    fn external_emote_playback_start_requires_current_mode_but_end_survives_reconfiguration(){
+        let profile=json!({"id":"nova","output":{"mode":"studio"}});let id=uuid::Uuid::new_v4().to_string();
+        for output in ["overlay","obs"]{assert!(emote_playback_event(&profile,output,&id,true).is_err());assert_eq!(emote_playback_event(&profile,output,&id,false).unwrap()["playing"],false);}
+        assert!(emote_playback_event(&json!({"id":"../other","output":{"mode":"obs"}}),"obs",&id,false).is_err());
+    }
+    #[test]
+    fn output_changes_can_detect_pending_audio_without_blocking_other_bots(){
+        let hub=OverlayHub::default();hub.speech.lock().unwrap().push_back(speech("system"));
+        assert!(hub.has_pending_speech("nova"));assert!(!hub.has_pending_speech("other-bot"));
+        hub.speech.lock().unwrap()[0].finished=true;assert!(!hub.has_pending_speech("nova"));
+        let mut entries=hub.speech.lock().unwrap();entries[0].finished=false;entries[0].cancel.store(true,Ordering::Relaxed);drop(entries);assert!(!hub.has_pending_speech("nova"));
     }
 }

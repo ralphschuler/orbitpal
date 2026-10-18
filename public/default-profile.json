@@ -3,7 +3,7 @@
   "id": "nova",
   "name": "Nova",
   "tagline": "Dein Gegenüber im Stream.",
-  "model": { "provider": "ollama", "baseUrl": "http://localhost:11434/v1", "model": "", "command": "", "apiKeyId": "llm", "temperature": 0.8, "maxTokens": 512, "toolsEnabled": true, "reasoningEffort": "default", "responseStyle": "default", "maxToolRounds": 4 },
+  "model": { "provider": "ollama", "baseUrl": "http://localhost:11434/v1", "model": "", "command": "", "apiKeyId": "llm", "temperature": 0.8, "maxTokens": 512, "toolsEnabled": true, "visionEnabled": true, "reasoningEffort": "default", "responseStyle": "default", "maxToolRounds": 4 },
   "voice": { "provider": "system", "baseUrl": "", "voiceId": "", "model": "eleven_flash_v2_5", "apiKeyId": "tts", "rate": 1, "volume": 0.85, "language": "de-DE", "enabled": true },
   "stt": { "provider": "whisper-local", "localBackend": "whispercpp", "baseUrl": "http://127.0.0.1:8080", "model": "", "apiKeyId": "", "language": "de" },
   "avatar": { "assetPath": null, "accent": "#80b8e8", "scale": 1, "expression": "neutral", "autoBlink": true, "idle": true, "camera": "portrait" },

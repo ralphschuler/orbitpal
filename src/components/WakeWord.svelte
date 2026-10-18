@@ -26,13 +26,15 @@
   let previousStop = 0;
   let epoch = 0;
   let destroyed = false;
+  let lastNotification = '';
+  let lastNotificationAt = 0;
   const active = $derived(status !== 'stopped');
   const local = $derived(sttProvider === 'whisper-local');
   const providerName = $derived(({ 'whisper-local': 'Lokales Whisper', openai: 'OpenAI Whisper · Cloud', elevenlabs: 'ElevenLabs Scribe · Cloud', compatible: 'Konfigurierte STT-API' } as Record<string, string>)[sttProvider] || 'Keine Spracherkennung');
   const phrases = $derived(normalizeWakePhrases(config?.phrases));
   const labels: Record<WakeWordState, string> = {
     stopped: 'Zuhören beendet', starting: 'Mikrofon wird aktiviert …', listening: 'Wartet auf Aktivierungsphrase', capturing: 'Audioabschnitt wird aufgenommen …',
-    transcribing: 'Sprachabschnitt wird erkannt …', 'follow-up': 'Phrase erkannt · jetzt deine Frage stellen (10 Sek.)', triggered: 'Frage an den Cohost übergeben', paused: 'Pausiert während Antwort oder Mikrofonaufnahme',
+    transcribing: 'Sprachabschnitt wird erkannt …', 'follow-up': 'Phrase erkannt · jetzt deine Frage stellen (10 Sek.)', triggered: 'Frage an den Cohost übergeben', paused: 'Vorübergehend pausiert · hört nach der Antwort automatisch weiter', retrying: 'Verbindung unterbrochen · Zuhören wird automatisch erneut versucht',
   };
 
   function stopListening() {
@@ -43,7 +45,17 @@
     saving = false;
   }
 
-  function showError(message: string) { failure = message; onError(message); }
+  function showError(message: string) {
+    failure = message;
+    // Keep the inline error current without flooding notifications on a flaky
+    // STT connection. A later explicit Start click allows a fresh notification.
+    const recovering = status === 'retrying' || status === 'paused';
+    if (!lastNotification || Date.now() - lastNotificationAt >= 30_000 || (!recovering && message !== lastNotification)) {
+      lastNotification = message;
+      lastNotificationAt = Date.now();
+      onError(message);
+    }
+  }
 
   function updateConfig(next: any) {
     // Internal edits are already explicitly stopped/saved by their handler;
@@ -75,10 +87,11 @@
     if (blocked || saving || destroyed) return;
     if (!native) { showError('Sprachaktivierung ist in der Desktop-App verfügbar.'); return; }
     if (!['whisper-local', 'openai', 'elevenlabs', 'compatible'].includes(sttProvider)) {
-      showError('Wähle unter Verbindungen zuerst einen Spracherkennungsanbieter.'); return;
+      showError('Wähle unter Modelle zuerst einen Spracherkennungsanbieter.'); return;
     }
     stopListening();
     failure = '';
+    lastNotification = '';
     let next: WakeWordListener | undefined;
     try {
       const selected = editedPhrases();
@@ -93,7 +106,12 @@
         onTrigger: async (text) => {
           if (!destroyed && currentEpoch === epoch && botId === currentBot && !blocked) await onTrigger(text);
         },
-        onState: (state) => { if (!destroyed && listener === next) status = state; },
+        onState: (state) => {
+          if (!destroyed && listener === next) {
+            if (state === 'listening' || state === 'follow-up') failure = '';
+            status = state;
+          }
+        },
         onError: (message) => { if (!destroyed && listener === next) showError(message); },
       });
       listener = next;
@@ -113,6 +131,7 @@
       stopListening();
       phraseDraft = normalizeWakePhrases(config?.phrases).join('\n');
       failure = '';
+      lastNotification = '';
       if (changedBot) expanded = false;
     });
   });
@@ -158,8 +177,8 @@
         <label class="wake-phrases">Aktivierungsphrasen <span>Eine pro Zeile · bis zu acht</span><textarea rows="2" bind:value={phraseDraft} disabled={active} placeholder="hey nova" spellcheck="false"></textarea></label>
         <div class="wake-explanation">
           <p>Gesagt wird zum Beispiel <strong>„hey nova, wie geht es dir?“</strong>. Sagst du nur die Phrase, wartet der Cohost zehn Sekunden auf deine Frage. Ganze Wörter zählen; Großschreibung und Satzzeichen spielen keine Rolle.</p>
-          <p>Der gewählte STT-Anbieter verarbeitet jeden erkannten Audioabschnitt, auch <strong>vor</strong> der Aktivierungsphrase. {local ? 'Lokales Whisper benötigt einen separat gestarteten Whisper-Server.' : 'Bei einem Cloud-Anbieter verlässt dieses Audio deinen Rechner.'} Anbieter und Zugang richtest du unter „Verbindungen“ ein.</p>
-          <p>Das Mikrofon startet ausschließlich mit deinem Klick auf „Zuhören starten“. Antworten, andere Aufnahmen und ein Botwechsel unterbrechen das Zuhören; nach einem Botwechsel ist ein neuer Start nötig.</p>
+          <p>Der gewählte STT-Anbieter verarbeitet jeden erkannten Audioabschnitt, auch <strong>vor</strong> der Aktivierungsphrase. {local ? 'Lokales Whisper benötigt einen separat gestarteten Whisper-Server.' : 'Bei einem Cloud-Anbieter verlässt dieses Audio deinen Rechner.'} Anbieter und Zugang richtest du unter „Modelle“ ein.</p>
+          <p>Das Mikrofon startet ausschließlich mit deinem Klick auf „Zuhören starten“. Bei Antworten, Emote-Sounds und anderen Aufnahmen pausiert es und hört danach automatisch weiter. Vorübergehende Fehler werden mit wachsendem Abstand bis zu fünfmal erneut versucht; sage den Abschnitt danach bitte noch einmal. „Stop“, ein Botwechsel oder entzogene Mikrofonrechte benötigen einen neuen Start.</p>
         </div>
       </div>
       <div class="wake-footer"><span>{active ? 'Zum Bearbeiten das Zuhören stoppen.' : 'Gespeicherte Einstellungen starten keine Aufnahme.'}</span><button class="wake-button" disabled={saving || active} onclick={saveSettings}>{saving ? 'Speichert …' : 'Einstellungen speichern'}</button></div>

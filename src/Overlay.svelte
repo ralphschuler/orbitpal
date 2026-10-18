@@ -4,6 +4,7 @@
   import Avatar from './components/Avatar.svelte';
   import { SpeechPlayer } from './lib/audio';
   import { EmoteSequence, type EmotePayload } from './lib/presentation';
+  import { EmoteAudioPlayer } from './lib/emote-audio';
   import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
 
@@ -21,7 +22,14 @@
   let failureDetail = $state('');
   let activationNeeded = $state(false);
   let connectionFailure = $state('');
+  let soundNotice = $state('');
+  let soundActivationNeeded = $state(false);
   let player: SpeechPlayer;
+  let emoteAudio: EmoteAudioPlayer;
+  let emoteRevision = 0;
+  let soundPlaybackId = '';
+  let soundPlaying = false;
+  let soundReporting = Promise.resolve();
   let current: PlaybackJob | undefined;
   let disposed = false;
   let profileRevision = 0;
@@ -35,6 +43,49 @@
       action: event.action, nonce: event.nonce ?? `${Date.now()}-${Math.random()}`,
       duration: (event.duration ?? 2.5) * 1000, intensity: event.intensity ?? 1,
     };
+    if(profile.output.mode===(native?'overlay':'obs'))emoteAudio?.play(event);
+  }
+
+  async function resolveSound(soundId: string) {
+    if (native) return call('get_emote_sound', { soundId, botId });
+    const url = new URL(`/emote-sound/${encodeURIComponent(soundId)}`, overlayUrl);
+    url.search = new URL(overlayUrl).search;
+    if (botId) url.searchParams.set('bot', botId);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
+    try {
+      const result = await fetch(url, { signal: controller.signal });
+      if (!result.ok) throw new Error('Emote-Sound nicht verfügbar.');
+      return await result.json();
+    } finally { window.clearTimeout(timeout); }
+  }
+
+  async function manualEmote(event: EmotePayload) {
+    ++emoteRevision; const revision = emoteRevision;
+    emoteSequence.stop(); emoteAudio?.stop();
+    await ready;
+    if (disposed || revision !== emoteRevision) return;
+    if(profile.output.mode===(native?'overlay':'obs'))await emoteAudio?.prepare([event], resolveSound);
+    if (disposed || revision !== emoteRevision) return;
+    applyEmote(event);
+  }
+
+  function reportSoundPlaying(playing: boolean) {
+    soundPlaying = playing;
+    if (playing) soundPlaybackId ||= crypto.randomUUID();
+    const id = soundPlaybackId; const targetBot = botId;
+    if (!id || !targetBot) return;
+    if (!playing) soundPlaybackId = '';
+    const payload = {botId: targetBot, output: native ? 'overlay' : 'obs', id, playing};
+    soundReporting = soundReporting.then(async () => {
+      try {
+        if(native) { await call('report_emote_playback',payload); return; }
+        const url = new URL('/emote-playback',overlayUrl); url.search=new URL(overlayUrl).search;url.searchParams.set('bot',targetBot);
+        const controller = new AbortController(); const timer=window.setTimeout(()=>controller.abort(),3000);
+        try { await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal,keepalive:true}); }
+        finally { window.clearTimeout(timer); }
+      } catch { /* A bounded host lease expires when an output disconnects. */ }
+    });
   }
 
   async function sendPlayback(id: string, state: boolean, targetBot: string, error?: string) {
@@ -78,16 +129,19 @@
       current = undefined;
       if (error) {
         emoteSequence.stop();
+        emoteAudio?.stop();
         profile.avatar.emote = undefined;
       }
     }
   }
 
   function cancelCurrent() {
+    ++emoteRevision;
     const job = current;
     current = undefined;
     subtitles.cancel();
     emoteSequence.stop();
+    emoteAudio?.stop();
     profile.avatar.emote = undefined;
     player?.stop();
     if (job) finish(job);
@@ -100,6 +154,7 @@
     cancelCurrent();
     const job: PlaybackJob = { event, started: false, finished: false, reporting: Promise.resolve() };
     current = job;
+    const plannedEmoteRevision = emoteRevision;
     failure = '';
     failureDetail = '';
     activationNeeded = false;
@@ -109,13 +164,15 @@
       job.started = true;
       emotion = event.emotion || 'neutral';
       subtitles.start(event.id, event.text);
-      emoteSequence.start(Array.isArray(event.emotes) ? event.emotes : []);
+      if(plannedEmoteRevision===emoteRevision)emoteSequence.start(Array.isArray(event.emotes) ? event.emotes : []);
       playback(job, true);
     };
     try {
       await ready;
       if (disposed || current !== job || job.finished) return;
       const voice = { ...profile.voice };
+      if(plannedEmoteRevision===emoteRevision&&profile.output.mode===(native?'overlay':'obs'))await emoteAudio.prepare(Array.isArray(event.emotes) ? event.emotes : [], resolveSound);
+      if (disposed || current !== job || job.finished) return;
       if (voice.enabled === false) { onStart(); return; }
       const speechText = voice.provider === 'elevenlabs' ? event.speechText || event.text : event.text;
       await player.speak(speechText, voice, async () => {
@@ -149,14 +206,13 @@
     if (!globalStop && (!targetBot || (botId && targetBot !== botId))) return;
     if (event.kind === 'profile') {
       botId ||= event.profile.id;
-      ++profileRevision; profile = event.profile;
+      ++profileRevision; ++emoteRevision; emoteSequence.stop();emoteAudio?.stop(); profile = event.profile;
       // Pin legacy OBS links without a bot parameter after their initial profile arrives.
       const url = new URL(overlayUrl); url.searchParams.set('bot', botId); overlayUrl = url.toString();
       return;
     }
     if (event.kind === 'emote') {
-      emoteSequence.stop();
-      applyEmote(event);
+      void manualEmote(event);
       return;
     }
     if (event.kind === 'stop') { cancelCurrent(); failure = ''; failureDetail = ''; return; }
@@ -169,10 +225,15 @@
 
   async function acknowledgeAudioFailure() {
     if (activationNeeded) {
-      try { await player.unlock(); }
+      try { await Promise.all([player.unlock(), emoteAudio.unlock()]); }
       catch (error) { failureDetail = error instanceof Error ? error.message : String(error); return; }
     }
     if (!disposed) { failure = ''; failureDetail = ''; activationNeeded = false; }
+  }
+
+  async function activateEmoteAudio() {
+    if (soundActivationNeeded) await emoteAudio?.unlock();
+    if (!disposed) soundNotice = '';
   }
 
   async function drag(event: PointerEvent) {
@@ -185,6 +246,8 @@
   onMount(() => {
     document.documentElement.classList.add('overlay-document');
     player = new SpeechPlayer((value) => { level = value; }, (state) => { speaking = state; });
+    emoteAudio = new EmoteAudioPlayer((message) => { soundNotice = message; soundActivationNeeded = /gesperrt|aktivieren|klick/i.test(message); },reportSoundPlaying);
+    const soundHeartbeat=window.setInterval(()=>{if(soundPlaying&&!disposed)reportSoundPlaying(true);},4000);
     const cleanup: (() => void)[] = [];
     if (native) {
       const initialRevision = profileRevision;
@@ -210,7 +273,7 @@
       cleanup.push(() => events.close());
     }
     return () => {
-      disposed = true; cancelCurrent(); subtitles.destroy(); cleanup.forEach((close) => close()); player.destroy();
+      disposed = true; window.clearInterval(soundHeartbeat);cancelCurrent(); subtitles.destroy(); cleanup.forEach((close) => close()); player.destroy(); emoteAudio.destroy();
       document.documentElement.classList.remove('overlay-document');
     };
   });
@@ -228,6 +291,8 @@
   {/if}
   {#if failure}
     <button class="overlay-audio" onclick={acknowledgeAudioFailure} title={failureDetail}>{failure}</button>
+  {:else if soundNotice}
+    <button class="overlay-audio" onclick={activateEmoteAudio} title={soundNotice}>{soundActivationNeeded ? 'Emote-Audio aktivieren' : 'Soundhinweis schließen'}</button>
   {:else if connectionFailure}
     <div class="overlay-connection" role="status">{connectionFailure}</div>
   {/if}

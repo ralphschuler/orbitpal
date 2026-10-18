@@ -10,6 +10,11 @@ mod memory;
 mod knowledge;
 mod runtime_command;
 mod speech_text;
+mod extensions;
+mod skill_library;
+mod emote_audio;
+mod vision;
+mod control_mcp;
 
 use serde_json::{json,Value};
 use std::sync::{Mutex,Arc,atomic::{AtomicBool,Ordering}};
@@ -22,13 +27,40 @@ pub struct AppState {
     cancel:Mutex<Option<Arc<AtomicBool>>>,
     generation:tokio::sync::Mutex<()>,
     overlay:overlay::OverlayHub,
+    control_mcp:control_mcp::ControlMcp,
 }
 
 #[tauri::command]
 fn get_app_state(state:State<'_,AppState>,app:tauri::AppHandle,bot_id:Option<String>)->Result<Value,String> {
     let id=bot_id.unwrap_or_else(||state.store.profile().ok().and_then(|p|p["id"].as_str().map(str::to_owned)).unwrap_or("nova".into()));
     let store=state.store.scoped(&id)?;
-    Ok(json!({"profile":store.profile()?,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy()}))
+    Ok(json!({"profile":store.profile()?,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy()}))
+}
+#[tauri::command]
+fn get_extension_library(state:State<'_,AppState>)->Result<Value,String>{state.store.extension_library()}
+#[tauri::command]
+fn get_library_skill(state:State<'_,AppState>,id:String)->Result<Value,String>{skill_library::SkillLibrary::new(&state.store.root)?.read(&id)}
+#[tauri::command]
+fn install_control_extension(state:State<'_,AppState>,app:tauri::AppHandle,window:tauri::WebviewWindow)->Result<Value,String>{
+    if window.label()!="main"{return Err("Control-Erweiterungen werden ausschließlich im Studio installiert".into());}
+    let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Installieren des Control-MCP beenden".to_owned())?;
+    let installed=state.store.install_control_extension(control_mcp::CONTROL_SKILL)?;
+    let _=app.emit("cohost://library-changed",json!({"kind":"control"}));Ok(installed)
+}
+#[tauri::command]
+fn get_control_mcp_config(app:tauri::AppHandle,window:tauri::WebviewWindow)->Result<Value,String>{if window.label()!="main"{return Err("Die Control-Verbindungskonfiguration ist nur für den Streamer im Studio verfügbar".into());}app.state::<AppState>().control_mcp.client_config(&app)}
+#[tauri::command]
+async fn save_library_mcp(state:State<'_,AppState>,app:tauri::AppHandle,server:Value)->Result<Value,String>{
+    let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Ändern der gemeinsamen Bibliothek beenden".to_owned())?;
+    let saved=state.store.save_library_mcp(server)?;
+    state.mcp.disconnect(saved["id"].as_str().ok_or("MCP-ID fehlt")?).await;
+    let _=app.emit("cohost://library-changed",json!({"kind":"mcp"}));Ok(saved)
+}
+#[tauri::command]
+async fn delete_library_mcp(state:State<'_,AppState>,app:tauri::AppHandle,server_id:String)->Result<(),String>{
+    let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Entfernen einer gemeinsamen Erweiterung beenden".to_owned())?;
+    state.store.delete_library_mcp(&server_id)?;state.mcp.disconnect(&server_id).await;
+    let _=app.emit("cohost://library-changed",json!({"kind":"mcp"}));Ok(())
 }
 fn bot_summaries(state:&AppState,app:&tauri::AppHandle)->Result<Vec<Value>,String>{
     let live=overlay::active_bots(app);let mut bots=state.store.list_bots()?;
@@ -56,30 +88,37 @@ async fn save_profile(state:State<'_,AppState>,app:tauri::AppHandle,profile:Valu
     let old=store.profile()?;
     let _profile_switch=if old["id"]!=profile["id"]{Some(state.generation.try_lock().map_err(|_|"Profilwechsel während einer laufenden Antwort nicht möglich. Bitte zuerst abbrechen.".to_owned())?)}else{None};
     let profile=store.save_profile(profile)?;
-    if let Some(servers)=old["mcpServers"].as_array(){for server in servers {if let Some(id)=server["id"].as_str(){
-        let unchanged=profile["mcpServers"].as_array().and_then(|list|list.iter().find(|s|s["id"].as_str()==Some(id))).map(|s|mcp_transport_signature(s)==mcp_transport_signature(server)).unwrap_or(false);
-        if !unchanged{state.mcp.disconnect(id).await;}
-    }}}
+    // Bindings are per bot; revoking one bot must not disconnect another bot's
+    // shared transport. Runtime calls recheck the answered bot's current grants.
     if old["output"]["mode"]!=profile["output"]["mode"]{state.overlay.publish(&app,json!({"kind":"stop","botId":profile["id"]}));}
     state.overlay.publish(&app,json!({"kind":"profile","profile":overlay::public_profile(&profile)}));
     Ok(profile)
 }
 
-fn mcp_transport_signature(server:&Value)->Value {
-    json!({"id":server["id"],"enabled":server["enabled"],"transport":server["transport"],"command":server["command"],"args":server["args"],"env":server["env"],"cwd":server["cwd"],"url":server["url"],"apiKeyId":server["apiKeyId"],"secretId":server["secretId"],"tokenEnv":server["tokenEnv"]})
-}
 #[tauri::command]
-fn save_document(state:State<'_,AppState>,name:String,content:String)->Result<(),String>{state.store.save_document(&name,&content)}
+fn save_document(state:State<'_,AppState>,name:String,content:String,bot_id:Option<String>)->Result<(),String>{let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;scoped.as_ref().unwrap_or(&state.store).save_document(&name,&content)}
 #[tauri::command]
-fn save_skill(state:State<'_,AppState>,id:String,content:String)->Result<(),String>{state.store.save_skill(&id,&content)}
+fn save_skill(state:State<'_,AppState>,id:String,content:String)->Result<(),String>{let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor einer gemeinsamen Skilländerung beenden".to_owned())?;state.store.save_skill(&id,&content)}
 #[tauri::command]
-fn delete_skill(state:State<'_,AppState>,id:String)->Result<(),String>{state.store.delete_skill(&id)}
+fn delete_skill(state:State<'_,AppState>,id:String)->Result<(),String>{let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Entfernen eines Skills beenden".to_owned())?;state.store.delete_skill(&id)}
 #[tauri::command]
-fn import_skill(state:State<'_,AppState>,source_path:String)->Result<Value,String>{state.store.import_skill(std::path::Path::new(&source_path))}
+fn import_skill(state:State<'_,AppState>,source_path:String)->Result<Value,String>{let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Installieren eines Skills beenden".to_owned())?;state.store.import_skill(std::path::Path::new(&source_path))}
 #[tauri::command]
 fn trigger_emote(app:tauri::AppHandle,emote_id:String,bot_id:Option<String>)->Result<Value,String>{
     let state=app.state::<AppState>();let id=bot_id.unwrap_or(state.store.profile()?["id"].as_str().unwrap_or("nova").to_owned());let profile=state.store.scoped(&id)?.profile()?;
     overlay::trigger_emote_profile(&app,&profile,&emote_id,false)
+}
+#[tauri::command]
+fn import_emote_sound(state:State<'_,AppState>,source_path:String,bot_id:Option<String>)->Result<String,String>{
+    let id=bot_id.unwrap_or(state.store.profile()?["id"].as_str().ok_or("Bot-ID fehlt")?.to_owned());
+    state.store.bot_profile(&id)?;
+    let imported=emote_audio::import(&state.store.root,&id,std::path::Path::new(&source_path))?;
+    imported["id"].as_str().map(str::to_owned).ok_or("Importierte Sound-ID fehlt".into())
+}
+#[tauri::command]
+fn get_emote_sound(state:State<'_,AppState>,sound_id:String,bot_id:String)->Result<Value,String>{
+    let profile=state.store.bot_profile(&bot_id)?;
+    emote_audio::read(&state.store.root,&profile,&sound_id)
 }
 #[tauri::command]
 async fn import_knowledge(state:State<'_,AppState>,source_path:String)->Result<Value,String>{
@@ -117,13 +156,25 @@ pub fn resolve_mcp_config(store:&storage::Store,mut config:Value)->Result<Value,
     }}
     Ok(config)
 }
+pub async fn connect_mcp_shared(app:&tauri::AppHandle,store:&storage::Store,server:Value)->Result<Vec<Value>,String>{
+    let state=app.state::<AppState>();
+    let mut config=extensions::definition(&server)?;
+    let id=config["id"].as_str().ok_or("MCP-ID fehlt")?.to_owned();
+    if state.mcp.connected(&id).await{return state.mcp.tools(&id).await;}
+    let key=if config["transport"]=="builtin"{
+        // The library and exported profiles contain only the builtin marker.
+        // Endpoint and independent bearer are resolved for this process only.
+        config["transport"]=json!("http");
+        config["url"]=json!(state.control_mcp.url(app)?);
+        Some(state.control_mcp.bearer_token().to_owned())
+    }else{config=resolve_mcp_config(store,config)?;store.key_for(&config)?};
+    state.mcp.connect(&config,key).await
+}
 #[tauri::command]
-async fn mcp_connect(state:State<'_,AppState>,server_id:String)->Result<Vec<Value>,String>{
-    let profile=state.store.profile()?;
-    let config=profile["mcpServers"].as_array().and_then(|s|s.iter().find(|s|s["id"].as_str()==Some(&server_id))).cloned().ok_or("MCP-Server nicht gefunden")?;
-    if config["enabled"].as_bool()!=Some(true){return Err("Bitte den MCP-Server zuerst aktivieren".into());}
-    let key=state.store.key_for(&config)?;
-    state.mcp.connect(&resolve_mcp_config(&state.store,config)?,key).await
+async fn mcp_connect(state:State<'_,AppState>,app:tauri::AppHandle,server_id:String)->Result<Vec<Value>,String>{
+    let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem manuellen Verbinden eines MCP-Servers beenden".to_owned())?;
+    let config=state.store.library_mcp()?.into_iter().find(|s|s["id"].as_str()==Some(&server_id)).ok_or("MCP-Server ist nicht in der gemeinsamen Bibliothek installiert")?;
+    connect_mcp_shared(&app,&state.store,config).await
 }
 #[tauri::command]
 async fn mcp_disconnect(state:State<'_,AppState>,server_id:String)->Result<(),String>{state.mcp.disconnect(&server_id).await;Ok(())}
@@ -140,6 +191,8 @@ async fn connect_platform(state:State<'_,AppState>,app:tauri::AppHandle,platform
 async fn disconnect_platform(state:State<'_,AppState>,platform:String)->Result<(),String>{state.chat.disconnect(&platform).await}
 #[tauri::command]
 fn report_playback(app:tauri::AppHandle,id:String,bot_id:String,speaking:bool,error:Option<String>)->Result<Value,String>{overlay::report_playback(&app,&id,&bot_id,speaking,error.as_deref())}
+#[tauri::command]
+fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:String,playing:bool)->Result<Value,String>{overlay::report_emote_playback(&app,&bot_id,&output,&id,playing)}
 #[tauri::command]
 async fn get_speech_audio(app:tauri::AppHandle,id:String,bot_id:String)->Result<Value,String>{overlay::speech_audio(&app,&id,&bot_id).await}
 #[tauri::command]
@@ -179,12 +232,12 @@ pub fn run(){
         .setup(|app|{
             let root=app.path().app_data_dir()?;
             let store=storage::Store::new(root).map_err(std::io::Error::other)?;
-            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default()});
+            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),control_mcp:control_mcp::ControlMcp::default()});
             tauri::async_runtime::block_on(overlay::start(app.handle().clone())).map_err(std::io::Error::other)?;
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_app_state,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,export_profile,import_profile])
+        .invoke_handler(tauri::generate_handler![get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,export_profile,import_profile])
         .run(tauri::generate_context!()).expect("Streamer AI Cohost konnte nicht gestartet werden");
 }
 

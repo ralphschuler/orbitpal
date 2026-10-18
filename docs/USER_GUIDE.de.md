@@ -2,31 +2,48 @@
 
 Eine eigenständige Desktop-App für einen konfigurierbaren KI-Stream-Charakter. Tauri + Rust bilden die native Anwendung, Svelte das Regiepult und Three.js den echten 3D-Charakter. Die Oberfläche ist deutsch.
 
+Diese Anleitung beschreibt **0.5.0**. Für veröffentlichte Pakete gelten zusätzlich die Hinweise des jeweiligen [Releases](https://github.com/ralphschuler/streamer-ai-cohost/releases/latest).
+
 ## Start
 
-Der mitgelieferte native Build von `Streamer AI Cohost.app` ist für **macOS auf Apple Silicon** (M1 oder neuer, macOS 12+) erstellt. Er hat **keine Developer-ID-Signatur oder Notarisierung**. Falls macOS den Start blockiert, kann die App nach dem ersten Öffnungsversuch in **Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen** freigegeben werden. Weitere Plattformpakete werden über die GitHub-Releases bereitgestellt; der Status steht beim jeweiligen Release.
+Pakete und Prüfsummen stehen im [aktuellen Release](https://github.com/ralphschuler/streamer-ai-cohost/releases/latest). Die Build-Pipeline sieht Windows x64, macOS Apple Silicon/Intel und Linux x64 vor; verfügbare Pakete stehen beim jeweiligen Release. Windows-Pakete sind unsigniert, macOS-Apps ad-hoc signiert und ohne Developer-ID oder Notarisierung. Falls macOS den Start blockiert, kann die App nach dem ersten Öffnungsversuch in **Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen** freigegeben werden. Hinweise zu Plattformvoraussetzungen und Prüfsummen stehen unter [RELEASING.md](RELEASING.md).
 
 Die App benötigt zum Start weder ein kostenpflichtiges KI-Konto noch ein heruntergeladenes 3D-Modell. Nova ist als eigene prozedurale 3D-Figur enthalten. Für Dialoge muss ein lokales Modell, eine Cloud-API oder eine separat installierte und angemeldete Claude-Code-/Codex-CLI konfiguriert werden.
 
 1. Unter **Modelle** die Integration wählen. Für API-Anbieter Basis-URL und Modell eintragen oder **Modelle laden** verwenden. Ollama und LM Studio müssen separat laufen. Für Claude Code oder Codex den installierten CLI-Befehl beziehungsweise seinen absoluten Programmpfad eintragen und die betreffende CLI vorher separat anmelden. Cloud-API-Schlüssel werden im Systemschlüsselbund gespeichert.
 2. Unter **Charakter & Stimme** Name, Darstellung, Stimme und Emotes einstellen. Die Systemstimme ist eine Betriebssystemstimme. Eigene Kunststimmen benötigen eine gespeicherte Stimme beim TTS-Anbieter beziehungsweise ein lokales Stimmenmodell.
-3. Im **Regiepult** direkt mit dem Charakter sprechen oder unter **Verbindungen** Twitch und YouTube einrichten.
+3. Im **Regiepult** direkt mit dem Charakter sprechen oder unter **Twitch & YouTube** die Livechats einrichten.
 4. **Manuell auswählen** beantwortet nur bewusst ausgewählte Nachrichten. Für automatische Antworten den Co-Host- oder Pausenmodus wählen und **Cohost starten** aktivieren.
-5. Geschriebene Chatantworten können unter **Verbindungen** für Twitch und YouTube getrennt aktiviert werden. Sie sind standardmäßig aus. Die gesprochene Antwort funktioniert unabhängig davon.
+5. Geschriebene Chatantworten können unter **Twitch & YouTube** getrennt aktiviert werden. Sie sind standardmäßig aus. Die gesprochene Antwort funktioniert unabhängig davon.
+
+## Bedienung und Tastatur
+
+Die kleinen Informationsschaltflächen erklären Einstellungen beim Überfahren und bei Tastaturfokus. Mit **Tab** und **Umschalt+Tab** sind sie ebenso wie die übrigen Bedienelemente erreichbar.
+
+| Kürzel | Aktion |
+| --- | --- |
+| **?** oder **F1** | Tastaturhilfe öffnen; `?` nur außerhalb von Eingabefeldern. |
+| **Strg/⌘ + S** | Aktuelle Einstellungen und Anweisungsänderungen speichern; im Erweiterungseditor dessen Inhalt speichern. |
+| **Strg/⌘ + K** | Zum Regiepult wechseln und das Nachrichtenfeld fokussieren. |
+| **Strg/⌘ + Enter** | Nachricht im Regiepult senden, wenn keine Aufnahme oder Antwort läuft. |
+| **Alt/⌥ + 1–7** | Bereiche in der Reihenfolge der Seitenleiste wählen; nicht während der Texteingabe. |
+| **Esc** | Zuerst sichtbare Hilfe oder einen Dialog schließen; sonst die laufende Ausgabe stoppen. |
+
+Die sieben Bereiche sind **Regiepult**, **Charakter & Stimme**, **Modelle**, **Persönlichkeit & Regeln**, **Wissen & Gedächtnis**, **Twitch & YouTube** und **Skills & MCP**. Botfreigaben in der Erweiterungsbibliothek werden unmittelbar gespeichert; andere Profiländerungen über **Änderungen speichern** sichern.
 
 ## Enthalten
 
 - Eigene animierte 3D-Roboterfigur Nova mit Blick, Blinzeln, Ruhebewegungen, Gesichtsausdrücken und sprachgesteuertem Mund.
 - 17 mitgelieferte Charaktere: Nova, Robot Expressive, Fox, KayKit-Ritter, -Magier, -Schurke und -Skelett sowie zehn CC0-VRM-Figuren aus [Open Source Avatars](https://www.opensourceavatars.com/en/finder). Quellen, Modellgrenzen und weitere Importmöglichkeiten stehen in [CHARACTERS.md](../CHARACTERS.md); die [Attributionshinweise](../public/characters/ATTRIBUTION.md) und [OSA-Metadaten](../public/characters/osa/CREDITS.json) gehören zu den Fremdmodellen. Die KayKit-Figuren enthalten Körperanimationen; die zehn OSA-VRMs besitzen Humanoidrigs und Vokalmorphs und verwenden die prozeduralen Gesten der App.
 - Import eigener VRM- und GLB-Modelle. Enthaltene GLB-Animationsclips können als eigene Emotes zugeordnet werden.
-- Emote-Bibliothek pro Profil: Winken, Verstecken, Freuen sowie Nicken und Tanzen. Namen, Dauer, Intensität und Freigabe für Zuschauer-Anfragen sind konfigurierbar. Der Agent kann freigegebene Emotes als Werkzeug ausführen.
+- Emote-Bibliothek pro Profil: Winken, Verstecken, Freuen sowie Nicken und Tanzen. Namen, Dauer, Intensität, optionaler Sound mit Lautstärke und Freigabe für Zuschauer-Anfragen sind konfigurierbar. Der Agent kann freigegebene Emotes als Werkzeug ausführen.
 - Dialogmodelle über Ollama, LM Studio, OpenAI-kompatible APIs, Anthropic Messages sowie die installierten Claude-Code- und Codex-CLIs. Begrenzte Werkzeugrunden und Abbruch; eintreffende Modelltexte werden intern gesammelt und mit der Sprachausgabe veröffentlicht.
 - Systemstimmen, ElevenLabs und kompatible lokale/Cloud-TTS-Endpunkte. Push-to-talk mit lokalem Whisper, ElevenLabs Scribe, OpenAI Whisper oder kompatiblen STT-Endpunkten. Aufnahmen werden lokal in Mono-PCM16-WAV mit 16 kHz umgewandelt.
 - Twitch EventSub und YouTube-Livechat gleichzeitig, begrenzte Warteschlange und Verfallszeit für alte Nachrichten. Die erste YouTube-Anbindung verwendet `liveChatMessages.list` mit dem vom Server vorgegebenen Abrufintervall.
 - Optionale geschriebene Antworten im jeweiligen Quellchat. Pro Antwort wird höchstens eine Nachricht gesendet; längere Texte werden auf 500 Zeichen bei Twitch beziehungsweise 200 Zeichen bei YouTube gekürzt. Die eigene Bot-Identität wird aus dem Eingang ausgefiltert.
 - Eigene `AGENTS.md` und `PERSONA.md`, direkt im Editor oder als Datei bearbeitbar.
-- Agent Skills mit `SKILL.md`, Referenzen, Assets und optionalen Node-/Python-Skripten. Skill-Ordner können importiert werden. Skriptausführung ist gesondert schaltbar und auf Betreiber-Anfragen beschränkt.
-- MCP-Server lokal über stdio und entfernt über Streamable HTTP. Werkzeuge, Ressourcen und Prompts werden mit Freigaben pro Charakter angeboten. Unterstützung moderner und älterer MCP-Protokolle.
+- Gemeinsame Skill-/MCP-Bibliothek für alle Bots, mit unabhängigen Bot- und Zuschauerfreigaben. Skill-Ordner enthalten `SKILL.md`, Referenzen, Assets und optionale Node-/Python-Skripte. Skriptausführung ist zusätzlich pro Bot schaltbar und auf ausdrückliche Betreiber-Aufträge beschränkt.
+- MCP-Server lokal über stdio und entfernt über Streamable HTTP. Echte Bildinhalte aus erlaubten MCP-Werkzeugen können an ein Vision-Modell weitergegeben werden; dafür gibt es eine eigene Einstellung pro Bot.
 - SQLite-Gesprächsverlauf, begrenzter Modellkontext, Wissensdateien, portable Profile und separate Zugangsdaten im Systemschlüsselbund.
 - Transparentes, rahmenloses Figurenfenster, optional immer im Vordergrund und mit durchgereichten Mausklicks. Separates Regiepult, Traymenü und OBS-Browserquelle.
 
@@ -38,10 +55,10 @@ Mehrere Bots können **gleichzeitig sichtbar im Stream** sein. Jeder hat seine e
 
 | Beim Anlegen | Ergebnis |
 | --- | --- |
-| **Frisch beginnen** | Eigenes Profil mit Vorgaben, eigenen `AGENTS.md`-/`PERSONA.md`-Dateien, Skill-/Wissensordnern, leerem Verlauf und neuen Schlüsselbund-Referenzen. |
-| **Einstellungen übernehmen** | Modell-, Stimmen- und weitere Einstellungen sowie Anweisungen, Skills und Wissen werden in ein eigenständiges Profil kopiert. Der Name in `PERSONA.md` wird angepasst; der Gesprächsverlauf bleibt leer. Vorhandene Schlüsselbund-Referenzen werden weiterverwendet, geheime Werte werden nicht kopiert. MCP-Server erhalten neue interne IDs. |
+| **Frisch beginnen** | Eigenes Profil mit Vorgaben, eigenen `AGENTS.md`-/`PERSONA.md`-Dateien, eigenem Wissen, leerem Verlauf und neuen Schlüsselbund-Referenzen. Installierte Skills und MCP-Server erhalten keine automatische Freigabe. |
+| **Einstellungen übernehmen** | Modell-, Stimmen- und weitere Einstellungen, Anweisungen und Wissen werden übernommen; der Verlauf bleibt leer. Der Name in `PERSONA.md` wird angepasst. Skill-/MCP-Freigaben werden als unabhängige Bindungen an dieselbe Bibliothek übernommen. Vorhandene Schlüsselbund-Referenzen werden weiterverwendet; geheime Werte werden nicht kopiert. |
 
-Die App speichert den Verlauf pro Bot. Änderungen an den Anweisungs- und Skill-Dateien eines Bots verändern die Kopie eines anderen Bots nicht. Bei übernommenen Einstellungen können beide Bots dieselbe im Schlüsselbund gespeicherte Anbieteranmeldung nutzen; dadurch teilen sie gegebenenfalls auch dessen Kontingent.
+Die App speichert Anweisungen, Wissen und Verlauf pro Bot. Änderungen an `AGENTS.md` oder `PERSONA.md` beeinflussen keine anderen Bots. Ein global bearbeiteter Skill oder MCP-Server ändert dagegen den gemeinsamen Bibliothekseintrag für alle zugeordneten Bots; deren Freigaben bleiben getrennt. Bei übernommenen Einstellungen können beide Bots dieselbe im Schlüsselbund gespeicherte Anbieteranmeldung und dessen Kontingent nutzen.
 
 Twitch und YouTube bilden die gemeinsame Live-Chat-Eingabe der Crew. Gleichzeitig wird jeweils eine Verbindung pro Plattform gehalten; die Auswahl eines anderen Botprofils trennt diese Verbindungen nicht. Die Bots wenden ihre eigenen Auslöser und Antwortmodi an. Gespräche und Sprachausgaben werden **nacheinander** verarbeitet, während alle eingeblendeten Figuren sichtbar bleiben. **Ausgabe beenden** betrifft den gewählten Bot; der zentrale **Stop** bricht ausstehende Antworten und Sprache aller Ausgaben ab. Dialog-, STT- und TTS-Integration werden pro Profil gewählt; eine CLI-Anmeldung und Cloud-API-Schlüssel sind weiterhin getrennte Zugänge.
 
@@ -66,6 +83,14 @@ codex login
 Bei einem absoluten Programmpfad denselben installierten Befehl auch für die Anmeldung verwenden. Die CLIs verwalten ihre eigenen Sitzungen und Zugangsdaten. **Im Cohost gespeicherte API-Schlüssel werden nicht automatisch in die CLI übernommen.** Verfügbare Modelle, Kontingente und Abrechnung richten sich nach der tatsächlichen CLI-Anmeldung und dem Anbieterzugang. Die offiziellen Anleitungen beschreiben die [Claude-Code-Anmeldung](https://code.claude.com/docs/en/authentication) und die [Codex-Anmeldung](https://learn.chatgpt.com/docs/auth).
 
 Charakter, `AGENTS.md`, `PERSONA.md`, Gesprächskontext und Cohost-Werkzeuge werden weiterhin durch unsere Agenten-Laufzeit zusammengestellt. CLI-Anbieter verwenden dafür eine strukturierte Host-Tool-Bridge: Das Modell kann Werkzeugaufrufe anfordern, der Cohost führt freigegebene MCP-Werkzeuge, Skills, Wissenssuche und Emotes aus und liefert die Ergebnisse für die nächste Antwort zurück. Die bestehenden Betreiber-/Chat-Freigaben bleiben wirksam. Diese Anbindung ist keine automatische Übernahme aller separat in der CLI installierten Erweiterungen. Die Codex-Integration verwendet `app-server`; die Claude-Code-Integration den Print-Modus. Die CLI-eigenen Betriebssystemwerkzeuge werden für diese Dialogaufrufe eingeschränkt, während der Cohost die freigegebenen Aktionen ausführt.
+
+### Bilder aus MCP-Werkzeugen
+
+Unter **Modelle → Werkzeugbilder an das Modell senden** (`model.visionEnabled`) entscheidet jeder Bot, ob Bildinhalte aus bereits freigegebenen MCP-Werkzeugen weitergegeben werden dürfen. Ein Screenshot-Werkzeug kann beispielsweise ein Bild liefern, das im nächsten Modellaufruf als echte Bildanlage statt als Base64-Textbeschreibung übermittelt wird. Die App nimmt dadurch keine Bildschirmaufnahmen selbstständig auf und erteilt keine zusätzlichen Werkzeugrechte.
+
+Unterstützt werden OpenAI-kompatible Bildnachrichten einschließlich geeigneter Ollama-/LM-Studio-Endpunkte, Anthropic Messages, Codex App Server und Claude Code mit Stream-JSON-Eingabe. Das **konkret gewählte Modell und der Endpoint müssen Bilder unterstützen**. Eine kompatible Text-API allein genügt nicht. Bekannte reine Textmodelle, deaktivierte Bildfreigabe oder zurückgewiesene Bildanfragen führen zu einem ausdrücklichen Fehler; Bilder werden nicht still durch eine erfundene Analyse ersetzt. Unvollständige Modellmetadaten können die tatsächliche Bildfähigkeit nicht garantieren. Codex weist Bildanfragen auch dann vor der Inferenz ab, wenn die Bildfähigkeit des tatsächlich ausgewählten Modells im CLI-Katalog unbekannt ist.
+
+Pro Gesprächszug gelten über alle Werkzeugrunden hinweg höchstens **vier Bilder**, **5 MiB pro Bild** und **12 MiB Bilddaten insgesamt**. Unterstützte Formate sind PNG, JPEG, WebP und GIF; zusätzlich gelten die Grenzen des Modells. Bei Claude Code darf außerdem die gesamte übergebene JSON-Eingabe inklusive Base64 und Gesprächskontext **10 MiB** nicht überschreiten. Größere Eingaben werden abgewiesen. Es werden ausschließlich eingebettete Bilddaten aus den Werkzeugergebnissen verarbeitet, keine beliebigen Bild-URLs oder lokalen Dateipfade nachgeladen. Bei Cloud-Modellen verlassen diese Bilddaten den Rechner. Bilder und Werkzeugtexte bleiben nicht vertrauenswürdige Inhalte und können keine Berechtigungen verändern.
 
 ## Mikrofon und Spracherkennung
 
@@ -117,21 +142,55 @@ Eine aktive Audioausgabe steuert die Mundbewegung. Bei API-TTS wird die tatsäch
 
 Die Antwort hat zwei Fassungen: `text` enthält den sichtbaren Inhalt, `speechText` die Fassung für die Stimme. Audio-Tags wie `[crying]` oder `[shouts]` bleiben für ElevenLabs im Sprechtext erhalten, erscheinen aber weder im Untertitel noch in neuen Chatantworten oder Erinnerungen. Systemstimmen und kompatible TTS-Anbieter erhalten den bereinigten Text. Tag-Unterstützung und Wirkung hängen vom gewählten ElevenLabs-Modell ab, beispielsweise `eleven_v3`; die App wechselt dein Stimmenmodell nicht automatisch. Die Trennung erfolgt lokal aus einer Modellantwort und benötigt keinen zweiten Dialogaufruf. Eckige Klammern sind außerhalb von Code, Links und nummerierten Quellen für Audio-Tags reserviert.
 
+### Optionale Emote-Sounds
+
+Unter **Charakter & Stimme** kann jedes Emote ohne Sound bleiben, einen integrierten Effekt (**wave**, **cheer**, **whoosh**) verwenden oder einen eigenen Clip mit eigener Lautstärke erhalten. Die integrierten Effekte werden lokal mit WebAudio erzeugt. Eigene **WAV-, MP3-, OGG-, WebM- und M4A-Dateien** werden in den Soundordner dieses Bots importiert; pro Datei sind höchstens **5 MiB** erlaubt. Das jeweilige WebView muss den enthaltenen Audiocodec dekodieren können. Die Ausgabe ist auf **15 Sekunden pro Clip** begrenzt.
+
+Emote-Sounds funktionieren im Studio, im nativen Figurenfenster und in der OBS-Browserquelle. Bei einer geplanten Antwort werden sie vor dem Sprachstart geladen und dekodiert; beim Beginn der Geste startet der vorbereitete Clip parallel. Manuelle Emotes bereiten ihren Sound ebenfalls vor. Pro Präsentation werden höchstens acht unterschiedliche Sounds mit einem begrenzten Decodiercache vorbereitet. Fehlende, gesperrte oder nicht dekodierbare Sounds werden mit Hinweis übersprungen und brechen die Sprachausgabe nicht ab. Falls eine Ausgabe die Audiofreigabe verlangt, zuerst dort klicken. Stop verwirft auch laufende Sounds und verspätete Ladevorgänge.
+
 Unter Linux hängen freie Fensterpositionierung, Transparenz und „immer im Vordergrund“ vom Desktop, X11/Wayland und Compositor ab. Der Browser-Renderer ist eine zusätzliche Stream-Ausgabe unabhängig vom Desktopfenster.
 
 ## MCP und Skills
 
-Im Bereich **Erweiterungen** Server hinzufügen, verbinden und anschließend die angebotenen Werkzeuge freigeben. Die Spalte **Cohost** erlaubt die Nutzung für Betreiber-Anfragen; **Chat** erlaubt zusätzlich Zuschauer-Anfragen. Leere Freigaben bedeuten keinen Zugriff. Das Dialogmodell muss zur Integration passendes Tool Calling unterstützen.
+Im Bereich **Skills & MCP** gibt es eine **Bibliothek für alle Bots** und die **Freigaben für den gewählten Bot**. Einen MCP-Server einmal hinzufügen oder einen Skillordner einmal importieren. Das installiert den Eintrag in der App-Bibliothek und aktiviert keinen weiteren Bot. Benötigte Serverprogramme und Laufzeiten müssen separat vorhanden sein; die Bibliothek ist kein Paketmanager.
+
+Für einen MCP-Server **Werkzeuge laden** wählen. Das verbindet den Server und liest seinen Katalog, ohne ein Werkzeug auszuführen oder einen Bot freizugeben. Danach **Für [Bot] verwenden** einschalten und einzelne Werkzeuge in der Spalte **Bot** erlauben. **Chat** erlaubt zusätzlich Zuschauer-Anfragen und setzt die Botfreigabe voraus. Leere Werkzeugfreigaben bedeuten keinen Zugriff. Das Dialogmodell muss zur Integration passendes Tool Calling unterstützen. Eine gemeinsame Serververbindung kann von mehreren Bots genutzt werden; eine Trennung betrifft sie alle. Daten- und Sitzungstrennung im MCP-Server hängen zusätzlich von dessen eigener Implementierung ab.
+
+Für einen Skill **Für [Bot] verwenden** einschalten. Zunächst erhält das Modell nur ID, Name und Beschreibung der freigegebenen Skills. Den vollständigen `SKILL.md`-Text sowie Referenzen lädt es erst bei Bedarf über die Hostwerkzeuge. Das ist schrittweises Laden, kein Training des Modells. `AGENTS.md` und `PERSONA.md` bleiben unter **Persönlichkeit & Regeln** pro Bot editierbar.
+
+**Global bearbeiten** ändert einen Bibliothekseintrag für alle Bots, die ihn verwenden. **Für alle Bots entfernen** löscht ihn aus der Bibliothek und entfernt seine Bindungen. Soll nur ein Bot keinen Zugriff mehr haben, stattdessen dessen Freigabe ausschalten. Neue Bots erhalten ohne Übernahme bestehender Einstellungen keine Erweiterungsfreigaben. Beim ersten Start dieser Version werden bisherige Installationen in die Bibliothek übernommen: identische Inhalte werden zusammengeführt, verschiedene Inhalte bei gleicher Skill-ID behalten getrennte IDs. Die bisherigen Skillordner bleiben bei dieser Migration erhalten.
 
 Lokale MCP-Server benötigen ihre eigenen Laufzeiten. Der Startbefehl wird direkt mit Argumenten aufgerufen, nicht über eine Shell. Für aufwendigere Startumgebungen können absolute Programmpfade verwendet werden. In dateibasierter MCP-Konfiguration können Umgebungswerte auf Schlüsselbund-Einträge verweisen: `${secret:meine-id}`. Profilexporte enthalten keine literalen Umgebungs- oder Header-Geheimnisse.
 
 Unter Windows bevorzugt die App native `.exe`-Programme. Bekannte npm-Startdateien `codex.cmd`, `claude.cmd`, `npm.cmd` und `npx.cmd` werden ohne Batch-Shell über `node.exe` und die zugehörige installierte JavaScript-Datei gestartet. Node.js und die betreffende CLI beziehungsweise der MCP-Server müssen separat installiert sein. Bei anderen Batchwrappern einen echten `.exe`-Pfad verwenden. Für einen manuell eingerichteten npm-MCP-Start kann beispielsweise `C:\Program Files\nodejs\node.exe` als Programm und `C:\Program Files\nodejs\node_modules\npm\bin\npx-cli.js` als erstes Argument eingetragen werden; die Serverargumente folgen als weitere Listeneinträge. Es wird keine zusammengesetzte Shell-Befehlszeile ausgeführt.
 
-`SKILL.md` wird bei Bedarf geladen. `scripts/`, `references/` und `assets/` werden mit importiert. Skripte sind standardmäßig ausgeschaltet und benötigen bei Aktivierung eine separat verfügbare Node-/Python-Laufzeit. Ein Beispielprofil liegt unter `character-template/`.
+`scripts/`, `references/` und `assets/` werden mit dem Skillordner importiert. **Skill-Skripte für [Bot] erlauben** ist eine zusätzliche Freigabe pro Bot, standardmäßig aus. Skripte benötigen eine separat verfügbare Node-/Python-Laufzeit und dürfen nur bei ausdrücklichen Betreiber-Aufträgen laufen; Zuschauer erhalten diese Fähigkeit nicht. Die App bietet dafür keine Betriebssystem-Sandbox. Ein Profilpaket enthält nur die diesem Bot zugewiesenen Erweiterungen und deren Ressourcen; Zugangsdaten müssen am Ziel erneut hinterlegt werden. Ein Beispielprofil liegt unter `character-template/`.
+
+### Den Cohost über einen Agenten steuern
+
+Unter **Skills & MCP → Den Cohost per Agent steuern → MCP + Skill installieren** werden der eingebaute Steuerungsserver und der passende `cohost-control`-Skill in die gemeinsame Bibliothek aufgenommen. Die Aktion startet keinen Dialog, führt keine Werkzeuge oder Skripte aus und erteilt keine Botrechte. Wähle danach beispielsweise Nova, aktiviere für sie den Skill und den Server und gib die gewünschten MCP-Werkzeuge einzeln frei. Zuschauerrechte bleiben eine zusätzliche bewusste Freigabe.
+
+| Werkzeug | Wirkung |
+| --- | --- |
+| `cohost_status` | Öffentlicher Appstatus und Auslastung der Dialog-Laufzeit. |
+| `cohost_list_bots` | Bis zu 100 Bots mit ID, Namen und Ausgabestatus; keine Verläufe, Dateipfade oder Zugangsdaten. |
+| `cohost_list_emotes` | Für den Zielbot über diesen Server erlaubte Emotes. |
+| `cohost_perform_emote` | Vorhandenes Emote mit dessen konfiguriertem optionalem Sound auslösen: intern zum Antwortstart einplanen, extern sofort übergeben. |
+| `cohost_show_character` / `cohost_hide_character` | Natives Figurenfenster öffnen und Overlay wählen beziehungsweise Figurenausgabe beenden und Studio wiederherstellen. |
+| `cohost_pause_auto_replies` | Das offene Regiepult auffordern, automatische Antworten zu pausieren. |
+| `cohost_stop_output` | Aktive Generierung und ausstehende/spielende Ausgaben aller Bots stoppen. |
+
+Der allgemeine Steuerungsserver führt nur Emotes mit **Zuschauerfreigabe** (`allowChat=true`) aus, auch bei externen Betreiber-Clients. So kann eine MCP-Freigabe die Emote-Freigabe nicht umgehen. Eine Emote-Dispatch-Bestätigung beweist noch keine abgeschlossene Wiedergabe. Anzeigen und Ausblenden liefern während einer laufenden Antwort oder vorbereiteten/laufenden Sprache des Zielbots einen ausdrücklichen Beschäftigt-Fehler. Das betrifft auch entsprechende Werkzeugaufrufe aus einem eigenen Botturn. Ein Pausenergebnis bestätigt nur die Übergabe der Anforderung, keine Rückmeldung des Regiepults und keine dauerhaft gespeicherte Änderung.
+
+Ein interner Cohost-Bot darf über `cohost_perform_emote` ausschließlich seinen eigenen Charakter steuern. Nach der Werkzeugfreigabenprüfung plant die Agenten-Laufzeit das Emote einschließlich Sound für den tatsächlichen Sprach-/Textausgabestart ein. Während der Denkphase wird keine Geste vorab gezeigt; Stop verwirft geplante Emotes. Ein externer MCP-Client mit Steuerungstoken kann dagegen das gewählte erlaubte Emote sofort an die Ausgabe übergeben, ohne einen Modellturn auszulösen.
+
+Für externe Agenten **Claude / MCP-JSON** oder **Codex · TOML** wählen und **Verbindung kopieren** anklicken. Die Konfiguration im dafür vorgesehenen Bereich des externen Clients einfügen; dessen Einrichtung bleibt ein separater Schritt. Der Server ist nur auf dem lokalen Rechner erreichbar, benötigt die laufende App und prüft Host, Origin und einen eigenen Bearer-Token. **Port und Steuerungstoken wechseln bei jedem App-Neustart**: danach die Konfiguration erneut kopieren. Der kopierte Token erlaubt die angebotenen Steuerungswerkzeuge als Betreiberzugang; die Botfreigaben der internen Bibliothek beschränken externe Clients nicht. Nicht im Stream, in Profilpaketen oder öffentlich teilen. Ein OBS-Link enthält einen anderen Zugang und berechtigt nicht zur Steuerung.
+
+Der Server bietet keine neuen Modellanfragen, allgemeinen Nachrichtenversand, freien Dateizugriff, Einstellungen, Promptänderungen oder Rechtevergabe an. Der Skill enthält die Bedienhinweise; er benötigt keine Skriptausführung. Die Einbindung selbst erzeugt keine automatischen Aktionen.
 
 ## Wissen und Hindsight
 
-Im Bereich **Gedächtnis** PDF, TXT, Markdown, JSON oder CSV importieren. PDF-Dateien sind auf 20 MiB und 500 Seiten begrenzt, extrahierter Text und UTF-8-Dateien auf 4 MiB; pro Bot maximal 128 Dokumente und 16 MiB indizierter Text. Die App erhält die Originaldatei und indexiert den Text beim Import. Scans ohne Text benötigen vorher OCR. Gleichnamige Dateien werden nicht überschrieben.
+Im Bereich **Wissen & Gedächtnis** PDF, TXT, Markdown, JSON oder CSV importieren. PDF-Dateien sind auf 20 MiB und 500 Seiten begrenzt, extrahierter Text und UTF-8-Dateien auf 4 MiB; pro Bot maximal 128 Dokumente und 16 MiB indizierter Text. Die App erhält die Originaldatei und indexiert den Text beim Import. Scans ohne Text benötigen vorher OCR. Gleichnamige Dateien werden nicht überschrieben.
 
 Vor jeder Antwort sucht die App lokal nach passenden Stichwörtern und fügt begrenzte Auszüge automatisch ein, auch bei ausgeschalteter Werkzeugnutzung. Quellen tragen Dateiname, Textzeilen und bei PDFs eine Seitennummer. PDF-Zeilen beziehen sich auf den extrahierten Text. Das Modell wird angewiesen, beim Bezug darauf die Quelle zu nennen; die tatsächliche Befolgung hängt vom Modell ab. Die zusätzliche Wissenssuche als Werkzeug ermöglicht weitere Nachfragen. Bei einem Cloud-Dialogmodell gehen relevante Auszüge an dessen Anbieter. Wissen bleibt getrennt vom Langzeitgedächtnis und wird mit dem Profil exportiert.
 
@@ -142,6 +201,8 @@ Der Recall ergänzt relevante Erinnerungen vor der Antwort; bei Fehlern läuft d
 ## Aktivierungsphrase am Mikrofon
 
 Die Mikrofon-Statuszeile enthält aufklappbare Einstellungen für eigene Phrasen, etwa **hey nova**. Die Erkennung startet nur durch bewusstes Einschalten des Mikrofons. Nach der Phrase wird der folgende Text als Nachricht verarbeitet; bei einer Phrase ohne weiteren Text öffnet sich ein kurzes Nachfragefenster. Während laufender Antwort, Sprachausgabe oder manueller Aufnahme pausiert die Erfassung. Stop und Botwechsel beenden sie.
+
+Nach einer Antwort- oder Emote-Soundpause hört eine bewusst gestartete Sitzung automatisch weiter. Ein einzelner Erkennungs-, Verbindungs- oder Aufnahmefehler beendet sie nicht: Wiederholungen warten 1, 2, 4, 8 und 16 Sekunden. Nach fünf erfolglosen Wiederaufnahmen erscheint ein Hinweis zum erneuten Start. Entzogener Mikrofonzugriff und ein getrenntes Gerät benötigen einen bewussten Neustart.
 
 Die Funktion erkennt Phrasen in den Transkripten kurzer VAD-Aufnahmen. Sie ist kein separates Offline-Wake-Word-Modell. Bei Cloud-STT werden Audioabschnitte schon vor Erkennung der Phrase an den ausgewählten Anbieter geschickt. Für lokale Verarbeitung einen lokalen Whisper-Server verwenden. Gespeicherte Aktivierung startet nach einem App-Neustart kein Mikrofon automatisch.
 
@@ -155,11 +216,13 @@ Siehe [CONTRIBUTING.md](../CONTRIBUTING.md) für Installation, lokale Tests und 
 
 ## Daten und Grenzen dieser Version
 
-Die App legt Charakterdateien, Wissensdateien und die SQLite-Datenbank in ihrem Betriebssystem-App-Datenordner ab. Der Ordner ist in der Oberfläche zugänglich. API-Schlüssel und Tokens liegen separat im Betriebssystem-Schlüsselbund. Profile werden als JSON-Bundle einschließlich der verwalteten Charakter-/Skillressourcen exportiert.
+Die App legt Charakterdateien, Wissensdateien, Emote-Sounds und die SQLite-Datenbank in ihrem Betriebssystem-App-Datenordner ab. Skills liegen gemeinsam unter `library/skills/`, MCP-Definitionen im gemeinsamen Datenbankkatalog; Botfreigaben, Anweisungen und Verlauf bleiben getrennt. Der Datenordner ist in der Oberfläche zugänglich. API-Schlüssel und Tokens liegen separat im Betriebssystem-Schlüsselbund. Profile werden als JSON-Bundle einschließlich der zugewiesenen Erweiterungen, verwalteten Charakterressourcen, Wissensdateien und Sounds exportiert.
 
 Cloud- und lokale Stimmen sind getrennte Ressourcen. Eine ElevenLabs-Stimme wird nicht als lokales Stimmenmodell heruntergeladen. Benutzer stellen eigene Anbieterzugänge, lokale Modelllaufzeiten, gegebenenfalls CLI-Installationen mit eigener Anmeldung, STT-Server und Whisper-Modelle, Stimmen und eigene 3D-Dateien bereit. CLI-Anmeldung und Zugriff auf Cloud-STT sind unabhängig; ein Codex- oder Claude-Code-Login ersetzt keinen OpenAI-/ElevenLabs-STT-API-Schlüssel.
 
 Eigenes Modelltraining, automatische Token-Erstellung bei Streaming-Plattformen und die Erzeugung eines individuellen 3D-Modells aus Fotos sind nicht Bestandteil dieser Version. Angepasste Modelle können über die jeweiligen Modelllaufzeiten eingebunden werden. Automatisierte Tests verwenden lokale Fixtures und Mocks; sie ersetzen keinen Live-Test mit dem eigenen Stream-Setup. Streaming-Konten, Modellanbieter, TTS/STT-Dienste und fremde MCP-Server wurden nicht live verifiziert. Der native Build belegt keine gemessene Leistung oder erfolgreiche Live-Anbieteranbindung.
+
+Die Linux-GTK-Abhängigkeit GLib 0.18.5 enthält einen dokumentierten Upstream-Backport für **GHSA-wrw7-89jp-8q8g**. Linux-CI und Release-Pipeline prüfen den betroffenen Iterator optimiert und kontrollieren die Quellhashes. Die Versionsnummer bleibt unverändert; reine Versionsscanner können den Befund daher weiter anzeigen. Details stehen im [Backport-Protokoll](../vendor/glib/COHOST-BACKPORT.md) und in [SECURITY.md](../SECURITY.md).
 
 ## Technische Quellen
 

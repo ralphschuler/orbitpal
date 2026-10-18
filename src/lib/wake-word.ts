@@ -1,6 +1,6 @@
 import { recordingToWav, type SynthesizedAudio } from './audio';
 
-export type WakeWordState = 'stopped' | 'starting' | 'listening' | 'capturing' | 'transcribing' | 'follow-up' | 'triggered' | 'paused';
+export type WakeWordState = 'stopped' | 'starting' | 'listening' | 'capturing' | 'transcribing' | 'follow-up' | 'triggered' | 'paused' | 'retrying';
 
 export interface WakeWordOptions {
   phrases: string[];
@@ -47,14 +47,23 @@ export function findWakePhrase(text: string, phrases: readonly string[]): { phra
   }
 }
 
+const RETRY_DELAYS = [1000, 2000, 4000, 8000, 16_000];
+
+class RestartRequired extends Error {}
+
 /** Explicitly started, STT-based phrase recognition, not an offline KWS model.
- * Audio segments are transcribed before their activation phrase can be known.
- * One epoch owns every microphone, conversion and transcription result. */
+ * A session owns microphone permission; an epoch owns its current utterance.
+ * Temporary output pauses invalidate utterances, never the user's session. */
 export class WakeWordListener {
   private epoch = 0;
+  private session = 0;
+  private sessionAbort?: AbortController;
   private requested = false;
   private blocked = false;
   private working = false;
+  private opening = false;
+  private retries = 0;
+  private retryUntil = 0;
   private stream?: MediaStream;
   private context?: AudioContext;
   private source?: MediaStreamAudioSourceNode;
@@ -86,33 +95,72 @@ export class WakeWordListener {
       throw new Error('Diese WebView unterstützt keine Mikrofonaufnahme. Bitte die Desktop-App und ihre WebView aktualisieren.');
     }
     if (this.blocked) throw new Error('Der Cohost ist gerade beschäftigt. Starte das Zuhören nach seiner Antwort.');
-    const epoch = ++this.epoch;
+    const session = ++this.session;
+    const abort = new AbortController();
+    this.sessionAbort = abort;
     this.requested = true;
+    this.opening = true;
     this.setState('starting');
     try {
       const context = new AudioContext();
       this.context = context;
       // Resume is initiated directly by the Start click, before profile saving
       // or the microphone permission dialog can consume user activation.
-      let resumeTimeout: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const [, saved] = await Promise.all([
-          Promise.race([
-            context.resume(),
-            new Promise<never>((_, reject) => {
-              resumeTimeout = setTimeout(() => reject(new Error('Audio konnte nicht aktiviert werden. Bitte erneut auf „Zuhören starten“ klicken.')), 5000);
-            }),
-          ]),
-          Promise.resolve(beforeListen?.()),
-        ]);
-        if (!this.current(epoch)) return;
-        if (saved === false) { this.stop(); return; }
-      } finally { if (resumeTimeout !== undefined) clearTimeout(resumeTimeout); }
+      const [, saved] = await Promise.all([
+        this.resumeContext(context, abort.signal),
+        Promise.resolve(beforeListen?.()),
+      ]);
+      if (!this.currentSession(session)) return;
+      if (saved === false) { this.stop(); return; }
+      await this.openStream(session);
+    } catch (error) {
+      if (!this.currentSession(session)) return;
+      this.opening = false;
+      const restart = this.restartReason(error);
+      if (restart || !this.context) { this.stop(); throw new Error(restart || this.message(error)); }
+      this.recover(`Mikrofon konnte nicht gestartet werden: ${this.message(error)}`);
+    } finally {
+      if (this.currentSession(session)) this.opening = false;
+    }
+  }
+
+  private async resumeContext(context: AudioContext, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) throw new Error('Zuhören beendet');
+    if (context.state === 'closed') throw new RestartRequired('Die Audioverarbeitung wurde geschlossen. Bitte das Zuhören erneut starten.');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let abort: (() => void) | undefined;
+    try {
+      await Promise.race([
+        context.resume(),
+        new Promise<never>((_, reject) => {
+          abort = () => reject(new Error('Zuhören beendet'));
+          signal.addEventListener('abort', abort, { once: true });
+          timer = setTimeout(() => reject(new RestartRequired('Audio konnte nicht aktiviert werden. Bitte erneut auf „Zuhören starten“ klicken.')), 5000);
+        }),
+      ]);
+      if (context.state !== 'running') throw new RestartRequired('Die Audioverarbeitung bleibt vom System pausiert. Bitte erneut auf „Zuhören starten“ klicken.');
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (abort) signal.removeEventListener('abort', abort);
+    }
+  }
+
+  private async openStream(session: number): Promise<void> {
+    if (!this.currentSession(session)) return;
+    this.opening = true;
+    try {
+      const context = this.context;
+      if (!context || context.state === 'closed') throw new RestartRequired('Die Audioverarbeitung wurde geschlossen. Bitte das Zuhören erneut starten.');
+      if (context.state !== 'running') await this.resumeContext(context, this.sessionAbort!.signal);
+      if (!this.currentSession(session)) return;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
-      if (!this.current(epoch)) { stream.getTracks().forEach((track) => track.stop()); return; }
+      if (!this.currentSession(session)) { stream.getTracks().forEach((track) => track.stop()); return; }
       this.stream = stream;
       for (const track of stream.getAudioTracks()) {
-        track.onended = () => { if (this.requested) this.fail('Das Mikrofon wurde getrennt oder seine Freigabe beendet.'); };
+        track.enabled = false;
+        track.onended = () => {
+          if (this.currentSession(session)) this.endWithError('Das Mikrofon wurde getrennt oder seine Freigabe beendet. Prüfe das Gerät und die Mikrofonberechtigung und starte das Zuhören erneut.');
+        };
       }
       this.source = context.createMediaStreamSource(stream);
       this.analyser = context.createAnalyser();
@@ -123,17 +171,21 @@ export class WakeWordListener {
       this.source.connect(this.analyser);
       this.analyser.connect(this.mute);
       this.mute.connect(context.destination);
+      context.onstatechange = () => {
+        if (!this.currentSession(session)) return;
+        if (context.state === 'closed') this.endWithError('Die Audioverarbeitung wurde geschlossen. Bitte das Zuhören erneut starten.');
+        else if (context.state !== 'running' && !this.blocked && !this.opening) this.recover('Die Audioverarbeitung wurde vom System pausiert.');
+      };
       this.mimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4', 'audio/webm']
         .find((mime) => MediaRecorder.isTypeSupported(mime)) || '';
       this.noiseFloor = 0.004;
-      this.resumeCapture(0);
+      if (this.blocked) this.setState('paused');
+      else this.resumeCapture(0);
     } catch (error) {
-      if (!this.current(epoch)) return;
-      this.stop();
-      if (error instanceof DOMException && ['NotAllowedError', 'SecurityError'].includes(error.name)) {
-        throw new Error('Mikrofonzugriff wurde nicht freigegeben. Erlaube ihn in den Systemeinstellungen und starte das Zuhören erneut.');
-      }
+      if (this.currentSession(session)) this.releaseStream();
       throw error;
+    } finally {
+      if (this.currentSession(session)) this.opening = false;
     }
   }
 
@@ -147,22 +199,36 @@ export class WakeWordListener {
       this.working = false;
       this.suspendCapture();
       this.setState('paused');
-    } else if (this.stream && this.context?.state !== 'closed') {
+    } else if (this.opening) {
+      // The explicit Start click still owns the pending permission dialog.
+      this.setState('starting');
+    } else if (this.context && this.context.state !== 'closed') {
       // Leave a short gap after playback, including any room/speaker echo.
       this.resumeCapture(650);
     } else {
-      // A profile change/permission race must never open a new microphone on
-      // its own. The operator can start a fresh listening session explicitly.
-      this.stop();
+      this.endWithError('Die Audioverarbeitung ist nicht mehr verfügbar. Bitte das Zuhören erneut starten.');
     }
   }
 
   stop(): void {
     ++this.epoch;
+    ++this.session;
     this.requested = false;
+    this.sessionAbort?.abort();
+    this.sessionAbort = undefined;
     this.working = false;
+    this.opening = false;
+    this.retries = 0;
+    this.retryUntil = 0;
     this.followUpUntil = 0;
     this.suspendCapture();
+    this.releaseStream();
+    if (this.context) { this.context.onstatechange = null; void this.context.close().catch(() => {}); }
+    this.context = undefined;
+    this.setState('stopped');
+  }
+
+  private releaseStream(): void {
     for (const track of this.stream?.getTracks() ?? []) { track.onended = null; track.stop(); }
     this.stream = undefined;
     this.source?.disconnect();
@@ -171,12 +237,11 @@ export class WakeWordListener {
     this.source = undefined;
     this.analyser = undefined;
     this.mute = undefined;
-    if (this.context) void this.context.close().catch(() => {});
-    this.context = undefined;
-    this.setState('stopped');
+    if (this.context) this.context.onstatechange = null;
   }
 
   private current(epoch: number) { return this.requested && this.epoch === epoch; }
+  private currentSession(session: number) { return this.requested && this.session === session; }
 
   private setState(state: WakeWordState) {
     if (this.state === state) return;
@@ -207,19 +272,33 @@ export class WakeWordListener {
   }
 
   private resumeCapture(delay: number) {
-    if (!this.requested || this.blocked || this.working || !this.stream) return;
+    if (!this.requested || this.blocked || this.working || (!this.stream && this.opening)) return;
     if (this.resumeTimer !== undefined) clearTimeout(this.resumeTimer);
     const epoch = this.epoch;
+    const session = this.session;
+    delay = Math.max(delay, this.retryUntil - performance.now());
+    if (this.retryUntil > performance.now()) this.setState('retrying');
     this.resumeTimer = setTimeout(() => {
       this.resumeTimer = undefined;
-      if (!this.current(epoch) || this.blocked || this.working || !this.stream) return;
-      if (!this.stream.getAudioTracks().some((track) => track.readyState === 'live')) { this.fail('Das Mikrofon ist nicht mehr verfügbar.'); return; }
-      this.stream.getAudioTracks().forEach((track) => { track.enabled = true; });
-      try {
-        this.beginSegment(epoch);
-        this.pollTimer = setInterval(() => this.poll(epoch), 50);
-      } catch (error) { this.fail(error instanceof Error ? error.message : String(error)); }
+      if (!this.current(epoch) || this.blocked || this.working) return;
+      if (!this.stream) {
+        if (!this.opening) void this.openStream(session).catch((error) => { if (this.currentSession(session)) this.captureFailure(error); });
+      } else void this.activateCapture(epoch);
     }, delay);
+  }
+
+  private async activateCapture(epoch: number): Promise<void> {
+    try {
+      if (!this.stream?.getAudioTracks().some((track) => track.readyState === 'live')) {
+        throw new RestartRequired('Das Mikrofon ist nicht mehr verfügbar. Prüfe das Gerät und starte das Zuhören erneut.');
+      }
+      if (!this.context || !this.sessionAbort) throw new RestartRequired('Die Audioverarbeitung ist nicht mehr verfügbar. Bitte das Zuhören erneut starten.');
+      if (this.context.state !== 'running') await this.resumeContext(this.context, this.sessionAbort.signal);
+      if (!this.current(epoch) || this.blocked) return;
+      this.stream.getAudioTracks().forEach((track) => { track.enabled = true; });
+      this.beginSegment(epoch);
+      this.pollTimer = setInterval(() => this.poll(epoch), 50);
+    } catch (error) { if (this.current(epoch)) this.captureFailure(error); }
   }
 
   private beginSegment(epoch: number) {
@@ -230,9 +309,12 @@ export class WakeWordListener {
     this.recorder = recorder;
     this.segmentStarted = performance.now();
     recorder.ondataavailable = (event) => { if (this.current(epoch) && event.data.size) parts.push(event.data); };
-    recorder.onerror = () => { if (this.current(epoch)) this.fail('Die Mikrofonaufnahme wurde unterbrochen. Bitte Zuhören erneut starten.'); };
+    recorder.onerror = (event) => {
+      if (this.current(epoch) && this.recorder === recorder) this.captureFailure((event as Event & { error?: DOMException }).error || new Error('Die Mikrofonaufnahme wurde unterbrochen.'));
+    };
     recorder.onstop = () => {
       if (!this.current(epoch) || this.blocked || this.recorder !== recorder) return;
+      if (!this.working) { this.recover('Die Mikrofonaufnahme wurde unerwartet beendet.'); return; }
       this.recorder = undefined;
       const followUp = this.utteranceFollowUp;
       const blob = new Blob(parts, { type: recorder.mimeType || this.mimeType });
@@ -269,9 +351,9 @@ export class WakeWordListener {
       this.stream?.getAudioTracks().forEach((track) => { track.enabled = false; });
       this.working = true;
       this.setState('transcribing');
-      try { this.recorder.stop(); } catch { this.fail('Der Audioabschnitt konnte nicht abgeschlossen werden.'); }
+      try { this.recorder.stop(); } catch (error) { this.captureFailure(error); }
     } else if (!this.voiceStarted && !this.voiceCandidate && now - this.segmentStarted >= 1800) {
-      try { this.beginSegment(epoch); } catch (error) { this.fail(error instanceof Error ? error.message : String(error)); }
+      try { this.beginSegment(epoch); } catch (error) { this.captureFailure(error); }
     } else if (!this.voiceStarted && this.followUpUntil && now >= this.followUpUntil) {
       this.followUpUntil = 0;
       this.setState('listening');
@@ -279,12 +361,16 @@ export class WakeWordListener {
   }
 
   private async processSegment(blob: Blob, epoch: number, followUp: boolean) {
+    let stage = 'Audioabschnitt konnte nicht verarbeitet werden';
     try {
       if (!this.current(epoch) || this.blocked) return;
       const audio = await recordingToWav(blob);
       if (!this.current(epoch) || this.blocked) return;
+      stage = 'Spracherkennung unterbrochen';
       const transcript = (await this.options.transcribe(audio)).trim();
       if (!this.current(epoch) || this.blocked) return;
+      this.retries = 0;
+      this.retryUntil = 0;
       const wake = findWakePhrase(transcript, this.phrases);
       if (wake && !words(wake.request).length) {
         this.followUpUntil = performance.now() + 10_000;
@@ -294,12 +380,13 @@ export class WakeWordListener {
           this.followUpUntil = 0;
           // Capture is already suspended before the callback can start TTS.
           this.setState('triggered');
+          stage = 'Cohost-Anfrage konnte nicht abgeschlossen werden';
           await this.options.onTrigger(request);
           if (!this.current(epoch)) return;
         }
       }
     } catch (error) {
-      if (this.current(epoch)) this.fail(error instanceof Error ? error.message : String(error));
+      if (this.current(epoch)) this.recover(`${stage}: ${this.message(error)}`);
       return;
     } finally {
       if (this.current(epoch)) {
@@ -309,7 +396,39 @@ export class WakeWordListener {
     }
   }
 
-  private fail(message: string) {
+  private message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+
+  private restartReason(error: unknown): string | undefined {
+    if (error instanceof RestartRequired) return error.message;
+    const name = error instanceof Error ? error.name : '';
+    if (['NotAllowedError', 'SecurityError'].includes(name)) return 'Mikrofonzugriff wurde nicht freigegeben. Erlaube ihn in den Systemeinstellungen und starte das Zuhören erneut.';
+    if (['NotFoundError', 'DevicesNotFoundError', 'OverconstrainedError'].includes(name)) return 'Kein passendes Mikrofon verfügbar. Schließe ein Mikrofon an, prüfe die Geräteeinstellungen und starte das Zuhören erneut.';
+  }
+
+  private captureFailure(error: unknown): void {
+    const restart = this.restartReason(error);
+    if (restart) this.endWithError(restart);
+    else this.recover(`Mikrofonaufnahme unterbrochen: ${this.message(error)}`);
+  }
+
+  private recover(message: string): void {
+    if (!this.requested) return;
+    ++this.epoch;
+    this.working = false;
+    this.followUpUntil = 0;
+    this.suspendCapture();
+    const delay = RETRY_DELAYS[this.retries++];
+    if (delay === undefined) {
+      this.endWithError(`${message} · Nach fünf erfolglosen Wiederaufnahmen wurde das Zuhören beendet. Prüfe Mikrofon und STT-Verbindung und klicke erneut auf „Zuhören starten“.`);
+      return;
+    }
+    this.retryUntil = performance.now() + delay;
+    this.setState(this.blocked ? 'paused' : 'retrying');
+    this.options.onError(`${message} · Zuhören wird automatisch erneut versucht; bitte den Abschnitt wiederholen.`);
+    this.resumeCapture(delay);
+  }
+
+  private endWithError(message: string): void {
     this.stop();
     this.options.onError(message);
   }

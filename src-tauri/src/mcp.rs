@@ -114,7 +114,7 @@ impl Session {
     async fn request(&mut self,method:&str,mut params:Value)->Result<Value,String> {
         if !params.is_object(){return Err("MCP-Parameter müssen ein JSON-Objekt sein".into());}
         if self.modern {
-            params["_meta"]=json!({"io.modelcontextprotocol/protocolVersion":self.protocol,"io.modelcontextprotocol/clientInfo":{"name":"streamer-ai-cohost","version":"0.1.0"},"io.modelcontextprotocol/clientCapabilities":{}});
+            params["_meta"]=json!({"io.modelcontextprotocol/protocolVersion":self.protocol,"io.modelcontextprotocol/clientInfo":{"name":"streamer-ai-cohost","version":env!("CARGO_PKG_VERSION")},"io.modelcontextprotocol/clientCapabilities":{}});
         }
         self.next+=1;let id=self.next;
         let response=tokio::time::timeout(Duration::from_secs(50),self.exchange(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),Some(id))).await.map_err(|_|"MCP-Zeitlimit überschritten".to_owned())??;

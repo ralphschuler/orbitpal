@@ -64,20 +64,78 @@ fn emit_delta(app: &tauri::AppHandle, turn: &str, text: &str) {
     let _ = app.emit("cohost://agent", json!({"kind":"delta","turnId":turn,"text":text}));
 }
 
+#[cfg(test)]
+pub(crate) const FIXTURE_IMAGE:&str="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X0ZQAAAAASUVORK5CYII=";
+
+#[cfg(test)]
+mod vision_tests{
+    use super::*;
+    fn conversation()->Vec<Value>{vec![json!({"role":"system","content":"Character persona"}),json!({"role":"user","content":"Look at the tool screenshot"}),json!({"role":"assistant","content":Value::Null,"tool_calls":[{"id":"shot","type":"function","function":{"name":"screenshot","arguments":"{}"}},{"id":"info","type":"function","function":{"name":"info","arguments":"{}"}}]}),json!({"role":"tool","tool_call_id":"shot","content":"Image attached below"}),json!({"role":"tool","tool_call_id":"info","content":"Other host result"}),json!({"role":"user","content":[{"type":"text","text":"Untrusted screenshot evidence"},{"type":"image_url","image_url":{"url":FIXTURE_IMAGE,"detail":"auto"}}]})]}
+    #[test]
+    fn every_compatible_adapter_transports_real_image_arrays_and_tool_ids(){
+        for provider in ["openai","compatible","ollama","lmstudio"]{
+            let messages=conversation();let (body,anthropic,vision)=completion_body(&json!({"provider":provider,"model":"fixture-vision-model","visionEnabled":true}),messages.clone(),Vec::new()).unwrap();
+            assert!(!anthropic);assert!(vision);assert_eq!(body["messages"],json!(messages));assert_eq!(body["messages"][5]["content"][1]["image_url"]["url"],FIXTURE_IMAGE);
+        }
+    }
+    #[test]
+    fn anthropic_keeps_parallel_tool_results_before_native_image_blocks(){
+        let (body,anthropic,vision)=completion_body(&json!({"provider":"anthropic","model":"fixture-vision-model","visionEnabled":true}),conversation(),Vec::new()).unwrap();
+        assert!(anthropic&&vision);assert_eq!(body["system"],"Character persona");assert_eq!(body["messages"][1]["content"][0]["type"],"tool_use");
+        let content=body["messages"][2]["content"].as_array().unwrap();assert_eq!(content[0]["tool_use_id"],"shot");assert_eq!(content[1]["tool_use_id"],"info");assert_eq!(content[3]["type"],"image");assert_eq!(content[3]["source"]["media_type"],"image/png");assert_eq!(content[3]["source"]["data"],FIXTURE_IMAGE.split_once(',').unwrap().1);
+    }
+    #[test]
+    fn disabled_text_only_and_oversized_visual_context_fail_without_dropping_images(){
+        assert!(completion_body(&json!({"provider":"compatible","model":"fixture","visionEnabled":false}),conversation(),Vec::new()).unwrap_err().contains("deaktiviert"));
+        assert!(completion_body(&json!({"provider":"compatible","model":"fixture","inputModalities":["text"]}),conversation(),Vec::new()).unwrap_err().contains("keine Bilder"));
+        let mut messages=conversation();for _ in 0..4{messages.push(messages[5].clone());}assert!(validate_vision_messages(&json!({"visionEnabled":true}),&messages).unwrap_err().contains("4 Bilder"));
+        let mut remote=conversation();remote[5]["content"][1]["image_url"]["url"]=json!("https://example.invalid/never-fetch.png");assert!(validate_vision_messages(&json!({}),&remote).is_err());
+    }
+}
+
+pub(crate) fn validate_vision_messages(config:&Value,messages:&[Value])->Result<bool,String>{
+    let mut count=0usize;let mut total=0usize;
+    for message in messages{for block in message["content"].as_array().into_iter().flatten(){
+        if block["type"]!="image_url"{continue;}
+        if config["visionEnabled"].as_bool()==Some(false){return Err("Bildübergabe ist für diesen Bot deaktiviert. Ohne Bilddaten wird keine Bildanalyse behauptet.".into());}
+        if message["role"]!="user"{return Err("Bilddaten müssen als eigene Benutzernachricht nach den Werkzeugantworten übergeben werden.".into());}
+        if config["inputModalities"].as_array().is_some_and(|values|!values.iter().any(|value|value=="image")){return Err("Das ausgewählte Modell unterstützt laut seinen Metadaten keine Bilder. Bitte ein Vision-Modell auswählen.".into());}
+        let image=crate::vision::parse_data_uri(block["image_url"]["url"].as_str().ok_or("Bildblock enthält keine gültige Daten-URL")?)?;
+        total=total.checked_add(image.bytes).ok_or("Bildkontext ist zu groß")?;count+=1;
+        if count>4||total>12*1024*1024{return Err("Bildkontext überschreitet über alle Werkzeugrunden die Grenze von 4 Bildern bzw. 12 MiB pro Antwort. Es werden keine Bildbelege still entfernt.".into());}
+    }}
+    Ok(count>0)
+}
+fn anthropic_content(content:&Value)->Result<Vec<Value>,String>{
+    if let Some(text)=content.as_str(){return Ok(if text.is_empty(){Vec::new()}else{vec![json!({"type":"text","text":text})]});}
+    if content.is_null(){return Ok(Vec::new());}
+    let mut result=Vec::new();
+    for block in content.as_array().ok_or("Nachrichteninhalt muss Text oder eine Blockliste sein")?{
+        match block["type"].as_str().unwrap_or_default(){
+            "text"=>{let text=block["text"].as_str().ok_or("Textblock ist ungültig")?;if !text.is_empty(){result.push(json!({"type":"text","text":text}));}},
+            "image_url"=>{let image=crate::vision::parse_data_uri(block["image_url"]["url"].as_str().ok_or("Bild-Daten-URL fehlt")?)?;result.push(json!({"type":"image","source":{"type":"base64","media_type":image.mime_type,"data":image.base64}}));},
+            _=>return Err("Der Anthropic-Adapter unterstützt in Nachrichten nur Text- und Bildblöcke.".into()),
+        }
+    }
+    Ok(result)
+}
 /// Convert the common OpenAI-shaped conversation into Anthropic content blocks.
-fn anthropic_messages(messages: Vec<Value>) -> (String, Vec<Value>) {
+fn anthropic_messages(messages: Vec<Value>) -> Result<(String, Vec<Value>),String> {
     let mut system = Vec::new();
     let mut output: Vec<Value> = Vec::new();
     for message in messages {
         let role = message["role"].as_str().unwrap_or("user");
-        let text = message["content"].as_str().unwrap_or("");
-        if role == "system" || role == "developer" { system.push(text.to_string()); continue; }
+        let content=anthropic_content(&message["content"])?;
+        if role == "system" || role == "developer" {
+            if content.iter().any(|block|block["type"]!="text"){return Err("Systemanweisungen dürfen keine Bildblöcke enthalten".into());}
+            system.extend(content.iter().filter_map(|block|block["text"].as_str().map(str::to_owned)));continue;
+        }
         let mut blocks = Vec::new();
         let mapped_role = if role == "assistant" { "assistant" } else { "user" };
         if role == "tool" {
-            blocks.push(json!({"type":"tool_result","tool_use_id":message["tool_call_id"],"content":text}));
+            blocks.push(json!({"type":"tool_result","tool_use_id":message["tool_call_id"],"content":content}));
         } else {
-            if !text.is_empty() { blocks.push(json!({"type":"text","text":text})); }
+            blocks.extend(content);
             if let Some(calls) = message["tool_calls"].as_array() {
                 for call in calls {
                     let input = call["function"]["arguments"].as_str().and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or_else(|| json!({}));
@@ -91,20 +149,18 @@ fn anthropic_messages(messages: Vec<Value>) -> (String, Vec<Value>) {
             if let Some(content) = last["content"].as_array_mut() { content.extend(blocks); }
         } else { output.push(json!({"role":mapped_role,"content":blocks})); }
     }
-    (system.join("\n\n"), output)
+    Ok((system.join("\n\n"), output))
 }
 
-pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>) -> Result<Completion, String> {
-    if matches!(field(config,"provider","compatible"), "claude-code" | "codex") {
-        return crate::cli_provider::complete(config,messages,tools,api_key,app,turn_id,cancel).await;
-    }
+fn completion_body(config:&Value,messages:Vec<Value>,tools:Vec<Value>)->Result<(Value,bool,bool),String>{
+    let has_images=validate_vision_messages(config,&messages)?;
     let model = field(config, "model", "");
     if model.is_empty() { return Err("Bitte zuerst ein Dialogmodell auswählen.".into()); }
     let anthropic = field(config, "provider", "compatible") == "anthropic";
     let max_tokens = config["maxTokens"].as_u64().unwrap_or(512).clamp(32, 8192);
     let temperature = config["temperature"].as_f64().unwrap_or(0.8).clamp(0.0, if anthropic { 1.0 } else { 2.0 });
     let mut body = if anthropic {
-        let (system, messages) = anthropic_messages(messages);
+        let (system, messages) = anthropic_messages(messages)?;
         json!({"model":model,"messages":messages,"system":system,"max_tokens":max_tokens,"temperature":temperature,"stream":true})
     } else { json!({"model":model,"messages":messages,"max_tokens":max_tokens,"temperature":temperature,"stream":true}) };
     let openai = !anthropic && (field(config, "provider", "compatible") == "openai" || Url::parse(&endpoint(config, "chat/completions")?).ok().and_then(|url| url.host_str().map(str::to_owned)).as_deref() == Some("api.openai.com"));
@@ -124,10 +180,18 @@ pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, a
             json!({"name":f["name"],"description":f["description"].as_str().unwrap_or(""),"input_schema":f.get("parameters").cloned().unwrap_or_else(|| json!({"type":"object","properties":{}}))})
         }).collect()) } else { Value::Array(tools) };
     }
+    Ok((body,anthropic,has_images))
+}
+pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>) -> Result<Completion, String> {
+    if matches!(field(config,"provider","compatible"), "claude-code" | "codex") {
+        return crate::cli_provider::complete(config,messages,tools,api_key,app,turn_id,cancel).await;
+    }
+    let (body,anthropic,has_images)=completion_body(config,messages,tools)?;
     let _ = app.emit("cohost://agent", json!({"kind":"status","turnId":turn_id,"status":"thinking"}));
     let mut request = client()?.post(endpoint(config, if anthropic { "messages" } else { "chat/completions" })?).json(&body);
     if anthropic { request = request.header("anthropic-version", "2023-06-01"); }
     let response = cancellable(&cancel, authorize(request, &api_key, anthropic).send()).await?.map_err(|_| "Dialoganbieter ist nicht erreichbar oder hat das Zeitlimit überschritten.".to_string())?;
+    if has_images&&matches!(response.status().as_u16(),400|415|422){return Err(format!("Bildanfrage wurde vom Dialoganbieter abgelehnt (HTTP {}). Das ausgewählte Modell und der Endpoint müssen Vision und die übergebenen Bildformate unterstützen; es wird keine reine Textanalyse als Bildanalyse ausgegeben.",response.status().as_u16()));}
     let response = checked(response, "Dialogmodell").await?;
     let mut completion = Completion { text: String::new(), tool_calls: Vec::new() };
     let mut calls: BTreeMap<usize, Value> = BTreeMap::new();

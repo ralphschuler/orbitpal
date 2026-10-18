@@ -55,6 +55,22 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
   let stream: { getTracks: () => typeof track[]; getAudioTracks: () => typeof track[] };
   let getUserMedia: ReturnType<typeof vi.fn>;
   let createdRecorders: FakeMediaRecorder[];
+  let contexts: FakeAudioContext[];
+
+  class FakeAudioContext {
+    state = 'running';
+    destination = {};
+    onstatechange: (() => void) | null = null;
+    resume = vi.fn(async () => { this.state = 'running'; });
+    close = vi.fn(async () => { this.state = 'closed'; });
+    constructor() { contexts.push(this); }
+    createMediaStreamSource = () => ({ connect: vi.fn(), disconnect: vi.fn() });
+    createGain = () => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() });
+    createAnalyser = () => ({
+      fftSize: 1024, smoothingTimeConstant: 0, connect: vi.fn(), disconnect: vi.fn(),
+      getFloatTimeDomainData: (samples: Float32Array) => samples.fill(volume),
+    });
+  }
 
   class FakeMediaRecorder {
     static isTypeSupported = () => true;
@@ -62,7 +78,7 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
     mimeType = 'audio/webm';
     ondataavailable: ((event: { data: Blob }) => void) | null = null;
     onstop: (() => void) | null = null;
-    onerror: (() => void) | null = null;
+    onerror: ((event: { error?: Error }) => void) | null = null;
     constructor() { createdRecorders.push(this); }
     start() { this.state = 'recording'; }
     stop() {
@@ -79,23 +95,13 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
     volume = 0;
     listeners = [];
     createdRecorders = [];
+    contexts = [];
     track = { enabled: true, readyState: 'live', onended: null, stop: vi.fn(() => { track.readyState = 'ended'; }) };
     stream = { getTracks: () => [track], getAudioTracks: () => [track] };
     getUserMedia = vi.fn().mockResolvedValue(stream);
     vi.stubGlobal('navigator', { mediaDevices: { getUserMedia } });
     vi.stubGlobal('MediaRecorder', FakeMediaRecorder);
-    vi.stubGlobal('AudioContext', class {
-      state = 'running';
-      destination = {};
-      resume = vi.fn().mockResolvedValue(undefined);
-      close = vi.fn(async () => { this.state = 'closed'; });
-      createMediaStreamSource = () => ({ connect: vi.fn(), disconnect: vi.fn() });
-      createGain = () => ({ gain: { value: 1 }, connect: vi.fn(), disconnect: vi.fn() });
-      createAnalyser = () => ({
-        fftSize: 1024, smoothingTimeConstant: 0, connect: vi.fn(), disconnect: vi.fn(),
-        getFloatTimeDomainData: (samples: Float32Array) => samples.fill(volume),
-      });
-    });
+    vi.stubGlobal('AudioContext', FakeAudioContext);
     vi.mocked(recordingToWav).mockReset().mockResolvedValue(wav);
   });
 
@@ -237,14 +243,285 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
     expect(track.enabled).toBe(true);
   });
 
-  it('beendet das Zuhören sichtbar bei fehlender STT-Verbindung', async () => {
-    const transcribe = vi.fn().mockRejectedValue(new Error('Whisper-Server nicht erreichbar'));
+  it('hört nach einem vorübergehenden STT-Fehler automatisch weiter und erkennt die nächste Frage', async () => {
+    const transcribe = vi.fn().mockRejectedValueOnce(new Error('Whisper-Server nicht erreichbar')).mockResolvedValue('hey nova, zweite Frage');
     const { listener, onTrigger, onError, onState } = setup(transcribe);
     await start(listener);
     await utterance();
-    expect(onError).toHaveBeenCalledWith('Whisper-Server nicht erreichbar');
-    expect(onState).toHaveBeenLastCalledWith('stopped');
-    expect(track.stop).toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('Whisper-Server nicht erreichbar'));
+    expect(onState).toHaveBeenLastCalledWith('retrying');
+    expect(track.stop).not.toHaveBeenCalled();
+    expect(track.enabled).toBe(false);
     expect(onTrigger).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onState).toHaveBeenLastCalledWith('listening');
+    await utterance();
+    expect(onTrigger).toHaveBeenCalledExactlyOnceWith('zweite Frage');
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])('behält die Startabsicht bei einer Pause im Berechtigungsdialog (früh entpausiert: %s)', async (earlyUnblock) => {
+    const permission = deferred<typeof stream>();
+    getUserMedia.mockReturnValueOnce(permission.promise);
+    const { listener, onState, onError } = setup();
+    const starting = listener.start();
+    await vi.advanceTimersByTimeAsync(0);
+    listener.setBlocked(true);
+    if (earlyUnblock) listener.setBlocked(false);
+    permission.resolve(stream);
+    await starting;
+    await vi.advanceTimersByTimeAsync(0);
+    if (!earlyUnblock) {
+      expect(onState).toHaveBeenLastCalledWith('paused');
+      expect(track.enabled).toBe(false);
+      expect(createdRecorders).toHaveLength(0);
+      listener.setBlocked(false);
+      await vi.advanceTimersByTimeAsync(650);
+    }
+    expect(onState).toHaveBeenLastCalledWith('listening');
+    expect(track.enabled).toBe(true);
+    expect(track.stop).not.toHaveBeenCalled();
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('behält die Sitzung bei einer Pause während des anfänglichen Profilspeicherns', async () => {
+    const save = deferred<boolean>();
+    const { listener, onState } = setup();
+    const starting = listener.start(() => save.promise);
+    listener.setBlocked(true);
+    save.resolve(true);
+    await starting;
+    expect(onState).toHaveBeenLastCalledWith('paused');
+    listener.setBlocked(false);
+    await vi.advanceTimersByTimeAsync(650);
+    expect(onState).toHaveBeenLastCalledWith('listening');
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('verwirft eine Transkription aus der Pause, ohne die wiederaufgenommene Sitzung zu beenden', async () => {
+    const oldResult = deferred<string>();
+    const transcribe = vi.fn().mockReturnValueOnce(oldResult.promise).mockResolvedValue('Hey Nova, aktuelle Frage');
+    const { listener, onTrigger, onState } = setup(transcribe);
+    await start(listener);
+    await utterance();
+    listener.setBlocked(true);
+    listener.setBlocked(false);
+    await vi.advanceTimersByTimeAsync(650);
+    oldResult.resolve('Hey Nova, verspätete Frage');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onTrigger).not.toHaveBeenCalled();
+    expect(onState).toHaveBeenLastCalledWith('listening');
+    await utterance();
+    expect(onTrigger).toHaveBeenCalledExactlyOnceWith('aktuelle Frage');
+  });
+
+  it('nimmt nach einer durch die eigene Antwort ausgelösten Pause wieder auf', async () => {
+    const reply = deferred<void>();
+    const { listener, onTrigger, onState } = setup();
+    onTrigger.mockImplementation(async () => { listener.setBlocked(true); await reply.promise; });
+    await start(listener);
+    await utterance();
+    expect(onState).toHaveBeenLastCalledWith('paused');
+    reply.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    listener.setBlocked(false);
+    await vi.advanceTimersByTimeAsync(650);
+    expect(onState).toHaveBeenLastCalledWith('listening');
+    expect(track.enabled).toBe(true);
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('wiederholt einen vorübergehend fehlgeschlagenen Mikrofonstart ohne neuen Benutzerstart', async () => {
+    getUserMedia.mockRejectedValueOnce(new DOMException('Gerät vorübergehend belegt', 'NotReadableError'));
+    const { listener, onState, onError } = setup();
+    await listener.start();
+    expect(onState).toHaveBeenLastCalledWith('retrying');
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('Gerät vorübergehend belegt'));
+    await vi.advanceTimersByTimeAsync(999);
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(getUserMedia).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onState).toHaveBeenLastCalledWith('listening');
+  });
+
+  it('startet nach einem Recorder-Fehler eine neue Aufnahme statt die Sitzung zu beenden', async () => {
+    const { listener, onState, transcribe } = setup();
+    await start(listener);
+    createdRecorders[0].onerror?.({ error: new Error('Container unterbrochen') });
+    expect(onState).toHaveBeenLastCalledWith('retrying');
+    expect(track.enabled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(createdRecorders).toHaveLength(2);
+    expect(onState).toHaveBeenLastCalledWith('listening');
+    expect(track.stop).not.toHaveBeenCalled();
+    expect(transcribe).not.toHaveBeenCalled();
+  });
+
+  it('holt auch einen ohne Fehlerereignis unerwartet beendeten Recorder zurück', async () => {
+    const { listener, onState, transcribe } = setup();
+    await start(listener);
+    createdRecorders[0].stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onState).toHaveBeenLastCalledWith('retrying');
+    expect(transcribe).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(onState).toHaveBeenLastCalledWith('listening');
+    expect(createdRecorders).toHaveLength(2);
+    expect(track.stop).not.toHaveBeenCalled();
+  });
+
+  it('beendet das Zuhören nicht nach einer defekten Aufnahme oder abgelehnten Cohost-Anfrage', async () => {
+    vi.mocked(recordingToWav).mockRejectedValueOnce(new Error('Aufnahme unvollständig'));
+    const { listener, onState, onTrigger } = setup();
+    await start(listener);
+    await utterance();
+    expect(onState).toHaveBeenLastCalledWith('retrying');
+    await vi.advanceTimersByTimeAsync(1000);
+    onTrigger.mockRejectedValueOnce(new Error('Cohost kurz beschäftigt'));
+    await utterance();
+    expect(onState).toHaveBeenLastCalledWith('retrying');
+    await vi.advanceTimersByTimeAsync(1000);
+    await utterance();
+    expect(onTrigger).toHaveBeenCalledTimes(2);
+    expect(track.stop).not.toHaveBeenCalled();
+  });
+
+  it('erhöht Fehlerabstände und verlangt nach fünf erfolglosen Wiederaufnahmen einen neuen Start', async () => {
+    const transcribe = vi.fn().mockRejectedValue(new Error('STT weiterhin offline'));
+    const { listener, onState, onError } = setup(transcribe);
+    await start(listener);
+    for (const delay of [1000, 2000, 4000, 8000, 16_000]) {
+      await utterance();
+      expect(onState).toHaveBeenLastCalledWith('retrying');
+      const count = createdRecorders.length;
+      // utterance() spends 50 ms after its final voiced/silence polling edge.
+      await vi.advanceTimersByTimeAsync(delay - 51);
+      expect(createdRecorders).toHaveLength(count);
+      await vi.advanceTimersByTimeAsync(51);
+      expect(onState).toHaveBeenLastCalledWith('listening');
+    }
+    await utterance();
+    expect(onState).toHaveBeenLastCalledWith('stopped');
+    expect(onError).toHaveBeenLastCalledWith(expect.stringContaining('Nach fünf erfolglosen Wiederaufnahmen'));
+    expect(track.stop).toHaveBeenCalledTimes(1);
+    const count = createdRecorders.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(createdRecorders).toHaveLength(count);
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['retrying', 'paused'])('übergeht einen ausdrücklichen Stop während %s niemals automatisch', async (phase) => {
+    const { listener, onState } = setup(vi.fn().mockRejectedValue(new Error('offline')));
+    await start(listener);
+    if (phase === 'retrying') await utterance();
+    else listener.setBlocked(true);
+    listener.stop();
+    const count = createdRecorders.length;
+    listener.setBlocked(false);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(createdRecorders).toHaveLength(count);
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(onState).toHaveBeenLastCalledWith('stopped');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('beachtet nach Entpausieren auch einen noch laufenden Fehlerabstand', async () => {
+    const { listener, onState } = setup(vi.fn().mockRejectedValue(new Error('offline')));
+    await start(listener);
+    await utterance();
+    await vi.advanceTimersByTimeAsync(1000);
+    await utterance();
+    listener.setBlocked(true);
+    listener.setBlocked(false);
+    await vi.advanceTimersByTimeAsync(650);
+    expect(onState).toHaveBeenLastCalledWith('retrying');
+    expect(track.enabled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1350);
+    expect(onState).toHaveBeenLastCalledWith('listening');
+  });
+
+  it.each([
+    ['NotAllowedError', 'Mikrofonzugriff wurde nicht freigegeben'],
+    ['NotFoundError', 'Kein passendes Mikrofon verfügbar'],
+  ])('fordert bei %s eine konkrete Benutzeraktion statt endlos erneut anzufragen', async (name, message) => {
+    getUserMedia.mockRejectedValue(new DOMException('Browserfehler', name));
+    const { listener, onState } = setup();
+    await expect(listener.start()).rejects.toThrow(message);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+    expect(onState).toHaveBeenLastCalledWith('stopped');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('meldet ein entferntes Mikrofon mit neuer Startaktion und öffnet kein anderes Gerät heimlich', async () => {
+    const { listener, onError, onState } = setup();
+    await start(listener);
+    track.readyState = 'ended';
+    track.onended?.();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(onState).toHaveBeenLastCalledWith('stopped');
+    expect(onError).toHaveBeenCalledWith(expect.stringContaining('Mikrofon wurde getrennt'));
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('aktiviert einen vorübergehend vom System pausierten Audiokontext wieder', async () => {
+    const { listener, onState } = setup();
+    await start(listener);
+    const context = contexts[0];
+    context.state = 'suspended';
+    context.onstatechange?.();
+    expect(onState).toHaveBeenLastCalledWith('retrying');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(context.resume).toHaveBeenCalledTimes(2);
+    expect(onState).toHaveBeenLastCalledWith('listening');
+    expect(getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('verlangt bei einer vom Browser blockierten Audioaktivierung einen erneuten Klick', async () => {
+    vi.stubGlobal('AudioContext', class extends FakeAudioContext {
+      constructor() { super(); this.state = 'suspended'; this.resume = vi.fn(() => new Promise<void>(() => {})); }
+    });
+    const { listener, onState } = setup();
+    const result = expect(listener.start()).rejects.toThrow('erneut auf „Zuhören starten“');
+    await vi.advanceTimersByTimeAsync(5000);
+    await result;
+    expect(onState).toHaveBeenLastCalledWith('stopped');
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('bricht auch eine noch nicht aktivierte Audioverarbeitung bei Stop ohne späten Timer ab', async () => {
+    vi.stubGlobal('AudioContext', class extends FakeAudioContext {
+      constructor() { super(); this.state = 'suspended'; this.resume = vi.fn(() => new Promise<void>(() => {})); }
+    });
+    const { listener, onError, onState } = setup();
+    const starting = listener.start();
+    listener.stop();
+    await starting;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(onState).toHaveBeenLastCalledWith('stopped');
+    expect(onError).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('lässt einen alten Botstart den Mikrofonstream einer neuen Sitzung nicht schließen', async () => {
+    const oldPermission = deferred<typeof stream>();
+    const oldTrack = { ...track, stop: vi.fn() };
+    const oldStream = { getTracks: () => [oldTrack], getAudioTracks: () => [oldTrack] };
+    getUserMedia.mockReturnValueOnce(oldPermission.promise);
+    const old = setup();
+    const starting = old.listener.start();
+    await vi.advanceTimersByTimeAsync(0);
+    old.listener.stop();
+    const current = setup();
+    await start(current.listener);
+    oldPermission.resolve(oldStream);
+    await starting;
+    expect(oldTrack.stop).toHaveBeenCalledTimes(1);
+    expect(track.stop).not.toHaveBeenCalled();
+    expect(current.onState).toHaveBeenLastCalledWith('listening');
   });
 });
