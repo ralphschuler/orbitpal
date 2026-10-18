@@ -37,7 +37,14 @@ impl OverlayHub {
                 if let Ok(profile)=app.state::<crate::AppState>().store.profile(){event["botId"]=profile["id"].clone();}
             }
         }
-        if event["kind"]=="stop" {self.invalidate_speech(event["botId"].as_str());}
+        if event["kind"]=="profile"{if let Some(bot_id)=event["botId"].as_str(){let state=app.state::<crate::AppState>();let config=state.store.bot_profile(bot_id).ok().and_then(|profile|crate::autopilot::config(&profile).ok()).unwrap_or_default();event["autopilotRuntime"]=json!(state.autopilot.runtime(bot_id,&config));}}
+        if event["kind"]=="stop" {
+            // Tray, Studio, Control-MCP and the global overlay stop all reach
+            // this boundary. No background session survives an emergency stop.
+            if event["botId"].is_null(){for runtime in app.state::<crate::AppState>().autopilot.stop_all(){crate::autopilot::publish(app,runtime);}}
+            else if let Some(bot_id)=event["botId"].as_str(){let _=app.state::<crate::AppState>().autopilot.invalidate(bot_id);}
+            self.invalidate_speech(event["botId"].as_str());
+        }
         // An unscoped stop is intentionally broadcast to every character.
         let _=self.sender.send(event.clone());let _=app.emit("cohost://overlay",event);
     }
@@ -55,6 +62,9 @@ impl OverlayHub {
     }
     pub fn has_any_pending_speech(&self)->bool{
         self.speech.lock().map(|entries|entries.iter().any(|entry|!entry.finished&&!entry.cancel.load(Ordering::Relaxed))).unwrap_or(true)
+    }
+    pub fn has_autopilot_speech(&self,bot_id:&str)->bool{
+        self.speech.lock().map(|entries|entries.iter().any(|entry|entry.bot_id==bot_id&&entry.source=="autopilot"&&!entry.finished)).unwrap_or(true)
     }
     pub fn say_profile(&self,app:&tauri::AppHandle,profile:&Value,id:&str,text:&str,speech_text:&str,emotion:&str,source:&str,user:&str,user_text:&str,emotes:&[Value],cancel:Arc<AtomicBool>)->Result<(),String> {
         let bot_id=profile["id"].as_str().ok_or("Bot-ID fehlt")?;
@@ -202,7 +212,7 @@ async fn events(State(app):State<tauri::AppHandle>,Query(q):Query<Access>)->Resp
     let Ok(bot_id)=requested_bot(&app,&q)else{return StatusCode::NOT_FOUND.into_response();};
     let state=app.state::<crate::AppState>();let receiver=state.overlay.sender.subscribe();
     let initial=match state.store.scoped(&bot_id).and_then(|store|store.profile()){
-        Ok(profile)=>json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile)}),
+        Ok(profile)=>json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile),"autopilotRuntime":state.autopilot.runtime(&bot_id,&crate::autopilot::config(&profile).unwrap_or_default())}),
         Err(_)=>return StatusCode::NOT_FOUND.into_response(),
     };
     let first=stream::once(async move{Ok::<Event,Infallible>(Event::default().data(initial.to_string()))});
@@ -243,8 +253,36 @@ pub async fn speech_audio(app:&tauri::AppHandle,id:&str,bot_id:&str)->Result<Val
     if entry.cancel.load(Ordering::Relaxed)||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
     if cache.len()>=64{cache.clear();}cache.insert(id.into(),audio.clone());Ok(audio)
 }
-async fn asset(State(app):State<tauri::AppHandle>,Path(name):Path<String>)->Response {
-    if name.contains('/')||name.contains('\\')||name.contains("..")||!name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'.'){return StatusCode::NOT_FOUND.into_response();}
+#[derive(Debug,PartialEq)]
+enum AssetRoute { ImportedAvatar, BundledFrontend }
+fn classify_asset(name:&str)->Option<AssetRoute>{
+    if name.is_empty()||name.len()>256||name.contains('/')||name.contains('\\')||name.contains("..")||!name.bytes().all(|b|b.is_ascii_alphanumeric()||b==b'-'||b==b'.'||b==b'_'){return None;}
+    Some(if crate::avatar_metadata::imported_asset_name(name){AssetRoute::ImportedAvatar}else{AssetRoute::BundledFrontend})
+}
+fn authorize_asset(route:Option<AssetRoute>,session_allowed:impl FnOnce()->bool)->Result<AssetRoute,StatusCode>{
+    match route{
+        Some(AssetRoute::ImportedAvatar) if !session_allowed()=>Err(StatusCode::UNAUTHORIZED),
+        Some(route)=>Ok(route),
+        None=>Err(StatusCode::NOT_FOUND),
+    }
+}
+async fn asset(State(app):State<tauri::AppHandle>,Path(name):Path<String>,Query(q):Query<Access>)->Response {
+    match authorize_asset(classify_asset(&name),||allowed(&app,&q)){
+        Ok(AssetRoute::ImportedAvatar)=>(),
+        // Vite emits its JavaScript, CSS and fonts under /assets too. They must
+        // resolve from the bundle, never from the private avatar directory.
+        Ok(AssetRoute::BundledFrontend)=>return serve_asset(&app,&format!("assets/{name}")),
+        Err(status)=>return status.into_response(),
+    }
+    // Recheck legacy imports as well: the OBS browser must never receive an
+    // unchecked model that could ask GLTFLoader to fetch external resources.
+    // This happens per model HTTP request, never in the animation frame loop.
+    let root=app.state::<crate::AppState>().store.root.clone();let requested=name.clone();
+    match tokio::task::spawn_blocking(move||crate::avatar_metadata::for_asset(&root,Some(&requested))).await{
+        Ok(Ok(_))=>(),
+        Ok(Err(message))=>return (StatusCode::UNPROCESSABLE_ENTITY,[(header::CACHE_CONTROL,"no-store")],message).into_response(),
+        Err(_)=>return (StatusCode::INTERNAL_SERVER_ERROR,"Die Modellprüfung konnte nicht abgeschlossen werden.").into_response(),
+    }
     let path=app.state::<crate::AppState>().store.root.join("avatars").join(&name);
     match tokio::fs::read(path).await{
         Ok(bytes)=>([(header::CONTENT_TYPE,"model/gltf-binary"),(header::ACCESS_CONTROL_ALLOW_ORIGIN,"*"),(header::CACHE_CONTROL,"public, max-age=3600")],bytes).into_response(),
@@ -330,6 +368,33 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]
+    fn public_profile_never_discloses_autopilot_screen_configuration_or_instructions(){
+        let mut profile:Value=serde_json::from_str(include_str!("../../public/default-profile.json")).unwrap();
+        profile["autopilot"]["instructions"]=json!("private instruction fixture");profile["autopilot"]["screenServerId"]=json!("private server fixture");profile["autopilot"]["screenToolArguments"]=json!("{\"private\":true}");
+        let public=public_profile(&profile);assert!(public.get("autopilot").is_none());assert!(!public.to_string().contains("private"));assert!(public.get("model").is_none());assert!(public.get("mcpServers").is_none());
+    }
+    #[test]
+    fn obs_frontend_bundles_and_imported_models_have_distinct_asset_routes(){
+        for name in ["index-DA3KJSJI.js","index-BrBgwP07.css","chunk_ab-c12.js","manrope-latin-wght-normal.woff2"]{assert_eq!(classify_asset(name),Some(AssetRoute::BundledFrontend));}
+        for extension in ["vrm","glb"]{let name=format!("{}.{extension}",uuid::Uuid::new_v4());assert_eq!(classify_asset(&name),Some(AssetRoute::ImportedAvatar));}
+        for name in ["","../cohost.sqlite3","folder/model.glb","folder\\model.vrm","index.js?secret=1","%2e%2e.glb"]{assert_eq!(classify_asset(name),None);}
+        // A guessed filename must never select an arbitrary app-data file.
+        assert_eq!(classify_asset("cohost.sqlite3"),Some(AssetRoute::BundledFrontend));
+        assert_eq!(classify_asset("model.vrm"),Some(AssetRoute::BundledFrontend));
+    }
+    #[test]
+    fn private_avatar_assets_require_a_session_while_frontend_imports_are_public(){
+        for extension in ["glb","vrm"]{
+            let name=format!("{}.{extension}",uuid::Uuid::new_v4());
+            assert_eq!(authorize_asset(classify_asset(&name),||false),Err(StatusCode::UNAUTHORIZED));
+            assert_eq!(authorize_asset(classify_asset(&name),||true),Ok(AssetRoute::ImportedAvatar));
+        }
+        for name in ["index-DA3KJSJI.js","index-BrBgwP07.css","manrope-latin-wght-normal.woff2"]{
+            assert_eq!(authorize_asset(classify_asset(name),||panic!("Public frontend imports must not require a session")),Ok(AssetRoute::BundledFrontend));
+        }
+        assert_eq!(authorize_asset(classify_asset("../secret.vrm"),||panic!("Malformed paths must fail before authorization")),Err(StatusCode::NOT_FOUND));
+    }
     fn speech(provider:&str)->SpeechEntry{
         SpeechEntry{id:"speech-fixture".into(),bot_id:"nova".into(),text:"Hallo zusammen!".into(),speech_text:"[crying] Hallo [shouts] zusammen!".into(),voice:json!({"provider":provider}),emotion:"neutral".into(),source:"twitch".into(),user:"viewer".into(),emotes:Vec::new(),output:"studio".into(),user_text:"Grüße den Chat".into(),hindsight:json!({"private_config_marker":"not an event field"}),started:false,finished:false,cancel:Arc::new(AtomicBool::new(false))}
     }

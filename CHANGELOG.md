@@ -2,6 +2,11 @@
 
 ## 0.6.0 — 2026-10-19
 
+- Add an explicitly started per-bot Autopilot with independent roaming, silent gestures and spontaneous speech, randomized quiet periods, fair serialized turns and native rolling hourly limits. Stop cancels all sessions; saved/imported profiles cannot start them.
+- Optionally capture one operator-selected MCP observation with fixed arguments before an autonomous turn, forwarding real images through the existing provider adapters. Keep general MCP actions and Skill scripts unavailable, support silent decisions and suppress platform-chat posts.
+- Inspect VRM 0/1 and GLB 2 containers and declared capabilities before import or legacy asset delivery, report unsupported required features, and expose real model clips for preview and emote assignment. Preserve authored body/face clips alongside VRM physics and speech mouth movement.
+- Fix production OBS asset routing so JavaScript/CSS/fonts are served separately from private avatar imports.
+
 - Add app-wide automatic stable-release checks at startup and every six hours, an opt-out setting, manual checking, release notes and a confirmation dialog. Choosing later never downloads a package.
 - Download/install only after explicit confirmation, with progress, signature and signed-version verification, native candidate expiry, fixed GitHub release URLs and rejection of equal/older/prerelease versions. Block installation during ongoing work, microphone capture or unsaved edits; restart only after successful installation.
 - Publish updater archives/signatures and a complete `latest.json` after all four platform builds pass. Preserve Windows MSI/NSIS installer type; support Linux in-app installation through AppImages and explain manual Debian updates.
@@ -10,6 +15,10 @@
 - Cancel late microphone permission results after Stop, bot/STT changes or update confirmation; prevent duplicate pending captures. Cancel prepared gestures/sounds before an update starts.
 - Save profile instructions before exporting, and abort export if saving fails.
 - Remove the unused direct ZIP dependency, eliminating its three reported RustSec advisories without suppressing the scanner.
+- Disable the updater's unused Tauri-v1 ZIP compatibility feature as well, retaining TLS, system proxies and the signed v2 package formats without the transitive ZIP dependency.
+- Derive VRM rest/gesture axes from the actual normalized skeleton instead of fixed VRM-version assumptions. Correct raised resting arms and downward waves in all ten bundled legacy OSA models; preserve modern rig orientation and cap strong gestures before arm overrotation.
+- Show one book and one wand variant on the KayKit Mage; hide the simultaneously visible alternate book and staff without changing the original asset or animation clips.
+- Merge the reviewed base64/rusqlite/Three.js/development-tool updates, retain supported TypeScript 6 checking, and add dependency advisory CI, branch protection and a documented audit backlog.
 
 ## 0.5.0 — 2026-10-19
 

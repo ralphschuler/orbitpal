@@ -16,6 +16,8 @@ mod emote_audio;
 mod vision;
 mod control_mcp;
 mod updater;
+mod avatar_metadata;
+mod autopilot;
 
 use serde_json::{json,Value};
 use std::sync::{Mutex,Arc,atomic::{AtomicBool,Ordering}};
@@ -30,13 +32,14 @@ pub struct AppState {
     overlay:overlay::OverlayHub,
     control_mcp:control_mcp::ControlMcp,
     updater:updater::UpdateState,
+    autopilot:autopilot::AutopilotHub,
 }
 
 #[tauri::command]
 fn get_app_state(state:State<'_,AppState>,app:tauri::AppHandle,bot_id:Option<String>)->Result<Value,String> {
     let id=bot_id.unwrap_or_else(||state.store.profile().ok().and_then(|p|p["id"].as_str().map(str::to_owned)).unwrap_or("nova".into()));
     let store=state.store.scoped(&id)?;
-    Ok(json!({"profile":store.profile()?,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy()}))
+    Ok(json!({"profile":store.profile()?,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy(),"autopilot":state.autopilot.all()?}))
 }
 #[tauri::command]
 fn get_extension_library(state:State<'_,AppState>)->Result<Value,String>{state.store.extension_library()}
@@ -89,7 +92,11 @@ async fn save_profile(state:State<'_,AppState>,app:tauri::AppHandle,profile:Valu
     let store=scoped.as_ref().unwrap_or(&state.store);
     let old=store.profile()?;
     let _profile_switch=if old["id"]!=profile["id"]{Some(state.generation.try_lock().map_err(|_|"Profilwechsel während einer laufenden Antwort nicht möglich. Bitte zuerst abbrechen.".to_owned())?)}else{None};
-    let profile=store.save_profile(profile)?;
+    // An identical save (also used before ordinary messages) does not disturb
+    // autonomous sessions. Changed settings revoke any in-flight snapshot.
+    let (profile,runtime)=if old!=profile{state.autopilot.change_profile(old["id"].as_str().ok_or("Bot-ID fehlt")?,||store.save_profile(profile))?}else{(store.save_profile(profile)?,None)};
+    if old!=profile&&state.overlay.has_autopilot_speech(old["id"].as_str().ok_or("Bot-ID fehlt")?){state.overlay.publish(&app,json!({"kind":"stop","botId":old["id"]}));}
+    if let Some(runtime)=runtime{autopilot::publish(&app,runtime);}
     // Bindings are per bot; revoking one bot must not disconnect another bot's
     // shared transport. Runtime calls recheck the answered bot's current grants.
     if old["output"]["mode"]!=profile["output"]["mode"]{state.overlay.publish(&app,json!({"kind":"stop","botId":profile["id"]}));}
@@ -98,7 +105,12 @@ async fn save_profile(state:State<'_,AppState>,app:tauri::AppHandle,profile:Valu
 }
 
 #[tauri::command]
-fn save_document(state:State<'_,AppState>,name:String,content:String,bot_id:Option<String>)->Result<(),String>{let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;scoped.as_ref().unwrap_or(&state.store).save_document(&name,&content)}
+fn save_document(state:State<'_,AppState>,app:tauri::AppHandle,name:String,content:String,bot_id:Option<String>)->Result<(),String>{
+    let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;let store=scoped.as_ref().unwrap_or(&state.store);let profile=store.profile()?;let bot_id=profile["id"].as_str().ok_or("Bot-ID fehlt")?;
+    let (_,runtime)=state.autopilot.change_profile(bot_id,||{store.save_document(&name,&content)?;store.profile()})?;
+    if state.overlay.has_autopilot_speech(bot_id){state.overlay.publish(&app,json!({"kind":"stop","botId":bot_id}));}
+    if let Some(runtime)=runtime{autopilot::publish(&app,runtime);}Ok(())
+}
 #[tauri::command]
 fn save_skill(state:State<'_,AppState>,id:String,content:String)->Result<(),String>{let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor einer gemeinsamen Skilländerung beenden".to_owned())?;state.store.save_skill(&id,&content)}
 #[tauri::command]
@@ -222,6 +234,12 @@ fn configure_overlay(app:tauri::AppHandle,always_on_top:bool,click_through:bool,
 #[tauri::command]
 fn import_avatar(state:State<'_,AppState>,source_path:String)->Result<String,String>{state.store.import_avatar(std::path::Path::new(&source_path))}
 #[tauri::command]
+async fn get_avatar_info(state:State<'_,AppState>,asset_path:Option<String>,bot_id:Option<String>)->Result<avatar_metadata::AvatarInfo,String>{
+    if let Some(id)=bot_id.as_deref(){state.store.bot_profile(id)?;}
+    let root=state.store.root.clone();
+    tauri::async_runtime::spawn_blocking(move||avatar_metadata::for_asset(&root,asset_path.as_deref())).await.map_err(|_|"Die Modellprüfung wurde unerwartet beendet".to_owned())?
+}
+#[tauri::command]
 fn export_profile(state:State<'_,AppState>,destination:String)->Result<(),String>{state.store.export(std::path::Path::new(&destination))}
 #[tauri::command]
 async fn import_profile(state:State<'_,AppState>,app:tauri::AppHandle,source_path:String)->Result<Value,String>{
@@ -236,12 +254,12 @@ pub fn run(){
         .setup(|app|{
             let root=app.path().app_data_dir()?;
             let store=storage::Store::new(root).map_err(std::io::Error::other)?;
-            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default()});
+            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default()});
             tauri::async_runtime::block_on(overlay::start(app.handle().clone())).map_err(std::io::Error::other)?;
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update])
+        .invoke_handler(tauri::generate_handler![get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update])
         .run(tauri::generate_context!()).expect("Streamer AI Cohost konnte nicht gestartet werden");
 }
 

@@ -1,0 +1,2933 @@
+{
+  "schemaVersion": 1,
+  "method": "Declared metadata from bundled GLB JSON; not a rendering or audio playback test.",
+  "characters": {
+    "nova": {
+      "format": "builtin",
+      "version": "procedural",
+      "containerVersion": null,
+      "animations": [],
+      "expressions": [],
+      "vowels": [],
+      "bones": [],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:robot-expressive": {
+      "format": "glb2",
+      "version": "2.0",
+      "containerVersion": 2,
+      "animations": [
+        {
+          "name": "Dance",
+          "index": 0,
+          "duration": 3.33333325386047
+        },
+        {
+          "name": "Death",
+          "index": 1,
+          "duration": 0.958333313465118
+        },
+        {
+          "name": "Idle",
+          "index": 2,
+          "duration": 3.33333325386047
+        },
+        {
+          "name": "Jump",
+          "index": 3,
+          "duration": 0.708333313465118
+        },
+        {
+          "name": "No",
+          "index": 4,
+          "duration": 1.66666662693024
+        },
+        {
+          "name": "Punch",
+          "index": 5,
+          "duration": 0.833333313465118
+        },
+        {
+          "name": "Running",
+          "index": 6,
+          "duration": 0.958333313465118
+        },
+        {
+          "name": "Sitting",
+          "index": 7,
+          "duration": 0.416666656732559
+        },
+        {
+          "name": "Standing",
+          "index": 8,
+          "duration": 0.416666656732559
+        },
+        {
+          "name": "ThumbsUp",
+          "index": 9,
+          "duration": 1.58333337306976
+        },
+        {
+          "name": "Walking",
+          "index": 10,
+          "duration": 0.958333313465118
+        },
+        {
+          "name": "WalkJump",
+          "index": 11,
+          "duration": 0.833333313465118
+        },
+        {
+          "name": "Wave",
+          "index": 12,
+          "duration": 1.83333337306976
+        },
+        {
+          "name": "Yes",
+          "index": 13,
+          "duration": 1.66666662693024
+        }
+      ],
+      "expressions": [
+        "Angry",
+        "Sad",
+        "Surprised"
+      ],
+      "vowels": [],
+      "bones": [
+        "Abdomen",
+        "Body",
+        "Bone",
+        "Foot.L",
+        "Foot.R",
+        "Head",
+        "Hips",
+        "Index.L",
+        "Index.R",
+        "Index2.L",
+        "Index2.R",
+        "LowerArm.L",
+        "LowerArm.R",
+        "LowerLeg.L",
+        "LowerLeg.R",
+        "Middle1.L",
+        "Middle1.R",
+        "Middle2.L",
+        "Middle2.R",
+        "Neck",
+        "Palm1.L",
+        "Palm1.R",
+        "Palm2.L",
+        "Palm2.R",
+        "Palm3.L",
+        "Palm3.R",
+        "PoleTarget.L",
+        "PoleTarget.R",
+        "Ring1.L",
+        "Ring1.R",
+        "Ring2.L",
+        "Ring2.R",
+        "Shoulder.L",
+        "Shoulder.R",
+        "Thumb.L",
+        "Thumb.R",
+        "Thumb2.L",
+        "Thumb2.R",
+        "Torso",
+        "UpperArm.L",
+        "UpperArm.R",
+        "UpperLeg.L",
+        "UpperLeg.R"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:fox": {
+      "format": "glb2",
+      "version": "2.0",
+      "containerVersion": 2,
+      "animations": [
+        {
+          "name": "Survey",
+          "index": 0,
+          "duration": 3.4166667461395264
+        },
+        {
+          "name": "Walk",
+          "index": 1,
+          "duration": 0.7083333134651184
+        },
+        {
+          "name": "Run",
+          "index": 2,
+          "duration": 1.1583333015441895
+        }
+      ],
+      "expressions": [],
+      "vowels": [],
+      "bones": [
+        "_rootJoint",
+        "b_Head_05",
+        "b_Hip_01",
+        "b_LeftFoot01_017",
+        "b_LeftFoot02_018",
+        "b_LeftForeArm_010",
+        "b_LeftHand_011",
+        "b_LeftLeg01_015",
+        "b_LeftLeg02_016",
+        "b_LeftUpperArm_09",
+        "b_Neck_04",
+        "b_RightFoot01_021",
+        "b_RightFoot02_022",
+        "b_RightForeArm_07",
+        "b_RightHand_08",
+        "b_RightLeg01_019",
+        "b_RightLeg02_020",
+        "b_RightUpperArm_06",
+        "b_Root_00",
+        "b_Spine01_02",
+        "b_Spine02_03",
+        "b_Tail01_012",
+        "b_Tail02_013",
+        "b_Tail03_014"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:kaykit-knight": {
+      "format": "glb2",
+      "version": "2.0",
+      "containerVersion": 2,
+      "animations": [
+        {
+          "name": "1H_Melee_Attack_Chop",
+          "index": 0,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Diagonal",
+          "index": 1,
+          "duration": 1
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Horizontal",
+          "index": 2,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Melee_Attack_Stab",
+          "index": 3,
+          "duration": 1.6
+        },
+        {
+          "name": "1H_Ranged_Aiming",
+          "index": 4,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Ranged_Reload",
+          "index": 5,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "1H_Ranged_Shoot",
+          "index": 6,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Ranged_Shooting",
+          "index": 7,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Attack_Chop",
+          "index": 8,
+          "duration": 1.6333333333333333
+        },
+        {
+          "name": "2H_Melee_Attack_Slice",
+          "index": 9,
+          "duration": 1.1
+        },
+        {
+          "name": "2H_Melee_Attack_Spin",
+          "index": 10,
+          "duration": 2.4
+        },
+        {
+          "name": "2H_Melee_Attack_Spinning",
+          "index": 11,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "2H_Melee_Attack_Stab",
+          "index": 12,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Idle",
+          "index": 13,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "2H_Ranged_Aiming",
+          "index": 14,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Reload",
+          "index": 15,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Shoot",
+          "index": 16,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "2H_Ranged_Shooting",
+          "index": 17,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block",
+          "index": 18,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block_Attack",
+          "index": 19,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block_Hit",
+          "index": 20,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Blocking",
+          "index": 21,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Cheer",
+          "index": 22,
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Death_A",
+          "index": 23,
+          "duration": 0.8
+        },
+        {
+          "name": "Death_A_Pose",
+          "index": 24,
+          "duration": 0
+        },
+        {
+          "name": "Death_B",
+          "index": 25,
+          "duration": 2.6333333333333333
+        },
+        {
+          "name": "Death_B_Pose",
+          "index": 26,
+          "duration": 0
+        },
+        {
+          "name": "Dodge_Backward",
+          "index": 27,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Forward",
+          "index": 28,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Left",
+          "index": 29,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Right",
+          "index": 30,
+          "duration": 0.4
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Chop",
+          "index": 31,
+          "duration": 1.2666666666666666
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Slice",
+          "index": 32,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Stab",
+          "index": 33,
+          "duration": 1.6
+        },
+        {
+          "name": "Hit_A",
+          "index": 34,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Hit_B",
+          "index": 35,
+          "duration": 0.8666666666666667
+        },
+        {
+          "name": "Idle",
+          "index": 36,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Interact",
+          "index": 37,
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Full_Long",
+          "index": 38,
+          "duration": 2.3333333333333335
+        },
+        {
+          "name": "Jump_Full_Short",
+          "index": 39,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "Jump_Idle",
+          "index": 40,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Jump_Land",
+          "index": 41,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Jump_Start",
+          "index": 42,
+          "duration": 0.6
+        },
+        {
+          "name": "Lie_Down",
+          "index": 43,
+          "duration": 3
+        },
+        {
+          "name": "Lie_Idle",
+          "index": 44,
+          "duration": 2.6666666666666665
+        },
+        {
+          "name": "Lie_Pose",
+          "index": 45,
+          "duration": 0
+        },
+        {
+          "name": "Lie_StandUp",
+          "index": 46,
+          "duration": 2.3333333333333335
+        },
+        {
+          "name": "PickUp",
+          "index": 47,
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "index": 48,
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "index": 49,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Running_Strafe_Left",
+          "index": 50,
+          "duration": 0.8
+        },
+        {
+          "name": "Running_Strafe_Right",
+          "index": 51,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Down",
+          "index": 52,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Idle",
+          "index": 53,
+          "duration": 3.6
+        },
+        {
+          "name": "Sit_Chair_Pose",
+          "index": 54,
+          "duration": 0
+        },
+        {
+          "name": "Sit_Chair_StandUp",
+          "index": 55,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Floor_Down",
+          "index": 56,
+          "duration": 1
+        },
+        {
+          "name": "Sit_Floor_Idle",
+          "index": 57,
+          "duration": 4
+        },
+        {
+          "name": "Sit_Floor_Pose",
+          "index": 58,
+          "duration": 0
+        },
+        {
+          "name": "Sit_Floor_StandUp",
+          "index": 59,
+          "duration": 1.1333333333333333
+        },
+        {
+          "name": "Spellcast_Long",
+          "index": 60,
+          "duration": 2.533333333333333
+        },
+        {
+          "name": "Spellcast_Raise",
+          "index": 61,
+          "duration": 2.1
+        },
+        {
+          "name": "Spellcast_Shoot",
+          "index": 62,
+          "duration": 0.9333333333333333
+        },
+        {
+          "name": "Spellcasting",
+          "index": 63,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "T-Pose",
+          "index": 64,
+          "duration": 0
+        },
+        {
+          "name": "Throw",
+          "index": 65,
+          "duration": 1.3666666666666667
+        },
+        {
+          "name": "Unarmed_Idle",
+          "index": 66,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Kick",
+          "index": 67,
+          "duration": 0.9333333333333333
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_A",
+          "index": 68,
+          "duration": 1.4666666666666666
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_B",
+          "index": 69,
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Unarmed_Pose",
+          "index": 70,
+          "duration": 0
+        },
+        {
+          "name": "Use_Item",
+          "index": 71,
+          "duration": 1.6
+        },
+        {
+          "name": "Walking_A",
+          "index": 72,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_B",
+          "index": 73,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_Backwards",
+          "index": 74,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_C",
+          "index": 75,
+          "duration": 1.6
+        }
+      ],
+      "expressions": [],
+      "vowels": [],
+      "bones": [
+        "IK-foot.l",
+        "IK-foot.r",
+        "IK-toe.l",
+        "IK-toe.r",
+        "chest",
+        "control-foot-roll.l",
+        "control-foot-roll.r",
+        "control-heel-roll.l",
+        "control-heel-roll.r",
+        "control-toe-roll.l",
+        "control-toe-roll.r",
+        "elbowIK.l",
+        "elbowIK.r",
+        "foot.l",
+        "foot.r",
+        "hand.l",
+        "hand.r",
+        "handIK.l",
+        "handIK.r",
+        "handslot.l",
+        "handslot.r",
+        "head",
+        "heelIK.l",
+        "heelIK.r",
+        "hips",
+        "kneeIK.l",
+        "kneeIK.r",
+        "lowerarm.l",
+        "lowerarm.r",
+        "lowerleg.l",
+        "lowerleg.r",
+        "root",
+        "spine",
+        "toes.l",
+        "toes.r",
+        "upperarm.l",
+        "upperarm.r",
+        "upperleg.l",
+        "upperleg.r",
+        "wrist.l",
+        "wrist.r"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:kaykit-mage": {
+      "format": "glb2",
+      "version": "2.0",
+      "containerVersion": 2,
+      "animations": [
+        {
+          "name": "1H_Melee_Attack_Chop",
+          "index": 0,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Diagonal",
+          "index": 1,
+          "duration": 1
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Horizontal",
+          "index": 2,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Melee_Attack_Stab",
+          "index": 3,
+          "duration": 1.6
+        },
+        {
+          "name": "1H_Ranged_Aiming",
+          "index": 4,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Ranged_Reload",
+          "index": 5,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "1H_Ranged_Shoot",
+          "index": 6,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Ranged_Shooting",
+          "index": 7,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Attack_Chop",
+          "index": 8,
+          "duration": 1.6333333333333333
+        },
+        {
+          "name": "2H_Melee_Attack_Slice",
+          "index": 9,
+          "duration": 1.1
+        },
+        {
+          "name": "2H_Melee_Attack_Spin",
+          "index": 10,
+          "duration": 2.4
+        },
+        {
+          "name": "2H_Melee_Attack_Spinning",
+          "index": 11,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "2H_Melee_Attack_Stab",
+          "index": 12,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Idle",
+          "index": 13,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "2H_Ranged_Aiming",
+          "index": 14,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Reload",
+          "index": 15,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Shoot",
+          "index": 16,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "2H_Ranged_Shooting",
+          "index": 17,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block",
+          "index": 18,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block_Attack",
+          "index": 19,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block_Hit",
+          "index": 20,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Blocking",
+          "index": 21,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Cheer",
+          "index": 22,
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Death_A",
+          "index": 23,
+          "duration": 0.8
+        },
+        {
+          "name": "Death_A_Pose",
+          "index": 24,
+          "duration": 0
+        },
+        {
+          "name": "Death_B",
+          "index": 25,
+          "duration": 2.6333333333333333
+        },
+        {
+          "name": "Death_B_Pose",
+          "index": 26,
+          "duration": 0
+        },
+        {
+          "name": "Dodge_Backward",
+          "index": 27,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Forward",
+          "index": 28,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Left",
+          "index": 29,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Right",
+          "index": 30,
+          "duration": 0.4
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Chop",
+          "index": 31,
+          "duration": 1.2666666666666666
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Slice",
+          "index": 32,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Stab",
+          "index": 33,
+          "duration": 1.6
+        },
+        {
+          "name": "Hit_A",
+          "index": 34,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Hit_B",
+          "index": 35,
+          "duration": 0.8666666666666667
+        },
+        {
+          "name": "Idle",
+          "index": 36,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Interact",
+          "index": 37,
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Full_Long",
+          "index": 38,
+          "duration": 2.3333333333333335
+        },
+        {
+          "name": "Jump_Full_Short",
+          "index": 39,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "Jump_Idle",
+          "index": 40,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Jump_Land",
+          "index": 41,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Jump_Start",
+          "index": 42,
+          "duration": 0.6
+        },
+        {
+          "name": "Lie_Down",
+          "index": 43,
+          "duration": 3
+        },
+        {
+          "name": "Lie_Idle",
+          "index": 44,
+          "duration": 2.6666666666666665
+        },
+        {
+          "name": "Lie_Pose",
+          "index": 45,
+          "duration": 0
+        },
+        {
+          "name": "Lie_StandUp",
+          "index": 46,
+          "duration": 2.3333333333333335
+        },
+        {
+          "name": "PickUp",
+          "index": 47,
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "index": 48,
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "index": 49,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Running_Strafe_Left",
+          "index": 50,
+          "duration": 0.8
+        },
+        {
+          "name": "Running_Strafe_Right",
+          "index": 51,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Down",
+          "index": 52,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Idle",
+          "index": 53,
+          "duration": 3.6
+        },
+        {
+          "name": "Sit_Chair_Pose",
+          "index": 54,
+          "duration": 0
+        },
+        {
+          "name": "Sit_Chair_StandUp",
+          "index": 55,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Floor_Down",
+          "index": 56,
+          "duration": 1
+        },
+        {
+          "name": "Sit_Floor_Idle",
+          "index": 57,
+          "duration": 4
+        },
+        {
+          "name": "Sit_Floor_Pose",
+          "index": 58,
+          "duration": 0
+        },
+        {
+          "name": "Sit_Floor_StandUp",
+          "index": 59,
+          "duration": 1.1333333333333333
+        },
+        {
+          "name": "Spellcast_Long",
+          "index": 60,
+          "duration": 2.533333333333333
+        },
+        {
+          "name": "Spellcast_Raise",
+          "index": 61,
+          "duration": 2.1
+        },
+        {
+          "name": "Spellcast_Shoot",
+          "index": 62,
+          "duration": 0.9333333333333333
+        },
+        {
+          "name": "Spellcasting",
+          "index": 63,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "T-Pose",
+          "index": 64,
+          "duration": 0
+        },
+        {
+          "name": "Throw",
+          "index": 65,
+          "duration": 1.3666666666666667
+        },
+        {
+          "name": "Unarmed_Idle",
+          "index": 66,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Kick",
+          "index": 67,
+          "duration": 0.9333333333333333
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_A",
+          "index": 68,
+          "duration": 1.4666666666666666
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_B",
+          "index": 69,
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Unarmed_Pose",
+          "index": 70,
+          "duration": 0
+        },
+        {
+          "name": "Use_Item",
+          "index": 71,
+          "duration": 1.6
+        },
+        {
+          "name": "Walking_A",
+          "index": 72,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_B",
+          "index": 73,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_Backwards",
+          "index": 74,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_C",
+          "index": 75,
+          "duration": 1.6
+        }
+      ],
+      "expressions": [],
+      "vowels": [],
+      "bones": [
+        "IK-foot.l",
+        "IK-foot.r",
+        "IK-toe.l",
+        "IK-toe.r",
+        "chest",
+        "control-foot-roll.l",
+        "control-foot-roll.r",
+        "control-heel-roll.l",
+        "control-heel-roll.r",
+        "control-toe-roll.l",
+        "control-toe-roll.r",
+        "elbowIK.l",
+        "elbowIK.r",
+        "foot.l",
+        "foot.r",
+        "hand.l",
+        "hand.r",
+        "handIK.l",
+        "handIK.r",
+        "handslot.l",
+        "handslot.r",
+        "head",
+        "heelIK.l",
+        "heelIK.r",
+        "hips",
+        "kneeIK.l",
+        "kneeIK.r",
+        "lowerarm.l",
+        "lowerarm.r",
+        "lowerleg.l",
+        "lowerleg.r",
+        "root",
+        "spine",
+        "toes.l",
+        "toes.r",
+        "upperarm.l",
+        "upperarm.r",
+        "upperleg.l",
+        "upperleg.r",
+        "wrist.l",
+        "wrist.r"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:kaykit-rogue": {
+      "format": "glb2",
+      "version": "2.0",
+      "containerVersion": 2,
+      "animations": [
+        {
+          "name": "1H_Melee_Attack_Chop",
+          "index": 0,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Diagonal",
+          "index": 1,
+          "duration": 1
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Horizontal",
+          "index": 2,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Melee_Attack_Stab",
+          "index": 3,
+          "duration": 1.6
+        },
+        {
+          "name": "1H_Ranged_Aiming",
+          "index": 4,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Ranged_Reload",
+          "index": 5,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "1H_Ranged_Shoot",
+          "index": 6,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Ranged_Shooting",
+          "index": 7,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Attack_Chop",
+          "index": 8,
+          "duration": 1.6333333333333333
+        },
+        {
+          "name": "2H_Melee_Attack_Slice",
+          "index": 9,
+          "duration": 1.1
+        },
+        {
+          "name": "2H_Melee_Attack_Spin",
+          "index": 10,
+          "duration": 2.4
+        },
+        {
+          "name": "2H_Melee_Attack_Spinning",
+          "index": 11,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "2H_Melee_Attack_Stab",
+          "index": 12,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Idle",
+          "index": 13,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "2H_Ranged_Aiming",
+          "index": 14,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Reload",
+          "index": 15,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Shoot",
+          "index": 16,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "2H_Ranged_Shooting",
+          "index": 17,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block",
+          "index": 18,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block_Attack",
+          "index": 19,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block_Hit",
+          "index": 20,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Blocking",
+          "index": 21,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Cheer",
+          "index": 22,
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Death_A",
+          "index": 23,
+          "duration": 0.8
+        },
+        {
+          "name": "Death_A_Pose",
+          "index": 24,
+          "duration": 0
+        },
+        {
+          "name": "Death_B",
+          "index": 25,
+          "duration": 2.6333333333333333
+        },
+        {
+          "name": "Death_B_Pose",
+          "index": 26,
+          "duration": 0
+        },
+        {
+          "name": "Dodge_Backward",
+          "index": 27,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Forward",
+          "index": 28,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Left",
+          "index": 29,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Right",
+          "index": 30,
+          "duration": 0.4
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Chop",
+          "index": 31,
+          "duration": 1.2666666666666666
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Slice",
+          "index": 32,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Stab",
+          "index": 33,
+          "duration": 1.6
+        },
+        {
+          "name": "Hit_A",
+          "index": 34,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Hit_B",
+          "index": 35,
+          "duration": 0.8666666666666667
+        },
+        {
+          "name": "Idle",
+          "index": 36,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Interact",
+          "index": 37,
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Full_Long",
+          "index": 38,
+          "duration": 2.3333333333333335
+        },
+        {
+          "name": "Jump_Full_Short",
+          "index": 39,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "Jump_Idle",
+          "index": 40,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Jump_Land",
+          "index": 41,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Jump_Start",
+          "index": 42,
+          "duration": 0.6
+        },
+        {
+          "name": "Lie_Down",
+          "index": 43,
+          "duration": 3
+        },
+        {
+          "name": "Lie_Idle",
+          "index": 44,
+          "duration": 2.6666666666666665
+        },
+        {
+          "name": "Lie_Pose",
+          "index": 45,
+          "duration": 0
+        },
+        {
+          "name": "Lie_StandUp",
+          "index": 46,
+          "duration": 2.3333333333333335
+        },
+        {
+          "name": "PickUp",
+          "index": 47,
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "index": 48,
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "index": 49,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Running_Strafe_Left",
+          "index": 50,
+          "duration": 0.8
+        },
+        {
+          "name": "Running_Strafe_Right",
+          "index": 51,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Down",
+          "index": 52,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Idle",
+          "index": 53,
+          "duration": 3.6
+        },
+        {
+          "name": "Sit_Chair_Pose",
+          "index": 54,
+          "duration": 0
+        },
+        {
+          "name": "Sit_Chair_StandUp",
+          "index": 55,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Floor_Down",
+          "index": 56,
+          "duration": 1
+        },
+        {
+          "name": "Sit_Floor_Idle",
+          "index": 57,
+          "duration": 4
+        },
+        {
+          "name": "Sit_Floor_Pose",
+          "index": 58,
+          "duration": 0
+        },
+        {
+          "name": "Sit_Floor_StandUp",
+          "index": 59,
+          "duration": 1.1333333333333333
+        },
+        {
+          "name": "Spellcast_Long",
+          "index": 60,
+          "duration": 2.533333333333333
+        },
+        {
+          "name": "Spellcast_Raise",
+          "index": 61,
+          "duration": 2.1
+        },
+        {
+          "name": "Spellcast_Shoot",
+          "index": 62,
+          "duration": 0.9333333333333333
+        },
+        {
+          "name": "Spellcasting",
+          "index": 63,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "T-Pose",
+          "index": 64,
+          "duration": 0
+        },
+        {
+          "name": "Throw",
+          "index": 65,
+          "duration": 1.3666666666666667
+        },
+        {
+          "name": "Unarmed_Idle",
+          "index": 66,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Kick",
+          "index": 67,
+          "duration": 0.9333333333333333
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_A",
+          "index": 68,
+          "duration": 1.4666666666666666
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_B",
+          "index": 69,
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Unarmed_Pose",
+          "index": 70,
+          "duration": 0
+        },
+        {
+          "name": "Use_Item",
+          "index": 71,
+          "duration": 1.6
+        },
+        {
+          "name": "Walking_A",
+          "index": 72,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_B",
+          "index": 73,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_Backwards",
+          "index": 74,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_C",
+          "index": 75,
+          "duration": 1.6
+        }
+      ],
+      "expressions": [],
+      "vowels": [],
+      "bones": [
+        "IK-foot.l",
+        "IK-foot.r",
+        "IK-toe.l",
+        "IK-toe.r",
+        "chest",
+        "control-foot-roll.l",
+        "control-foot-roll.r",
+        "control-heel-roll.l",
+        "control-heel-roll.r",
+        "control-toe-roll.l",
+        "control-toe-roll.r",
+        "elbowIK.l",
+        "elbowIK.r",
+        "foot.l",
+        "foot.r",
+        "hand.l",
+        "hand.r",
+        "handIK.l",
+        "handIK.r",
+        "handslot.l",
+        "handslot.r",
+        "head",
+        "heelIK.l",
+        "heelIK.r",
+        "hips",
+        "kneeIK.l",
+        "kneeIK.r",
+        "lowerarm.l",
+        "lowerarm.r",
+        "lowerleg.l",
+        "lowerleg.r",
+        "root",
+        "spine",
+        "toes.l",
+        "toes.r",
+        "upperarm.l",
+        "upperarm.r",
+        "upperleg.l",
+        "upperleg.r",
+        "wrist.l",
+        "wrist.r"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:kaykit-skeleton": {
+      "format": "glb2",
+      "version": "2.0",
+      "containerVersion": 2,
+      "animations": [
+        {
+          "name": "1H_Melee_Attack_Chop",
+          "index": 0,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Melee_Attack_Jump_Chop",
+          "index": 1,
+          "duration": 1.3333333333333333
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Diagonal",
+          "index": 2,
+          "duration": 1
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Horizontal",
+          "index": 3,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Melee_Attack_Stab",
+          "index": 4,
+          "duration": 1.6
+        },
+        {
+          "name": "1H_Ranged_Aiming",
+          "index": 5,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Ranged_Reload",
+          "index": 6,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "1H_Ranged_Shoot",
+          "index": 7,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "1H_Ranged_Shooting",
+          "index": 8,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Attack_Chop",
+          "index": 9,
+          "duration": 1.6333333333333333
+        },
+        {
+          "name": "2H_Melee_Attack_Slice",
+          "index": 10,
+          "duration": 1.1
+        },
+        {
+          "name": "2H_Melee_Attack_Spin",
+          "index": 11,
+          "duration": 2.4
+        },
+        {
+          "name": "2H_Melee_Attack_Spinning",
+          "index": 12,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "2H_Melee_Attack_Stab",
+          "index": 13,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Idle",
+          "index": 14,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "2H_Ranged_Aiming",
+          "index": 15,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Reload",
+          "index": 16,
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Shoot",
+          "index": 17,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "2H_Ranged_Shooting",
+          "index": 18,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block",
+          "index": 19,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block_Attack",
+          "index": 20,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Block_Hit",
+          "index": 21,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Blocking",
+          "index": 22,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Cheer",
+          "index": 23,
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Death_A",
+          "index": 24,
+          "duration": 0.8
+        },
+        {
+          "name": "Death_A_Pose",
+          "index": 25,
+          "duration": 0
+        },
+        {
+          "name": "Death_B",
+          "index": 26,
+          "duration": 2.6333333333333333
+        },
+        {
+          "name": "Death_B_Pose",
+          "index": 27,
+          "duration": 0
+        },
+        {
+          "name": "Death_C_Pose",
+          "index": 28,
+          "duration": 0
+        },
+        {
+          "name": "Death_C_Skeletons",
+          "index": 29,
+          "duration": 2
+        },
+        {
+          "name": "Death_C_Skeletons_Resurrect",
+          "index": 30,
+          "duration": 2.7
+        },
+        {
+          "name": "Dodge_Backward",
+          "index": 31,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Forward",
+          "index": 32,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Left",
+          "index": 33,
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Right",
+          "index": 34,
+          "duration": 0.4
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Chop",
+          "index": 35,
+          "duration": 1.2666666666666666
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Slice",
+          "index": 36,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Stab",
+          "index": 37,
+          "duration": 1.6
+        },
+        {
+          "name": "Hit_A",
+          "index": 38,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Hit_B",
+          "index": 39,
+          "duration": 0.8666666666666667
+        },
+        {
+          "name": "Idle",
+          "index": 40,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Idle_B",
+          "index": 41,
+          "duration": 2.1333333333333333
+        },
+        {
+          "name": "Idle_Combat",
+          "index": 42,
+          "duration": 4.266666666666667
+        },
+        {
+          "name": "Interact",
+          "index": 43,
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Full_Long",
+          "index": 44,
+          "duration": 2.3333333333333335
+        },
+        {
+          "name": "Jump_Full_Short",
+          "index": 45,
+          "duration": 1.1666666666666667
+        },
+        {
+          "name": "Jump_Idle",
+          "index": 46,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Jump_Land",
+          "index": 47,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "Jump_Start",
+          "index": 48,
+          "duration": 0.6
+        },
+        {
+          "name": "Lie_Down",
+          "index": 49,
+          "duration": 3
+        },
+        {
+          "name": "Lie_Idle",
+          "index": 50,
+          "duration": 2.6666666666666665
+        },
+        {
+          "name": "Lie_Pose",
+          "index": 51,
+          "duration": 0
+        },
+        {
+          "name": "Lie_StandUp",
+          "index": 52,
+          "duration": 2.3333333333333335
+        },
+        {
+          "name": "PickUp",
+          "index": 53,
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "index": 54,
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "index": 55,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Running_C",
+          "index": 56,
+          "duration": 0.8
+        },
+        {
+          "name": "Running_Strafe_Left",
+          "index": 57,
+          "duration": 0.8
+        },
+        {
+          "name": "Running_Strafe_Right",
+          "index": 58,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Down",
+          "index": 59,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Idle",
+          "index": 60,
+          "duration": 3.6
+        },
+        {
+          "name": "Sit_Chair_Pose",
+          "index": 61,
+          "duration": 0
+        },
+        {
+          "name": "Sit_Chair_StandUp",
+          "index": 62,
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Floor_Down",
+          "index": 63,
+          "duration": 1
+        },
+        {
+          "name": "Sit_Floor_Idle",
+          "index": 64,
+          "duration": 4
+        },
+        {
+          "name": "Sit_Floor_Pose",
+          "index": 65,
+          "duration": 0
+        },
+        {
+          "name": "Sit_Floor_StandUp",
+          "index": 66,
+          "duration": 1.1333333333333333
+        },
+        {
+          "name": "Skeleton_Inactive_Standing_Pose",
+          "index": 67,
+          "duration": 0
+        },
+        {
+          "name": "Skeletons_Awaken_Floor",
+          "index": 68,
+          "duration": 2.3
+        },
+        {
+          "name": "Skeletons_Awaken_Floor_Long",
+          "index": 69,
+          "duration": 3.8333333333333335
+        },
+        {
+          "name": "Skeletons_Awaken_Standing",
+          "index": 70,
+          "duration": 1
+        },
+        {
+          "name": "Skeletons_Inactive_Floor_Pose",
+          "index": 71,
+          "duration": 0
+        },
+        {
+          "name": "Spawn_Air",
+          "index": 72,
+          "duration": 1.3
+        },
+        {
+          "name": "Spawn_Ground",
+          "index": 73,
+          "duration": 1.3
+        },
+        {
+          "name": "Spawn_Ground_Skeletons",
+          "index": 74,
+          "duration": 3.566666666666667
+        },
+        {
+          "name": "Spellcast_Long",
+          "index": 75,
+          "duration": 2.533333333333333
+        },
+        {
+          "name": "Spellcast_Raise",
+          "index": 76,
+          "duration": 2.1
+        },
+        {
+          "name": "Spellcast_Shoot",
+          "index": 77,
+          "duration": 0.9333333333333333
+        },
+        {
+          "name": "Spellcast_Summon",
+          "index": 78,
+          "duration": 4.3
+        },
+        {
+          "name": "Spellcasting",
+          "index": 79,
+          "duration": 0.6666666666666666
+        },
+        {
+          "name": "T-Pose",
+          "index": 80,
+          "duration": 0
+        },
+        {
+          "name": "Taunt",
+          "index": 81,
+          "duration": 1.0333333333333334
+        },
+        {
+          "name": "Taunt_Longer",
+          "index": 82,
+          "duration": 3
+        },
+        {
+          "name": "Throw",
+          "index": 83,
+          "duration": 1.3666666666666667
+        },
+        {
+          "name": "Unarmed_Idle",
+          "index": 84,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Kick",
+          "index": 85,
+          "duration": 0.9333333333333333
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_A",
+          "index": 86,
+          "duration": 1.4666666666666666
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_B",
+          "index": 87,
+          "duration": 1.6666666666666667
+        },
+        {
+          "name": "Unarmed_Pose",
+          "index": 88,
+          "duration": 0
+        },
+        {
+          "name": "Use_Item",
+          "index": 89,
+          "duration": 1.6
+        },
+        {
+          "name": "Walking_A",
+          "index": 90,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_B",
+          "index": 91,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_Backwards",
+          "index": 92,
+          "duration": 1.0666666666666667
+        },
+        {
+          "name": "Walking_C",
+          "index": 93,
+          "duration": 1.6
+        },
+        {
+          "name": "Walking_D_Skeletons",
+          "index": 94,
+          "duration": 1.6
+        }
+      ],
+      "expressions": [],
+      "vowels": [],
+      "bones": [
+        "IK-foot.l",
+        "IK-foot.r",
+        "IK-toe.l",
+        "IK-toe.r",
+        "chest",
+        "control-foot-roll.l",
+        "control-foot-roll.r",
+        "control-heel-roll.l",
+        "control-heel-roll.r",
+        "control-toe-roll.l",
+        "control-toe-roll.r",
+        "elbowIK.l",
+        "elbowIK.r",
+        "foot.l",
+        "foot.r",
+        "hand.l",
+        "hand.r",
+        "handIK.l",
+        "handIK.r",
+        "handslot.l",
+        "handslot.r",
+        "head",
+        "heelIK.l",
+        "heelIK.r",
+        "hips",
+        "kneeIK.l",
+        "kneeIK.r",
+        "lowerarm.l",
+        "lowerarm.r",
+        "lowerleg.l",
+        "lowerleg.r",
+        "root",
+        "spine",
+        "toes.l",
+        "toes.r",
+        "upperarm.l",
+        "upperarm.r",
+        "upperleg.l",
+        "upperleg.r",
+        "wrist.l",
+        "wrist.r"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:osa-mushy": {
+      "format": "vrm0",
+      "version": "0.0",
+      "containerVersion": 2,
+      "animations": [],
+      "expressions": [
+        "a",
+        "blink",
+        "e",
+        "i",
+        "o",
+        "u"
+      ],
+      "vowels": [
+        "aa",
+        "ee",
+        "ih",
+        "oh",
+        "ou"
+      ],
+      "bones": [
+        "chest",
+        "head",
+        "hips",
+        "leftFoot",
+        "leftHand",
+        "leftIndexDistal",
+        "leftIndexIntermediate",
+        "leftIndexProximal",
+        "leftLittleDistal",
+        "leftLittleIntermediate",
+        "leftLittleProximal",
+        "leftLowerArm",
+        "leftLowerLeg",
+        "leftMiddleDistal",
+        "leftMiddleIntermediate",
+        "leftMiddleProximal",
+        "leftRingDistal",
+        "leftRingIntermediate",
+        "leftRingProximal",
+        "leftShoulder",
+        "leftThumbDistal",
+        "leftThumbIntermediate",
+        "leftThumbProximal",
+        "leftToes",
+        "leftUpperArm",
+        "leftUpperLeg",
+        "neck",
+        "rightFoot",
+        "rightHand",
+        "rightIndexDistal",
+        "rightIndexIntermediate",
+        "rightIndexProximal",
+        "rightLittleDistal",
+        "rightLittleIntermediate",
+        "rightLittleProximal",
+        "rightLowerArm",
+        "rightLowerLeg",
+        "rightMiddleDistal",
+        "rightMiddleIntermediate",
+        "rightMiddleProximal",
+        "rightRingDistal",
+        "rightRingIntermediate",
+        "rightRingProximal",
+        "rightShoulder",
+        "rightThumbDistal",
+        "rightThumbIntermediate",
+        "rightThumbProximal",
+        "rightToes",
+        "rightUpperArm",
+        "rightUpperLeg",
+        "spine",
+        "upperChest"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [
+        "VRM",
+        "KHR_materials_unlit",
+        "KHR_texture_transform",
+        "VRMC_materials_mtoon"
+      ],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:osa-dracula": {
+      "format": "vrm0",
+      "version": "0.0",
+      "containerVersion": 2,
+      "animations": [],
+      "expressions": [
+        "a",
+        "blink",
+        "e",
+        "i",
+        "o",
+        "u"
+      ],
+      "vowels": [
+        "aa",
+        "ee",
+        "ih",
+        "oh",
+        "ou"
+      ],
+      "bones": [
+        "chest",
+        "head",
+        "hips",
+        "leftFoot",
+        "leftHand",
+        "leftIndexDistal",
+        "leftIndexIntermediate",
+        "leftIndexProximal",
+        "leftLittleDistal",
+        "leftLittleIntermediate",
+        "leftLittleProximal",
+        "leftLowerArm",
+        "leftLowerLeg",
+        "leftMiddleDistal",
+        "leftMiddleIntermediate",
+        "leftMiddleProximal",
+        "leftRingDistal",
+        "leftRingIntermediate",
+        "leftRingProximal",
+        "leftShoulder",
+        "leftThumbDistal",
+        "leftThumbIntermediate",
+        "leftThumbProximal",
+        "leftToes",
+        "leftUpperArm",
+        "leftUpperLeg",
+        "neck",
+        "rightFoot",
+        "rightHand",
+        "rightIndexDistal",
+        "rightIndexIntermediate",
+        "rightIndexProximal",
+        "rightLittleDistal",
+        "rightLittleIntermediate",
+        "rightLittleProximal",
+        "rightLowerArm",
+        "rightLowerLeg",
+        "rightMiddleDistal",
+        "rightMiddleIntermediate",
+        "rightMiddleProximal",
+        "rightRingDistal",
+        "rightRingIntermediate",
+        "rightRingProximal",
+        "rightShoulder",
+        "rightThumbDistal",
+        "rightThumbIntermediate",
+        "rightThumbProximal",
+        "rightToes",
+        "rightUpperArm",
+        "rightUpperLeg",
+        "spine",
+        "upperChest"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [
+        "VRM",
+        "KHR_materials_unlit",
+        "KHR_texture_transform",
+        "VRMC_materials_mtoon"
+      ],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:osa-always-watching": {
+      "format": "vrm0",
+      "version": "0.0",
+      "containerVersion": 2,
+      "animations": [],
+      "expressions": [
+        "a",
+        "blink",
+        "e",
+        "i",
+        "o",
+        "u"
+      ],
+      "vowels": [
+        "aa",
+        "ee",
+        "ih",
+        "oh",
+        "ou"
+      ],
+      "bones": [
+        "chest",
+        "head",
+        "hips",
+        "leftFoot",
+        "leftHand",
+        "leftIndexDistal",
+        "leftIndexIntermediate",
+        "leftIndexProximal",
+        "leftLittleDistal",
+        "leftLittleIntermediate",
+        "leftLittleProximal",
+        "leftLowerArm",
+        "leftLowerLeg",
+        "leftMiddleDistal",
+        "leftMiddleIntermediate",
+        "leftMiddleProximal",
+        "leftRingDistal",
+        "leftRingIntermediate",
+        "leftRingProximal",
+        "leftShoulder",
+        "leftThumbDistal",
+        "leftThumbIntermediate",
+        "leftThumbProximal",
+        "leftToes",
+        "leftUpperArm",
+        "leftUpperLeg",
+        "neck",
+        "rightFoot",
+        "rightHand",
+        "rightIndexDistal",
+        "rightIndexIntermediate",
+        "rightIndexProximal",
+        "rightLittleDistal",
+        "rightLittleIntermediate",
+        "rightLittleProximal",
+        "rightLowerArm",
+        "rightLowerLeg",
+        "rightMiddleDistal",
+        "rightMiddleIntermediate",
+        "rightMiddleProximal",
+        "rightRingDistal",
+        "rightRingIntermediate",
+        "rightRingProximal",
+        "rightShoulder",
+        "rightThumbDistal",
+        "rightThumbIntermediate",
+        "rightThumbProximal",
+        "rightToes",
+        "rightUpperArm",
+        "rightUpperLeg",
+        "spine",
+        "upperChest"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [
+        "VRM",
+        "KHR_materials_unlit",
+        "KHR_texture_transform",
+        "VRMC_materials_mtoon"
+      ],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:osa-conehead-being": {
+      "format": "vrm0",
+      "version": "0.0",
+      "containerVersion": 2,
+      "animations": [],
+      "expressions": [
+        "a",
+        "blink",
+        "blink_l",
+        "e",
+        "i",
+        "lookleft",
+        "o",
+        "u"
+      ],
+      "vowels": [
+        "aa",
+        "ee",
+        "ih",
+        "oh",
+        "ou"
+      ],
+      "bones": [
+        "chest",
+        "head",
+        "hips",
+        "leftFoot",
+        "leftHand",
+        "leftIndexDistal",
+        "leftIndexIntermediate",
+        "leftIndexProximal",
+        "leftLittleDistal",
+        "leftLittleIntermediate",
+        "leftLittleProximal",
+        "leftLowerArm",
+        "leftLowerLeg",
+        "leftMiddleDistal",
+        "leftMiddleIntermediate",
+        "leftMiddleProximal",
+        "leftRingDistal",
+        "leftRingIntermediate",
+        "leftRingProximal",
+        "leftShoulder",
+        "leftThumbDistal",
+        "leftThumbIntermediate",
+        "leftThumbProximal",
+        "leftUpperArm",
+        "leftUpperLeg",
+        "neck",
+        "rightFoot",
+        "rightHand",
+        "rightIndexDistal",
+        "rightIndexIntermediate",
+        "rightIndexProximal",
+        "rightLittleDistal",
+        "rightLittleIntermediate",
+        "rightLittleProximal",
+        "rightLowerArm",
+        "rightLowerLeg",
+        "rightMiddleDistal",
+        "rightMiddleIntermediate",
+        "rightMiddleProximal",
+        "rightRingDistal",
+        "rightRingIntermediate",
+        "rightRingProximal",
+        "rightShoulder",
+        "rightThumbDistal",
+        "rightThumbIntermediate",
+        "rightThumbProximal",
+        "rightUpperArm",
+        "rightUpperLeg",
+        "spine",
+        "upperChest"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [
+        "VRM",
+        "KHR_materials_unlit",
+        "KHR_texture_transform",
+        "VRMC_materials_mtoon"
+      ],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:osa-cool-alien": {
+      "format": "vrm0",
+      "version": "0.0",
+      "containerVersion": 2,
+      "animations": [],
+      "expressions": [
+        "a",
+        "blink",
+        "e",
+        "i",
+        "o",
+        "u"
+      ],
+      "vowels": [
+        "aa",
+        "ee",
+        "ih",
+        "oh",
+        "ou"
+      ],
+      "bones": [
+        "chest",
+        "head",
+        "hips",
+        "leftFoot",
+        "leftHand",
+        "leftIndexDistal",
+        "leftIndexIntermediate",
+        "leftIndexProximal",
+        "leftLittleDistal",
+        "leftLittleIntermediate",
+        "leftLittleProximal",
+        "leftLowerArm",
+        "leftLowerLeg",
+        "leftMiddleDistal",
+        "leftMiddleIntermediate",
+        "leftMiddleProximal",
+        "leftRingDistal",
+        "leftRingIntermediate",
+        "leftRingProximal",
+        "leftShoulder",
+        "leftThumbDistal",
+        "leftThumbIntermediate",
+        "leftThumbProximal",
+        "leftToes",
+        "leftUpperArm",
+        "leftUpperLeg",
+        "neck",
+        "rightFoot",
+        "rightHand",
+        "rightIndexDistal",
+        "rightIndexIntermediate",
+        "rightIndexProximal",
+        "rightLittleDistal",
+        "rightLittleIntermediate",
+        "rightLittleProximal",
+        "rightLowerArm",
+        "rightLowerLeg",
+        "rightMiddleDistal",
+        "rightMiddleIntermediate",
+        "rightMiddleProximal",
+        "rightRingDistal",
+        "rightRingIntermediate",
+        "rightRingProximal",
+        "rightShoulder",
+        "rightThumbDistal",
+        "rightThumbIntermediate",
+        "rightThumbProximal",
+        "rightToes",
+        "rightUpperArm",
+        "rightUpperLeg",
+        "spine",
+        "upperChest"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [
+        "VRM",
+        "KHR_materials_unlit",
+        "KHR_texture_transform",
+        "VRMC_materials_mtoon"
+      ],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:osa-cool-tiger": {
+      "format": "vrm0",
+      "version": "0.0",
+      "containerVersion": 2,
+      "animations": [],
+      "expressions": [
+        "a",
+        "angry",
+        "blink",
+        "blink_l",
+        "blink_r",
+        "e",
+        "fun",
+        "i",
+        "joy",
+        "lookdown",
+        "lookleft",
+        "lookright",
+        "lookup",
+        "neutral",
+        "o",
+        "sorrow",
+        "u"
+      ],
+      "vowels": [
+        "aa",
+        "ee",
+        "ih",
+        "oh",
+        "ou"
+      ],
+      "bones": [
+        "chest",
+        "head",
+        "hips",
+        "leftFoot",
+        "leftHand",
+        "leftIndexIntermediate",
+        "leftIndexProximal",
+        "leftLittleIntermediate",
+        "leftLittleProximal",
+        "leftLowerArm",
+        "leftLowerLeg",
+        "leftMiddleIntermediate",
+        "leftMiddleProximal",
+        "leftRingIntermediate",
+        "leftRingProximal",
+        "leftShoulder",
+        "leftThumbIntermediate",
+        "leftThumbProximal",
+        "leftToes",
+        "leftUpperArm",
+        "leftUpperLeg",
+        "neck",
+        "rightFoot",
+        "rightHand",
+        "rightIndexIntermediate",
+        "rightIndexProximal",
+        "rightLittleIntermediate",
+        "rightLittleProximal",
+        "rightLowerArm",
+        "rightLowerLeg",
+        "rightMiddleIntermediate",
+        "rightMiddleProximal",
+        "rightRingIntermediate",
+        "rightRingProximal",
+        "rightShoulder",
+        "rightThumbIntermediate",
+        "rightThumbProximal",
+        "rightToes",
+        "rightUpperArm",
+        "rightUpperLeg",
+        "spine",
+        "upperChest"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [
+        "KHR_materials_unlit",
+        "KHR_texture_transform",
+        "VRM"
+      ],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:osa-ghost-pumpking": {
+      "format": "vrm0",
+      "version": "0.0",
+      "containerVersion": 2,
+      "animations": [],
+      "expressions": [
+        "a",
+        "angry",
+        "blink",
+        "blink_l",
+        "blink_r",
+        "e",
+        "fun",
+        "i",
+        "joy",
+        "lookdown",
+        "lookleft",
+        "lookright",
+        "lookup",
+        "neutral",
+        "o",
+        "sorrow",
+        "u"
+      ],
+      "vowels": [
+        "aa",
+        "ee",
+        "ih",
+        "oh",
+        "ou"
+      ],
+      "bones": [
+        "chest",
+        "head",
+        "hips",
+        "leftFoot",
+        "leftHand",
+        "leftIndexDistal",
+        "leftIndexIntermediate",
+        "leftIndexProximal",
+        "leftLittleDistal",
+        "leftLittleIntermediate",
+        "leftLittleProximal",
+        "leftLowerArm",
+        "leftLowerLeg",
+        "leftMiddleDistal",
+        "leftMiddleIntermediate",
+        "leftMiddleProximal",
+        "leftRingDistal",
+        "leftRingIntermediate",
+        "leftRingProximal",
+        "leftShoulder",
+        "leftThumbDistal",
+        "leftThumbIntermediate",
+        "leftThumbProximal",
+        "leftToes",
+        "leftUpperArm",
+        "leftUpperLeg",
+        "neck",
+        "rightFoot",
+        "rightHand",
+        "rightIndexDistal",
+        "rightIndexIntermediate",
+        "rightIndexProximal",
+        "rightLittleDistal",
+        "rightLittleIntermediate",
+        "rightLittleProximal",
+        "rightLowerArm",
+        "rightLowerLeg",
+        "rightMiddleDistal",
+        "rightMiddleIntermediate",
+        "rightMiddleProximal",
+        "rightRingDistal",
+        "rightRingIntermediate",
+        "rightRingProximal",
+        "rightShoulder",
+        "rightThumbDistal",
+        "rightThumbIntermediate",
+        "rightThumbProximal",
+        "rightToes",
+        "rightUpperArm",
+        "rightUpperLeg",
+        "spine",
+        "upperChest"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [
+        "KHR_materials_unlit",
+        "KHR_texture_transform",
+        "VRM"
+      ],
+      "warnings": [
+        "Eine ältere Dateiabweichung wird automatisch berücksichtigt."
+      ],
+      "externalResources": []
+    },
+    "builtin:osa-max-hax": {
+      "format": "vrm0",
+      "version": "0.0",
+      "containerVersion": 2,
+      "animations": [],
+      "expressions": [
+        "a",
+        "angry",
+        "blink",
+        "blink_l",
+        "blink_r",
+        "e",
+        "fun",
+        "i",
+        "joy",
+        "lookdown",
+        "lookleft",
+        "lookright",
+        "lookup",
+        "neutral",
+        "o",
+        "sorrow",
+        "u"
+      ],
+      "vowels": [
+        "aa",
+        "ee",
+        "ih",
+        "oh",
+        "ou"
+      ],
+      "bones": [
+        "chest",
+        "head",
+        "hips",
+        "leftFoot",
+        "leftHand",
+        "leftIndexDistal",
+        "leftIndexIntermediate",
+        "leftIndexProximal",
+        "leftLittleDistal",
+        "leftLittleIntermediate",
+        "leftLittleProximal",
+        "leftLowerArm",
+        "leftLowerLeg",
+        "leftMiddleDistal",
+        "leftMiddleIntermediate",
+        "leftMiddleProximal",
+        "leftRingDistal",
+        "leftRingIntermediate",
+        "leftRingProximal",
+        "leftShoulder",
+        "leftThumbDistal",
+        "leftThumbIntermediate",
+        "leftThumbProximal",
+        "leftToes",
+        "leftUpperArm",
+        "leftUpperLeg",
+        "neck",
+        "rightFoot",
+        "rightHand",
+        "rightIndexDistal",
+        "rightIndexIntermediate",
+        "rightIndexProximal",
+        "rightLittleDistal",
+        "rightLittleIntermediate",
+        "rightLittleProximal",
+        "rightLowerArm",
+        "rightLowerLeg",
+        "rightMiddleDistal",
+        "rightMiddleIntermediate",
+        "rightMiddleProximal",
+        "rightRingDistal",
+        "rightRingIntermediate",
+        "rightRingProximal",
+        "rightShoulder",
+        "rightThumbDistal",
+        "rightThumbIntermediate",
+        "rightThumbProximal",
+        "rightToes",
+        "rightUpperArm",
+        "rightUpperLeg",
+        "spine",
+        "upperChest"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [
+        "KHR_materials_unlit",
+        "KHR_texture_transform",
+        "VRM"
+      ],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:osa-megan-the-fox": {
+      "format": "vrm0",
+      "version": "0.0",
+      "containerVersion": 2,
+      "animations": [],
+      "expressions": [
+        "a",
+        "angry",
+        "blink",
+        "blink_l",
+        "blink_r",
+        "e",
+        "fun",
+        "i",
+        "joy",
+        "lookdown",
+        "lookleft",
+        "lookright",
+        "lookup",
+        "neutral",
+        "o",
+        "sorrow",
+        "u"
+      ],
+      "vowels": [
+        "aa",
+        "ee",
+        "ih",
+        "oh",
+        "ou"
+      ],
+      "bones": [
+        "chest",
+        "head",
+        "hips",
+        "leftFoot",
+        "leftHand",
+        "leftIndexDistal",
+        "leftIndexIntermediate",
+        "leftIndexProximal",
+        "leftLowerArm",
+        "leftLowerLeg",
+        "leftMiddleDistal",
+        "leftMiddleIntermediate",
+        "leftMiddleProximal",
+        "leftShoulder",
+        "leftThumbDistal",
+        "leftThumbIntermediate",
+        "leftThumbProximal",
+        "leftToes",
+        "leftUpperArm",
+        "leftUpperLeg",
+        "neck",
+        "rightFoot",
+        "rightHand",
+        "rightIndexDistal",
+        "rightIndexIntermediate",
+        "rightIndexProximal",
+        "rightLowerArm",
+        "rightLowerLeg",
+        "rightMiddleDistal",
+        "rightMiddleIntermediate",
+        "rightMiddleProximal",
+        "rightShoulder",
+        "rightThumbDistal",
+        "rightThumbIntermediate",
+        "rightThumbProximal",
+        "rightToes",
+        "rightUpperArm",
+        "rightUpperLeg",
+        "spine",
+        "upperChest"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [
+        "KHR_materials_unlit",
+        "KHR_texture_transform",
+        "VRM"
+      ],
+      "warnings": [],
+      "externalResources": []
+    },
+    "builtin:osa-paco": {
+      "format": "vrm0",
+      "version": "0.0",
+      "containerVersion": 2,
+      "animations": [],
+      "expressions": [
+        "a",
+        "angry",
+        "blink",
+        "blink_l",
+        "blink_r",
+        "e",
+        "fun",
+        "i",
+        "joy",
+        "lookdown",
+        "lookleft",
+        "lookright",
+        "lookup",
+        "neutral",
+        "o",
+        "sorrow",
+        "u"
+      ],
+      "vowels": [
+        "aa",
+        "ee",
+        "ih",
+        "oh",
+        "ou"
+      ],
+      "bones": [
+        "chest",
+        "head",
+        "hips",
+        "leftFoot",
+        "leftHand",
+        "leftIndexDistal",
+        "leftIndexIntermediate",
+        "leftIndexProximal",
+        "leftLittleDistal",
+        "leftLittleIntermediate",
+        "leftLittleProximal",
+        "leftLowerArm",
+        "leftLowerLeg",
+        "leftMiddleDistal",
+        "leftMiddleIntermediate",
+        "leftMiddleProximal",
+        "leftRingDistal",
+        "leftRingIntermediate",
+        "leftRingProximal",
+        "leftShoulder",
+        "leftThumbDistal",
+        "leftThumbIntermediate",
+        "leftThumbProximal",
+        "leftToes",
+        "leftUpperArm",
+        "leftUpperLeg",
+        "neck",
+        "rightFoot",
+        "rightHand",
+        "rightIndexDistal",
+        "rightIndexIntermediate",
+        "rightIndexProximal",
+        "rightLittleDistal",
+        "rightLittleIntermediate",
+        "rightLittleProximal",
+        "rightLowerArm",
+        "rightLowerLeg",
+        "rightMiddleDistal",
+        "rightMiddleIntermediate",
+        "rightMiddleProximal",
+        "rightRingDistal",
+        "rightRingIntermediate",
+        "rightRingProximal",
+        "rightShoulder",
+        "rightThumbDistal",
+        "rightThumbIntermediate",
+        "rightThumbProximal",
+        "rightToes",
+        "rightUpperArm",
+        "rightUpperLeg",
+        "spine",
+        "upperChest"
+      ],
+      "audioExtensions": [],
+      "requiredExtensions": [],
+      "usedExtensions": [
+        "KHR_materials_unlit",
+        "KHR_texture_transform",
+        "VRM"
+      ],
+      "warnings": [
+        "Eine ältere Dateiabweichung wird automatisch berücksichtigt."
+      ],
+      "externalResources": []
+    }
+  }
+}

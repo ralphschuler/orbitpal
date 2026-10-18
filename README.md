@@ -24,6 +24,8 @@ The current source version is **0.6.0**. Consult the release notes for the versi
 - Secrets in the OS credential store, portable profiles and per-bot conversation storage.
 - Optional automatic update checks through GitHub Releases. Download, signature verification, installation and restart require your explicit confirmation in **Updates & Version**.
 
+Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, silent gestures and occasional spontaneous speech, with quiet periods and a rolling hourly limit. A separately configured MCP observation can provide fresh screen images; autonomous turns receive no general MCP control or Skill-script execution.
+
 ## Download and start
 
 Get published packages from the [latest release](https://github.com/ralphschuler/streamer-ai-cohost/releases/latest). The release pipeline targets Windows x64, macOS Apple Silicon/Intel, and Linux x64; each release identifies its available files and checksums. Windows packages are **unsigned**; macOS packages use **ad-hoc signing without notarization**. Platform trust prompts may appear. See [release details](docs/RELEASING.md).
@@ -39,7 +41,7 @@ Press **?** or **F1** for keyboard help. **Ctrl/Cmd+S** saves, **Ctrl/Cmd+K** fo
 
 From version 0.6.0, **Updates & Version** checks the stable GitHub release channel shortly after startup and every six hours. You may disable automatic checks, check manually or choose **Später**. The app downloads and installs only after **Bestätigen & installieren**; save edits and stop ongoing output/microphone use first. Linux in-app installation requires an AppImage; Debian packages update manually. Earlier versions require one manual upgrade. See [updates](docs/UPDATING.md).
 
-[German user guide](docs/USER_GUIDE.de.md) · [Character sources and licenses](CHARACTERS.md) · [Architecture](docs/ARCHITECTURE.md)
+[German user guide](docs/USER_GUIDE.de.md) · [Character sources and licenses](CHARACTERS.md) · [Model format support](docs/AVATAR-SUPPORT.md) · [Architecture](docs/ARCHITECTURE.md) · [Audit and follow-up issues](docs/AUDIT-2026-10-19.md)
 
 ## Development
 

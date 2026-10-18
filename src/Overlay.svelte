@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import Avatar from './components/Avatar.svelte';
+  import { AutopilotRuntimeVersions, type AutopilotRuntime } from './lib/autopilot-runtime';
   import { SpeechPlayer } from './lib/audio';
   import { EmoteSequence, type EmotePayload } from './lib/presentation';
   import { EmoteAudioPlayer } from './lib/emote-audio';
@@ -14,6 +15,9 @@
   let speaking = $state(false);
   let level = $state(0);
   let emotion = $state('neutral');
+  let autopilot = $state<AutopilotRuntime>();
+  const autopilotVersions = new AutopilotRuntimeVersions();
+  function acceptAutopilot(runtime:AutopilotRuntime){if(autopilotVersions.accept(runtime))autopilot=runtime.active?runtime:undefined;}
   let text = $state('');
   let overlayUrl = $state(location.href);
   // Each renderer stays bound to its own bot even when the studio selects another one.
@@ -33,6 +37,7 @@
   let current: PlaybackJob | undefined;
   let disposed = false;
   let profileRevision = 0;
+  let runtimeRevision = 0;
   let ready: Promise<void> = Promise.resolve();
   const receivedIds = new Set<string>();
   const emoteSequence = new EmoteSequence(applyEmote);
@@ -207,15 +212,17 @@
     if (event.kind === 'profile') {
       botId ||= event.profile.id;
       ++profileRevision; ++emoteRevision; emoteSequence.stop();emoteAudio?.stop(); profile = event.profile;
+      ++runtimeRevision; if(event.autopilotRuntime||event.profile?.autopilotRuntime)acceptAutopilot(event.autopilotRuntime||event.profile.autopilotRuntime);
       // Pin legacy OBS links without a bot parameter after their initial profile arrives.
       const url = new URL(overlayUrl); url.searchParams.set('bot', botId); overlayUrl = url.toString();
       return;
     }
+    if (event.kind === 'autopilot') { ++runtimeRevision; acceptAutopilot(event); return; }
     if (event.kind === 'emote') {
       void manualEmote(event);
       return;
     }
-    if (event.kind === 'stop') { cancelCurrent(); failure = ''; failureDetail = ''; return; }
+    if (event.kind === 'stop') { ++runtimeRevision; autopilot = undefined; cancelCurrent(); failure = ''; failureDetail = ''; return; }
     if (event.kind === 'error') { subtitles.cancel(); connectionFailure = event.text || 'Die Verbindung zur App ist nicht verfügbar.'; return; }
     if (event.kind !== 'speech' || !event.id || receivedIds.has(event.id)) return;
     receivedIds.add(event.id);
@@ -251,10 +258,12 @@
     const cleanup: (() => void)[] = [];
     if (native) {
       const initialRevision = profileRevision;
+      const initialRuntimeRevision = runtimeRevision;
       ready = call('get_app_state', { botId: botId || undefined }).then((state) => {
         if (disposed) return;
         botId ||= state.profile.id;
         if (profileRevision === initialRevision) profile = state.profile;
+        if (runtimeRevision === initialRuntimeRevision) { const runtime=(state.autopilot || []).find((entry:any) => entry.botId === botId); if(runtime)acceptAutopilot(runtime); }
         const url = new URL(state.overlayUrl); url.searchParams.set('bot', botId); overlayUrl = url.toString();
       }).catch(() => { if (!disposed) connectionFailure = 'Charakterprofil konnte nicht geladen werden.'; });
       onEvent('cohost://overlay', receive).then((unlisten) => {
@@ -280,7 +289,7 @@
 </script>
 
 <div class="overlay-scene">
-  <Avatar {profile} {speaking} {level} {emotion} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  <Avatar {profile} {speaking} {level} {emotion} {autopilot} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
   {#if native && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label="Figurenfenster verschieben" title="Figurenfenster verschieben" onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>

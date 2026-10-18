@@ -18,6 +18,10 @@ Die App benötigt zum Start weder ein kostenpflichtiges KI-Konto noch ein herunt
 4. **Manuell auswählen** beantwortet nur bewusst ausgewählte Nachrichten. Für automatische Antworten den Co-Host- oder Pausenmodus wählen und **Cohost starten** aktivieren.
 5. Geschriebene Chatantworten können unter **Twitch & YouTube** getrennt aktiviert werden. Sie sind standardmäßig aus. Die gesprochene Antwort funktioniert unabhängig davon.
 
+## Selbstständiger Autopilot
+
+Unter **Autopilot** kann jeder Bot unabhängig herumlaufen, kleine Gesten zeigen und nach einer ruhigen Phase selbst einen kurzen Beitrag beginnen. Bewegung funktioniert ohne Modellanfrage; die Sprachversuche haben ein rollendes Stundenbudget. Optional wird vor einem Beitrag ein fest gewähltes MCP-Beobachtungswerkzeug aufgerufen und dessen Bild dem bildfähigen Dialogmodell übergeben. Start gilt nur für die aktuelle Sitzung; **Stop** beendet alle Autopiloten. Einrichtung, Kosten und Grenzen stehen unter [AUTOPILOT.md](AUTOPILOT.md).
+
 ## Bedienung und Tastatur
 
 Die kleinen Informationsschaltflächen erklären Einstellungen beim Überfahren und bei Tastaturfokus. Mit **Tab** und **Umschalt+Tab** sind sie ebenso wie die übrigen Bedienelemente erreichbar.
@@ -28,16 +32,17 @@ Die kleinen Informationsschaltflächen erklären Einstellungen beim Überfahren 
 | **Strg/⌘ + S** | Aktuelle Einstellungen und Anweisungsänderungen speichern; im Erweiterungseditor dessen Inhalt speichern. |
 | **Strg/⌘ + K** | Zum Regiepult wechseln und das Nachrichtenfeld fokussieren. |
 | **Strg/⌘ + Enter** | Nachricht im Regiepult senden, wenn keine Aufnahme oder Antwort läuft. |
-| **Alt/⌥ + 1–7** | Bereiche in der Reihenfolge der Seitenleiste wählen; nicht während der Texteingabe. |
+| **Alt/⌥ + 1–8** | Bereiche in der Reihenfolge der Seitenleiste wählen; nicht während der Texteingabe. |
 | **Esc** | Zuerst sichtbare Hilfe oder einen Dialog schließen; sonst die laufende Ausgabe stoppen. |
 
-Die sieben Bereiche sind **Regiepult**, **Charakter & Stimme**, **Modelle**, **Persönlichkeit & Regeln**, **Wissen & Gedächtnis**, **Twitch & YouTube** und **Skills & MCP**. Botfreigaben in der Erweiterungsbibliothek werden unmittelbar gespeichert; andere Profiländerungen über **Änderungen speichern** sichern.
+Die acht Bereiche sind **Regiepult**, **Charakter & Stimme**, **Modelle**, **Persönlichkeit & Regeln**, **Wissen & Gedächtnis**, **Twitch & YouTube**, **Autopilot** und **Skills & MCP**. Botfreigaben in der Erweiterungsbibliothek werden unmittelbar gespeichert; andere Profiländerungen über **Änderungen speichern** sichern.
 
 ## Enthalten
 
 - Eigene animierte 3D-Roboterfigur Nova mit Blick, Blinzeln, Ruhebewegungen, Gesichtsausdrücken und sprachgesteuertem Mund.
 - 17 mitgelieferte Charaktere: Nova, Robot Expressive, Fox, KayKit-Ritter, -Magier, -Schurke und -Skelett sowie zehn CC0-VRM-Figuren aus [Open Source Avatars](https://www.opensourceavatars.com/en/finder). Quellen, Modellgrenzen und weitere Importmöglichkeiten stehen in [CHARACTERS.md](../CHARACTERS.md); die [Attributionshinweise](../public/characters/ATTRIBUTION.md) und [OSA-Metadaten](../public/characters/osa/CREDITS.json) gehören zu den Fremdmodellen. Die KayKit-Figuren enthalten Körperanimationen; die zehn OSA-VRMs besitzen Humanoidrigs und Vokalmorphs und verwenden die prozeduralen Gesten der App.
-- Import eigener VRM- und GLB-Modelle. Enthaltene GLB-Animationsclips können als eigene Emotes zugeordnet werden.
+- Import eigener VRM- und GLB-Modelle. Tatsächlich vorhandene Animationsclips stehen unter **Was deine Figur mitbringt** zur stummen Vorschau und Übernahme als eigenes Emote bereit. Die [Formatübersicht](AVATAR-SUPPORT.md) beschreibt die automatische VRM-0/1-/GLB-2-Erkennung und klar gemeldete Importgrenzen.
+
 - Emote-Bibliothek pro Profil: Winken, Verstecken, Freuen sowie Nicken und Tanzen. Namen, Dauer, Intensität, optionaler Sound mit Lautstärke und Freigabe für Zuschauer-Anfragen sind konfigurierbar. Der Agent kann freigegebene Emotes als Werkzeug ausführen.
 - Dialogmodelle über Ollama, LM Studio, OpenAI-kompatible APIs, Anthropic Messages sowie die installierten Claude-Code- und Codex-CLIs. Begrenzte Werkzeugrunden und Abbruch; eintreffende Modelltexte werden intern gesammelt und mit der Sprachausgabe veröffentlicht.
 - Systemstimmen, ElevenLabs und kompatible lokale/Cloud-TTS-Endpunkte. Push-to-talk mit lokalem Whisper, ElevenLabs Scribe, OpenAI Whisper oder kompatiblen STT-Endpunkten. Aufnahmen werden lokal in Mono-PCM16-WAV mit 16 kHz umgewandelt.
@@ -48,6 +53,12 @@ Die sieben Bereiche sind **Regiepult**, **Charakter & Stimme**, **Modelle**, **P
 - MCP-Server lokal über stdio und entfernt über Streamable HTTP. Echte Bildinhalte aus erlaubten MCP-Werkzeugen können an ein Vision-Modell weitergegeben werden; dafür gibt es eine eigene Einstellung pro Bot.
 - SQLite-Gesprächsverlauf, begrenzter Modellkontext, Wissensdateien, portable Profile und separate Zugangsdaten im Systemschlüsselbund.
 - Transparentes, rahmenloses Figurenfenster, optional immer im Vordergrund und mit durchgereichten Mausklicks. Separates Regiepult, Traymenü und OBS-Browserquelle.
+
+## Haltung und Modellvarianten
+
+Die Ruhehaltung und Gesten von VRM-Figuren werden automatisch aus dem jeweiligen Skelett abgeleitet, einschließlich der zehn älteren OSA-Modelle. Eine manuelle Armkorrektur ist nicht erforderlich.
+
+Der mitgelieferte Magier zeigt ein offenes Buch und einen einhändigen Zauberstab. Die zusätzlich im Modell enthaltenen Varianten für das geschlossene Buch und den großen Stab werden ausgeblendet; die Originaldatei bleibt unverändert.
 
 ## Mehrere Bots und Stream-Crew
 

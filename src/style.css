@@ -25,3 +25,8 @@ main{padding:32px 34px 0;max-width:1720px;margin:0 auto}.page-heading{display:fl
 @media(max-width:1100px){.scope-strip{align-items:flex-start;flex-direction:column;gap:3px}}@media(max-width:950px){.nav-group-label{font-size:0;padding:10px 0 0;border-top:1px solid #303b4e;margin:10px 5px 0}.scope-strip{margin-bottom:20px}nav{gap:2px}nav button{padding:12px}.sidebar nav{margin-top:22px}}
 
 .field-with-help{margin:17px 0;color:#b7c9e6;font-size:10px}.field-label{display:flex;align-items:center;gap:5px;margin-bottom:8px}.settings-panel .field-label>label{margin:0;display:inline;line-height:1.6}.field-row>.field-with-help{flex:1;min-width:0}.field-with-help>input,.field-with-help>select,.field-with-help>textarea{margin:0}.emote-card .field-with-help{font-size:9px}.emote-card .field-label{margin-bottom:7px}
+
+/* Keep update controls reachable at the minimum supported window height. */
+@media(min-width:951px){.sidebar>nav{min-height:0;flex:1 1 auto;overflow-y:auto;padding-bottom:12px}.sidebar-bottom{flex-shrink:0}.sidebar-bottom .subtle-button{padding:10px 6px}}
+.autopilot-stage { position:relative; height:460px; margin-top:20px; border:1px solid var(--border, #2d3a4d); border-radius:12px; overflow:hidden; background:radial-gradient(ellipse at 50% 70%, #253746, #111b28 75%); }
+.autopilot-stage > span { position:absolute; bottom:18px; left:20px; color:#a4b7ce; font-size:11px; pointer-events:none; }

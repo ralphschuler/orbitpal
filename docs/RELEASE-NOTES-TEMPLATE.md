@@ -1,5 +1,8 @@
 ## Features
 
+- Explicit per-bot Autopilot with quiet periods, rolling speech budgets, roaming, silent gestures and optional fixed MCP screen observations.
+- Automatic VRM 0/1 and GLB 2 inspection, actual model-clip previews and embedded walking animations; speech moves mouths/jaws without artificial body wobble.
+
 - Multiple 3D cohosts with independent personas, voices, emotes and OBS outputs.
 - Twitch/YouTube, local/cloud models, Codex and Claude Code model/reasoning controls.
 - Configurable microphone activation phrases; speech-aligned text and gestures.

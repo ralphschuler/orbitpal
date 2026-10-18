@@ -27,6 +27,21 @@ Add focused regression tests for behavior changes, using local fixtures or mock 
 
 Keep changes focused. Explain the user-visible problem, the resulting behavior, validation and limitations in the PR. Do not include app data, exported profiles, chat transcripts, provider recordings, secrets or compiled installers. New assets need a source, redistribution license and attribution. Do not claim measured performance or live provider validation without evidence.
 
+## Branches and review
+
+Create a focused branch and open a pull request against `main`. Main requires an up-to-date branch and these GitHub checks:
+
+- `Checks (ubuntu-24.04)`
+- `Checks (windows-latest)`
+- `Checks (macos-latest)`
+- `Dependency advisories`
+
+One approving review and resolution of review conversations are required. New commits dismiss stale approvals. Use squash merges to preserve linear history; force pushes and deletion of `main` are blocked. Review the final PR head and combined dependency changes before merging. A previously green run on a different head is insufficient.
+
+Administrators retain bypass for recovery and explicitly authorized maintenance. Ordinary contributions must use the protected PR workflow. AI agents must not use administrator bypass, approve their own work, merge or publish without explicit maintainer authorization; the existence of credentials or a GitHub permission is not authorization.
+
+CI also tests the release packaging scripts, generates strict third-party notices and runs the Linux GLib source-hash/optimized regression checks. The advisory workflow runs JavaScript and Rust dependency checks. Fix failing checks; do not disable them or add broad advisory exclusions. Track upstream maintenance limitations explicitly, as in the [2026-10-19 audit and follow-up issues](docs/AUDIT-2026-10-19.md).
+
 ## AI-assisted work
 
 Read [AGENTS.md](AGENTS.md) before editing. The contributor remains responsible for the full diff, licensing and validation. Disclose substantial AI assistance and identify the checks actually performed. Never fabricate test results, provider responses or benchmark data. Repository instructions govern source contributions; per-character instruction files govern runtime bots and must not override repository or host security policies. Humans review and merge contributions; agents must not self-approve, publish releases or use maintainers' accounts without explicit authorization.

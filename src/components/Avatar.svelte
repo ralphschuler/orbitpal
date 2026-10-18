@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { AvatarStage } from '../lib/avatar';
+  import { onMount, untrack } from 'svelte';
+  import { AvatarStage, type AvatarModelInfo } from '../lib/avatar';
+  import type { AutopilotVisualConfig } from '../lib/autopilot-motion';
 
   interface Props {
     profile: any;
@@ -9,9 +10,11 @@
     emotion?: string;
     transparent?: boolean;
     assetUrl?: string;
+    onModelLoaded?: (info: AvatarModelInfo) => void;
+    autopilot?: AutopilotVisualConfig;
   }
 
-  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl }: Props = $props();
+  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, onModelLoaded, autopilot }: Props = $props();
   let host: HTMLDivElement;
   let stage = $state<AvatarStage>();
   let failure = $state('');
@@ -22,17 +25,18 @@
 
   onMount(() => {
     try {
-      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent }, (message) => { emoteFailure = message; });
+      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot }, (message) => { emoteFailure = message; });
       stage = renderer;
       return () => { ++assetRequest; renderer.dispose(); };
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
       unavailable = true;
+      onModelLoaded?.({ status: 'error', animations: [], proceduralGestures: [], error: failure });
     }
   });
 
   $effect(() => {
-    stage?.update({ profile, speaking, level, emotion, transparent });
+    stage?.update({ profile, speaking, level, emotion, transparent, autopilot });
   });
 
   $effect(() => {
@@ -42,8 +46,14 @@
     const request = ++assetRequest;
     failure = '';
     loading = Boolean(url);
-    renderer.loadAsset(url).catch((error) => {
-      if (request === assetRequest) failure = error instanceof Error ? error.message : String(error);
+    untrack(() => onModelLoaded?.({ status: 'loading', animations: [], proceduralGestures: [] }));
+    renderer.loadAsset(url).then(() => {
+      if (request === assetRequest) onModelLoaded?.(renderer.getModelInfo());
+    }).catch((error) => {
+      if (request === assetRequest) {
+        failure = error instanceof Error ? error.message : String(error);
+        onModelLoaded?.({ status: 'error', animations: [], proceduralGestures: [], error: failure });
+      }
     }).finally(() => {
       if (request === assetRequest) loading = false;
     });

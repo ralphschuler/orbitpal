@@ -21,3 +21,5 @@ From 0.6.0, automatic checks use this repository's fixed HTTPS stable-release en
 ## Carried dependency correction
 
 The Linux GTK stack requires GLib 0.18. We vendor 0.18.5 with the original upstream fix for RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g; optimized iterator regression tests and source hashes run in Linux CI and releases. See [the backport record](vendor/glib/COHOST-BACKPORT.md). Version-only scanners may still identify 0.18.5; the source correction is documented rather than concealed with a different version.
+
+The updater enables only TLS and system-proxy support; unused legacy Tauri-v1 ZIP archive compatibility is disabled. Our release channel uses Tauri-v2 installer/AppImage/macOS archive formats. Do not restore the legacy feature or an obsolete direct ZIP dependency without reviewing its advisories. Dependency CI reports unmaintained transitive crates separately from vulnerability findings; the audit follow-up is tracked in issue #19.

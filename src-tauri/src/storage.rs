@@ -68,6 +68,7 @@ impl Store {
         self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key='extension_library_v1')",[],|row|row.get(0)).map_err(error)
     }
     fn effective_profile(&self,mut profile:Value)->Result<Value,String>{
+        if profile.get("autopilot").is_none_or(Value::is_null){profile["autopilot"]=serde_json::to_value(crate::autopilot::Config::default()).map_err(error)?;}
         // Before the one-time migration, keep legacy definitions intact so
         // startup can import them without losing their transport or grants.
         if !self.extensions_migrated()?{return Ok(profile);}
@@ -363,10 +364,8 @@ impl Store {
     pub fn import_avatar(&self,source:&Path) -> Result<String,String> {
         let ext=source.extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
         if !["vrm","glb"].contains(&ext.as_str()) {return Err("Bitte eine VRM- oder GLB-Datei auswählen".into());}
-        let meta=fs::metadata(source).map_err(error)?;
-        if !meta.is_file() || meta.len()>256*1024*1024 {return Err("Avatar muss eine Datei unter 256 MB sein".into());}
         let name=format!("{}.{}",uuid::Uuid::new_v4(),ext);
-        fs::copy(source,self.root.join("avatars").join(&name)).map_err(error)?;
+        crate::avatar_metadata::copy_validated(source,&self.root.join("avatars").join(&name))?;
         Ok(name)
     }
     pub fn export(&self,destination:&Path) -> Result<(),String> {
@@ -430,6 +429,7 @@ impl Store {
             if !["vrm","glb"].contains(&ext.as_str()) {return Err("Ungültiges Avatarformat im Profilpaket".into());}
             let bytes=base64::engine::general_purpose::STANDARD.decode(encoded).map_err(error)?;
             if bytes.len()>256*1024*1024 {return Err("Avatar ist zu groß".into());}
+            crate::avatar_metadata::inspect_bytes(&bytes)?;
             let name=format!("{}.{}",uuid::Uuid::new_v4(),ext);
             fs::write(self.root.join("avatars").join(&name),bytes).map_err(error)?;
             profile["avatar"]["assetPath"]=json!(name);
@@ -499,6 +499,11 @@ fn reset_imported_authority(profile:&mut Value,existing_ids:&[String])->Result<(
     let mut used=existing_ids.iter().cloned().collect();
     visit(profile,&mut used);
     let fields=profile.as_object_mut().ok_or("Profil muss ein JSON-Objekt sein")?;
+    if let Some(autopilot)=fields.get_mut("autopilot").and_then(Value::as_object_mut){
+        // Importing a character never imports a screen-observation grant or
+        // references an installed server selected by another operator.
+        autopilot.insert("screenContext".into(),json!(false));autopilot.insert("screenServerId".into(),json!(""));autopilot.insert("screenToolName".into(),json!(""));autopilot.insert("screenToolArguments".into(),json!("{}"));
+    }
     for name in ["model","voice","stt","hindsight"]{
         let section=fields.entry(name).or_insert_with(||json!({}));
         if section.is_null(){*section=json!({});}
@@ -523,6 +528,7 @@ fn validate_profile(profile:&Value)->Result<(),String>{
     if !profile["id"].as_str().map(valid_id).unwrap_or(false){return Err("Profil-ID fehlt oder ist ungültig".into());}
     for section in ["model","voice","stt","avatar","output","chat","memory"] {if !profile[section].is_object(){return Err(format!("Profilbereich {section} muss ein JSON-Objekt sein"));}}
     if let Some(config)=profile.get("hindsight").filter(|value|!value.is_null()){crate::memory::validate_config(config)?;}
+    crate::autopilot::config(profile)?;
     if matches!(profile["model"]["provider"].as_str(),Some("codex"|"claude-code")){crate::cli_provider::validate_options(&profile["model"])?;}
     if let Some(style)=profile["model"].get("responseStyle").filter(|value|!value.is_null()){
         if !style.as_str().is_some_and(|style|["default","short","normal","detailed"].contains(&style)){return Err("Antwortstil muss default, short, normal oder detailed sein".into());}
@@ -619,6 +625,14 @@ mod extension_tests{
         let db=Connection::open(root.join("cohost.sqlite3")).unwrap();db.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);CREATE TABLE bot_profiles(id TEXT PRIMARY KEY,profile TEXT NOT NULL);").unwrap();
         for profile in profiles{db.execute("INSERT INTO bot_profiles VALUES(?1,?2)",params![profile["id"].as_str().unwrap(),profile.to_string()]).unwrap();let dir=root.join("profiles").join(profile["id"].as_str().unwrap()).join("skills/shared");fs::create_dir_all(&dir).unwrap();fs::write(dir.join("SKILL.md"),"---\nname: shared\ndescription: fixture\n---\nShared instructions").unwrap();}
         db.execute("INSERT INTO settings VALUES('profile',?1)",[profiles[0].to_string()]).unwrap();
+    }
+    #[test]
+    fn imported_autopilot_cannot_reuse_screen_grants_or_activate_sessions(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();let mut portable=store.profile().unwrap();
+        portable["autopilot"]["screenContext"]=json!(true);portable["autopilot"]["screenServerId"]=json!("existing-screen-server");portable["autopilot"]["screenToolName"]=json!("capture");portable["autopilot"]["screenToolArguments"]=json!("{\"window\":\"private\"}");
+        let source=fixture.0.join("autopilot.json");fs::write(&source,json!({"profile":portable}).to_string()).unwrap();let imported=store.import(&source).unwrap();
+        assert_eq!(imported["autopilot"]["screenContext"],false);assert_eq!(imported["autopilot"]["screenServerId"],"");assert_eq!(imported["autopilot"]["screenToolName"],"");assert_eq!(imported["autopilot"]["screenToolArguments"],"{}");
+        let mut invalid=imported;invalid["autopilot"]["active"]=json!(true);assert!(store.save_profile(invalid).is_err());
     }
     #[test]
     fn migration_deduplicates_transport_and_skill_without_granting_another_bot(){

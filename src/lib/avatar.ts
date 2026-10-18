@@ -3,6 +3,9 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { VRMExpressionMorphTargetBind, VRMLoaderPlugin, VRMUtils, type VRM, type VRMExpression } from '@pixiv/three-vrm';
+import { configureBundledAccessories, discoverGenericHumanoid, humanoidArmRest, humanoidFrame, humanoidRotation, humanoidWaveRaise, poseGenericArm, rawHumanoidRig, rotateGenericBone, type GenericHumanoidRig } from './avatar-rig';
+import { AuthoredAnimationProperties, finishVrmAnimationFrame, selectEmoteAnimation, selectIdleAnimation } from './avatar-animation';
+import { ambientGestureActions, discoverWalkingLegs, followAmbientPosition, motionLaneHalfWidth, sampleAmbientMotion, sampleWalkingGait, selectWalkingAnimation, type AutopilotVisualConfig, type WalkingLegs } from './autopilot-motion';
 
 export interface AvatarOptions {
   profile: any;
@@ -10,6 +13,15 @@ export interface AvatarOptions {
   level: number;
   emotion: string;
   transparent: boolean;
+  autopilot?: AutopilotVisualConfig;
+}
+
+export interface AvatarModelInfo {
+  status: 'loading' | 'ready' | 'error';
+  format?: 'builtin' | 'glb' | 'vrm0' | 'vrm1';
+  animations: { name: string; duration: number }[];
+  proceduralGestures: string[];
+  error?: string;
 }
 
 type Robot = {
@@ -17,6 +29,7 @@ type Robot = {
   head: THREE.Group;
   torso: THREE.Group;
   arms: THREE.Group[];
+  legs: THREE.Group[];
   eyes: THREE.Group[];
   mouth: THREE.Group;
   jaw: THREE.Mesh;
@@ -55,14 +68,18 @@ export class AvatarStage {
   private clock = new THREE.Clock();
   private robot: Robot;
   private ground = new THREE.Group();
+  private travel = new THREE.Group();
   private imported = new THREE.Group();
   private vrm?: VRM;
   private mixer?: THREE.AnimationMixer;
   private clips: THREE.AnimationClip[] = [];
+  private authoredProperties?: AuthoredAnimationProperties;
   private idleAction?: THREE.AnimationAction;
   private emote?: ActiveEmote;
+  private emoteSource?: 'manual' | 'ambient';
   private emoteNonce: string | number | undefined;
   private humanoidPose = new Map<string, { node: THREE.Object3D; quaternion: THREE.Quaternion }>();
+  private humanoidBasis = new THREE.Quaternion();
   private faceMeshes: THREE.Mesh[] = [];
   private faceVowels = new Map<THREE.Mesh, Map<number, Vowel>>();
   private genericMouthRig = false;
@@ -71,6 +88,25 @@ export class AvatarStage {
   private morphMotion = new WeakMap<THREE.BufferGeometry, Map<number, boolean>>();
   private genericHead?: THREE.Object3D;
   private genericChest?: THREE.Object3D;
+  private armRig?: GenericHumanoidRig;
+  private genericBoneRest = new Map<THREE.Object3D, THREE.Quaternion>();
+  private pendingImportedHead?: [number, number, number];
+  private walkingLegs?: WalkingLegs;
+  private walkingClip?: THREE.AnimationClip;
+  private walkingAction?: THREE.AnimationAction;
+  private walking = false;
+  private walkingPhase = 0;
+  private walkAnchor?: THREE.Object3D;
+  private walkAnchorRest = new THREE.Vector3();
+  private modelForwardYaw = 0;
+  private contentWidth = 2.05;
+  private contentDepth = 1.35;
+  private travelFraction = 0;
+  private ambientSession = '';
+  private ambientGesture = '';
+  private ambientActions: string[] = ['wave', 'nod', 'celebrate'];
+  private walkStrength = 0;
+  private contactShadow?: THREE.Mesh;
   private jawBone?: THREE.Object3D;
   private previousBoneOffsets = new Map<THREE.Object3D, THREE.Quaternion>();
   private contentHeight = 2.9;
@@ -89,8 +125,6 @@ export class AvatarStage {
   private speechPhase = 0;
   private vowelWeights: Record<Vowel, number> = { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 };
   private blinkAt = 2.4;
-  private previousEmotion = '';
-  private gestureAt = -10;
 
   constructor(private host: HTMLElement, options: AvatarOptions, private onEmoteError?: (message: string) => void) {
     this.options = options;
@@ -126,7 +160,8 @@ export class AvatarStage {
     this.scene.add(fill);
 
     this.robot = createRobot();
-    this.scene.add(this.robot.root, this.imported, this.ground, this.lookAt);
+    this.travel.add(this.robot.root, this.imported);
+    this.scene.add(this.travel, this.ground, this.lookAt);
     this.makeGround();
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -167,10 +202,6 @@ export class AvatarStage {
       this.controls.update();
     }
     this.controls.enabled = !options.transparent;
-    if (this.previousEmotion !== options.emotion) {
-      this.previousEmotion = options.emotion;
-      this.gestureAt = this.time;
-    }
     const emote = avatar.emote;
     if (!emote && this.emoteNonce !== undefined) {
       this.emoteNonce = undefined;
@@ -215,10 +246,28 @@ export class AvatarStage {
         VRMUtils.combineSkeletons(gltf.scene);
         VRMUtils.rotateVRM0(vrm);
         vrm.lookAt && (vrm.lookAt.target = this.lookAt);
+        this.vrm = vrm;
+        this.armRig = rawHumanoidRig(gltf.scene, vrm.humanoid);
+        this.humanoidBasis = humanoidFrame(vrm.humanoid);
+        for (const name of ['head', 'neck', 'spine', 'chest', 'hips', 'jaw', 'leftUpperArm', 'rightUpperArm', 'leftLowerArm', 'rightLowerArm', 'leftHand', 'rightHand', 'leftUpperLeg', 'rightUpperLeg', 'leftLowerLeg', 'rightLowerLeg', 'leftFoot', 'rightFoot'] as const) {
+          const node = vrm.humanoid.getNormalizedBoneNode(name);
+          if (node) this.humanoidPose.set(name, { node, quaternion: node.quaternion.clone() });
+        }
+        this.applyHumanoidRestPose();
+        vrm.humanoid.update();
       }
+      if (!vrm) {
+        this.armRig = discoverGenericHumanoid(gltf.scene);
+        if (this.armRig) this.walkingLegs = discoverWalkingLegs(gltf.scene);
+        if (this.armRig && !selectIdleAnimation(gltf.animations)) {
+          for (const side of ['left', 'right'] as const) poseGenericArm(this.armRig, side, -1.15, -1.15, 1);
+        }
+      }
+      const pathname = new URL(next, window.location.href).pathname;
+      configureBundledAccessories(gltf.scene, pathname);
       const normalization = new THREE.Group();
       normalization.add(gltf.scene);
-      if (new URL(next, window.location.href).pathname.endsWith('/characters/Fox.glb')) normalization.rotation.y = Math.PI * 0.23;
+      if (pathname.endsWith('/characters/Fox.glb')) normalization.rotation.y = Math.PI * 0.23;
       normalization.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(normalization);
       const size = box.getSize(new THREE.Vector3());
@@ -231,6 +280,8 @@ export class AvatarStage {
       // scaling preserves its proportions and keeps the complete body in view.
       const fit = Math.min(2.9 / size.y, 3.1 / Math.max(size.x, 0.001), 3.1 / Math.max(size.z, 0.001));
       this.contentHeight = size.y * fit;
+      this.contentWidth = size.x * fit;
+      this.contentDepth = size.z * fit;
       normalization.scale.setScalar(fit);
       normalization.position.set(-center.x * fit, -box.min.y * fit, -center.z * fit);
       gltf.scene.traverse((object) => {
@@ -255,19 +306,22 @@ export class AvatarStage {
           if (/^(?:b_)?(?:chest|spine(?:0?[123])?|torso)(?:[_.\d].*)?$/i.test(name)) this.genericChest = object;
           if (/(?:^|[_. -])(?:jaw|lowerjaw|mandible)(?:$|[_.\d])/i.test(name) && !this.jawBone) this.jawBone = object;
         }
+        if (object instanceof THREE.Bone && /^(?:b_)?(?:hips?|pelvis)(?:[_.\d].*)?$/i.test(object.name.split(':').pop()!.replace(/^mixamorig/i, '')) && !this.walkAnchor) this.walkAnchor = object;
       });
+      for (const node of [this.genericHead, this.genericChest, this.jawBone]) if (node) this.genericBoneRest.set(node, node.quaternion.clone());
       this.imported.add(normalization);
+      normalization.updateWorldMatrix(true, true);
+      if (vrm) this.walkAnchor = vrm.humanoid.getRawBoneNode('hips') ?? this.walkAnchor;
+      if (this.walkAnchor) this.walkAnchorRest.copy(this.imported.worldToLocal(this.walkAnchor.getWorldPosition(new THREE.Vector3())));
+      const forward = new THREE.Vector3(0, 0, 1);
+      if (this.armRig) forward.applyQuaternion(this.armRig.root.getWorldQuaternion(new THREE.Quaternion()).multiply(this.armRig.frame));
+      else if (this.genericHead && this.walkAnchor) {
+        const direction = this.genericHead.getWorldPosition(new THREE.Vector3()).sub(this.walkAnchor.getWorldPosition(new THREE.Vector3()));
+        if (Math.hypot(direction.x, direction.z) > Math.abs(direction.y)) forward.copy(direction);
+      }
+      this.modelForwardYaw = Math.atan2(forward.x, forward.z);
       this.vrm = vrm;
       if (vrm) {
-        // Normalized VRM bones have a common T-pose basis. These procedural
-        // gestures are an approximation, not full animation retargeting.
-        for (const name of ['head', 'neck', 'spine', 'chest', 'hips', 'jaw', 'leftUpperArm', 'rightUpperArm', 'leftLowerArm', 'rightLowerArm', 'leftHand', 'rightHand'] as const) {
-          const node = vrm.humanoid.getNormalizedBoneNode(name);
-          if (!node) continue;
-          if (name === 'leftUpperArm') node.rotation.z = -1.15;
-          if (name === 'rightUpperArm') node.rotation.z = 1.15;
-          this.humanoidPose.set(name, { node, quaternion: node.quaternion.clone() });
-        }
         this.jawBone = vrm.humanoid.getNormalizedBoneNode('jaw') ?? undefined;
         for (const expression of Object.values(vrm.expressionManager?.expressionMap ?? {})) {
           this.vrmExpressions.set(expressionKey(expression.expressionName), expression);
@@ -291,15 +345,20 @@ export class AvatarStage {
       this.clips = gltf.animations;
       if (gltf.animations.length) {
         this.mixer = new THREE.AnimationMixer(gltf.scene);
+        this.authoredProperties = new AuthoredAnimationProperties(gltf.scene);
         // Prefer the neutral action over e.g. 2H_Melee_Idle or Sit_Chair_Idle
         // in packs containing many activity-specific idle animations.
-        const clip = gltf.animations.find((animation) => /^idle$/i.test(animation.name))
-          ?? gltf.animations.find((animation) => /^unarmed_idle$/i.test(animation.name))
-          ?? gltf.animations.find((animation) => /^survey$/i.test(animation.name))
-          ?? gltf.animations.find((animation) => /^(rest|stand|standing|idle_b)$/i.test(animation.name))
-          ?? gltf.animations.find((animation) => /(?:^|[_ .-])idle(?:$|[_ .-])/i.test(animation.name));
+        const clip = selectIdleAnimation(gltf.animations);
         if (clip) this.idleAction = this.mixer.clipAction(clip).play();
+        const walking = selectWalkingAnimation(gltf.animations);
+        if (walking) {
+          // A separate action prevents an explicit Walking preview from
+          // sharing mutable loop/time state with the ambient layer.
+          this.walkingClip = walking.clone();
+          this.walkingAction = this.mixer.clipAction(this.walkingClip);
+        }
       }
+      this.ambientActions = ambientGestureActions(this.clips, this.getModelInfo().proceduralGestures);
       this.robot.root.visible = false;
       this.cameraMode = '';
       this.update(this.options);
@@ -312,7 +371,145 @@ export class AvatarStage {
 
   get clipNames(): string[] { return this.clips.map((clip) => clip.name); }
 
-  private triggerEmote(action: string, duration: number, intensity: number) {
+  getModelInfo(): AvatarModelInfo {
+    return {
+      status: 'ready',
+      format: !this.asset ? 'builtin' : this.vrm ? this.vrm.meta.metaVersion === '0' ? 'vrm0' : 'vrm1' : 'glb',
+      animations: this.clips.map((clip) => ({ name: clip.name, duration: Number.isFinite(clip.duration) ? clip.duration : 0 })),
+      proceduralGestures: !this.asset || this.vrm || this.armRig ? ['wave', 'celebrate', 'nod', 'dance', 'hide'] : ['hide'],
+    };
+  }
+
+  private get activeAnimationActions(): (THREE.AnimationAction | undefined)[] { return [this.idleAction, this.walkingAction, this.emote?.clip]; }
+
+  private setWalking(walking: boolean, immediate = false) {
+    if (this.walking === walking && !immediate) return;
+    const previous = this.walking;
+    this.walking = walking;
+    const action = this.walkingAction;
+    if (!action) return;
+    if (walking) {
+      this.idleAction?.fadeOut(0.2);
+      action.reset().setLoop(THREE.LoopRepeat, Infinity).setEffectiveWeight(1).setEffectiveTimeScale(0).fadeIn(0.2).play();
+    } else {
+      const participated = previous || (action.enabled && action.isScheduled() && action.getEffectiveWeight() > 0.0001);
+      if (immediate) action.stop(); else action.fadeOut(0.2);
+      if (participated && this.idleAction && !this.emote?.clip) this.idleAction.setEffectiveWeight(1).fadeIn(immediate ? 0 : 0.2).play();
+    }
+  }
+
+  private canWalk(): boolean {
+    if (!this.asset || this.walkingClip) return true;
+    if (this.vrm) return ['leftUpperLeg', 'leftLowerLeg', 'leftFoot', 'rightUpperLeg', 'rightLowerLeg', 'rightFoot'].every((name) => this.humanoidPose.has(name));
+    return Boolean(this.armRig && this.walkingLegs);
+  }
+
+  private updateAutopilot(delta: number, reduced: boolean) {
+    const config = this.options.autopilot;
+    const frame = sampleAmbientMotion(config, Date.now());
+    const session = frame.active && config ? `${config.startedAt}:${config.seed.slice(0, 128)}` : '';
+    if (session !== this.ambientSession) {
+      if (this.emoteSource === 'ambient') this.finishEmote();
+      this.setWalking(false, true);
+      this.ambientSession = session; this.ambientGesture = ''; this.travelFraction = 0;
+    }
+    const blocked = this.options.speaking || this.emoteSource === 'manual' || Boolean(this.asset && this.robot.root.visible);
+    if (!frame.active || reduced) {
+      if (this.emoteSource === 'ambient') this.finishEmote();
+      this.setWalking(false, true); this.walkStrength = 0; this.travelFraction = 0;
+      this.travel.position.set(0, 0, 0); this.travel.rotation.set(0, 0, 0);
+      if (this.contactShadow) { this.contactShadow.position.x = 0; this.contactShadow.position.z = 0; }
+      return;
+    }
+    if (blocked || !frame.gesture || frame.gesture.key !== this.ambientGesture) {
+      if (this.emoteSource === 'ambient') this.finishEmote();
+    }
+    if (blocked && frame.gesture) this.ambientGesture = frame.gesture.key;
+    if (this.emoteSource === 'ambient' && this.emote && frame.gesture?.key === this.ambientGesture) {
+      this.emote.start = this.time - frame.gesture.elapsed;
+      if (this.emote.clip) {
+        this.emote.clip.setEffectiveTimeScale(0);
+        this.emote.clip.time = this.emote.clip.getClip().duration * frame.gesture.elapsed / frame.gesture.duration;
+      }
+    }
+    const scale = this.robot.root.scale.x;
+    const radius = (Math.hypot(this.contentWidth, this.contentDepth) / 2 + this.contentHeight * 0.08) * scale;
+    const lane = motionLaneHalfWidth(this.camera.position.distanceTo(this.controls.target), this.camera.fov, this.camera.aspect, radius);
+    const capable = this.canWalk() && lane > 0.03;
+    const previous = this.travelFraction;
+    this.travelFraction = followAmbientPosition(previous, capable && config?.wander ? frame.x : previous, delta, blocked);
+    const moving = capable && Math.abs(this.travelFraction - previous) > 0.00001;
+    this.setWalking(moving && !blocked, blocked);
+    this.walkStrength = blocked ? 0 : THREE.MathUtils.damp(this.walkStrength, moving ? 1 : 0, 14, delta);
+    this.walkingPhase = frame.ageSeconds;
+    const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion); right.y = 0; right.normalize();
+    this.travel.position.copy(right).multiplyScalar(this.travelFraction * lane);
+    const direction = this.travelFraction >= previous ? 1 : -1;
+    const heading = moving && !blocked ? Math.atan2(right.x * direction, right.z * direction) - this.modelForwardYaw : 0;
+    const angle = Math.atan2(Math.sin(heading - this.travel.rotation.y), Math.cos(heading - this.travel.rotation.y));
+    this.travel.rotation.y += angle * (1 - Math.exp(-delta * 9));
+    if (this.contactShadow) { this.contactShadow.position.x = this.travel.position.x; this.contactShadow.position.z = this.travel.position.z; }
+    if (this.walkingAction && this.walkingClip && this.walkingAction.enabled && this.walkingAction.isScheduled()) this.walkingAction.time = (frame.ageSeconds * 0.8) % this.walkingClip.duration;
+    if (!blocked && !moving && frame.gesture && frame.gesture.key !== this.ambientGesture && this.ambientActions.length) {
+      this.ambientGesture = frame.gesture.key;
+      const action = this.ambientActions[Math.min(this.ambientActions.length - 1, Math.floor(frame.gesture.choice * this.ambientActions.length))];
+      this.triggerEmote(action, frame.gesture.duration * 1000, 0.8, 'ambient');
+      if (this.emote) {
+        this.emote.start = this.time - frame.gesture.elapsed;
+        if (this.emote.clip) {
+          this.emote.clip.setEffectiveTimeScale(0);
+          this.emote.clip.time = this.emote.clip.getClip().duration * frame.gesture.elapsed / frame.gesture.duration;
+        }
+      }
+    }
+  }
+
+  private animateWalkingGait(postMixer: boolean) {
+    if (this.walkingClip || this.walkStrength < 0.001) return;
+    const gait = sampleWalkingGait(this.walkingPhase);
+    const strength = this.walkStrength;
+    const { left, right, rotations } = gait;
+    if (!this.asset && !postMixer) {
+      this.robot.legs[0].rotation.x = -left * 0.28 * strength;
+      this.robot.legs[1].rotation.x = -right * 0.28 * strength;
+      this.robot.arms[0].rotation.x += left * 0.2 * strength;
+      this.robot.arms[1].rotation.x += right * 0.2 * strength;
+      const bob = gait.bob * strength;
+      this.robot.torso.position.y += bob; this.robot.head.position.y += bob;
+    }
+    if (this.vrm && !postMixer) {
+      for (const [name, x] of rotations) this.rotateHumanoid(name, x * strength);
+      this.imported.position.y += gait.bob * strength;
+    }
+    const rig = this.armRig;
+    if (!postMixer || !rig) return;
+    for (const [name, x] of rotations) {
+      const raw = this.vrm
+        ? this.vrm.humanoid.getRawBoneNode(name)
+        : name === 'leftUpperArm' ? rig.left.upper : name === 'rightUpperArm' ? rig.right.upper : this.walkingLegs?.[name as keyof Omit<WalkingLegs, 'rest'>];
+      if (!raw || (this.vrm && !this.authored(raw, 'quaternion'))) continue;
+      const offset = rotateGenericBone(rig, raw, x * strength, 0, 0);
+      this.previousBoneOffsets.set(raw, offset);
+    }
+    if (!this.vrm) this.imported.position.y += gait.bob * strength;
+  }
+
+  private compensateWalkingRootMotion() {
+    if (!this.walkAnchor || !this.walkingAction?.enabled || !this.walkingAction.isScheduled() || this.walkingAction.getEffectiveWeight() < 0.0001) return;
+    const position = this.imported.worldToLocal(this.walkAnchor.getWorldPosition(new THREE.Vector3())).sub(this.walkAnchorRest);
+    if (![position.x, position.y, position.z].every(Number.isFinite)) return;
+    this.imported.position.x -= position.x * this.imported.scale.x;
+    this.imported.position.z -= position.z * this.imported.scale.z;
+    const vertical = THREE.MathUtils.clamp(position.y, -this.contentHeight * 0.025, this.contentHeight * 0.045);
+    this.imported.position.y -= (position.y - vertical) * this.imported.scale.y;
+  }
+
+  private authored(node: THREE.Object3D, property: string, index?: number): boolean {
+    return this.authoredProperties?.owns(this.activeAnimationActions, node, property, index) ?? false;
+  }
+
+  private triggerEmote(action: string, duration: number, intensity: number, source: 'manual' | 'ambient' = 'manual') {
+    this.setWalking(false);
     this.finishEmote();
     this.onEmoteError?.('');
     if (!action) return;
@@ -322,10 +519,9 @@ export class AvatarStage {
       duration: THREE.MathUtils.clamp(Number.isFinite(duration) && duration > 0 ? duration / 1000 : 3, 0.4, 30),
       intensity: THREE.MathUtils.clamp(Number.isFinite(intensity) ? intensity : 1, 0.1, 2),
     };
-    const aliases: Record<string, string[]> = { wave: ['Wave'], celebrate: ['Cheer', 'Jump', 'Jump_Full_Short'], nod: ['Yes'], dance: ['Dance'] };
-    const clip = this.clips.find((item) => item.name === action)
-      ?? this.clips.find((item) => item.name.toLowerCase() === action.toLowerCase())
-      ?? this.clips.find((item) => (aliases[action] || []).includes(item.name));
+    let clip: THREE.AnimationClip | undefined;
+    try { clip = selectEmoteAnimation(this.clips, action); }
+    catch (error) { this.onEmoteError?.(error instanceof Error ? error.message : String(error)); return; }
     if (clip || !['wave', 'hide', 'celebrate', 'nod', 'dance'].includes(action)) {
       if (!clip || !this.mixer) {
         this.onEmoteError?.(`Animation „${action}“ ist in dieser Figur nicht vorhanden.${this.clips.length ? ` Verfügbar: ${this.clipNames.join(', ')}` : ''}`);
@@ -341,6 +537,7 @@ export class AvatarStage {
       active.clip = playing;
     }
     this.emote = active;
+    this.emoteSource = source;
   }
 
   private finishEmote() {
@@ -352,11 +549,13 @@ export class AvatarStage {
       }
     }
     this.emote = undefined;
+    this.emoteSource = undefined;
     this.robot.root.position.set(0, 0, 0);
     this.robot.root.rotation.set(0, 0, 0);
     this.imported.position.set(0, 0, 0);
     this.imported.rotation.set(0, 0, 0);
     for (const { node, quaternion } of this.humanoidPose.values()) node.quaternion.copy(quaternion);
+    this.applyHumanoidRestPose();
   }
 
   private animateEmote(reduced: boolean) {
@@ -378,25 +577,30 @@ export class AvatarStage {
     const weight = fade * active.intensity * (reduced ? 0.45 : 1);
     const cycle = reduced ? 0 : Math.sin(elapsed * 9);
     const r = this.robot;
-    const bone = (name: string, x = 0, y = 0, z = 0) => {
+    const bone = (name: string, x = 0, y = 0, z = 0, poseWeight = weight) => {
       const item = this.humanoidPose.get(name);
       if (!item) {
-        if (name === 'head') this.tiltImportedHead(x * weight, y * weight, z * weight);
+        if (name === 'head') this.pendingImportedHead = [x * poseWeight, y * poseWeight, z * poseWeight];
         return;
       }
-      const offset = new THREE.Quaternion().setFromEuler(new THREE.Euler(x * weight, y * weight, z * weight));
+      const rawHead = name === 'head' ? this.vrm?.humanoid.getRawBoneNode('head') : undefined;
+      if (rawHead && this.authored(rawHead, 'quaternion')) this.pendingImportedHead = [x * poseWeight, y * poseWeight, z * poseWeight];
+      const offset = humanoidRotation(this.humanoidBasis, x * poseWeight, y * poseWeight, z * poseWeight);
       item.node.quaternion.multiply(offset);
     };
     switch (active.action) {
-      case 'wave':
+      case 'wave': {
         r.arms[1].rotation.z += (2.1 + cycle * 0.23) * weight;
         r.arms[1].rotation.x -= 0.15 * weight;
         r.head.rotation.z -= 0.07 * weight;
-        bone('rightUpperArm', -0.2, 0, -2.0);
+        // Cap the raised pose at its target: doubled emote intensity must
+        // not rotate a hand past the head and back down toward the floor.
+        this.humanoidPose.get('rightUpperArm')?.node.quaternion.multiply(humanoidWaveRaise(this.humanoidBasis, weight));
         bone('rightLowerArm', 0, 0, -0.35);
         bone('rightHand', 0, cycle * 0.3, cycle * 0.23);
         bone('head', 0, 0, -0.07);
         break;
+      }
       case 'hide': {
         const dip = -3.3 * weight;
         r.root.position.y = dip;
@@ -415,8 +619,8 @@ export class AvatarStage {
         r.arms[0].rotation.z -= 2.35 * weight;
         r.arms[1].rotation.z += 2.35 * weight;
         r.head.rotation.x -= 0.1 * weight;
-        bone('leftUpperArm', 0, 0, 2.1);
-        bone('rightUpperArm', 0, 0, -2.1);
+        bone('leftUpperArm', 0, 0, 2.1, Math.min(weight, 1));
+        bone('rightUpperArm', 0, 0, -2.1, Math.min(weight, 1));
         bone('leftLowerArm', 0, 0, 0.25);
         bone('rightLowerArm', 0, 0, -0.25);
         bone('head', -0.1);
@@ -449,8 +653,8 @@ export class AvatarStage {
     this.tiltImportedBone(this.genericHead, x, y, z);
   }
 
-  private tiltImportedBone(node: THREE.Object3D | undefined, x: number, y: number, z: number) {
-    if (!node) return;
+  private tiltImportedBone(node: THREE.Object3D | undefined, x: number, y: number, z: number, overrideIdle = false) {
+    if (!node || (!overrideIdle && this.authored(node, 'quaternion'))) return;
     const delta = new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z));
     node.quaternion.multiply(delta);
     const previous = this.previousBoneOffsets.get(node);
@@ -458,9 +662,47 @@ export class AvatarStage {
     else this.previousBoneOffsets.set(node, delta);
   }
 
+  private animateImportedEmote(reduced: boolean) {
+    const active = this.emote;
+    if (!active || active.clip) return;
+    if (this.pendingImportedHead) {
+      if (this.armRig) {
+        const delta = rotateGenericBone(this.armRig, this.armRig.head, ...this.pendingImportedHead);
+        this.previousBoneOffsets.set(this.armRig.head, delta);
+      } else this.tiltImportedBone(this.genericHead, ...this.pendingImportedHead, true);
+    }
+    const rig = this.armRig;
+    if (!rig) return;
+    const elapsed = this.time - active.start;
+    const progress = THREE.MathUtils.clamp(elapsed / active.duration, 0, 1);
+    const fade = THREE.MathUtils.smoothstep(progress, 0, 0.18) * (1 - THREE.MathUtils.smoothstep(progress, 0.78, 1));
+    const weight = fade * active.intensity * (reduced ? 0.45 : 1);
+    const cycle = reduced ? 0 : Math.sin(elapsed * 9);
+    const pose = (side: 'left' | 'right', upper: number, lower: number, wrist = 0) => {
+      // VRM's normalized gestures already drive untracked arms. Fill only
+      // those that an authored idle track would otherwise overwrite.
+      if (this.vrm && !Object.values(rig[side]).some((node) => this.authored(node, 'quaternion'))) return;
+      for (const [node, delta] of poseGenericArm(rig, side, upper, lower, weight, wrist)) this.previousBoneOffsets.set(node, delta);
+    };
+    if (active.action === 'wave') pose('right', THREE.MathUtils.degToRad(70), Math.PI / 2, cycle * 0.23);
+    else if (active.action === 'celebrate') {
+      pose('left', 1, 1.4); pose('right', 1, 1.4);
+    } else if (active.action === 'dance') {
+      pose('left', -0.3 + cycle * 0.3, -0.1 + cycle * 0.3);
+      pose('right', -0.3 - cycle * 0.3, -0.1 - cycle * 0.3);
+    }
+  }
+
   private rotateHumanoid(name: string, x: number, y = 0, z = 0) {
     const node = this.humanoidPose.get(name)?.node;
-    if (node) node.quaternion.multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z)));
+    if (node) node.quaternion.multiply(humanoidRotation(this.humanoidBasis, x, y, z));
+  }
+
+  private applyHumanoidRestPose() {
+    for (const side of ['left', 'right'] as const) {
+      const arm = this.humanoidPose.get(`${side}UpperArm`);
+      if (arm) arm.node.quaternion.multiply(humanoidArmRest(this.humanoidBasis, side));
+    }
   }
 
   private hasMorphMotion(mesh: THREE.Mesh, index: number): boolean {
@@ -503,47 +745,21 @@ export class AvatarStage {
     this.vowelWeights[VOWEL_SEQUENCE[(index + 1) % VOWEL_SEQUENCE.length]] += blend * 0.55;
   }
 
-  private animateSpeechGesture(reduced: boolean) {
-    const amount = this.mouthLevel * (reduced ? 0.25 : 1) * (this.emote ? 0.45 : 1);
-    if (amount < 0.0001) return;
-    const beat = Math.sin(this.speechPhase * 1.35);
-    const sway = Math.sin(this.speechPhase * 0.57);
-    const noMouthRig = this.vrm ? !this.mouthExpressions.size && !this.jawBone : !this.genericMouthRig && !this.jawBone;
-    const emphasis = noMouthRig ? 1.55 : 1;
-    const nod = (0.035 + beat * 0.06) * amount * emphasis;
-    const tilt = sway * 0.045 * amount * emphasis;
-    const r = this.robot;
-    r.head.rotation.x += nod;
-    r.head.rotation.z += tilt;
-    r.torso.rotation.x = amount * 0.025;
-    r.torso.rotation.z = tilt * 0.35;
-    r.arms[0].rotation.x -= (0.07 + beat * 0.045) * amount;
-    r.arms[1].rotation.x -= (0.1 - beat * 0.045) * amount;
+  private animateSpeechJaw() {
+    // Speech drives existing lips/mouth morphs and a real jaw only. Models
+    // without a mouth rig do not substitute nodding or body movement.
     if (this.vrm) {
-      this.rotateHumanoid('head', nod, sway * amount * 0.025, tilt);
-      this.rotateHumanoid(this.humanoidPose.has('chest') ? 'chest' : 'spine', amount * 0.025, 0, tilt * 0.45);
-      this.rotateHumanoid('leftUpperArm', -(0.07 + beat * 0.045) * amount);
-      this.rotateHumanoid('rightUpperArm', -(0.1 - beat * 0.045) * amount);
-      this.rotateHumanoid('leftLowerArm', -amount * 0.09);
-      this.rotateHumanoid('rightLowerArm', -amount * 0.12);
-      if (!this.mouthExpressions.size && this.jawBone) this.rotateHumanoid('jaw', this.mouthLevel * 0.32);
-    } else {
-      this.tiltImportedHead(nod, sway * amount * 0.025, tilt);
-      this.tiltImportedBone(this.genericChest, amount * 0.03, 0, tilt * 0.45);
-      if (!this.genericMouthRig) this.tiltImportedBone(this.jawBone, this.mouthLevel * 0.32, 0, 0);
-      if (!this.genericHead && !this.genericChest) {
-        // Unrigged figures still give visible, audio-synchronous feedback.
-        // Their original geometry is preserved; no artificial face is added.
-        this.imported.rotation.z += tilt * 0.65;
-        this.imported.rotation.x += nod * 0.4;
-        this.imported.position.y += amount * (0.012 + Math.max(0, beat) * 0.018);
+      const jaw = this.vrm.humanoid.getRawBoneNode('jaw');
+      if (!this.mouthExpressions.size && jaw && this.armRig) {
+        const offset = rotateGenericBone(this.armRig, jaw, this.mouthLevel * 0.32, 0, 0);
+        this.previousBoneOffsets.set(jaw, offset);
       }
-    }
+    } else if (!this.genericMouthRig) this.tiltImportedBone(this.jawBone, this.mouthLevel * 0.32, 0, 0, true);
   }
 
   private setVrmExpression(aliases: readonly string[], weight: number, mouthPriority = false) {
     const expression = aliases.map((name) => this.vrmExpressions.get(name)).find(Boolean);
-    if (!expression) return;
+    if (!expression || this.authored(expression, 'weight')) return;
     // VRM 1 emotions may explicitly block mouth expressions. While audible
     // speech is active, give the working mouth rig priority over that pose.
     expression.weight = mouthPriority && this.mouthLevel > 0.005 && expression.overrideMouth !== 'none'
@@ -559,6 +775,7 @@ export class AvatarStage {
       if (this.vowelWeights[vowel] > strongest) { strongest = this.vowelWeights[vowel]; dominant = vowel; }
     }
     for (const [vowel, expression] of this.mouthExpressions) {
+      if (this.mouthLevel <= 0.005 && this.authored(expression, 'weight')) continue;
       const weight = this.vowelWeights[vowel];
       expression.weight = expression.isBinary
         ? (this.mouthLevel > 0.12 && vowel === dominant ? 1 : 0)
@@ -574,9 +791,10 @@ export class AvatarStage {
       const available = new Set(vowels.values());
       const fallback = available.values().next().value;
       const total = [...available].reduce((sum, vowel) => sum + this.vowelWeights[vowel], 0);
-      const hasMouth = vowels.size > 0 || Object.entries(dictionary).some(([name, index]) => /^(mouthopen|jawopen)$/.test(expressionKey(name)) && this.hasMorphMotion(mesh, index));
       for (const [rawName, index] of Object.entries(dictionary)) {
         const name = expressionKey(rawName);
+        const speakingMouth = this.mouthLevel > 0.005 && (vowels.has(index) || (/^(mouthopen|jawopen)$/.test(name) && this.hasMorphMotion(mesh, index)));
+        if (!speakingMouth && this.authored(mesh, 'morphTargetInfluences', index)) continue;
         let target: number | undefined;
         const vowel = vowels.get(index);
         if (vowel) target = this.mouthLevel * (total > 0 ? this.vowelWeights[vowel] / total : vowel === fallback ? 1 : 0);
@@ -584,10 +802,8 @@ export class AvatarStage {
         else if (name === 'sad') target = /sad|traurig/i.test(emotion) ? 0.65 : 0;
         else if (name === 'happy' || name === 'smile') target = /happy|joy|friendly|freu/i.test(emotion) ? 0.6 : 0;
         else if (name === 'surprised') {
-          // Robot Expressive has expressive face morphs but no phoneme rig.
-          // This is audio-reactive expression, not claimed as exact lip sync.
-          target = Math.max(/surpris|überrasch/i.test(emotion) ? 0.65 : 0, hasMouth ? 0 : this.mouthLevel * 0.9);
-        } else if (/^(blink|eyeblinkleft|eyeblinkright)$/.test(name)) target = Math.max(0, blink);
+          target = /surpris|überrasch/i.test(emotion) ? 0.65 : 0;
+        } else if (/^(blink|blinkleft|blinkright|blinkl|blinkr|eyeblinkleft|eyeblinkright)$/.test(name)) target = Math.max(0, blink);
         else if (/^(mouthopen|jawopen)$/.test(name)) target = this.hasMorphMotion(mesh, index) ? this.mouthLevel : 0;
         if (target !== undefined) influences[index] = THREE.MathUtils.damp(influences[index] || 0, target, 18, dt);
       }
@@ -614,6 +830,7 @@ export class AvatarStage {
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, 128, 128);
     const contact = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 2.5), new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(textureCanvas), transparent: true, depthWrite: false }));
+    this.contactShadow = contact;
     contact.rotation.x = -Math.PI / 2;
     contact.position.y = 0.008;
     const shadow = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), new THREE.ShadowMaterial({ color: 0x85839e, opacity: 0.16 }));
@@ -637,6 +854,7 @@ export class AvatarStage {
     const reduced = this.motion.matches;
     const { speaking, level, emotion, profile } = this.options;
     const idle = !reduced && profile?.avatar?.idle !== false;
+    this.updateAutopilot(dt, reduced);
     const blinkEnabled = profile?.avatar?.autoBlink !== false;
     this.updateSpeech(dt, speaking, level);
     const t = this.time;
@@ -647,23 +865,27 @@ export class AvatarStage {
     this.imported.rotation.set(0, 0, 0);
     for (const [node, offset] of this.previousBoneOffsets) node.quaternion.multiply(offset.invert());
     this.previousBoneOffsets.clear();
+    this.pendingImportedHead = undefined;
+    for (const [node, quaternion] of this.genericBoneRest) node.quaternion.copy(quaternion);
+    if (!this.vrm && this.walkingLegs) for (const [node, quaternion] of this.walkingLegs.rest) node.quaternion.copy(quaternion);
+    if (!this.vrm && this.armRig) {
+      for (const [node, quaternion] of this.armRig.rest) node.quaternion.copy(quaternion);
+      if (!this.idleAction) for (const side of ['left', 'right'] as const) poseGenericArm(this.armRig, side, -1.15, -1.15, 1);
+    }
     for (const { node, quaternion } of this.humanoidPose.values()) node.quaternion.copy(quaternion);
+    this.applyHumanoidRestPose();
     const breath = idle ? Math.sin(t * 1.5) : 0;
     r.torso.position.y = breath * 0.013;
     r.torso.rotation.set(0, 0, 0);
     r.head.position.y = 2.24 + breath * 0.016;
-    r.head.rotation.y = idle ? Math.sin(t * 0.6) * 0.055 : 0;
-    r.head.rotation.z = idle ? Math.sin(t * 0.83) * 0.027 : 0;
-    const gesture = !reduced ? Math.max(0, 1 - (t - this.gestureAt) / 1.6) : 0;
+    r.head.rotation.y = 0;
+    r.head.rotation.z = 0;
     const cheerful = /happy|joy|excited|greet|friendly|freud|fröh|begrü|freundlich/i.test(emotion);
-    const thoughtful = /think|curious|nachdenk|neugier/i.test(emotion);
-    r.head.rotation.x = idle ? Math.sin(t * 0.7) * 0.02 : 0;
-    if (gesture > 0) r.head.rotation.x += Math.sin((t - this.gestureAt) * 7) * 0.07 * gesture;
-    if (thoughtful) r.head.rotation.z += 0.08;
-    r.arms[0].rotation.z = 0.04 + (idle ? Math.sin(t * 1.25) * 0.025 : 0);
-    r.arms[1].rotation.z = -0.04 - (idle ? Math.sin(t * 1.25 + 0.8) * 0.025 : 0);
-    if (cheerful && gesture > 0) r.arms[1].rotation.z -= Math.sin(gesture * Math.PI) * 1.25;
-    r.arms[0].rotation.x = r.arms[1].rotation.x = idle ? Math.sin(t * 1.1) * 0.025 : 0;
+    r.head.rotation.x = 0;
+    r.arms[0].rotation.z = 0.04;
+    r.arms[1].rotation.z = -0.04;
+    r.arms[0].rotation.x = r.arms[1].rotation.x = 0;
+    for (const leg of r.legs) leg.rotation.set(0, 0, 0);
     if (t > this.blinkAt + 0.16) this.blinkAt = t + 2.7 + Math.random() * 3.5;
     const blink = blinkEnabled && t >= this.blinkAt ? Math.sin((t - this.blinkAt) / 0.16 * Math.PI) : 0;
     for (const eye of r.eyes) {
@@ -673,10 +895,21 @@ export class AvatarStage {
     r.mouth.scale.y = 1 + this.mouthLevel * 4;
     r.mouth.scale.x = 1 - this.mouthLevel * 0.15;
     r.jaw.position.y = -0.35 - this.mouthLevel * 0.045;
-    (r.antenna.material as THREE.MeshStandardMaterial).emissiveIntensity = speaking ? 1 + this.mouthLevel * 0.8 : 0.5 + (idle ? Math.sin(t * 1.8) * 0.15 : 0);
-    if (this.mixer && (idle || this.emote?.clip)) this.mixer.update(dt);
+    (r.antenna.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.5 + (idle ? Math.sin(t * 1.8) * 0.15 : 0);
     this.animateEmote(reduced);
-    this.animateSpeechGesture(reduced);
+    this.animateWalkingGait(false);
+    // Establish procedural defaults first. Authored skeleton tracks then win;
+    // the final VRM update must not transfer the humanoid a second time.
+    this.vrm?.humanoid.update();
+    if (this.mixer) {
+      if (this.idleAction) this.idleAction.paused = !idle && this.emote?.clip !== this.idleAction;
+      this.authoredProperties?.restoreTransforms(this.activeAnimationActions);
+      this.mixer.update(dt);
+      this.authoredProperties?.captureTransforms(this.activeAnimationActions);
+    }
+    this.animateSpeechJaw();
+    this.animateWalkingGait(true);
+    this.animateImportedEmote(reduced);
     this.animateImportedFace(dt, blink, emotion);
     if (this.vrm) {
       if (this.vrmExpressions.has('blink')) this.setVrmExpression(['blink'], Math.max(0, blink));
@@ -690,8 +923,9 @@ export class AvatarStage {
       this.setVrmExpression(['angry'], /angry|wütend/i.test(emotion) ? 0.4 : 0, true);
       this.setVrmExpression(['surprised', 'surprise'], /surpris|überrasch/i.test(emotion) ? 0.55 : 0, true);
       this.lookAt.position.copy(this.camera.position);
-      this.vrm.update(dt);
+      finishVrmAnimationFrame(this.vrm, dt, this.authoredProperties, this.activeAnimationActions, this.mouthLevel > 0.005 ? [...this.mouthExpressions.values()] : []);
     }
+    this.compensateWalkingRootMotion();
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   };
@@ -701,9 +935,27 @@ export class AvatarStage {
     this.mixer?.stopAllAction();
     if (this.mixer) this.mixer.uncacheRoot(this.mixer.getRoot());
     this.mixer = undefined;
+    this.authoredProperties = undefined;
     this.clips = [];
+    this.walkingClip = undefined;
+    this.walkingAction = undefined;
+    this.walking = false;
+    this.walkStrength = 0;
+    this.walkingLegs = undefined;
+    this.walkAnchor = undefined;
+    this.walkAnchorRest.set(0, 0, 0);
+    this.modelForwardYaw = 0;
+    this.contentWidth = 2.05;
+    this.contentDepth = 1.35;
+    this.travelFraction = 0;
+    this.ambientSession = '';
+    this.ambientGesture = '';
+    this.ambientActions = ['wave', 'nod', 'celebrate'];
+    this.travel.position.set(0, 0, 0);
+    this.travel.rotation.set(0, 0, 0);
     this.idleAction = undefined;
     this.humanoidPose.clear();
+    this.humanoidBasis.identity();
     this.faceMeshes = [];
     this.faceVowels.clear();
     this.genericMouthRig = false;
@@ -712,6 +964,9 @@ export class AvatarStage {
     this.morphMotion = new WeakMap();
     this.genericHead = undefined;
     this.genericChest = undefined;
+    this.armRig = undefined;
+    this.genericBoneRest.clear();
+    this.pendingImportedHead = undefined;
     this.jawBone = undefined;
     this.previousBoneOffsets.clear();
     this.contentHeight = 2.9;
@@ -781,13 +1036,16 @@ function createRobot(): Robot {
   const round = (width: number, height: number, depth: number, radius = 0.1) => new RoundedBoxGeometry(width, height, depth, 5, radius);
   const sphere = (radius: number) => new THREE.SphereGeometry(radius, 40, 28);
 
-  // Compact boots and articulated legs give Nova a grounded, toy-like silhouette.
+  // Separate hip pivots preserve the neutral geometry and allow real leg
+  // swings for the optional stage-only walking cycle.
+  const legs: THREE.Group[] = [];
   for (const side of [-1, 1]) {
-    mesh(round(0.46, 0.23, 0.62, 0.1), porcelain, root, [side * 0.28, 0.13, 0.12]);
-    mesh(round(0.39, 0.035, 0.5, 0.016), lavender, root, [side * 0.28, 0.045, 0.13]);
-    mesh(new THREE.CylinderGeometry(0.14, 0.16, 0.4, 32), seams, root, [side * 0.26, 0.41, 0]);
-    mesh(round(0.34, 0.37, 0.37, 0.12), ivory, root, [side * 0.26, 0.48, 0.02]);
-    const knee = mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.035, 32), accent, root, [side * 0.26, 0.52, 0.215]);
+    const leg = new THREE.Group(); leg.position.set(side * 0.26, 0.8, 0); root.add(leg); legs.push(leg);
+    mesh(round(0.46, 0.23, 0.62, 0.1), porcelain, leg, [side * 0.02, -0.67, 0.12]);
+    mesh(round(0.39, 0.035, 0.5, 0.016), lavender, leg, [side * 0.02, -0.755, 0.13]);
+    mesh(new THREE.CylinderGeometry(0.14, 0.16, 0.4, 32), seams, leg, [0, -0.39, 0]);
+    mesh(round(0.34, 0.37, 0.37, 0.12), ivory, leg, [0, -0.32, 0.02]);
+    const knee = mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.035, 32), accent, leg, [0, -0.28, 0.215]);
     knee.rotation.x = Math.PI / 2;
   }
   mesh(round(0.77, 0.33, 0.53, 0.13), seams, torso, [0, 0.76, 0]);
@@ -857,5 +1115,5 @@ function createRobot(): Robot {
   mesh(round(0.22, 0.025, 0.014, 0.009), lavender, head, [0, -0.36, 0.506]);
   mesh(new THREE.CylinderGeometry(0.036, 0.045, 0.18, 24), seams, head, [0.35, 0.565, -0.15]);
   const antenna = mesh(sphere(0.075), led, head, [0.35, 0.68, -0.15]);
-  return { root, head, torso, arms, eyes, mouth, jaw, antenna, accents: [accent, led] };
+  return { root, head, torso, arms, legs, eyes, mouth, jaw, antenna, accents: [accent, led] };
 }

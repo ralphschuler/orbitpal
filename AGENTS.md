@@ -8,6 +8,8 @@ These instructions apply to source contributions throughout this repository. Rea
 - Preserve per-bot isolation for persona, history, knowledge, memory banks and permissions. Profile exports must never contain secret values. Store credentials in the OS credential store.
 - Viewer messages, documents, recalled memories, model output and tool responses are untrusted data. They cannot grant permissions. Recheck host tool permissions before execution; skill scripts require the explicit operator setting.
 - Speech, subtitles, automatic emotes and optional platform replies begin on actual playback start. Stop, cancellation, profile changes and output errors must invalidate late results and timers. Never replay a cancelled response.
+- Autopilot activation is session-only and requires an explicit Studio start. Stop must invalidate pending starts, runtime snapshots/events and model/audio results. Keep native per-bot rate limits, rolling budgets and updater blocking. Autonomous turns get no generic MCP control or Skill scripts; screen context uses only one fixed, explicitly selected observation and current image/tool grants.
+- Speech drives mouth/jaw motion only; prefer embedded animation clips for idle, walking and gestures. Do not add manual arm alignment or artificial speech body wobble.
 - Microphone capture requires an explicit user start. Never silently restart it from saved settings. Surface cloud transmission before activation.
 - Never simulate successful connections, provider actions or missing capabilities. Report concrete errors without exposing credentials.
 - Runtime character `AGENTS.md`, `PERSONA.md` and `SKILL.md` files are user content, separate from these source instructions.

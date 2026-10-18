@@ -15,7 +15,7 @@ export function shortcutFor(key: ShortcutKey, context: { editing: boolean; modal
   // Use physical digit codes: macOS Option changes event.key, and AltGr must
   // remain available for normal text input rather than switching settings.
   if (key.altKey && !modifier && !key.shiftKey && !context.editing) {
-    const digit = /^Digit([1-7])$/.exec(key.code)?.[1];
+    const digit = /^Digit([1-8])$/.exec(key.code)?.[1];
     if (digit) return { page: Number(digit) - 1 };
   }
   return null;
