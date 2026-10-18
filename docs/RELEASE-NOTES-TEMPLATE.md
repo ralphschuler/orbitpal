@@ -1,3 +1,15 @@
+## Features
+
+- Multiple 3D cohosts with independent personas, voices, emotes and OBS outputs.
+- Twitch/YouTube, local/cloud models, Codex and Claude Code model/reasoning controls.
+- Configurable microphone activation phrases; speech-aligned text and gestures.
+- MCP, Skills, character instructions, Hindsight memory and PDF/text knowledge retrieval.
+- Automated unit checks, source and license inventories, and contribution rules for people and coding agents.
+
+See [CHANGELOG.md](https://github.com/ralphschuler/streamer-ai-cohost/blob/main/CHANGELOG.md) and the [German guide](https://github.com/ralphschuler/streamer-ai-cohost/blob/main/docs/USER_GUIDE.de.md) for details and limitations.
+
+## Downloads
+
 Prebuilt desktop applications for Windows x64, macOS Apple Silicon, macOS Intel, and Ubuntu 24.04 x64 are attached below, together with source code and SHA-256 checksums.
 
 These builds do not use a paid code-signing identity. Windows installers are unsigned. macOS applications use ad-hoc signing and are not notarized by Apple. Your operating system may therefore request an explicit trust decision. Check that you are downloading from this project's official release page and compare the file with `SHA256SUMS`.

@@ -5,7 +5,7 @@ Pull requests and changes on `main` run the CI workflow on Linux, Windows, and m
 ## Publish a version
 
 1. Update the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Update `Cargo.lock` by running Cargo normally, then verify it with `node scripts/release-info.mjs`.
-2. Complete the checks and merge the release commit.
+2. Update `CHANGELOG.md` and the release-note template for the final behavior, complete the checks and merge the release commit.
 3. Create and push its matching tag, for example `v0.4.0`. The existing tag can also be selected through the manual release workflow.
 4. The workflow checks all version files, reruns CI for the tagged commit, then builds all four targets. Only when every build succeeds does its final job receive permission to create a release.
 

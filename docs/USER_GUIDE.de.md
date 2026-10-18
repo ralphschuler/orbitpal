@@ -123,6 +123,8 @@ Im Bereich **Erweiterungen** Server hinzufügen, verbinden und anschließend die
 
 Lokale MCP-Server benötigen ihre eigenen Laufzeiten. Der Startbefehl wird direkt mit Argumenten aufgerufen, nicht über eine Shell. Für aufwendigere Startumgebungen können absolute Programmpfade verwendet werden. In dateibasierter MCP-Konfiguration können Umgebungswerte auf Schlüsselbund-Einträge verweisen: `${secret:meine-id}`. Profilexporte enthalten keine literalen Umgebungs- oder Header-Geheimnisse.
 
+Unter Windows bevorzugt die App native `.exe`-Programme. Bekannte npm-Startdateien `codex.cmd`, `claude.cmd`, `npm.cmd` und `npx.cmd` werden ohne Batch-Shell über `node.exe` und die zugehörige installierte JavaScript-Datei gestartet. Node.js und die betreffende CLI beziehungsweise der MCP-Server müssen separat installiert sein. Bei anderen Batchwrappern einen echten `.exe`-Pfad verwenden. Für einen manuell eingerichteten npm-MCP-Start kann beispielsweise `C:\Program Files\nodejs\node.exe` als Programm und `C:\Program Files\nodejs\node_modules\npm\bin\npx-cli.js` als erstes Argument eingetragen werden; die Serverargumente folgen als weitere Listeneinträge. Es wird keine zusammengesetzte Shell-Befehlszeile ausgeführt.
+
 `SKILL.md` wird bei Bedarf geladen. `scripts/`, `references/` und `assets/` werden mit importiert. Skripte sind standardmäßig ausgeschaltet und benötigen bei Aktivierung eine separat verfügbare Node-/Python-Laufzeit. Ein Beispielprofil liegt unter `character-template/`.
 
 ## Wissen und Hindsight

@@ -107,7 +107,7 @@ jobs:
       - name: Fetch locked Rust dependencies
         run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
       - name: Generate bundled third-party license notices
-        run: node scripts/third-party-notices.mjs
+        run: node scripts/third-party-notices.mjs --strict
       - name: Build macOS packages (ad-hoc signed, not notarized)
         if: runner.os == 'macOS'
         shell: bash

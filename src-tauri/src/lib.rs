@@ -8,6 +8,7 @@ mod agent;
 mod overlay;
 mod memory;
 mod knowledge;
+mod runtime_command;
 
 use serde_json::{json,Value};
 use std::sync::{Mutex,Arc,atomic::{AtomicBool,Ordering}};

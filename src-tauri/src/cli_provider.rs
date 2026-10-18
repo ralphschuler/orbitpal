@@ -31,16 +31,11 @@ fn executable(config: &Value) -> Result<String, String> {
     if command.contains('\0') || command.contains('\n') || command.contains('\r') { return Err("Ungültiger CLI-Programmpfad".into()); }
     Ok(command.to_owned())
 }
-fn process(command: &str, workspace: &Workspace) -> Command {
-    let mut cmd = Command::new(command);
+fn process(command: &str, workspace: &Workspace) -> Result<Command,String> {
+    let mut cmd = crate::runtime_command::command(command)?;
     cmd.current_dir(&workspace.0).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
-    // GUI apps often have a narrower PATH. Preserve the user PATH, then append
-    // common CLI installation directories without invoking a login shell.
-    let mut paths: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
-    #[cfg(target_os = "macos")] { paths.push("/opt/homebrew/bin".into()); paths.push("/usr/local/bin".into()); }
-    if let Ok(path) = std::env::join_paths(paths) { cmd.env("PATH", path); }
     cmd.env("NO_COLOR", "1");
-    cmd
+    Ok(cmd)
 }
 async fn bounded_read(reader: impl AsyncRead + Unpin, limit: usize) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
@@ -79,7 +74,7 @@ fn failure(label: &str, status: Option<i32>, output: &[u8], errors: &[u8]) -> St
 pub async fn status(config: &Value) -> Result<Value, String> {
     let command = executable(config)?;
     let workspace = Workspace::new()?;
-    let mut cmd = process(&command, &workspace); cmd.arg("--version");
+    let mut cmd = process(&command, &workspace)?; cmd.arg("--version");
     let (exit, output, errors) = tokio::time::timeout(Duration::from_secs(8), capture(cmd, String::new())).await.map_err(|_| "CLI-Versionsabfrage hat das Zeitlimit überschritten".to_owned())??;
     if !exit.success() { return Err(failure("CLI-Versionsabfrage", exit.code(), &output, &errors)); }
     let version = String::from_utf8_lossy(&output).trim().chars().take(250).collect::<String>();
@@ -195,7 +190,7 @@ pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, _
     let envelope = match config["provider"].as_str().unwrap_or_default() {
         "claude-code" => {
             validate_claude_effort(explicit_model,effort)?;
-            let mut cmd = process(&command, &workspace);
+            let mut cmd = process(&command, &workspace)?;
             cmd.args(["-p", "--safe-mode", "--restricted", "--tools", "", "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}", "--setting-sources", "", "--disable-slash-commands", "--no-session-persistence", "--no-chrome", "--permission-mode", "dontAsk", "--permission-prompts", "none", "--output-format", "json", "--system-prompt", WORKER_INSTRUCTIONS, "--json-schema"]);
             cmd.arg(schema.to_string());
             if let Some(model) = explicit_model { cmd.arg("--model").arg(model); }
@@ -310,7 +305,7 @@ fn strip_json_nulls(value: &mut Value) {
 }
 
 async fn codex_connection(command:&str,workspace:&Workspace)->Result<Rpc,String>{
-    let mut cmd = process(command, workspace); cmd.args(["app-server", "--listen", "stdio://"]);
+    let mut cmd = process(command, workspace)?; cmd.args(["app-server", "--listen", "stdio://"]);
     let overrides = codex_overrides();
     for (key, value) in &overrides { cmd.arg("-c").arg(format!("{key}={value}")); }
     let mut child = cmd.spawn().map_err(|e| format!("Codex-Appserver konnte nicht starten. CLI installieren und Programmpfad prüfen: {e}"))?;

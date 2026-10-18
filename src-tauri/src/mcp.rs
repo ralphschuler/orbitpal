@@ -1,6 +1,6 @@
 use serde_json::{json,Value};
 use std::{collections::HashMap,sync::Arc,time::Duration};
-use tokio::{io::{AsyncBufReadExt,AsyncWriteExt,BufReader},process::{Child,ChildStdin,ChildStdout,Command},sync::Mutex};
+use tokio::{io::{AsyncBufReadExt,AsyncWriteExt,BufReader},process::{Child,ChildStdin,ChildStdout},sync::Mutex};
 
 #[derive(Default)]
 pub struct McpHub { sessions:Mutex<HashMap<String,Arc<Mutex<Session>>>> }
@@ -16,7 +16,7 @@ impl McpHub {
         let transport=match config["transport"].as_str().unwrap_or("stdio") {
             "stdio"=>{
                 let command=config["command"].as_str().filter(|s|!s.trim().is_empty()).ok_or("MCP-Startbefehl fehlt")?;
-                let mut cmd=Command::new(command);
+                let mut cmd=crate::runtime_command::command(command)?;
                 if let Some(args)=config["args"].as_array() {for arg in args {cmd.arg(arg.as_str().ok_or("MCP-Argumente müssen Zeichenketten sein")?);}}
                 if let Some(env)=config["env"].as_object() {for (key,value) in env {if let Some(v)=value.as_str() {cmd.env(key,v);}}}
                 if let Some(key)=config["tokenEnv"].as_str() {if let Some(ref token)=token {cmd.env(key,token);}}
@@ -51,7 +51,7 @@ impl McpHub {
           if let Transport::Http {protocol,session,..}=&mut session.transport {*protocol="2025-11-25".into();*session=None;}
           for version in ["2025-11-25","2025-06-18","2025-03-26","2024-11-05"] {
             if let Transport::Http {protocol,..}=&mut session.transport {*protocol=version.into();}
-            match session.request("initialize",json!({"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"streamer-ai-cohost","version":"0.1.0"}})).await {
+            match session.request("initialize",json!({"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"streamer-ai-cohost","version":env!("CARGO_PKG_VERSION")}})).await {
                 Ok(result)=>{
                     if let Transport::Http {protocol,..}=&mut session.transport {*protocol=result["protocolVersion"].as_str().unwrap_or(version).to_owned();}
                     capabilities=result["capabilities"].clone();

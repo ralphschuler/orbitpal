@@ -66,7 +66,7 @@ jobs:
       - name: Fetch locked Rust dependencies
         run: cargo fetch --manifest-path src-tauri/Cargo.toml --locked
       - name: Generate bundled third-party license notices
-        run: node scripts/third-party-notices.mjs
+        run: node scripts/third-party-notices.mjs --strict
       - name: Build frontend assets
         run: pnpm build
       - name: Rust unit tests (no external accounts)
