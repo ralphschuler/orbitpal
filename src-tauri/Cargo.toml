@@ -16,7 +16,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-tauri-plugin-updater = "2.14"
+# Only Tauri v2 artifacts are published. Disable legacy v1 ZIP compatibility,
+# retaining the default TLS and system proxy support without vulnerable ZIP v4.
+tauri-plugin-updater = { version = "2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

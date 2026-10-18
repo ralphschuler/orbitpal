@@ -45,6 +45,18 @@ test('architecture names stay distinct and unsupported targets are rejected', ()
   assert.throws(() => platformForTarget('../../another-target'));
 });
 
+test('published v2 update formats keep the unused legacy ZIP decoder disabled', () => {
+  const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+  const cargo = readFileSync(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
+  assert.equal(config.bundle.createUpdaterArtifacts, true, 'Only native Tauri v2 updater packages are supported');
+  assert.ok(Object.values(updaterArtifacts).every(([, suffix]) => ['.app.tar.gz', '.AppImage', '-setup.exe', '.msi'].includes(suffix)), 'A legacy ZIP updater package would require the intentionally disabled compatibility decoder');
+  const updater = cargo.match(/^tauri-plugin-updater\s*=\s*\{([^\n]+)\}/m)?.[1];
+  assert.ok(updater, 'Keep updater feature selection explicit in Cargo.toml');
+  assert.match(updater, /default-features\s*=\s*false/, 'The upstream defaults enable the unused ZIP v4 decoder');
+  const features = updater.match(/features\s*=\s*\[([^\]]*)\]/)?.[1].match(/"([^"]+)"/g)?.map(value => JSON.parse(value));
+  assert.deepEqual(features?.sort(), ['rustls-tls', 'system-proxy'], 'Keep TLS and system proxies without restoring legacy archive decoding');
+});
+
 test('dependency inventories omit build-machine paths and URL credentials', () => {
   const rust = rustInventory({ packages: [{ name: 'fixture', version: '1.0.0', license: 'MIT', manifest_path: '/private/home/Cargo.toml', target_directory: '/private/build', license_file: '/private/home/LICENSE', repository: 'https://user:password@example.invalid/repo?token=private', source: 'registry+https://github.com/rust-lang/crates.io-index', authors: ['Fixture author'] }] });
   assert.equal(rust[0].license_file, 'LICENSE');
