@@ -11,6 +11,7 @@ pub async fn send(app:tauri::AppHandle,text:String,source:String,user:String,sel
     if !["operator","twitch","youtube","viewer","microphone"].contains(&source.as_str()){return Err("Ungültige Nachrichtenquelle".into());}
     let viewer=!["operator","microphone"].contains(&source.as_str());
     let state=app.state::<crate::AppState>();
+    state.updater.ensure_idle()?;
     let _turn=state.generation.try_lock().map_err(|_|"Der Co-Host verarbeitet bereits eine Nachricht. Bitte warten oder abbrechen.".to_owned())?;
     let cancel=Arc::new(AtomicBool::new(false));
     *state.cancel.lock().map_err(|e|e.to_string())?=Some(cancel.clone());

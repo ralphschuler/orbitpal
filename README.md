@@ -8,7 +8,7 @@ Your own animated AI cohost for Twitch and YouTube. A native **Tauri 2 + Rust** 
 
 **Early release:** expect rough edges and review provider settings before going live. Model runtimes, accounts, API keys and voices are supplied by you.
 
-The current source version is **0.5.0**. Consult the release notes for the version included in each published package.
+The current source version is **0.6.0**. Consult the release notes for the version included in each published package.
 
 ## What it does
 
@@ -22,6 +22,7 @@ The current source version is **0.5.0**. Consult the release notes for the versi
 - Real image inputs from permitted MCP tools through compatible APIs, Anthropic, Codex and Claude Code. Each bot controls image forwarding; the selected model must support vision.
 - Optional **Hindsight** long-term memory with automatic recall and retention. Local PDF/text knowledge retrieval includes source references; recent chat stays local as short-term context.
 - Secrets in the OS credential store, portable profiles and per-bot conversation storage.
+- Optional automatic update checks through GitHub Releases. Download, signature verification, installation and restart require your explicit confirmation in **Updates & Version**.
 
 ## Download and start
 
@@ -35,6 +36,8 @@ Get published packages from the [latest release](https://github.com/ralphschuler
 The app opens without an AI account. Nova and the included models work without downloading assets. Dialog and voice services require their respective configuration. CLI integrations usually use cloud inference; installing a CLI does not make its model local.
 
 Press **?** or **F1** for keyboard help. **Ctrl/Cmd+S** saves, **Ctrl/Cmd+K** focuses the composer, **Ctrl/Cmd+Enter** sends from the studio, and **Alt/Option+1–7** switches sections. **Esc** dismisses visible help or a dialog first; otherwise it stops output. Inline information buttons explain settings on hover or keyboard focus.
+
+From version 0.6.0, **Updates & Version** checks the stable GitHub release channel shortly after startup and every six hours. You may disable automatic checks, check manually or choose **Später**. The app downloads and installs only after **Bestätigen & installieren**; save edits and stop ongoing output/microphone use first. Linux in-app installation requires an AppImage; Debian packages update manually. Earlier versions require one manual upgrade. See [updates](docs/UPDATING.md).
 
 [German user guide](docs/USER_GUIDE.de.md) · [Character sources and licenses](CHARACTERS.md) · [Architecture](docs/ARCHITECTURE.md)
 
@@ -52,7 +55,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 pnpm tauri dev
 ```
 
-`pnpm tauri build` creates native packages on the current platform. A browser-only preview has no native integrations. CI runs type checks, unit tests and builds; tagged releases build platform installers after validation. See [CONTRIBUTING.md](CONTRIBUTING.md) and [release process](docs/RELEASING.md).
+`pnpm tauri build` creates native packages on the current platform with the release signing key configured as described in the [release process](docs/RELEASING.md). For an unsigned local development package, use `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`; these packages are not project releases. A browser-only preview has no native integrations. CI runs type checks, unit tests and builds; tagged releases build platform installers after validation. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Data and current limits
 

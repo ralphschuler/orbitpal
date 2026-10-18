@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0 — 2026-10-19
+
+- Add app-wide automatic stable-release checks at startup and every six hours, an opt-out setting, manual checking, release notes and a confirmation dialog. Choosing later never downloads a package.
+- Download/install only after explicit confirmation, with progress, signature and signed-version verification, native candidate expiry, fixed GitHub release URLs and rejection of equal/older/prerelease versions. Block installation during ongoing work, microphone capture or unsaved edits; restart only after successful installation.
+- Publish updater archives/signatures and a complete `latest.json` after all four platform builds pass. Preserve Windows MSI/NSIS installer type; support Linux in-app installation through AppImages and explain manual Debian updates.
+- Document update operations, signing-key handling and contributor invariants. Updater signatures are separate from OS code signing; Windows Authenticode and Apple notarization remain unavailable.
+- Reset imported credential references to fresh unbound identifiers, clear imported CLI executable overrides and disable imported automatic/platform replies. Imported profiles require explicit credential setup; existing bots and operator-requested bot copies keep their own bindings.
+- Cancel late microphone permission results after Stop, bot/STT changes or update confirmation; prevent duplicate pending captures. Cancel prepared gestures/sounds before an update starts.
+- Save profile instructions before exporting, and abort export if saving fails.
+- Remove the unused direct ZIP dependency, eliminating its three reported RustSec advisories without suppressing the scanner.
+
 ## 0.5.0 — 2026-10-19
 
 - Preserve explicitly started wake-phrase listening across output pauses and microphone-start races. Retry transient STT/recording errors with bounded backoff and report permanent microphone failures clearly.

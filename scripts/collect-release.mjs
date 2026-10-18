@@ -44,9 +44,10 @@ export function collect(root, target, output = resolve(root, 'release-artifacts'
     if (applications.length !== 1) throw new Error(`Expected one macOS application; found ${applications.length}`);
     const archive = join(output, `${prefix}.zip`);
     execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', applications[0], archive]);
-    result = [archive, copyOne('.dmg')];
-  } else if (platform === 'windows-x64') result = [copyOne('.exe', '-setup.exe'), copyOne('.msi')];
-  else result = [copyOne('.AppImage'), copyOne('.deb')];
+    result = [archive, copyOne('.dmg'), copyOne('.app.tar.gz'), copyOne('.app.tar.gz.sig')];
+  } else if (platform === 'windows-x64') {
+    result = [copyOne('.exe', '-setup.exe'), copyOne('.exe.sig', '-setup.exe.sig'), copyOne('.msi'), copyOne('.msi.sig')];
+  } else result = [copyOne('.AppImage'), copyOne('.AppImage.sig'), copyOne('.deb')];
   return result.map(path => basename(path));
 }
 

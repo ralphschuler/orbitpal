@@ -266,6 +266,7 @@ fn execute(app: &tauri::AppHandle, command: Command) -> Result<Value, String> {
             Ok(public_emotes(&profile))
         },
         Command::PerformEmote { bot_id, emote_id } => {
+            state.updater.ensure_idle()?;
             let profile = state.store.bot_profile(&bot_id).map_err(|_| "Bot wurde nicht gefunden oder ist nicht verfügbar")?;
             // Generic MCP calls do not carry a trusted viewer/operator origin.
             // Enforce the stricter emote grant for internal and external clients.

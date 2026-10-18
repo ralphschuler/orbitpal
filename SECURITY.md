@@ -14,7 +14,9 @@ MCP servers and enabled skill scripts can run programs with the user's OS privil
 
 Secrets belong in the OS credential store. Dialog providers receive supplied context; voice providers receive their configured input. Hindsight is opt-in and may use further services according to its server configuration. OBS URLs are session-bound access links: do not share them publicly.
 
-Initial prebuilt releases are unsigned/not notarized. Verify downloads against release SHA-256 checksums. Checksums provide integrity, not an independent publisher signature. No automatic in-app updater is enabled.
+Windows packages lack Authenticode signatures; macOS packages are ad-hoc signed without notarization. Verify manual downloads against release SHA-256 checksums. Checksums provide integrity, not an independent publisher signature.
+
+From 0.6.0, automatic checks use this repository's fixed HTTPS stable-release endpoint. Download and installation require explicit studio confirmation. Native validation requires a newer stable version, a same-version repository asset and a Tauri signature verified against the embedded public key, including signed version binding. Updates are unavailable to avatars, MCP tools and skills. The private updater key belongs only in protected release infrastructure and an offline maintainer backup, never the repository, profiles or public artifacts. See [updates](docs/UPDATING.md) and [release operations](docs/RELEASING.md).
 
 ## Carried dependency correction
 

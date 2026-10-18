@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing version tag, for example v0.4.0
+        description: Existing version tag, for example v0.6.0
         required: true
         type: string
 
@@ -34,6 +34,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+      - name: Require the updater signing key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: node -e "if (!process.env.TAURI_SIGNING_PRIVATE_KEY?.trim()) throw new Error('TAURI_SIGNING_PRIVATE_KEY must be configured before publishing signed updater packages')"
       - name: Require matching manifests and an existing version tag
         id: version
         shell: bash
@@ -114,14 +118,18 @@ jobs:
         env:
           RUST_TARGET: ${{ matrix.target }}
           BUNDLES: ${{ matrix.bundles }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target "$RUST_TARGET" --bundles "$BUNDLES" --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
-      - name: Build Windows or Linux packages (unsigned)
+      - name: Build Windows or Linux packages (updater signed, no OS code-signing identity)
         if: runner.os != 'macOS'
         shell: bash
         env:
           RUST_TARGET: ${{ matrix.target }}
           BUNDLES: ${{ matrix.bundles }}
           APPIMAGE_EXTRACT_AND_RUN: '1'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target "$RUST_TARGET" --bundles "$BUNDLES"
       - name: Linux GLib iterator regression (optimized)
         if: runner.os == 'Linux'
@@ -150,6 +158,9 @@ jobs:
     needs: [validate, build]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    concurrency:
+      group: release-publication
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -166,6 +177,10 @@ jobs:
           pattern: release-*
           path: release-artifacts
           merge-multiple: true
+      - name: Require all signed updater targets and create the update manifest
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        run: node scripts/updater-manifest.mjs release-artifacts
       - name: Add source archive and SHA-256 checksums
         shell: bash
         env:
@@ -181,11 +196,14 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         run: |
+          node scripts/updater-manifest.mjs --check-latest
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo '::error::This release already exists. Published downloads are never overwritten automatically. Resolve an unfinished draft explicitly or use a new version.'
             exit 1
           fi
-          options=(--repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "Streamer AI Cohost $RELEASE_TAG" --notes-file docs/RELEASE-NOTES-TEMPLATE.md --generate-notes)
+          options=(--repo "$GITHUB_REPOSITORY" --verify-tag --draft --latest=false --title "Streamer AI Cohost $RELEASE_TAG" --notes-file docs/RELEASE-NOTES-TEMPLATE.md --generate-notes)
           if [ "$PRERELEASE" = true ]; then options+=(--prerelease); fi
           gh release create "$RELEASE_TAG" "${options[@]}" release-artifacts/*
-          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+          latest=true
+          if [ "$PRERELEASE" = true ]; then latest=false; fi
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest="$latest"

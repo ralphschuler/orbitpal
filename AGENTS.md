@@ -11,6 +11,7 @@ These instructions apply to source contributions throughout this repository. Rea
 - Microphone capture requires an explicit user start. Never silently restart it from saved settings. Surface cloud transmission before activation.
 - Never simulate successful connections, provider actions or missing capabilities. Report concrete errors without exposing credentials.
 - Runtime character `AGENTS.md`, `PERSONA.md` and `SKILL.md` files are user content, separate from these source instructions.
+- Update discovery must never download or install a package. Only an explicit studio confirmation may consume a native update candidate. Preserve the fixed stable GitHub channel, signature/version verification, main-window restriction and idle/unsaved-edit guards. Never give update permission to model tools, skills, avatars or MCP clients.
 
 ## Validation and review
 

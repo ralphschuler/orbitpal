@@ -46,6 +46,18 @@ impl Store {
         }}?;
         self.effective_profile(profile)
     }
+    // Updates belong to this app installation, never to a bot/profile export.
+    pub fn automatic_update_checks(&self)->Result<bool,String>{
+        let db=self.db.lock().map_err(error)?;
+        match db.query_row("SELECT value FROM settings WHERE key='automatic_update_checks'",[],|row|row.get::<_,String>(0)){
+            Ok(value)=>serde_json::from_str(&value).map_err(error),
+            Err(rusqlite::Error::QueryReturnedNoRows)=>Ok(true),
+            Err(value)=>Err(error(value)),
+        }
+    }
+    pub fn save_automatic_update_checks(&self,enabled:bool)->Result<(),String>{
+        self.db.lock().map_err(error)?.execute("INSERT INTO settings(key,value) VALUES('automatic_update_checks',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[enabled.to_string()]).map_err(error)?;Ok(())
+    }
     pub fn scoped(&self,id:&str)->Result<Self,String>{
         self.bot_profile(id)?;
         let connection=Connection::open(self.root.join("cohost.sqlite3")).map_err(error)?;
@@ -398,6 +410,7 @@ impl Store {
         let id=profile["id"].as_str().ok_or("Profil-ID fehlt")?.to_owned();
         let exists=self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM bot_profiles WHERE id=?1)",[&id],|r|r.get::<_,bool>(0)).map_err(error)?;
         if exists || self.profile_dir(&profile)?.exists(){profile["id"]=json!(new_bot_id(profile["name"].as_str().unwrap_or("Bot")));}
+        reset_imported_authority(&mut profile,&self.secret_ids()?)?;
         profile["output"]["streamingEnabled"]=json!(false);profile["output"]["mode"]=json!("studio");
         if profile["hindsight"].is_object(){profile["hindsight"]["enabled"]=json!(false);profile["hindsight"]["bankId"]=json!("");}
         // Installing a portable package never replaces an existing library
@@ -456,6 +469,53 @@ impl Store {
         }
         Ok(saved)
     }
+}
+
+/// Portable configuration never authorizes access to credentials already stored
+/// on this computer. Each imported reference needs its own explicit rebinding;
+/// aliases in separate integrations must not silently share a later key entry.
+fn reset_imported_authority(profile:&mut Value,existing_ids:&[String])->Result<(),String>{
+    fn fresh(used:&mut std::collections::BTreeSet<String>)->String{
+        loop{let id=format!("import-{}",uuid::Uuid::new_v4());if used.insert(id.clone()){return id;}}
+    }
+    fn visit(value:&mut Value,used:&mut std::collections::BTreeSet<String>){
+        match value{
+            Value::Object(fields)=>for (key,value) in fields{
+                if ["apiKeyId","secretId","sendSecretId"].contains(&key.as_str()){*value=json!(fresh(used));}
+                else{visit(value,used);}
+            },
+            Value::Array(values)=>for value in values{visit(value,used);},
+            Value::String(value) if value.starts_with("${secret:")&&value.ends_with('}')=>{
+                *value=format!("${{secret:{}}}",fresh(used));
+            },
+            _=>(),
+        }
+    }
+    fn ensure_reference(fields:&mut serde_json::Map<String,Value>,key:&str,used:&mut std::collections::BTreeSet<String>){
+        if !fields.get(key).and_then(Value::as_str).is_some_and(|id|!id.is_empty()){
+            fields.insert(key.into(),json!(fresh(used)));
+        }
+    }
+    let mut used=existing_ids.iter().cloned().collect();
+    visit(profile,&mut used);
+    let fields=profile.as_object_mut().ok_or("Profil muss ein JSON-Objekt sein")?;
+    for name in ["model","voice","stt","hindsight"]{
+        let section=fields.entry(name).or_insert_with(||json!({}));
+        if section.is_null(){*section=json!({});}
+        let section=section.as_object_mut().ok_or_else(||format!("Profilbereich {name} muss ein JSON-Objekt sein"))?;
+        ensure_reference(section,"apiKeyId",&mut used);
+        if name=="model"{section.insert("command".into(),json!(""));}
+    }
+    let chat=fields.get_mut("chat").and_then(Value::as_object_mut).ok_or("Profilbereich chat muss ein JSON-Objekt sein")?;
+    chat.insert("autoReply".into(),json!(false));chat.insert("mode".into(),json!("manual"));
+    for (platform,references) in [("twitch",&["secretId"][..]),("youtube",&["apiKeyId","sendSecretId"][..])]{
+        let section=chat.entry(platform).or_insert_with(||json!({}));
+        if section.is_null(){*section=json!({});}
+        let section=section.as_object_mut().ok_or_else(||format!("Profilbereich chat.{platform} muss ein JSON-Objekt sein"))?;
+        for reference in references{ensure_reference(section,reference,&mut used);}
+        section.insert("sendReplies".into(),json!(false));
+    }
+    Ok(())
 }
 
 fn validate_profile(profile:&Value)->Result<(),String>{
@@ -600,6 +660,45 @@ mod extension_tests{
         assert_eq!(crate::skill_library::SkillLibrary::new(&target.0).unwrap().read_resource(imported_skill,"references/facts.txt").unwrap(),"Portable resource content");
         assert_eq!(fs::read(destination.profile_dir(&imported).unwrap().join("sounds").join(&sound_name)).unwrap(),wav);assert_eq!(crate::emote_audio::read(&target.0,&imported,&sound_id).unwrap()["mimeType"],"audio/wav");
         assert_eq!(crate::skill_library::SkillLibrary::new(&target.0).unwrap().read("shared").unwrap()["content"],"Existing unrelated skill content");assert_eq!(destination.bot_profile("nova").unwrap()["skillsEnabled"],json!(["shared"]));assert!(!destination.library_mcp().unwrap().is_empty());
+    }
+    #[test]
+    fn imported_references_are_unbound_independent_and_leave_existing_library_untouched(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
+        // Only dummy identifiers enter SQLite; this test never reads or writes
+        // the OS credential store and never launches an imported integration.
+        store.db.lock().unwrap().execute("INSERT INTO secret_ids(id) VALUES('existing-reference')",[]).unwrap();
+        let server=json!({"id":"shared-server","name":"Existing server","transport":"stdio","command":"node","args":["fixture.js"],"apiKeyId":"existing-reference","env":{"API_TOKEN":"${secret:existing-reference}"}});
+        store.save_library_mcp(server).unwrap();let existing_server=store.library_mcp().unwrap().remove(0);
+        let mut original=store.profile().unwrap();original["model"]["apiKeyId"]=json!("existing-reference");store.save_profile(original.clone()).unwrap();
+        let mut portable=original.clone();portable["id"]=json!("imported-fixture");portable["name"]=json!("Imported fixture");
+        for section in ["model","voice","stt","hindsight"]{portable[section]["apiKeyId"]=json!("existing-reference");}
+        portable["model"]["provider"]=json!("codex");portable["model"]["command"]=json!("untrusted-imported-program");
+        portable["chat"]["twitch"]["secretId"]=json!("existing-reference");portable["chat"]["youtube"]["apiKeyId"]=json!("existing-reference");
+        portable["chat"]["youtube"].as_object_mut().unwrap().remove("sendSecretId");
+        portable["chat"]["autoReply"]=json!(true);portable["chat"]["twitch"]["sendReplies"]=json!(true);portable["chat"]["youtube"]["sendReplies"]=json!(true);
+        let mut imported_server=existing_server.clone();imported_server["enabled"]=json!(true);imported_server["allowedTools"]=json!(["*"]);portable["mcpServers"]=json!([imported_server]);
+        let source=fixture.0.join("imported.json");fs::write(&source,json!({"profile":portable}).to_string()).unwrap();
+        let imported=store.import(&source).unwrap();let mut references=std::collections::BTreeSet::new();
+        for section in ["model","voice","stt","hindsight"]{let id=imported[section]["apiKeyId"].as_str().unwrap();assert!(valid_id(id));assert!(references.insert(id.to_owned()));}
+        for (platform,key) in [("twitch","secretId"),("youtube","apiKeyId"),("youtube","sendSecretId")]{let id=imported["chat"][platform][key].as_str().unwrap();assert!(valid_id(id));assert!(references.insert(id.to_owned()));}
+        let imported_server=&imported["mcpServers"][0];assert_ne!(imported_server["id"],existing_server["id"]);assert_eq!(imported_server["enabled"],false);
+        let id=imported_server["apiKeyId"].as_str().unwrap();assert!(valid_id(id));assert!(references.insert(id.to_owned()));
+        let env=imported_server["env"]["API_TOKEN"].as_str().unwrap();let id=env.strip_prefix("${secret:").and_then(|value|value.strip_suffix('}')).unwrap();assert!(valid_id(id));assert!(references.insert(id.to_owned()));
+        assert!(!references.contains("existing-reference"));assert!(references.iter().all(|id|!store.secret_ids().unwrap().contains(id)));
+        assert_eq!(imported["model"]["command"],"");assert_eq!(imported["allowSkillScripts"],false);assert_eq!(imported["chat"]["autoReply"],false);
+        assert_eq!(imported["chat"]["twitch"]["sendReplies"],false);assert_eq!(imported["chat"]["youtube"]["sendReplies"],false);
+        assert_eq!(store.bot_profile("nova").unwrap()["model"]["apiKeyId"],original["model"]["apiKeyId"]);
+        assert_eq!(store.library_mcp().unwrap().into_iter().find(|entry|entry["id"]==existing_server["id"]).unwrap(),existing_server);
+        let second=store.import(&source).unwrap();assert_ne!(second["model"]["apiKeyId"],imported["model"]["apiKeyId"]);
+    }
+    #[test]
+    fn imported_missing_references_get_fresh_ids_and_invalid_chat_sections_are_rejected(){
+        let mut profile:Value=serde_json::from_str(DEFAULT_PROFILE).unwrap();
+        for section in ["model","voice","stt","hindsight"]{profile[section].as_object_mut().unwrap().remove("apiKeyId");}
+        profile["chat"]=json!({});reset_imported_authority(&mut profile,&[]).unwrap();
+        for section in ["model","voice","stt","hindsight"]{assert!(valid_id(profile[section]["apiKeyId"].as_str().unwrap()));}
+        assert!(valid_id(profile["chat"]["youtube"]["sendSecretId"].as_str().unwrap()));
+        profile["chat"]["twitch"]=json!("invalid");assert!(reset_imported_authority(&mut profile,&[]).is_err());
     }
     const CONTROL_FIXTURE:&str="---\nname: cohost-control\ndescription: Control fixture\n---\nUse only offered cohost tools.";
     #[test]

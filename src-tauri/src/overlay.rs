@@ -53,6 +53,9 @@ impl OverlayHub {
         // lock alone no longer covers a reply once its audio is being prepared.
         self.speech.lock().map(|entries|entries.iter().any(|entry|entry.bot_id==bot_id&&!entry.finished&&!entry.cancel.load(Ordering::Relaxed))).unwrap_or(true)
     }
+    pub fn has_any_pending_speech(&self)->bool{
+        self.speech.lock().map(|entries|entries.iter().any(|entry|!entry.finished&&!entry.cancel.load(Ordering::Relaxed))).unwrap_or(true)
+    }
     pub fn say_profile(&self,app:&tauri::AppHandle,profile:&Value,id:&str,text:&str,speech_text:&str,emotion:&str,source:&str,user:&str,user_text:&str,emotes:&[Value],cancel:Arc<AtomicBool>)->Result<(),String> {
         let bot_id=profile["id"].as_str().ok_or("Bot-ID fehlt")?;
         let mut speech=self.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;

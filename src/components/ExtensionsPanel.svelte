@@ -12,8 +12,9 @@
     profile: any; library: Library; native: boolean; busy: boolean;
     onSave: () => Promise<boolean>; onRefresh: () => Promise<void>;
     onNotify: (message: string, error?: boolean) => void;
+    onEditingChange?: (editing: boolean) => void;
   }
-  let { profile = $bindable(), library, native, busy, onSave, onRefresh, onNotify }: Props = $props();
+  let { profile = $bindable(), library, native, busy, onSave, onRefresh, onNotify, onEditingChange }: Props = $props();
   const uid = $props.id();
   let tab = $state<'mcp' | 'skills'>('mcp');
   let search = $state('');
@@ -32,6 +33,7 @@
   let editorFocus: HTMLElement | undefined;
   let revision = 0;
   let disposed = false;
+  $effect(() => { onEditingChange?.(!!editor || !!operation || !!deletion); });
   const servers = $derived(library?.mcpServers || []);
   const skills = $derived(library?.skills || []);
   const selected = $derived(tab === 'mcp' ? servers.find((item) => item.id === serverId) : skills.find((item) => item.id === skillId));
@@ -244,7 +246,7 @@
     window.addEventListener('cohost:save-extension', save);
     window.addEventListener('cohost:close-extension', closeOverlay);
     window.addEventListener('keydown', keydown, { capture: true });
-    return () => { disposed = true; ++revision; window.removeEventListener('cohost:save-extension', save); window.removeEventListener('cohost:close-extension', closeOverlay); window.removeEventListener('keydown', keydown, { capture: true }); };
+    return () => { disposed = true; ++revision; onEditingChange?.(false); window.removeEventListener('cohost:save-extension', save); window.removeEventListener('cohost:close-extension', closeOverlay); window.removeEventListener('keydown', keydown, { capture: true }); };
   });
 </script>
 

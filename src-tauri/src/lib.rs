@@ -15,6 +15,7 @@ mod skill_library;
 mod emote_audio;
 mod vision;
 mod control_mcp;
+mod updater;
 
 use serde_json::{json,Value};
 use std::sync::{Mutex,Arc,atomic::{AtomicBool,Ordering}};
@@ -28,6 +29,7 @@ pub struct AppState {
     generation:tokio::sync::Mutex<()>,
     overlay:overlay::OverlayHub,
     control_mcp:control_mcp::ControlMcp,
+    updater:updater::UpdateState,
 }
 
 #[tauri::command]
@@ -105,7 +107,7 @@ fn delete_skill(state:State<'_,AppState>,id:String)->Result<(),String>{let _idle
 fn import_skill(state:State<'_,AppState>,source_path:String)->Result<Value,String>{let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Installieren eines Skills beenden".to_owned())?;state.store.import_skill(std::path::Path::new(&source_path))}
 #[tauri::command]
 fn trigger_emote(app:tauri::AppHandle,emote_id:String,bot_id:Option<String>)->Result<Value,String>{
-    let state=app.state::<AppState>();let id=bot_id.unwrap_or(state.store.profile()?["id"].as_str().unwrap_or("nova").to_owned());let profile=state.store.scoped(&id)?.profile()?;
+    let state=app.state::<AppState>();state.updater.ensure_idle()?;let id=bot_id.unwrap_or(state.store.profile()?["id"].as_str().unwrap_or("nova").to_owned());let profile=state.store.scoped(&id)?.profile()?;
     overlay::trigger_emote_profile(&app,&profile,&emote_id,false)
 }
 #[tauri::command]
@@ -197,12 +199,14 @@ fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:Str
 async fn get_speech_audio(app:tauri::AppHandle,id:String,bot_id:String)->Result<Value,String>{overlay::speech_audio(&app,&id,&bot_id).await}
 #[tauri::command]
 async fn synthesize_speech(state:State<'_,AppState>,text:String,bot_id:Option<String>)->Result<Value,String>{
+    state.updater.ensure_idle()?;
     if text.len()>20_000{return Err("Sprachtext ist zu lang".into());}
     let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;let store=scoped.as_ref().unwrap_or(&state.store);
     let profile=store.profile()?;let config=&profile["voice"];providers::synthesize(config,&text,store.key_for(config)?).await
 }
 #[tauri::command]
 async fn transcribe_audio(state:State<'_,AppState>,audio_base64:String,mime_type:String,bot_id:Option<String>)->Result<String,String>{
+    state.updater.ensure_idle()?;
     if audio_base64.len()>40*1024*1024{return Err("Audioaufnahme ist zu groß".into());}
     let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;let store=scoped.as_ref().unwrap_or(&state.store);
     let profile=store.profile()?;let config=&profile["stt"];providers::transcribe(config,&audio_base64,&mime_type,store.key_for(config)?).await
@@ -228,16 +232,16 @@ async fn import_profile(state:State<'_,AppState>,app:tauri::AppHandle,source_pat
 
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
 pub fn run(){
-    tauri::Builder::default().plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_opener::init())
+    tauri::Builder::default().plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app|{
             let root=app.path().app_data_dir()?;
             let store=storage::Store::new(root).map_err(std::io::Error::other)?;
-            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),control_mcp:control_mcp::ControlMcp::default()});
+            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default()});
             tauri::async_runtime::block_on(overlay::start(app.handle().clone())).map_err(std::io::Error::other)?;
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,export_profile,import_profile])
+        .invoke_handler(tauri::generate_handler![get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update])
         .run(tauri::generate_context!()).expect("Streamer AI Cohost konnte nicht gestartet werden");
 }
 

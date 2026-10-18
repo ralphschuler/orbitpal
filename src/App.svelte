@@ -7,9 +7,11 @@
   import WakeWord from './components/WakeWord.svelte';
   import ExtensionsPanel from './components/ExtensionsPanel.svelte';
   import HelpTip from './components/HelpTip.svelte';
+  import UpdatesPanel from './components/UpdatesPanel.svelte';
   import { shortcutFor } from './lib/shortcuts';
   import { focusTrap } from './lib/focus';
   import { SpeechPlayer, recordingToWav } from './lib/audio';
+  import { MicrophoneSession } from './lib/microphone-session';
   import { EmoteSequence, type EmotePayload } from './lib/presentation';
   import { EmoteAudioPlayer } from './lib/emote-audio';
   import { ExternalEmotePlayback } from './lib/emote-playback';
@@ -25,6 +27,11 @@
   let page = $state<Page>('studio');
   let library = $state<any>({mcpServers:[],skills:[]});
   let shortcutHelp = $state(false);
+  let updatesOpen = $state(false);
+  let updateInstalling = $state(false);
+  let availableUpdate = $state('');
+  let wakeActive = $state(false);
+  let extensionEditing = $state(false);
   let switchingBot = $state(false);
   let messageInput = $state<HTMLInputElement>();
   let profile = $state<any>(cloneDefaults());
@@ -82,6 +89,8 @@
   let wakeStopSignal = $state(0);
   let systemVoices = $state<SpeechSynthesisVoice[]>([]);
   let microphone = $state(false);
+  let microphoneStarting = $state(false);
+  const microphoneSession = new MicrophoneSession<MediaStream>(pending=>microphoneStarting=pending);
   let player: SpeechPlayer;
   let emoteSequence: EmoteSequence;
   let emoteAudio: EmoteAudioPlayer;
@@ -146,6 +155,13 @@
   const dirty = $derived(JSON.stringify(profileSnapshot()) !== savedProfile);
   const documentDirty = $derived(JSON.stringify(documents)!==JSON.stringify(savedDocuments));
   const hasUnsavedChanges = $derived(dirty||documentDirty);
+  const updateBusyReason = $derived(
+    busy || speaking || speechPreparing || emoteSoundPlaying || externalEmotePlaying ? 'Beende zuerst laufende Antworten, Sprachausgaben und Emote-Sounds.' :
+    microphone || microphoneStarting || transcribing || wakeActive ? 'Beende zuerst die Mikrofonaufnahme und das Zuhören mit Aktivierungsphrase (Stop).' :
+    running ? 'Pausiere zuerst die automatischen Chat-Antworten.' :
+    hasUnsavedChanges || message.trim() || Object.values(secretInputs).some(value=>!!value.trim()) ? 'Speichere deine Änderungen und sende oder leere Entwürfe vor der Installation.' :
+    saving || switchingBot || creatingBot || extensionEditing || botDialog ? 'Schließe zuerst laufende Bearbeitungen und Speichervorgänge.' : ''
+  );
   const currentPage = $derived(nav.find(n => n.id === page));
 
   const activeStatus = $derived(speaking ? 'Spricht gerade' : speechPreparing ? 'Bereitet Sprache vor' : busy ? 'Antwortet gerade' : running ? 'Hört zu' : 'Bereit, wenn du es bist');
@@ -260,7 +276,7 @@
     if(await saveCurrentBot())notify('Änderungen für '+profile.name+' gespeichert.');
   }
   async function handleShortcut(event:KeyboardEvent){
-    if(event.defaultPrevented)return;
+    if(event.defaultPrevented||updateInstalling||updatesOpen)return;
     const target=event.target instanceof HTMLElement?event.target:null;
     const editing=!!target?.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]');
     const modal=!!document.querySelector('[role="dialog"],[role="alertdialog"]');
@@ -275,7 +291,7 @@
     if(action==='send'&&!busy&&!microphone&&!transcribing&&message.trim())await sendOwn();
   }
   async function selectBot(id:string){
-    if(busy||microphone||transcribing||switchingBot||creatingBot||saving){notify('Beende zuerst die laufende Antwort, Aufnahme oder Speicherung.');return;}
+    if(busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving){notify('Beende zuerst die laufende Antwort, Aufnahme oder Speicherung.');return;}
     if(id===profile.id){botMenu=false;return;}
     switchingBot=true;wakeStopSignal++;
     try{if(!await saveCurrentBot())return;player?.stop();await call('select_bot',{id});await refresh();cliStatus='';partial='';emotion='neutral';botMenu=false;log(profile.name+' zum Bearbeiten ausgewählt.');}catch(e){notify(prettyError(e),true);}finally{switchingBot=false;}
@@ -293,7 +309,7 @@
     }catch(e){notify(prettyError(e),true);}finally{creatingBot=false;}
   }
   async function toggleBotLive(bot:any){
-    if(busy||microphone||transcribing){notify('Beende zuerst die laufende Antwort oder Aufnahme.');return;}
+    if(busy||microphone||microphoneStarting||transcribing){notify('Beende zuerst die laufende Antwort oder Aufnahme.');return;}
     if(!await saveCurrentBot())return;
     try{await call(botEnabled(bot)?'close_overlay':'open_overlay',{botId:bot.id});await refresh();botMenu=false;notify(botEnabled(bot)?`${bot.name} ausgeblendet.`:`${bot.name} ist im eigenen Figurenfenster.`);}catch(e){notify(prettyError(e),true);}
   }
@@ -312,14 +328,15 @@
     try{modelList=await call('list_models',{config:$state.snapshot(profile.model)});notify(`${modelList.length} Modelle verfügbar.`);}catch(e){notify(prettyError(e),true);}finally{loadingModels=false;}
   }
   async function toggleRunning(){
+    if(updateInstalling)return;
     unlockEmoteAudio();
     if(running){running=false;notify('Automatische Antworten pausiert.');return;}
     if(!profile.model.model&&!cliProvider&&!liveBots.some(bot=>bot.profile?.model?.model)){page='models';notify('Wähle zuerst ein Dialogmodell aus.');return;}
     if(await persist(true)){running=true;log('Cohost gestartet.');}
   }
-  async function stopAll(){externalEmotes?.clear();turnEpoch++;wakeStopSignal++;subtitleLifetime?.cancel();running=false;busy=false;speechPreparing=false;partial='';queue=[];clearTimeout(recordingTimer);if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}microphoneStream?.getTracks().forEach(t=>t.stop());microphone=false;transcribing=false;player?.stop();clearEmotes();finishPlayback();speaking=false;level=0;try{await call('stop_generation');}catch(e){if(native)notify(prettyError(e),true);}log('Sprache und ausstehende Antworten gestoppt.');}
+  async function stopAll(){externalEmotes?.clear();turnEpoch++;wakeStopSignal++;subtitleLifetime?.cancel();running=false;busy=false;speechPreparing=false;partial='';queue=[];clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}microphoneStream?.getTracks().forEach(t=>t.stop());microphone=false;transcribing=false;player?.stop();clearEmotes();finishPlayback();speaking=false;level=0;try{await call('stop_generation');}catch(e){if(native)notify(prettyError(e),true);}log('Sprache und ausstehende Antworten gestoppt.');}
   async function runMessage(text:string,source='operator',user='Streamer',botId=profile.id) {
-    if(!text.trim()||busy)return;
+    if(!text.trim()||busy||updateInstalling)return;
     const selected=botId===profile.id;
     const botConfig=selected?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===botId)?.profile);
     if(!botConfig){notify('Bot wurde nicht gefunden.',true);return;}
@@ -360,7 +377,7 @@
   async function sendOwn(){unlockEmoteAudio();const text=message;message='';await runMessage(text);}
   async function answerQueued(item:any,botId=profile.id){
     unlockEmoteAudio();
-    if(busy||microphone||transcribing)return;
+    if(busy||microphone||microphoneStarting||transcribing)return;
     queue=queue.map(entry=>entry.id===item.id?{...entry,answeredBy:[...new Set([...(entry.answeredBy||[]),botId])]}:entry);
     await runMessage(item.text,item.platform,item.user,botId);
   }
@@ -385,8 +402,8 @@
     player?.stop();finishPlayback();await copyBotObs(bot);
   }
   async function configureOverlay(){if(await persist(true))try{await call('configure_overlay',{alwaysOnTop:profile.output.alwaysOnTop,clickThrough:profile.output.clickThrough,botId:profile.id});}catch(e){notify(prettyError(e),true);}}
-  async function exportProfile(){try{const destination=await save({defaultPath:`${profile.id||'cohost'}.cohost.json`,filters:[{name:'Cohost-Profil',extensions:['json']}]});if(destination){await persist(true);await call('export_profile',{destination});notify('Profil ohne Zugangsdaten exportiert.');}}catch(e){notify(prettyError(e),true);}}
-  async function importProfile(){try{const sourcePath=await open({multiple:false,filters:[{name:'Cohost-Profil',extensions:['json']}]});if(typeof sourcePath==='string'){wakeStopSignal++;await call('import_profile',{sourcePath});await refresh();notify('Profil importiert.');}}catch(e){notify(prettyError(e),true);}}
+  async function exportProfile(){try{const destination=await save({defaultPath:`${profile.id||'cohost'}.cohost.json`,filters:[{name:'Cohost-Profil',extensions:['json']}]});if(destination){if(!await saveCurrentBot())return;await call('export_profile',{destination});notify('Profil ohne Zugangsdaten exportiert.');}}catch(e){notify(prettyError(e),true);}}
+  async function importProfile(){try{const sourcePath=await open({multiple:false,filters:[{name:'Cohost-Profil',extensions:['json']}]});if(typeof sourcePath==='string'){wakeStopSignal++;await call('import_profile',{sourcePath});await refresh();notify('Profil importiert. Zugangsdaten und eigene CLI-Pfade bitte neu einrichten.');}}catch(e){notify(prettyError(e),true);}}
   async function importKnowledge(){try{const sourcePath=await open({multiple:false,filters:[{name:'Wissensdokument',extensions:['pdf','txt','md','json','csv']}]});if(typeof sourcePath==='string'){if(!await persist(true))return;const file=await call('import_knowledge',{sourcePath});knowledge=[...knowledge.filter(item=>item.name!==file.name),file];notify('Wissensdokument hinzugefügt. Passende Stellen werden automatisch herangezogen.');}}catch(e){notify(prettyError(e),true);}}
   async function removeKnowledge(name:string){try{await call('delete_knowledge',{name});knowledge=knowledge.filter(file=>file.name!==name);notify('Wissensdatei entfernt.');}catch(e){notify(prettyError(e),true);}}
   async function triggerEmote(id:string){if(switchingBot||creatingBot||saving)return;const botId=profile.id;unlockEmoteAudio();try{if(!await persist(true)||botId!==profile.id)return;await call('trigger_emote',{emoteId:id,botId});}catch(e){notify(prettyError(e),true);}}
@@ -404,39 +421,52 @@
       if(await persist(true))notify('Emote-Sound importiert. Er startet gemeinsam mit der Geste.');
     }catch(error){notify(prettyError(error),true);}
   }
+  function microphoneContext(){return JSON.stringify([profile.id,$state.snapshot(profile.stt),turnEpoch]);}
+  function lockForUpdate(installing:boolean){
+    updateInstalling=installing;
+    if(!installing)return;
+    ++turnEpoch;++wakeStopSignal;microphoneSession.cancel();clearEmotes();player?.stop();
+    clearTimeout(recordingTimer);if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}
+    microphoneStream?.getTracks().forEach(track=>track.stop());microphone=false;
+  }
   async function toggleMic(){
     unlockEmoteAudio();
     if(microphone&&recorder){recorder.stop();microphone=false;return;}
-    if(busy||transcribing)return;
-    if(!await persist(true))return;
-    const epoch=turnEpoch;
+    if(updateInstalling||microphoneStarting||busy||transcribing)return;
+    const context=microphoneContext();const targetBot=profile.id;
+    const current=()=>context===microphoneContext()&&!updateInstalling;
+    let lease:Awaited<ReturnType<typeof microphoneSession.request>>=null;
     try{
-      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-      if(epoch!==turnEpoch){stream.getTracks().forEach(t=>t.stop());return;}
+      lease=await microphoneSession.request(async()=>{
+        if(!await persist(true)||!current())return null;
+        return navigator.mediaDevices.getUserMedia({audio:true});
+      },current);
+      if(!lease)return;
+      const captured=lease;const stream=captured.stream;
       microphoneStream=stream;
       const chunks:BlobPart[]=[];
       const sessionRecorder=new MediaRecorder(stream);
       recorder=sessionRecorder;
       sessionRecorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
       sessionRecorder.onstop=async()=>{
-        clearTimeout(recordingTimer);stream.getTracks().forEach(t=>t.stop());microphone=false;
-        if(epoch!==turnEpoch)return;
+        clearTimeout(recordingTimer);microphoneSession.release(captured);microphone=false;
+        if(!current()||!microphoneSession.isCurrent(captured))return;
         transcribing=true;
         try{
           const blob=new Blob(chunks,{type:sessionRecorder.mimeType||'audio/webm'});
           const audio=await recordingToWav(blob);
-          if(epoch!==turnEpoch)return;
-          const text=await call<string>('transcribe_audio',{...audio,botId:profile.id});
-          if(epoch!==turnEpoch)return;
+          if(!current()||!microphoneSession.isCurrent(captured))return;
+          const text=await call<string>('transcribe_audio',{...audio,botId:targetBot});
+          if(!current()||!microphoneSession.isCurrent(captured))return;
           transcribing=false;message=text;
-          if(profile.model.model||cliProvider){message='';await runMessage(text,'operator','Streamer');}
+          if(profile.model.model||cliProvider){message='';await runMessage(text,'operator','Streamer',targetBot);}
           else notify('Aufnahme transkribiert. Wähle ein Dialogmodell, um die Nachricht zu senden.');
-        }catch(e){if(epoch===turnEpoch)notify(prettyError(e),true);}finally{transcribing=false;}
+        }catch(e){if(current())notify(prettyError(e),true);}finally{if(microphoneSession.isCurrent(captured))transcribing=false;}
       };
       sessionRecorder.start(1000);microphone=true;
       recordingTimer=setTimeout(()=>{if(sessionRecorder.state==='recording'){sessionRecorder.stop();microphone=false;}},120000);
       notify('Mikrofon nimmt auf. Noch einmal klicken, um zu senden. Maximal zwei Minuten.');
-    }catch(e){microphoneStream?.getTracks().forEach(t=>t.stop());microphone=false;notify(`Mikrofon: ${prettyError(e)}`,true);}
+    }catch(e){if(lease)microphoneSession.release(lease);if(current()){microphone=false;notify(`Mikrofon: ${prettyError(e)}`,true);}}
   }
   function timeOf(value:string){try{return new Date(value).toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}catch{return ''}}
 
@@ -462,7 +492,7 @@
     subscribe('cohost://emote',e=>{if(e.botId&&e.botId!==profile.id)return;void showManualEmote(e);});
     const timer=setInterval(()=>{
       queue=queue.filter(q=>Date.now()-new Date(q.createdAt).getTime()<Math.max(profile.chat.expirySeconds,...bots.map(bot=>bot.profile?.chat?.expirySeconds||0))*1000);
-      if(!running||busy||speaking||emoteSoundPlaying||externalEmotePlaying||microphone||transcribing)return;
+      if(updateInstalling||!running||busy||speaking||emoteSoundPlaying||externalEmotePlaying||microphone||microphoneStarting||transcribing)return;
       const participants=bots.filter(bot=>botEnabled(bot)||bot.id===profile.id);
       for(const bot of participants){
         const config=bot.id===profile.id?profile:bot.profile;
@@ -471,35 +501,35 @@
         if(next){void answerQueued(next,bot.id);break;}
       }
     },1000);
-    return()=>{disposed=true;turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
+    return()=>{disposed=true;turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
   });
 </script>
 
 <svelte:head><title>Streamer AI Cohost</title></svelte:head>
 <svelte:window onkeydown={handleShortcut}/>
 
-<div class="app-shell">
+<div class="app-shell" inert={updateInstalling}>
   <aside class="sidebar">
     <div class="window-drag" data-tauri-drag-region></div>
     <a class="brand" href="/" onclick={(e)=>{e.preventDefault();page='studio'}} aria-label="Streamer AI Cohost Regiepult"><span class="brand-symbol"><Sparkles size={22} strokeWidth={2.3}/></span><span>streamer<span class="brand-ai">ai</span><small>Cohost studio</small></span></a>
     <div class="bot-switcher">
       <button class="profile-switch" aria-expanded={botMenu} onclick={()=>botMenu=!botMenu}><span class="mini-avatar"><span></span><span></span></span><span><strong>{profile.name}</strong><small>{bots.length||1} {bots.length<=1?'Bot':'Bots'} · Auswahl</small></span><ChevronDown size={15}/></button>
-      {#if botMenu}<div class="bot-menu"><div class="bot-menu-heading"><strong>Deine Bots</strong><button class="icon-button" aria-label="Bot-Auswahl schließen" onclick={()=>botMenu=false}><X size={14}/></button></div>{#each bots as bot}<button class="bot-menu-entry" class:chosen={bot.id===profile.id} onclick={()=>selectBot(bot.id)} disabled={busy||microphone||transcribing||switchingBot||creatingBot||saving}><span class="bot-initial">{bot.name.charAt(0)}</span><span><strong>{bot.name}</strong><small>{bot.live?'Eigenes Figurenfenster':bot.profile?.output?.streamingEnabled?'OBS-Ausgabe':'Profil'}</small></span>{#if bot.id===profile.id}<Check size={14}/>{/if}</button>{/each}<button class="button secondary full" disabled={busy||microphone||transcribing||switchingBot||creatingBot||saving} onclick={()=>{botMenu=false;botDialog=true;botCopy=false;botCharacter='nova'}}><Plus size={14}/>Neuen Bot anlegen</button></div>{/if}
+      {#if botMenu}<div class="bot-menu"><div class="bot-menu-heading"><strong>Deine Bots</strong><button class="icon-button" aria-label="Bot-Auswahl schließen" onclick={()=>botMenu=false}><X size={14}/></button></div>{#each bots as bot}<button class="bot-menu-entry" class:chosen={bot.id===profile.id} onclick={()=>selectBot(bot.id)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving}><span class="bot-initial">{bot.name.charAt(0)}</span><span><strong>{bot.name}</strong><small>{bot.live?'Eigenes Figurenfenster':bot.profile?.output?.streamingEnabled?'OBS-Ausgabe':'Profil'}</small></span>{#if bot.id===profile.id}<Check size={14}/>{/if}</button>{/each}<button class="button secondary full" disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving} onclick={()=>{botMenu=false;botDialog=true;botCopy=false;botCharacter='nova'}}><Plus size={14}/>Neuen Bot anlegen</button></div>{/if}
     </div>
-    <button class="new-bot-button" disabled={busy||microphone||transcribing||switchingBot||creatingBot||saving} onclick={()=>{botDialog=true;botCopy=false;botCharacter='nova'}}><Plus size={14}/><span>Neuen Bot anlegen</span></button>
+    <button class="new-bot-button" disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving} onclick={()=>{botDialog=true;botCopy=false;botCharacter='nova'}}><Plus size={14}/><span>Neuen Bot anlegen</span></button>
     <nav aria-label="Hauptnavigation">{#each ['live','bot','shared'] as group}{#if group!=='live'}<p class="nav-group-label">{group==='bot'?'Für '+profile.name:'Gemeinsame Bibliothek'}</p>{/if}{#each nav.filter(item=>item.group===group) as item}<button class:active={page===item.id} onclick={()=>page=item.id as Page} aria-current={page===item.id?'page':undefined} title={'Alt/⌥+'+(nav.indexOf(item)+1)}><item.icon size={18} strokeWidth={1.7}/><span>{item.label}</span>{#if item.id==='extensions'&&(library.mcpServers.length+library.skills.length)}<span class="nav-count">{library.mcpServers.length+library.skills.length}</span>{/if}</button>{/each}{/each}</nav>
-    <div class="sidebar-bottom"><div class="runtime-line"><span class="status-dot" class:online={native}></span>{native?'Desktop-App':'Browser-Vorschau'}<span>v{appVersion}</span></div><button class="subtle-button" onclick={()=>{page='models'}}><SlidersHorizontal size={16}/> Integrationen verwalten</button><p>Dein Charakter. Deine Regeln.</p></div>
+    <div class="sidebar-bottom"><div class="runtime-line"><span class="status-dot" class:online={native}></span>{native?'Desktop-App':'Browser-Vorschau'}<span>v{appVersion}</span></div><button class="subtle-button" onclick={()=>updatesOpen=true}><Download size={16}/>{availableUpdate ? 'Update auf v'+availableUpdate : 'Updates & Version'}</button><button class="subtle-button" onclick={()=>{page='models'}}><SlidersHorizontal size={16}/> Integrationen verwalten</button><p>Dein Charakter. Deine Regeln.</p></div>
   </aside>
 
   <div class="workspace">
     <header class="app-header" data-tauri-drag-region><div class="breadcrumb">{page==='extensions'?'Bibliothek':profile.name} <span>/</span> <strong>{currentPage?.label}</strong></div><div class="header-actions"><span class="mode-pill"><span class="small-dot"></span>{cliProvider?'CLI-Anbieter':['ollama','lmstudio'].includes(profile.model.provider)?'Lokales Modell':'Cloud / API'}</span>{#if hasUnsavedChanges}<button class="button small secondary" onclick={saveContext} disabled={saving}><Check size={14}/>{saving?'Speichert …':'Änderungen speichern'}</button>{/if}<button class="icon-button keyboard-help-button" onclick={()=>shortcutHelp=true} title="Tastatursteuerung (?)" aria-label="Tastatursteuerung anzeigen"><CircleHelp size={18}/></button><button class="stop-button" onclick={stopAll} title="Sprache und Agent sofort stoppen"><Square size={13} fill="currentColor"/>Stop</button></div></header>
     <main>
       <div class="scope-strip" class:shared={page==='extensions'}><span>{page==='extensions'?'Für alle Bots installiert':'Ausgewählter Bot: '+profile.name}</span><p>{page==='extensions'?'Freigaben rechts gelten ausschließlich für den gewählten Bot.':'Persönlichkeit, Regeln und Freigaben werden getrennt gespeichert.'}</p></div>
-      <div hidden={page!=='studio'&&!profile.wakeWord?.enabled}><WakeWord bind:config={profile.wakeWord} botId={profile.id} sttProvider={profile.stt.provider} blocked={busy||speaking||speechPreparing||emoteSoundPlaying||externalEmotePlaying||microphone||transcribing} stopSignal={wakeStopSignal} onTrigger={text=>runMessage(text,'microphone','Streamer',profile.id)} onError={message=>notify(message,true)} onConfigChange={()=>persist(true)}/></div>
+      <div hidden={page!=='studio'&&!profile.wakeWord?.enabled}><WakeWord bind:config={profile.wakeWord} botId={profile.id} sttProvider={profile.stt.provider} blocked={updateInstalling||busy||speaking||speechPreparing||emoteSoundPlaying||externalEmotePlaying||microphone||microphoneStarting||transcribing} stopSignal={wakeStopSignal} onTrigger={text=>runMessage(text,'microphone','Streamer',profile.id)} onError={message=>notify(message,true)} onConfigChange={()=>persist(true)} onActiveChange={active=>wakeActive=active}/></div>
       <div class="page-heading"><div><h1>{page==='studio'&&bots.length>1?'Dein Stream. Deine Crew.':headings[page]}</h1><p>{subheadings[page]}</p></div>{#if page==='studio'}<button class="button primary" class:running onclick={toggleRunning}>{#if running}<Pause size={16}/>Cohost pausieren{:else}<Play size={16} fill="currentColor"/>Cohost starten{/if}</button>{:else if page!=='extensions'}<button class="button primary" onclick={saveContext} disabled={saving}><Check size={16}/>Änderungen speichern</button>{/if}</div>
 
       {#if page==='studio'}
-        <section class="crew-panel"><div class="crew-heading"><div><h2>Deine Stream-Crew <span>{liveBots.length} Ausgaben aktiv</span></h2><p>Mehrere Figuren gleichzeitig. Jede mit eigenem Modell und eigener Stimme.</p></div><button class="button secondary small" disabled={busy||microphone||transcribing||switchingBot||creatingBot||saving} onclick={()=>{botDialog=true;botCopy=false;botCharacter='nova'}}><Plus size={14}/>Bot hinzufügen</button></div><div class="crew-list">{#each bots as bot}<article class="crew-card" class:editing={bot.id===profile.id}><button class="crew-identity" onclick={()=>selectBot(bot.id)} disabled={busy||microphone||transcribing||switchingBot||creatingBot||saving}><span class="bot-initial">{bot.name.charAt(0)}</span><span><strong>{bot.name}</strong><small>{bot.id===profile.id?'Zum Bearbeiten ausgewählt':bot.profile?.model?.provider||'Eigenes Profil'}</small></span></button><div class="crew-actions"><button class="button small" class:secondary={!(botEnabled(bot))} class:live-output={botEnabled(bot)} disabled={busy||microphone||transcribing||switchingBot||creatingBot||saving} onclick={()=>toggleBotLive(bot)}><Monitor size={12}/>{botEnabled(bot)?'Ausgabe beenden':'Figur zeigen'}</button><button class="icon-button" title={`Eigener OBS-Link für ${bot.name}`} onclick={()=>copyBotObs(bot)} disabled={busy||microphone||transcribing||switchingBot||creatingBot||saving}><Copy size={14}/></button></div></article>{/each}</div><p class="crew-note">Der Live-Chat ist die gemeinsame Eingabe. Eigene Ansprache und Antwortmodus legst du pro Bot unter Verbindungen fest. Antworten werden nacheinander gesprochen.</p></section>
+        <section class="crew-panel"><div class="crew-heading"><div><h2>Deine Stream-Crew <span>{liveBots.length} Ausgaben aktiv</span></h2><p>Mehrere Figuren gleichzeitig. Jede mit eigenem Modell und eigener Stimme.</p></div><button class="button secondary small" disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving} onclick={()=>{botDialog=true;botCopy=false;botCharacter='nova'}}><Plus size={14}/>Bot hinzufügen</button></div><div class="crew-list">{#each bots as bot}<article class="crew-card" class:editing={bot.id===profile.id}><button class="crew-identity" onclick={()=>selectBot(bot.id)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving}><span class="bot-initial">{bot.name.charAt(0)}</span><span><strong>{bot.name}</strong><small>{bot.id===profile.id?'Zum Bearbeiten ausgewählt':bot.profile?.model?.provider||'Eigenes Profil'}</small></span></button><div class="crew-actions"><button class="button small" class:secondary={!(botEnabled(bot))} class:live-output={botEnabled(bot)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving} onclick={()=>toggleBotLive(bot)}><Monitor size={12}/>{botEnabled(bot)?'Ausgabe beenden':'Figur zeigen'}</button><button class="icon-button" title={`Eigener OBS-Link für ${bot.name}`} onclick={()=>copyBotObs(bot)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving}><Copy size={14}/></button></div></article>{/each}</div><p class="crew-note">Der Live-Chat ist die gemeinsame Eingabe. Eigene Ansprache und Antwortmodus legst du pro Bot unter Verbindungen fest. Antworten werden nacheinander gesprochen.</p></section>
         <div class="studio-layout"><section class="stage-column"><div class="studio-stage"><div class="stage-top"><span class="stage-identity"><span class="stage-dot" class:alive={running||speaking}></span>{profile.name}<span class="soft-label">Dein KI-Cohost</span></span><button class="stage-tool" onclick={()=>page='character'} title="Charakter bearbeiten"><Settings2 size={17}/></button></div>
           {#if profile.output.mode==='studio'}<Avatar {profile} {speaking} {level} {emotion} assetUrl={assetUrl(profile.avatar.assetPath,overlayUrl)}/>{:else}<div class="stage-away"><Monitor size={48} strokeWidth={1}/><h2>{profile.output.mode==='overlay'?'Auf deinem Desktop.':'Bereit für deinen Stream.'}</h2><p>{profile.output.mode==='overlay'?'Dein Charakter läuft im eigenen Figurenfenster.':'Füge den kopierten Link als Browserquelle in OBS ein.'}</p><button class="button dark" onclick={useStudio}>Zur Studioansicht</button></div>{/if}
           <div class="stage-caption">{#if subtitleText}<p>{subtitleText}</p>{:else if !hadSubtitle}<h2>Hi, ich bin {profile.name}.</h2><p>{profile.tagline}</p>{/if}</div><div class="stage-bottom"><span><span class="stage-dot" class:alive={busy||speaking||running}></span>{activeStatus}</span><span><Volume2 size={13}/>{profile.voice.provider==='system'?'Systemstimme':profile.voice.provider==='elevenlabs'?'ElevenLabs':'Eigene Sprach-API'}</span></div></div>
@@ -577,7 +607,7 @@
         <div class="settings-grid"><section class="settings-panel"><div class="connection-heading"><span class="platform-logo twitch-bg">▰</span><div><h2>Twitch</h2><p>EventSub WebSocket</p></div><span class="connection-state" class:connected={connection.twitch==='connected'}>{connection.twitch==='connected'?'Verbunden':connection.twitch==='connecting'?'Verbindet …':'Nicht verbunden'}</span></div><label>Client-ID<input bind:value={profile.chat.twitch.clientId} placeholder="Deine Twitch-Anwendung"/></label><div class="field-row"><label>Broadcaster-ID<input bind:value={profile.chat.twitch.broadcasterId}/></label><label>Bot-Nutzer-ID<input bind:value={profile.chat.twitch.userId}/></label></div><label>OAuth-Token <span class="saved-tag">{secrets.includes(profile.chat.twitch.secretId)?'Gespeichert':'Benötigt user:read:chat'}</span><div class="input-action"><input type="password" autocomplete="off" bind:value={secretInputs[profile.chat.twitch.secretId]} placeholder="Token deiner Twitch-Anwendung"/><button class="button secondary" onclick={()=>storeSecret(profile.chat.twitch.secretId)}>Speichern</button></div></label><button class="button secondary full" onclick={()=>platformAction('twitch')}><Plug size={15}/>{['connected','connecting'].includes(connection.twitch)?'Verbindung trennen':'Twitch verbinden'}</button>{#if connectionMessages.twitch}<p class="field-note">{connectionMessages.twitch}</p>{/if}<div class="toggle-row"><div><strong>Antworten auch in den Chat senden</strong><small>Benötigt zusätzlich user:write:chat.</small></div><input type="checkbox" role="switch" aria-label="Antworten auch in den Chat senden" bind:checked={profile.chat.twitch.sendReplies}/></div><p class="field-note">Verwende ein OAuth-Token deiner eigenen Twitch-App mit Chat-Leserechten. Anmeldung und Token-Erstellung erfolgen bei Twitch.</p></section><section class="settings-panel"><div class="connection-heading"><span class="platform-logo youtube-bg"><Youtube size={24}/></span><div><h2>YouTube</h2><p>Live-Chat</p></div><span class="connection-state" class:connected={connection.youtube==='connected'}>{connection.youtube==='connected'?'Verbunden':connection.youtube==='connecting'?'Verbindet …':'Nicht verbunden'}</span></div><label>Live-Video-URL oder Video-ID<input bind:value={profile.chat.youtube.videoId} placeholder="https://youtube.com/watch?v=…"/></label><label>Live-Chat-ID <span>Optional</span><input bind:value={profile.chat.youtube.liveChatId} placeholder="Wird aus dem Live-Video ermittelt"/></label><label>YouTube Data API-Schlüssel <span class="saved-tag">{secrets.includes(profile.chat.youtube.apiKeyId)?'Gespeichert':'Nicht gesetzt'}</span><div class="input-action"><input type="password" autocomplete="off" bind:value={secretInputs[profile.chat.youtube.apiKeyId]} placeholder="Schlüssel deines Google-Projekts"/><button class="button secondary" onclick={()=>storeSecret(profile.chat.youtube.apiKeyId)}>Speichern</button></div></label><button class="button secondary full" onclick={()=>platformAction('youtube')}><Plug size={15}/>{['connected','connecting'].includes(connection.youtube)?'Verbindung trennen':'YouTube verbinden'}</button>{#if connectionMessages.youtube}<p class="field-note">{connectionMessages.youtube}</p>{/if}<div class="toggle-row"><div><strong>Antworten auch in den Chat senden</strong><small>Benötigt ein separates OAuth-Token mit YouTube-Schreibrecht.</small></div><input type="checkbox" role="switch" aria-label="Antworten auch in den Chat senden" bind:checked={profile.chat.youtube.sendReplies}/></div>{#if profile.chat.youtube.sendReplies}<label>OAuth-Token für Chatantworten <span class="saved-tag">{secrets.includes(profile.chat.youtube.sendSecretId||'youtube-write')?'Gespeichert':'Nicht gesetzt'}</span><div class="input-action"><input type="password" autocomplete="off" bind:value={secretInputs[profile.chat.youtube.sendSecretId||'youtube-write']} placeholder="OAuth-Token deiner Google-Anwendung"/><button class="button secondary" onclick={()=>storeSecret(profile.chat.youtube.sendSecretId||'youtube-write')}>Speichern</button></div></label>{/if}<p class="field-note">Der Chat wird mit dem von YouTube vorgegebenen Abrufintervall gelesen. Beide Plattformen können gleichzeitig verbunden sein.</p></section><section class="settings-panel span-two"><div class="section-heading"><SlidersHorizontal size={19}/><div><h2>Gesprächssteuerung</h2><p>Damit aus vielen Nachrichten ein gutes Gespräch wird.</p></div></div><div class="three-fields"><div class="field-with-help"><div class="field-label"><label for="cohost-field-7">Ansprache / Auslöser </label><HelpTip text="Filtert Nachrichten aus dem Stream-Chat für diesen Bot. Nur Nachrichten mit dieser Zeichenfolge werden automatisch berücksichtigt. Der Mikrofon-Weckruf wird getrennt im Regiepult eingestellt."/></div><input id="cohost-field-7" bind:value={profile.chat.trigger} placeholder="Leer = alle Nachrichten"/></div><label>Warteschlange maximal<input type="number" min="1" max="200" bind:value={profile.chat.maxQueue}/></label><div class="field-with-help"><div class="field-label"><label for="cohost-field-8">Nachrichten verfallen nach (Sek.) </label><HelpTip text="Verwirft wartende Chatnachrichten nach dieser Zeit, damit der Cohost nicht auf längst überholte Themen antwortet."/></div><input id="cohost-field-8" type="number" min="10" max="600" bind:value={profile.chat.expirySeconds}/></div></div></section></div>
 
       {:else if page==='extensions'}
-        <ExtensionsPanel bind:profile {library} {native} {busy} onSave={()=>persist(true)} onRefresh={refreshLibrary} onNotify={notify}/>
+        <ExtensionsPanel bind:profile {library} {native} {busy} onSave={()=>persist(true)} onRefresh={refreshLibrary} onNotify={notify} onEditingChange={editing=>extensionEditing=editing}/>
 
       {:else if page==='instructions'}
         <div class="document-layout"><section class="document-panel"><div class="document-tabs"><button class:active={instructionTab==='agents'} onclick={()=>instructionTab='agents'}><FileText size={15}/>AGENTS.md</button><button class:active={instructionTab==='persona'} onclick={()=>instructionTab='persona'}><Sparkles size={15}/>PERSONA.md</button><span>Markdown</span></div><textarea class="document-editor" spellcheck="false" bind:value={documents[instructionTab]} aria-label={instructionTab==='agents'?'AGENTS.md bearbeiten':'PERSONA.md bearbeiten'}></textarea><div class="document-footer"><span>Änderungen gelten ab der nächsten Antwort.</span><span>{documents[instructionTab].length} Zeichen</span></div></section><aside class="settings-stack"><section class="settings-panel"><h2>{instructionTab==='agents'?'Wie dein Agent arbeitet.':'Wer dein Charakter ist.'}</h2><p>{instructionTab==='agents'?'Lege fest, wie dein Cohost Antworten formuliert, Werkzeuge verwendet und mit deinen Zuschauern umgeht.':'Gib deinem Charakter eine Geschichte, eine Haltung und einen eigenen Humor. Diese Beschreibung bleibt beim Modellwechsel erhalten.'}</p><div class="document-hint"><Check size={15}/><span>Persönliche Anweisungen</span></div><div class="document-hint"><Check size={15}/><span>Unabhängig vom Anbieter</span></div><div class="document-hint"><Check size={15}/><span>Als Datei bearbeitbar</span></div></section><section class="settings-panel"><h2>Dein Profil mitnehmen.</h2><p>Exportiere Charakter und Anweisungen. Zugangsdaten bleiben im Schlüsselbund.</p><div class="button-row"><button class="button secondary small" onclick={exportProfile}><Download size={14}/>Exportieren</button><button class="button secondary small" onclick={importProfile}><Upload size={14}/>Importieren</button></div>{#if appDataDir}<button class="text-link folder-link" onclick={()=>openPath(appDataDir)}><FolderOpen size={14}/>Profilordner öffnen</button>{/if}</section></aside></div>
@@ -606,6 +636,8 @@
     </main>
   </div>
 </div>
+
+<UpdatesPanel bind:open={updatesOpen} busyReason={updateBusyReason} onInstalling={lockForUpdate} onAvailable={version=>availableUpdate=version}/>
 
 {#if toast}<div class="toast" class:error role="status">{#if error}<CircleHelp size={18}/>{:else}<CheckCheck size={18}/>{/if}<span>{toast}</span><button onclick={()=>toast=''} aria-label="Meldung schließen"><X size={15}/></button></div>{/if}
 

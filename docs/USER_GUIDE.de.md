@@ -2,7 +2,9 @@
 
 Eine eigenständige Desktop-App für einen konfigurierbaren KI-Stream-Charakter. Tauri + Rust bilden die native Anwendung, Svelte das Regiepult und Three.js den echten 3D-Charakter. Die Oberfläche ist deutsch.
 
-Diese Anleitung beschreibt **0.5.0**. Für veröffentlichte Pakete gelten zusätzlich die Hinweise des jeweiligen [Releases](https://github.com/ralphschuler/streamer-ai-cohost/releases/latest).
+Diese Anleitung beschreibt **0.6.0**. Für veröffentlichte Pakete gelten zusätzlich die Hinweise des jeweiligen [Releases](https://github.com/ralphschuler/streamer-ai-cohost/releases/latest).
+
+Unter **Updates & Version** kannst du automatisch oder manuell nach neuen GitHub Releases suchen. Download und Installation beginnen erst mit **Bestätigen & installieren**. Speichere vorher Entwürfe und beende laufende Ausgaben und das Mikrofon. Details, unterstützte Paketformate und die einmalige manuelle Aktualisierung älterer Versionen stehen unter [Updates](UPDATING.md).
 
 ## Start
 
@@ -165,6 +167,8 @@ Lokale MCP-Server benötigen ihre eigenen Laufzeiten. Der Startbefehl wird direk
 Unter Windows bevorzugt die App native `.exe`-Programme. Bekannte npm-Startdateien `codex.cmd`, `claude.cmd`, `npm.cmd` und `npx.cmd` werden ohne Batch-Shell über `node.exe` und die zugehörige installierte JavaScript-Datei gestartet. Node.js und die betreffende CLI beziehungsweise der MCP-Server müssen separat installiert sein. Bei anderen Batchwrappern einen echten `.exe`-Pfad verwenden. Für einen manuell eingerichteten npm-MCP-Start kann beispielsweise `C:\Program Files\nodejs\node.exe` als Programm und `C:\Program Files\nodejs\node_modules\npm\bin\npx-cli.js` als erstes Argument eingetragen werden; die Serverargumente folgen als weitere Listeneinträge. Es wird keine zusammengesetzte Shell-Befehlszeile ausgeführt.
 
 `scripts/`, `references/` und `assets/` werden mit dem Skillordner importiert. **Skill-Skripte für [Bot] erlauben** ist eine zusätzliche Freigabe pro Bot, standardmäßig aus. Skripte benötigen eine separat verfügbare Node-/Python-Laufzeit und dürfen nur bei ausdrücklichen Betreiber-Aufträgen laufen; Zuschauer erhalten diese Fähigkeit nicht. Die App bietet dafür keine Betriebssystem-Sandbox. Ein Profilpaket enthält nur die diesem Bot zugewiesenen Erweiterungen und deren Ressourcen; Zugangsdaten müssen am Ziel erneut hinterlegt werden. Ein Beispielprofil liegt unter `character-template/`.
+
+Importierte Profile erhalten neue, ungebundene Zugangsdaten-Verweise. Sie können keine vorhandenen Schlüssel oder automatisch erkannten Standard-Schlüssel mitbenutzen. Auch eigene CLI-Programmpfade werden zurückgesetzt; richte sie nach dem Import erneut ein. MCP-Zugriff, Skill-Skripte, Hindsight und automatische Plattformantworten bleiben bis zu deiner Freigabe aus. Das ausdrückliche Kopieren eines eigenen Bots innerhalb der App behält dagegen die gewählten Verweise.
 
 ### Den Cohost über einen Agenten steuern
 

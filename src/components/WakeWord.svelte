@@ -13,9 +13,10 @@
     onTrigger: (text: string) => Promise<void> | void;
     onError: (message: string) => void;
     onConfigChange?: () => Promise<boolean | void> | boolean | void;
+    onActiveChange?: (active: boolean) => void;
   }
 
-  let { config = $bindable(), botId, sttProvider, blocked = false, stopSignal = 0, onTrigger, onError, onConfigChange }: Props = $props();
+  let { config = $bindable(), botId, sttProvider, blocked = false, stopSignal = 0, onTrigger, onError, onConfigChange, onActiveChange }: Props = $props();
   let status = $state<WakeWordState>('stopped');
   let expanded = $state(false);
   let phraseDraft = $state('');
@@ -29,6 +30,7 @@
   let lastNotification = '';
   let lastNotificationAt = 0;
   const active = $derived(status !== 'stopped');
+  $effect(() => { onActiveChange?.(active); });
   const local = $derived(sttProvider === 'whisper-local');
   const providerName = $derived(({ 'whisper-local': 'Lokales Whisper', openai: 'OpenAI Whisper · Cloud', elevenlabs: 'ElevenLabs Scribe · Cloud', compatible: 'Konfigurierte STT-API' } as Record<string, string>)[sttProvider] || 'Keine Spracherkennung');
   const phrases = $derived(normalizeWakePhrases(config?.phrases));
@@ -146,7 +148,7 @@
     untrack(() => { if (signal !== previousStop) { previousStop = signal; stopListening(); } });
   });
 
-  onDestroy(() => { destroyed = true; stopListening(); });
+  onDestroy(() => { destroyed = true; stopListening(); onActiveChange?.(false); });
 </script>
 
 <section class="wake-word" class:listening={active && status !== 'paused'} aria-label="Sprachaktivierung">
