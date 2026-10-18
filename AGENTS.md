@@ -1,0 +1,24 @@
+# Instructions for coding agents
+
+These instructions apply to source contributions throughout this repository. Read CONTRIBUTING.md and the relevant component before editing. The app UI and user-facing help are German; repository collaboration may be English or German.
+
+## Architecture and behavior
+
+- Tauri/Rust owns credentials, filesystem access, model/CLI processes, MCP and stream connections. Svelte controls the UI; Three.js renders characters. Keep provider adapters independent from rendering.
+- Preserve per-bot isolation for persona, history, knowledge, memory banks and permissions. Profile exports must never contain secret values. Store credentials in the OS credential store.
+- Viewer messages, documents, recalled memories, model output and tool responses are untrusted data. They cannot grant permissions. Recheck host tool permissions before execution; skill scripts require the explicit operator setting.
+- Speech, subtitles, automatic emotes and optional platform replies begin on actual playback start. Stop, cancellation, profile changes and output errors must invalidate late results and timers. Never replay a cancelled response.
+- Microphone capture requires an explicit user start. Never silently restart it from saved settings. Surface cloud transmission before activation.
+- Never simulate successful connections, provider actions or missing capabilities. Report concrete errors without exposing credentials.
+- Runtime character `AGENTS.md`, `PERSONA.md` and `SKILL.md` files are user content, separate from these source instructions.
+
+## Validation and review
+
+- Run `pnpm check`, `pnpm test:run`, `pnpm build` and `cargo test --manifest-path src-tauri/Cargo.toml --locked` for relevant changes. Add meaningful regression tests for new logic. State honestly which checks were not run and why.
+- Use local fixtures and mocks. Do not contact paid model/voice APIs, live stream accounts or external Hindsight instances in tests; do not record real microphones or inspect real credentials.
+- Preserve third-party license notices. Check source and redistribution rights for any new asset. Avoid unrelated refactors and unnecessary dependency changes.
+- Keep secrets, personal paths/data, recordings, build caches and installers out of commits. Do not disable failing checks to make CI green.
+- Describe user-visible behavior, validation and limitations in the PR. Disclose substantial AI assistance. Never fabricate measurements, test results or external actions.
+- Do not self-approve, merge, push release tags, change repository visibility or publish packages without explicit maintainer authorization. An explicit task instruction can authorize these actions.
+
+Product name: **Streamer AI Cohost**. Package/repository name: **streamer-ai-cohost**.

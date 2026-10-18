@@ -1,0 +1,28 @@
+name: Bug report
+description: Report a reproducible problem using sanitized data.
+body:
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include expected behavior and steps to reproduce. Never paste tokens, OBS access links, private transcripts or profiles.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App version
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: Windows x64 / macOS Apple Silicon / Linux x64
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized error details
+      description: Remove account identifiers, credentials and personal data.

@@ -1,0 +1,1429 @@
+{
+  "method": "Statisch aus den glTF-JSON-Chunks der ausgelieferten GLB-Dateien extrahiert; keine Laufzeit- oder Darstellungstests.",
+  "assets": [
+    {
+      "file": "Fox.glb",
+      "bytes": 162852,
+      "sha256": "d97044e701822bac5a62696459b27d7b375aada5de8574ed4362edbba94771f7",
+      "animations": [
+        {
+          "name": "Survey",
+          "duration": 3.416667
+        },
+        {
+          "name": "Walk",
+          "duration": 0.708333
+        },
+        {
+          "name": "Run",
+          "duration": 1.158333
+        }
+      ],
+      "faceMorphs": [],
+      "embeddedImages": true,
+      "requiredExtensions": []
+    },
+    {
+      "file": "KayKitKnight.glb",
+      "bytes": 3659532,
+      "sha256": "60428e3abc09ba83e595d256e3af8c5c976b46cdae599f0802fc82b4a3445168",
+      "animations": [
+        {
+          "name": "1H_Melee_Attack_Chop",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Diagonal",
+          "duration": 1
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Horizontal",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "1H_Ranged_Aiming",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Ranged_Reload",
+          "duration": 1.166667
+        },
+        {
+          "name": "1H_Ranged_Shoot",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Ranged_Shooting",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Attack_Chop",
+          "duration": 1.633333
+        },
+        {
+          "name": "2H_Melee_Attack_Slice",
+          "duration": 1.1
+        },
+        {
+          "name": "2H_Melee_Attack_Spin",
+          "duration": 2.4
+        },
+        {
+          "name": "2H_Melee_Attack_Spinning",
+          "duration": 0.666667
+        },
+        {
+          "name": "2H_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "2H_Ranged_Aiming",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Reload",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Shoot",
+          "duration": 1.066667
+        },
+        {
+          "name": "2H_Ranged_Shooting",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block_Attack",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block_Hit",
+          "duration": 1.066667
+        },
+        {
+          "name": "Blocking",
+          "duration": 1.066667
+        },
+        {
+          "name": "Cheer",
+          "duration": 1.666667
+        },
+        {
+          "name": "Death_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Death_A_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Death_B",
+          "duration": 2.633333
+        },
+        {
+          "name": "Death_B_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Dodge_Backward",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Forward",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Left",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Right",
+          "duration": 0.4
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Chop",
+          "duration": 1.266667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Slice",
+          "duration": 1.166667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "Hit_A",
+          "duration": 0.666667
+        },
+        {
+          "name": "Hit_B",
+          "duration": 0.866667
+        },
+        {
+          "name": "Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Interact",
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Full_Long",
+          "duration": 2.333333
+        },
+        {
+          "name": "Jump_Full_Short",
+          "duration": 1.166667
+        },
+        {
+          "name": "Jump_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Jump_Land",
+          "duration": 0.666667
+        },
+        {
+          "name": "Jump_Start",
+          "duration": 0.6
+        },
+        {
+          "name": "Lie_Down",
+          "duration": 3
+        },
+        {
+          "name": "Lie_Idle",
+          "duration": 2.666667
+        },
+        {
+          "name": "Lie_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Lie_StandUp",
+          "duration": 2.333333
+        },
+        {
+          "name": "PickUp",
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "duration": 1.066667
+        },
+        {
+          "name": "Running_Strafe_Left",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_Strafe_Right",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Down",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Idle",
+          "duration": 3.6
+        },
+        {
+          "name": "Sit_Chair_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Sit_Chair_StandUp",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Floor_Down",
+          "duration": 1
+        },
+        {
+          "name": "Sit_Floor_Idle",
+          "duration": 4
+        },
+        {
+          "name": "Sit_Floor_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Sit_Floor_StandUp",
+          "duration": 1.133333
+        },
+        {
+          "name": "Spellcast_Long",
+          "duration": 2.533333
+        },
+        {
+          "name": "Spellcast_Raise",
+          "duration": 2.1
+        },
+        {
+          "name": "Spellcast_Shoot",
+          "duration": 0.933333
+        },
+        {
+          "name": "Spellcasting",
+          "duration": 0.666667
+        },
+        {
+          "name": "T-Pose",
+          "duration": 0
+        },
+        {
+          "name": "Throw",
+          "duration": 1.366667
+        },
+        {
+          "name": "Unarmed_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Kick",
+          "duration": 0.933333
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_A",
+          "duration": 1.466667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_B",
+          "duration": 1.666667
+        },
+        {
+          "name": "Unarmed_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Use_Item",
+          "duration": 1.6
+        },
+        {
+          "name": "Walking_A",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_B",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_Backwards",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_C",
+          "duration": 1.6
+        }
+      ],
+      "faceMorphs": [],
+      "embeddedImages": true,
+      "requiredExtensions": []
+    },
+    {
+      "file": "KayKitMage.glb",
+      "bytes": 3589240,
+      "sha256": "cf898585da33fab50c724d31605fb931eb2912e6d2280092141e98ca81ad507d",
+      "animations": [
+        {
+          "name": "1H_Melee_Attack_Chop",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Diagonal",
+          "duration": 1
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Horizontal",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "1H_Ranged_Aiming",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Ranged_Reload",
+          "duration": 1.166667
+        },
+        {
+          "name": "1H_Ranged_Shoot",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Ranged_Shooting",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Attack_Chop",
+          "duration": 1.633333
+        },
+        {
+          "name": "2H_Melee_Attack_Slice",
+          "duration": 1.1
+        },
+        {
+          "name": "2H_Melee_Attack_Spin",
+          "duration": 2.4
+        },
+        {
+          "name": "2H_Melee_Attack_Spinning",
+          "duration": 0.666667
+        },
+        {
+          "name": "2H_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "2H_Ranged_Aiming",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Reload",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Shoot",
+          "duration": 1.066667
+        },
+        {
+          "name": "2H_Ranged_Shooting",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block_Attack",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block_Hit",
+          "duration": 1.066667
+        },
+        {
+          "name": "Blocking",
+          "duration": 1.066667
+        },
+        {
+          "name": "Cheer",
+          "duration": 1.666667
+        },
+        {
+          "name": "Death_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Death_A_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Death_B",
+          "duration": 2.633333
+        },
+        {
+          "name": "Death_B_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Dodge_Backward",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Forward",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Left",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Right",
+          "duration": 0.4
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Chop",
+          "duration": 1.266667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Slice",
+          "duration": 1.166667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "Hit_A",
+          "duration": 0.666667
+        },
+        {
+          "name": "Hit_B",
+          "duration": 0.866667
+        },
+        {
+          "name": "Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Interact",
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Full_Long",
+          "duration": 2.333333
+        },
+        {
+          "name": "Jump_Full_Short",
+          "duration": 1.166667
+        },
+        {
+          "name": "Jump_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Jump_Land",
+          "duration": 0.666667
+        },
+        {
+          "name": "Jump_Start",
+          "duration": 0.6
+        },
+        {
+          "name": "Lie_Down",
+          "duration": 3
+        },
+        {
+          "name": "Lie_Idle",
+          "duration": 2.666667
+        },
+        {
+          "name": "Lie_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Lie_StandUp",
+          "duration": 2.333333
+        },
+        {
+          "name": "PickUp",
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "duration": 1.066667
+        },
+        {
+          "name": "Running_Strafe_Left",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_Strafe_Right",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Down",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Idle",
+          "duration": 3.6
+        },
+        {
+          "name": "Sit_Chair_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Sit_Chair_StandUp",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Floor_Down",
+          "duration": 1
+        },
+        {
+          "name": "Sit_Floor_Idle",
+          "duration": 4
+        },
+        {
+          "name": "Sit_Floor_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Sit_Floor_StandUp",
+          "duration": 1.133333
+        },
+        {
+          "name": "Spellcast_Long",
+          "duration": 2.533333
+        },
+        {
+          "name": "Spellcast_Raise",
+          "duration": 2.1
+        },
+        {
+          "name": "Spellcast_Shoot",
+          "duration": 0.933333
+        },
+        {
+          "name": "Spellcasting",
+          "duration": 0.666667
+        },
+        {
+          "name": "T-Pose",
+          "duration": 0
+        },
+        {
+          "name": "Throw",
+          "duration": 1.366667
+        },
+        {
+          "name": "Unarmed_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Kick",
+          "duration": 0.933333
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_A",
+          "duration": 1.466667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_B",
+          "duration": 1.666667
+        },
+        {
+          "name": "Unarmed_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Use_Item",
+          "duration": 1.6
+        },
+        {
+          "name": "Walking_A",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_B",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_Backwards",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_C",
+          "duration": 1.6
+        }
+      ],
+      "faceMorphs": [],
+      "embeddedImages": true,
+      "requiredExtensions": []
+    },
+    {
+      "file": "KayKitRogue.glb",
+      "bytes": 3616284,
+      "sha256": "e825437cd4d2ee9c1960b517a74a69101e33eb409ae7fa8cedc7134a998fbb7d",
+      "animations": [
+        {
+          "name": "1H_Melee_Attack_Chop",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Diagonal",
+          "duration": 1
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Horizontal",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "1H_Ranged_Aiming",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Ranged_Reload",
+          "duration": 1.166667
+        },
+        {
+          "name": "1H_Ranged_Shoot",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Ranged_Shooting",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Attack_Chop",
+          "duration": 1.633333
+        },
+        {
+          "name": "2H_Melee_Attack_Slice",
+          "duration": 1.1
+        },
+        {
+          "name": "2H_Melee_Attack_Spin",
+          "duration": 2.4
+        },
+        {
+          "name": "2H_Melee_Attack_Spinning",
+          "duration": 0.666667
+        },
+        {
+          "name": "2H_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "2H_Ranged_Aiming",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Reload",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Shoot",
+          "duration": 1.066667
+        },
+        {
+          "name": "2H_Ranged_Shooting",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block_Attack",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block_Hit",
+          "duration": 1.066667
+        },
+        {
+          "name": "Blocking",
+          "duration": 1.066667
+        },
+        {
+          "name": "Cheer",
+          "duration": 1.666667
+        },
+        {
+          "name": "Death_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Death_A_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Death_B",
+          "duration": 2.633333
+        },
+        {
+          "name": "Death_B_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Dodge_Backward",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Forward",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Left",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Right",
+          "duration": 0.4
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Chop",
+          "duration": 1.266667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Slice",
+          "duration": 1.166667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "Hit_A",
+          "duration": 0.666667
+        },
+        {
+          "name": "Hit_B",
+          "duration": 0.866667
+        },
+        {
+          "name": "Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Interact",
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Full_Long",
+          "duration": 2.333333
+        },
+        {
+          "name": "Jump_Full_Short",
+          "duration": 1.166667
+        },
+        {
+          "name": "Jump_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Jump_Land",
+          "duration": 0.666667
+        },
+        {
+          "name": "Jump_Start",
+          "duration": 0.6
+        },
+        {
+          "name": "Lie_Down",
+          "duration": 3
+        },
+        {
+          "name": "Lie_Idle",
+          "duration": 2.666667
+        },
+        {
+          "name": "Lie_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Lie_StandUp",
+          "duration": 2.333333
+        },
+        {
+          "name": "PickUp",
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "duration": 1.066667
+        },
+        {
+          "name": "Running_Strafe_Left",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_Strafe_Right",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Down",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Idle",
+          "duration": 3.6
+        },
+        {
+          "name": "Sit_Chair_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Sit_Chair_StandUp",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Floor_Down",
+          "duration": 1
+        },
+        {
+          "name": "Sit_Floor_Idle",
+          "duration": 4
+        },
+        {
+          "name": "Sit_Floor_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Sit_Floor_StandUp",
+          "duration": 1.133333
+        },
+        {
+          "name": "Spellcast_Long",
+          "duration": 2.533333
+        },
+        {
+          "name": "Spellcast_Raise",
+          "duration": 2.1
+        },
+        {
+          "name": "Spellcast_Shoot",
+          "duration": 0.933333
+        },
+        {
+          "name": "Spellcasting",
+          "duration": 0.666667
+        },
+        {
+          "name": "T-Pose",
+          "duration": 0
+        },
+        {
+          "name": "Throw",
+          "duration": 1.366667
+        },
+        {
+          "name": "Unarmed_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Kick",
+          "duration": 0.933333
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_A",
+          "duration": 1.466667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_B",
+          "duration": 1.666667
+        },
+        {
+          "name": "Unarmed_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Use_Item",
+          "duration": 1.6
+        },
+        {
+          "name": "Walking_A",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_B",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_Backwards",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_C",
+          "duration": 1.6
+        }
+      ],
+      "faceMorphs": [],
+      "embeddedImages": true,
+      "requiredExtensions": []
+    },
+    {
+      "file": "KayKitSkeleton.glb",
+      "bytes": 4814296,
+      "sha256": "6ffc003f895bed0b074791e0e490846210a2e2f8fc7da300aba53cc185f95968",
+      "animations": [
+        {
+          "name": "1H_Melee_Attack_Chop",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Melee_Attack_Jump_Chop",
+          "duration": 1.333333
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Diagonal",
+          "duration": 1
+        },
+        {
+          "name": "1H_Melee_Attack_Slice_Horizontal",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "1H_Ranged_Aiming",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Ranged_Reload",
+          "duration": 1.166667
+        },
+        {
+          "name": "1H_Ranged_Shoot",
+          "duration": 1.066667
+        },
+        {
+          "name": "1H_Ranged_Shooting",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Attack_Chop",
+          "duration": 1.633333
+        },
+        {
+          "name": "2H_Melee_Attack_Slice",
+          "duration": 1.1
+        },
+        {
+          "name": "2H_Melee_Attack_Spin",
+          "duration": 2.4
+        },
+        {
+          "name": "2H_Melee_Attack_Spinning",
+          "duration": 0.666667
+        },
+        {
+          "name": "2H_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Melee_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "2H_Ranged_Aiming",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Reload",
+          "duration": 1.6
+        },
+        {
+          "name": "2H_Ranged_Shoot",
+          "duration": 1.066667
+        },
+        {
+          "name": "2H_Ranged_Shooting",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block_Attack",
+          "duration": 1.066667
+        },
+        {
+          "name": "Block_Hit",
+          "duration": 1.066667
+        },
+        {
+          "name": "Blocking",
+          "duration": 1.066667
+        },
+        {
+          "name": "Cheer",
+          "duration": 1.666667
+        },
+        {
+          "name": "Death_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Death_A_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Death_B",
+          "duration": 2.633333
+        },
+        {
+          "name": "Death_B_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Death_C_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Death_C_Skeletons",
+          "duration": 2
+        },
+        {
+          "name": "Death_C_Skeletons_Resurrect",
+          "duration": 2.7
+        },
+        {
+          "name": "Dodge_Backward",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Forward",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Left",
+          "duration": 0.4
+        },
+        {
+          "name": "Dodge_Right",
+          "duration": 0.4
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Chop",
+          "duration": 1.266667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Slice",
+          "duration": 1.166667
+        },
+        {
+          "name": "Dualwield_Melee_Attack_Stab",
+          "duration": 1.6
+        },
+        {
+          "name": "Hit_A",
+          "duration": 0.666667
+        },
+        {
+          "name": "Hit_B",
+          "duration": 0.866667
+        },
+        {
+          "name": "Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Idle_B",
+          "duration": 2.133333
+        },
+        {
+          "name": "Idle_Combat",
+          "duration": 4.266667
+        },
+        {
+          "name": "Interact",
+          "duration": 1.3
+        },
+        {
+          "name": "Jump_Full_Long",
+          "duration": 2.333333
+        },
+        {
+          "name": "Jump_Full_Short",
+          "duration": 1.166667
+        },
+        {
+          "name": "Jump_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Jump_Land",
+          "duration": 0.666667
+        },
+        {
+          "name": "Jump_Start",
+          "duration": 0.6
+        },
+        {
+          "name": "Lie_Down",
+          "duration": 3
+        },
+        {
+          "name": "Lie_Idle",
+          "duration": 2.666667
+        },
+        {
+          "name": "Lie_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Lie_StandUp",
+          "duration": 2.333333
+        },
+        {
+          "name": "PickUp",
+          "duration": 1.3
+        },
+        {
+          "name": "Running_A",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_B",
+          "duration": 1.066667
+        },
+        {
+          "name": "Running_C",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_Strafe_Left",
+          "duration": 0.8
+        },
+        {
+          "name": "Running_Strafe_Right",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Down",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Chair_Idle",
+          "duration": 3.6
+        },
+        {
+          "name": "Sit_Chair_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Sit_Chair_StandUp",
+          "duration": 0.8
+        },
+        {
+          "name": "Sit_Floor_Down",
+          "duration": 1
+        },
+        {
+          "name": "Sit_Floor_Idle",
+          "duration": 4
+        },
+        {
+          "name": "Sit_Floor_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Sit_Floor_StandUp",
+          "duration": 1.133333
+        },
+        {
+          "name": "Skeleton_Inactive_Standing_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Skeletons_Awaken_Floor",
+          "duration": 2.3
+        },
+        {
+          "name": "Skeletons_Awaken_Floor_Long",
+          "duration": 3.833333
+        },
+        {
+          "name": "Skeletons_Awaken_Standing",
+          "duration": 1
+        },
+        {
+          "name": "Skeletons_Inactive_Floor_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Spawn_Air",
+          "duration": 1.3
+        },
+        {
+          "name": "Spawn_Ground",
+          "duration": 1.3
+        },
+        {
+          "name": "Spawn_Ground_Skeletons",
+          "duration": 3.566667
+        },
+        {
+          "name": "Spellcast_Long",
+          "duration": 2.533333
+        },
+        {
+          "name": "Spellcast_Raise",
+          "duration": 2.1
+        },
+        {
+          "name": "Spellcast_Shoot",
+          "duration": 0.933333
+        },
+        {
+          "name": "Spellcast_Summon",
+          "duration": 4.3
+        },
+        {
+          "name": "Spellcasting",
+          "duration": 0.666667
+        },
+        {
+          "name": "T-Pose",
+          "duration": 0
+        },
+        {
+          "name": "Taunt",
+          "duration": 1.033333
+        },
+        {
+          "name": "Taunt_Longer",
+          "duration": 3
+        },
+        {
+          "name": "Throw",
+          "duration": 1.366667
+        },
+        {
+          "name": "Unarmed_Idle",
+          "duration": 1.066667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Kick",
+          "duration": 0.933333
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_A",
+          "duration": 1.466667
+        },
+        {
+          "name": "Unarmed_Melee_Attack_Punch_B",
+          "duration": 1.666667
+        },
+        {
+          "name": "Unarmed_Pose",
+          "duration": 0
+        },
+        {
+          "name": "Use_Item",
+          "duration": 1.6
+        },
+        {
+          "name": "Walking_A",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_B",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_Backwards",
+          "duration": 1.066667
+        },
+        {
+          "name": "Walking_C",
+          "duration": 1.6
+        },
+        {
+          "name": "Walking_D_Skeletons",
+          "duration": 1.6
+        }
+      ],
+      "faceMorphs": [],
+      "embeddedImages": true,
+      "requiredExtensions": []
+    },
+    {
+      "file": "RobotExpressive.glb",
+      "bytes": 463988,
+      "sha256": "047f5e5fb3bb6d378bd1df16ca6137f2a596c99b3a1b5690b4020c05aaf6f319",
+      "animations": [
+        {
+          "name": "Dance",
+          "duration": 3.333333
+        },
+        {
+          "name": "Death",
+          "duration": 0.958333
+        },
+        {
+          "name": "Idle",
+          "duration": 3.333333
+        },
+        {
+          "name": "Jump",
+          "duration": 0.708333
+        },
+        {
+          "name": "No",
+          "duration": 1.666667
+        },
+        {
+          "name": "Punch",
+          "duration": 0.833333
+        },
+        {
+          "name": "Running",
+          "duration": 0.958333
+        },
+        {
+          "name": "Sitting",
+          "duration": 0.416667
+        },
+        {
+          "name": "Standing",
+          "duration": 0.416667
+        },
+        {
+          "name": "ThumbsUp",
+          "duration": 1.583333
+        },
+        {
+          "name": "Walking",
+          "duration": 0.958333
+        },
+        {
+          "name": "WalkJump",
+          "duration": 0.833333
+        },
+        {
+          "name": "Wave",
+          "duration": 1.833333
+        },
+        {
+          "name": "Yes",
+          "duration": 1.666667
+        }
+      ],
+      "faceMorphs": [
+        "Angry",
+        "Sad",
+        "Surprised"
+      ],
+      "embeddedImages": true,
+      "requiredExtensions": []
+    }
+  ]
+}

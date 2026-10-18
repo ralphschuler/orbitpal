@@ -1,0 +1,13 @@
+* text=auto eol=lf
+*.glb binary
+*.vrm binary
+*.png binary
+*.ico binary
+*.icns binary
+*.woff2 binary
+*.jpg binary
+
+# Preserve upstream license formatting.
+public/characters/*.txt -whitespace
+public/characters/osa/*.txt -whitespace
+public/licenses/** -whitespace

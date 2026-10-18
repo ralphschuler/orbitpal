@@ -1,0 +1,83 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { AvatarStage } from '../lib/avatar';
+
+  interface Props {
+    profile: any;
+    speaking?: boolean;
+    level?: number;
+    emotion?: string;
+    transparent?: boolean;
+    assetUrl?: string;
+  }
+
+  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl }: Props = $props();
+  let host: HTMLDivElement;
+  let stage = $state<AvatarStage>();
+  let failure = $state('');
+  let unavailable = $state(false);
+  let loading = $state(false);
+  let emoteFailure = $state('');
+  let assetRequest = 0;
+
+  onMount(() => {
+    try {
+      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent }, (message) => { emoteFailure = message; });
+      stage = renderer;
+      return () => { ++assetRequest; renderer.dispose(); };
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+      unavailable = true;
+    }
+  });
+
+  $effect(() => {
+    stage?.update({ profile, speaking, level, emotion, transparent });
+  });
+
+  $effect(() => {
+    const renderer = stage;
+    const url = assetUrl;
+    if (!renderer) return;
+    const request = ++assetRequest;
+    failure = '';
+    loading = Boolean(url);
+    renderer.loadAsset(url).catch((error) => {
+      if (request === assetRequest) failure = error instanceof Error ? error.message : String(error);
+    }).finally(() => {
+      if (request === assetRequest) loading = false;
+    });
+  });
+</script>
+
+<div class="avatar-stage" class:transparent role="img" aria-label={`${profile?.name || 'Nova'}, animierter 3D-Charakter`}>
+  <div class="canvas-host" bind:this={host}></div>
+  {#if unavailable}
+    <div class="render-fallback">
+      <span class="fallback-mark">N</span>
+      <strong>3D-Darstellung nicht verfügbar</strong>
+      <span>{failure}</span>
+    </div>
+  {:else if loading}
+    <div class="asset-badge" role="status"><span class="spinner"></span> Figur wird geladen</div>
+  {:else if failure}
+    <div class="asset-badge error" role="status" title={failure}>Import fehlgeschlagen · Nova wird angezeigt<span>{failure}</span></div>
+  {:else if emoteFailure}
+    <div class="asset-badge error" role="status" title={emoteFailure}>Emote nicht verfügbar<span>{emoteFailure}</span></div>
+  {/if}
+</div>
+
+<style>
+  .avatar-stage { width: 100%; height: 100%; min-height: 180px; position: relative; isolation: isolate; }
+  .canvas-host { width: 100%; height: 100%; position: absolute; inset: 0; outline: none; }
+  .asset-badge { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: calc(100% - 36px); display: flex; align-items: center; gap: 8px; border: 1px solid #dce1ec; padding: 8px 12px; border-radius: 10px; color: #626d83; background: #fffffff0; font-size: 11px; line-height: 1.5; box-shadow: 0 3px 14px #1d27450b; }
+  .error { flex-direction: column; gap: 2px; text-align: center; color: #8d5336; }
+  .error span { max-width: 320px; font-size: 10px; opacity: 0.8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spinner { width: 10px; height: 10px; flex: 0 0 auto; border: 1.5px solid #cdd6e6; border-top-color: #748ad4; border-radius: 50%; animation: spin 0.8s linear infinite; }
+  .render-fallback { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 28px; text-align: center; color: #647085; font-size: 12px; }
+  .render-fallback > span:last-child { max-width: 300px; line-height: 1.6; }
+  .fallback-mark { display: grid; place-items: center; width: 68px; height: 68px; background: #e0e7fc; color: #7b87c1; border-radius: 22px; font-size: 28px; font-weight: 600; }
+  .transparent .asset-badge { bottom: 4px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+</style>

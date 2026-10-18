@@ -1,0 +1,918 @@
+[
+  {
+    "id": "nova",
+    "name": "Nova",
+    "description": "Unser eigener kleiner 3D-Cohost. Winkt, freut sich und spricht mit animiertem Mund.",
+    "assetPath": null,
+    "author": "Streamer AI Cohost",
+    "license": "Eigene mitgelieferte Figur",
+    "sourceUrl": "",
+    "licenseUrl": "",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:robot-expressive",
+    "name": "Robot Expressive",
+    "description": "Ein ausdrucksstarker Roboter mit 14 eigenen Animationen und drei Gesichtsausdrücken.",
+    "assetPath": "builtin:robot-expressive",
+    "author": "Tomás Laulhé / Quaternius · Don McCurdy",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf/RobotExpressive",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "Wave",
+        "duration": 1.833,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "Dance",
+        "duration": 3.333,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "Jump",
+        "duration": 0.708,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "zustimmen",
+        "name": "Zustimmen",
+        "action": "Yes",
+        "duration": 1.667,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "daumen-hoch",
+        "name": "Daumen hoch",
+        "action": "ThumbsUp",
+        "duration": 1.583,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:fox",
+    "name": "Fox",
+    "description": "Ein stilisierter Fuchs mit aufmerksamem Umsehen, Gehen und Rennen. Ohne Mund- oder Gesichtsrig.",
+    "assetPath": "builtin:fox",
+    "author": "PixelMannen · tomkranis · AsoboStudio · scurest",
+    "license": "CC0 1.0 (Modell) · CC BY 4.0 (Rig & Konvertierung)",
+    "sourceUrl": "https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Fox",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "emotes": [
+      {
+        "id": "umsehen",
+        "name": "Umsehen",
+        "action": "Survey",
+        "duration": 3.417,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "spazieren",
+        "name": "Spazieren",
+        "action": "Walk",
+        "duration": 0.708,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "rennen",
+        "name": "Rennen",
+        "action": "Run",
+        "duration": 1.158,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:kaykit-knight",
+    "name": "Ritter",
+    "description": "Stilisierter humanoider Ritter mit eigener Ruhepose, Jubeln und Interaktion. Ohne Mundmorphs.",
+    "assetPath": "builtin:kaykit-knight",
+    "author": "Kay Lousberg / KayKit",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "Cheer",
+        "duration": 1.667,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "interagieren",
+        "name": "Interagieren",
+        "action": "Interact",
+        "duration": 1.3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "springen",
+        "name": "Springen",
+        "action": "Jump_Full_Short",
+        "duration": 1.167,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "schuetzen",
+        "name": "Schützen",
+        "action": "Block",
+        "duration": 1.067,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:kaykit-mage",
+    "name": "Magier",
+    "description": "Humanoider Magier mit eigener Ruhepose, Jubeln und Zaubergesten. Ohne Mundmorphs.",
+    "assetPath": "builtin:kaykit-mage",
+    "author": "Kay Lousberg / KayKit",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "Cheer",
+        "duration": 1.667,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "interagieren",
+        "name": "Interagieren",
+        "action": "Interact",
+        "duration": 1.3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "springen",
+        "name": "Springen",
+        "action": "Jump_Full_Short",
+        "duration": 1.167,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "zaubern",
+        "name": "Zaubern",
+        "action": "Spellcast_Long",
+        "duration": 2.533,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:kaykit-rogue",
+    "name": "Schurke",
+    "description": "Stilisierter menschlicher Abenteurer mit eigener Ruhepose und beweglicher Haltung. Ohne Mundmorphs.",
+    "assetPath": "builtin:kaykit-rogue",
+    "author": "Kay Lousberg / KayKit",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "Cheer",
+        "duration": 1.667,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "interagieren",
+        "name": "Interagieren",
+        "action": "Interact",
+        "duration": 1.3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "springen",
+        "name": "Springen",
+        "action": "Jump_Full_Short",
+        "duration": 1.167,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "ausweichen",
+        "name": "Ausweichen",
+        "action": "Dodge_Left",
+        "duration": 0.4,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:kaykit-skeleton",
+    "name": "Skelett",
+    "description": "Kleiner Skelett-Cohost mit eigener Ruhepose, Jubeln und frechen Gesten. Ohne Mundmorphs.",
+    "assetPath": "builtin:kaykit-skeleton",
+    "author": "Kay Lousberg / KayKit",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Skeletons-1.0",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "Cheer",
+        "duration": 1.667,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "interagieren",
+        "name": "Interagieren",
+        "action": "Interact",
+        "duration": 1.3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "springen",
+        "name": "Springen",
+        "action": "Jump_Full_Short",
+        "duration": 1.167,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "frech",
+        "name": "Freche Geste",
+        "action": "Taunt_Longer",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:osa-mushy",
+    "name": "Mushy",
+    "description": "VRM-Charakter aus 100Avatars R1 mit Humanoidrig, Blinzeln und Vokalmorphs. Die App steuert Stimme und Gesten.",
+    "assetPath": "builtin:osa-mushy",
+    "author": "Polygonal Mind (Sammlungsangabe)",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://www.opensourceavatars.com/en/finder",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:osa-dracula",
+    "name": "Dracula",
+    "description": "VRM-Charakter aus 100Avatars R1 mit Humanoidrig, Blinzeln und Vokalmorphs. Die App steuert Stimme und Gesten.",
+    "assetPath": "builtin:osa-dracula",
+    "author": "Polygonal Mind (Sammlungsangabe)",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://www.opensourceavatars.com/en/finder",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:osa-always-watching",
+    "name": "AlwaysWatching",
+    "description": "VRM-Charakter aus 100Avatars R1 mit Humanoidrig, Blinzeln und Vokalmorphs. Die App steuert Stimme und Gesten.",
+    "assetPath": "builtin:osa-always-watching",
+    "author": "Polygonal Mind (Sammlungsangabe)",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://www.opensourceavatars.com/en/finder",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:osa-conehead-being",
+    "name": "ConeheadBeing",
+    "description": "VRM-Charakter aus 100Avatars R2 mit Humanoidrig, Blinzeln und Vokalmorphs. Die App steuert Stimme und Gesten.",
+    "assetPath": "builtin:osa-conehead-being",
+    "author": "Polygonal Mind (Sammlungsangabe)",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://www.opensourceavatars.com/en/finder",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:osa-cool-alien",
+    "name": "CoolAlien",
+    "description": "VRM-Charakter aus 100Avatars R1 mit Humanoidrig, Blinzeln und Vokalmorphs. Die App steuert Stimme und Gesten.",
+    "assetPath": "builtin:osa-cool-alien",
+    "author": "Polygonal Mind (Sammlungsangabe)",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://www.opensourceavatars.com/en/finder",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:osa-cool-tiger",
+    "name": "CoolTiger",
+    "description": "VRM-Charakter aus 100Avatars R3 mit Humanoidrig, Blinzeln und Vokalmorphs. Die App steuert Stimme und Gesten.",
+    "assetPath": "builtin:osa-cool-tiger",
+    "author": "Polygonal Mind (Sammlungsangabe)",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://www.opensourceavatars.com/en/finder",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:osa-ghost-pumpking",
+    "name": "GhostPumpking",
+    "description": "VRM-Charakter aus 100Avatars R3 mit Humanoidrig, Blinzeln und Vokalmorphs. Die App steuert Stimme und Gesten.",
+    "assetPath": "builtin:osa-ghost-pumpking",
+    "author": "Polygonal Mind (Sammlungsangabe)",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://www.opensourceavatars.com/en/finder",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:osa-max-hax",
+    "name": "MaxHax",
+    "description": "VRM-Charakter aus ToxSam mit Humanoidrig, Blinzeln und Vokalmorphs. Die App steuert Stimme und Gesten.",
+    "assetPath": "builtin:osa-max-hax",
+    "author": "ToxSam",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://www.opensourceavatars.com/en/finder",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:osa-megan-the-fox",
+    "name": "MeganTheFox",
+    "description": "VRM-Charakter aus 100Avatars R3 mit Humanoidrig, Blinzeln und Vokalmorphs. Die App steuert Stimme und Gesten.",
+    "assetPath": "builtin:osa-megan-the-fox",
+    "author": "Polygonal Mind (Sammlungsangabe)",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://www.opensourceavatars.com/en/finder",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  },
+  {
+    "id": "builtin:osa-paco",
+    "name": "Paco",
+    "description": "VRM-Charakter aus 100Avatars R3 mit Humanoidrig, Blinzeln und Vokalmorphs. Die App steuert Stimme und Gesten.",
+    "assetPath": "builtin:osa-paco",
+    "author": "Polygonal Mind (Sammlungsangabe)",
+    "license": "CC0 1.0",
+    "sourceUrl": "https://www.opensourceavatars.com/en/finder",
+    "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "emotes": [
+      {
+        "id": "winken",
+        "name": "Winken",
+        "action": "wave",
+        "duration": 2.8,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "verstecken",
+        "name": "Verstecken",
+        "action": "hide",
+        "duration": 3,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "freuen",
+        "name": "Freuen",
+        "action": "celebrate",
+        "duration": 2.6,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "nicken",
+        "name": "Nicken",
+        "action": "nod",
+        "duration": 2,
+        "intensity": 1,
+        "allowChat": true
+      },
+      {
+        "id": "tanzen",
+        "name": "Tanzen",
+        "action": "dance",
+        "duration": 3.3,
+        "intensity": 1,
+        "allowChat": true
+      }
+    ]
+  }
+]
