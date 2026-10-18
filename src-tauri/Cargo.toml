@@ -41,6 +41,18 @@ keyring = { version = "3", features = ["windows-native"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Exercise the same patched GLib already required by the Linux runtime.
+glib = "=0.18.5"
+
+[[test]]
+name = "glib_variant_regression"
+path = "../vendor/glib/cohost-regression.rs"
+
+[patch.crates-io]
+# Original 0.18.5 plus the two-line upstream RUSTSEC-2024-0429 fix.
+glib = { path = "../vendor/glib" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

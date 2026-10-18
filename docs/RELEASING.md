@@ -2,6 +2,8 @@
 
 Pull requests and changes on `main` run the CI workflow on Linux, Windows, and macOS. Each platform runs `pnpm check`, `pnpm test:run`, the frontend build, packaging-script tests, and `cargo test --locked`. Tests use local fixtures and HTTP mocks; they do not need live model, voice, streaming, or Hindsight accounts.
 
+Linux CI and the Linux release build also run the focused `glib_variant_regression` test with `--release` optimization. It exercises the vendored GLib string-array iterator fix for [GHSA-wrw7-89jp-8q8g](https://github.com/advisories/GHSA-wrw7-89jp-8q8g); it does not run the upstream GTK test suite. A failed regression prevents publication.
+
 ## Publish a version
 
 1. Update the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Update `Cargo.lock` by running Cargo normally, then verify it with `node scripts/release-info.mjs`.

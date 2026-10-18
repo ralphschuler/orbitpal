@@ -11,3 +11,5 @@ Run `node scripts/third-party-notices.mjs --strict` after installing JavaScript 
 Some upstream package archives omit a standalone license file. For those packages the collection identifies the declared license choice and supplies its complete standard terms from the pinned official SPDX License List v3.27.0, alongside available original copyright headers, authors and the corresponding versioned package-source link. SPDX copyright placeholders remain explicitly marked as template fields; author names or years are never invented. An unknown or unsupported missing license text causes strict generation to fail. Original asset and font licenses remain separate.
 
 Imported user models, voices, documents and extensions are not distributed by this repository. Their users must ensure they have the required rights.
+
+The Linux GLib dependency includes a documented upstream security backport without changing its version. See [vendor/glib/COHOST-BACKPORT.md](vendor/glib/COHOST-BACKPORT.md); a correction notice is bundled in `public/licenses/LOCAL-PATCHES.txt`. Original GLib licensing and source provenance are retained.

@@ -1,0 +1,12 @@
+Streamer AI Cohost local dependency corrections
+
+Linux GTK dependency: glib 0.18.5, MIT license.
+This distribution uses the original two-line upstream correction for
+RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g. The package version is unchanged.
+Original project: https://github.com/gtk-rs/gtk-rs-core
+Original fix: https://github.com/gtk-rs/gtk-rs-core/pull/1343
+Fix commit: b5a4071e439bef2b5eea76c3aa25e5ae84839e34
+Modified source, original licenses, provenance, patch and file hashes:
+https://github.com/ralphschuler/streamer-ai-cohost/tree/v0.4.0/vendor/glib
+The complete corresponding source is also in this release's source ZIP.
+Dependency license/copyright texts remain in DEPENDENCIES.txt.

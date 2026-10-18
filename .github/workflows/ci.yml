@@ -69,5 +69,10 @@ jobs:
         run: node scripts/third-party-notices.mjs --strict
       - name: Build frontend assets
         run: pnpm build
+      - name: Linux GLib iterator regression (optimized)
+        if: runner.os == 'Linux'
+        run: |
+          (cd vendor/glib && sha256sum --check COHOST-SHA256SUMS.txt)
+          cargo test --locked --release --manifest-path src-tauri/Cargo.toml --test glib_variant_regression
       - name: Rust unit tests (no external accounts)
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked

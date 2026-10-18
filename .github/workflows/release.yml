@@ -123,6 +123,13 @@ jobs:
           BUNDLES: ${{ matrix.bundles }}
           APPIMAGE_EXTRACT_AND_RUN: '1'
         run: pnpm tauri build --target "$RUST_TARGET" --bundles "$BUNDLES"
+      - name: Linux GLib iterator regression (optimized)
+        if: runner.os == 'Linux'
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: |
+          (cd vendor/glib && sha256sum --check COHOST-SHA256SUMS.txt)
+          cargo test --locked --release --manifest-path src-tauri/Cargo.toml --target "$RUST_TARGET" --test glib_variant_regression
       - name: Collect versioned platform downloads
         env:
           RUST_TARGET: ${{ matrix.target }}

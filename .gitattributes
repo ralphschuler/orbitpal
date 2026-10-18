@@ -11,3 +11,6 @@
 public/characters/*.txt -whitespace
 public/characters/osa/*.txt -whitespace
 public/licenses/** -whitespace
+
+# Vendored archive bytes are verified by COHOST-SHA256SUMS.txt.
+vendor/** -text -whitespace

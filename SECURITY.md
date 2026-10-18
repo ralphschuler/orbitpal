@@ -15,3 +15,7 @@ MCP servers and enabled skill scripts can run programs with the user's OS privil
 Secrets belong in the OS credential store. Dialog providers receive supplied context; voice providers receive their configured input. Hindsight is opt-in and may use further services according to its server configuration. OBS URLs are session-bound access links: do not share them publicly.
 
 Initial prebuilt releases are unsigned/not notarized. Verify downloads against release SHA-256 checksums. Checksums provide integrity, not an independent publisher signature. No automatic in-app updater is enabled.
+
+## Carried dependency correction
+
+The Linux GTK stack requires GLib 0.18. We vendor 0.18.5 with the original upstream fix for RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g; optimized iterator regression tests and source hashes run in Linux CI and releases. See [the backport record](vendor/glib/COHOST-BACKPORT.md). Version-only scanners may still identify 0.18.5; the source correction is documented rather than concealed with a different version.
