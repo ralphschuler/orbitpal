@@ -7,10 +7,15 @@ use tokio::sync::{broadcast,Mutex as AsyncMutex};
 
 #[derive(Clone)]
 struct SpeechEntry {
-    id:String, bot_id:String, text:String, voice:Value, emotion:String,
+    id:String, bot_id:String, text:String, speech_text:String, voice:Value, emotion:String,
     source:String, user:String, emotes:Vec<Value>, output:String,
     user_text:String, hindsight:Value,
     started:bool, finished:bool, cancel:Arc<AtomicBool>,
+}
+impl SpeechEntry{
+    fn synthesis_text(&self)->&str{if self.voice["provider"]=="elevenlabs"{&self.speech_text}else{&self.text}}
+    fn speech_event(&self)->Value{json!({"kind":"speech","botId":self.bot_id,"id":self.id,"text":self.text,"speechText":self.speech_text,"emotion":self.emotion,"source":self.source,"user":self.user,"emotes":self.emotes})}
+    fn presentation_event(&self)->Value{json!({"kind":"started","id":self.id,"botId":self.bot_id,"text":self.text,"emotion":self.emotion,"emotes":self.emotes,"source":self.source,"user":self.user})}
 }
 pub struct OverlayHub {
     pub sender:broadcast::Sender<Value>,
@@ -43,13 +48,13 @@ impl OverlayHub {
         }
         if let Ok(mut audio)=self.audio.try_lock(){audio.clear();}
     }
-    pub fn say_profile(&self,app:&tauri::AppHandle,profile:&Value,id:&str,text:&str,emotion:&str,source:&str,user:&str,user_text:&str,emotes:&[Value],cancel:Arc<AtomicBool>)->Result<(),String> {
+    pub fn say_profile(&self,app:&tauri::AppHandle,profile:&Value,id:&str,text:&str,speech_text:&str,emotion:&str,source:&str,user:&str,user_text:&str,emotes:&[Value],cancel:Arc<AtomicBool>)->Result<(),String> {
         let bot_id=profile["id"].as_str().ok_or("Bot-ID fehlt")?;
         let mut speech=self.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
         if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
-        speech.push_back(SpeechEntry{id:id.into(),bot_id:bot_id.into(),text:text.into(),voice:profile["voice"].clone(),emotion:emotion.into(),source:source.into(),user:user.into(),user_text:user_text.into(),hindsight:profile["hindsight"].clone(),emotes:emotes.to_vec(),output:profile["output"]["mode"].as_str().unwrap_or("studio").into(),started:false,finished:false,cancel});
+        let entry=SpeechEntry{id:id.into(),bot_id:bot_id.into(),text:text.into(),speech_text:speech_text.into(),voice:profile["voice"].clone(),emotion:emotion.into(),source:source.into(),user:user.into(),user_text:user_text.into(),hindsight:profile["hindsight"].clone(),emotes:emotes.to_vec(),output:profile["output"]["mode"].as_str().unwrap_or("studio").into(),started:false,finished:false,cancel};
+        let event=entry.speech_event();speech.push_back(entry);
         while speech.len()>64{if let Some(expired)=speech.pop_front(){expired.cancel.store(true,Ordering::Relaxed);}}
-        let event=json!({"kind":"speech","botId":bot_id,"id":id,"text":text,"emotion":emotion,"source":source,"user":user,"emotes":emotes});
         // Route by the answered bot, independently of the selected editor.
         match profile["output"]["mode"].as_str().unwrap_or("studio"){
             "overlay"=>{let _=app.emit("cohost://overlay",event);},
@@ -104,8 +109,7 @@ pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,e
             entry.started=true;
             // Acknowledgement and invalidation share the same lock. A late
             // start received after Stop can never publish an answer or gesture.
-            let presentation=json!({"kind":"started","id":entry.id,"botId":entry.bot_id,"text":entry.text,"emotion":entry.emotion,"emotes":entry.emotes,"source":entry.source,"user":entry.user});
-            let _=app.emit("cohost://presentation",presentation);
+            let _=app.emit("cohost://presentation",entry.presentation_event());
         }else{
             if entry.finished{return Ok(json!({"accepted":true,"started":false}));}
             entry.finished=true;
@@ -192,7 +196,7 @@ pub async fn speech_audio(app:&tauri::AppHandle,id:&str,bot_id:&str)->Result<Val
     if let Some(audio)=cache.get(id){return Ok(audio.clone());}
     let key=state.store.key_for(&entry.voice)?;
     let audio=tokio::select!{
-        audio=crate::providers::synthesize(&entry.voice,&entry.text,key)=>audio?,
+        audio=crate::providers::synthesize(&entry.voice,entry.synthesis_text(),key)=>audio?,
         _=async{while !entry.cancel.load(Ordering::Relaxed){tokio::time::sleep(Duration::from_millis(75)).await;}}=>return Err("Sprachausgabe wurde abgebrochen".into()),
     };
     if entry.cancel.load(Ordering::Relaxed)||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
@@ -280,4 +284,30 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
         }
     });
     let _=app.emit("cohost://overlay-state",json!({"botId":profile["id"],"active":true}));Ok(())
+}
+
+#[cfg(test)]
+mod tests{
+    use super::*;
+    fn speech(provider:&str)->SpeechEntry{
+        SpeechEntry{id:"speech-fixture".into(),bot_id:"nova".into(),text:"Hallo zusammen!".into(),speech_text:"[crying] Hallo [shouts] zusammen!".into(),voice:json!({"provider":provider}),emotion:"neutral".into(),source:"twitch".into(),user:"viewer".into(),emotes:Vec::new(),output:"studio".into(),user_text:"Grüße den Chat".into(),hindsight:json!({"private_config_marker":"not an event field"}),started:false,finished:false,cancel:Arc::new(AtomicBool::new(false))}
+    }
+    #[test]
+    fn elevenlabs_keeps_audio_tags_in_synthesis_only(){
+        let entry=speech("elevenlabs");
+        assert_eq!(entry.synthesis_text(),"[crying] Hallo [shouts] zusammen!");
+        assert_eq!(entry.presentation_event()["text"],"Hallo zusammen!");
+    }
+    #[test]
+    fn other_speech_providers_receive_clean_text(){
+        for provider in ["system","openai-tts","piper","custom",""]{assert_eq!(speech(provider).synthesis_text(),"Hallo zusammen!");}
+    }
+    #[test]
+    fn speech_job_keeps_both_texts_while_presentation_omits_raw_tags_and_config(){
+        let entry=speech("elevenlabs");let event=entry.speech_event();
+        assert_eq!(event["text"],"Hallo zusammen!");assert_eq!(event["speechText"],entry.speech_text);
+        assert!(event.get("hindsight").is_none());
+        let presentation=entry.presentation_event();
+        assert!(presentation.get("speechText").is_none());assert!(!presentation.to_string().contains("[crying]"));assert!(!presentation.to_string().contains("private_config_marker"));
+    }
 }

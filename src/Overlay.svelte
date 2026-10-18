@@ -4,9 +4,10 @@
   import Avatar from './components/Avatar.svelte';
   import { SpeechPlayer } from './lib/audio';
   import { EmoteSequence, type EmotePayload } from './lib/presentation';
+  import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
 
-  type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; emotion?: string; emotes?: EmotePayload[] };
+  type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; emotion?: string; emotes?: EmotePayload[] };
   type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void> };
   let profile = $state<any>(cloneDefaults());
   let speaking = $state(false);
@@ -27,6 +28,7 @@
   let ready: Promise<void> = Promise.resolve();
   const receivedIds = new Set<string>();
   const emoteSequence = new EmoteSequence(applyEmote);
+  const subtitles = new SubtitleLifetime((value) => { text = value; });
 
   function applyEmote(event: EmotePayload) {
     profile.avatar.emote = {
@@ -71,6 +73,8 @@
     job.finished = true;
     playback(job, false, error);
     if (current === job) {
+      if (error) subtitles.cancel(job.event.id);
+      else if (job.started) subtitles.finish(job.event.id);
       current = undefined;
       if (error) {
         emoteSequence.stop();
@@ -82,6 +86,7 @@
   function cancelCurrent() {
     const job = current;
     current = undefined;
+    subtitles.cancel();
     emoteSequence.stop();
     profile.avatar.emote = undefined;
     player?.stop();
@@ -103,7 +108,7 @@
       if (disposed || current !== job || job.finished || job.started) return;
       job.started = true;
       emotion = event.emotion || 'neutral';
-      text = event.text;
+      subtitles.start(event.id, event.text);
       emoteSequence.start(Array.isArray(event.emotes) ? event.emotes : []);
       playback(job, true);
     };
@@ -112,7 +117,8 @@
       if (disposed || current !== job || job.finished) return;
       const voice = { ...profile.voice };
       if (voice.enabled === false) { onStart(); return; }
-      await player.speak(event.text, voice, async () => {
+      const speechText = voice.provider === 'elevenlabs' ? event.speechText || event.text : event.text;
+      await player.speak(speechText, voice, async () => {
         if (native) return call('get_speech_audio', { id: event.id, botId: event.botId || botId });
         const url = new URL(`/speech/${encodeURIComponent(event.id)}`, overlayUrl);
         url.search = new URL(overlayUrl).search;
@@ -153,8 +159,8 @@
       applyEmote(event);
       return;
     }
-    if (event.kind === 'stop') { cancelCurrent(); text = ''; failure = ''; failureDetail = ''; return; }
-    if (event.kind === 'error') { connectionFailure = event.text || 'Die Verbindung zur App ist nicht verfügbar.'; return; }
+    if (event.kind === 'stop') { cancelCurrent(); failure = ''; failureDetail = ''; return; }
+    if (event.kind === 'error') { subtitles.cancel(); connectionFailure = event.text || 'Die Verbindung zur App ist nicht verfügbar.'; return; }
     if (event.kind !== 'speech' || !event.id || receivedIds.has(event.id)) return;
     receivedIds.add(event.id);
     if (receivedIds.size > 128) receivedIds.delete(receivedIds.values().next().value!);
@@ -204,7 +210,7 @@
       cleanup.push(() => events.close());
     }
     return () => {
-      disposed = true; cancelCurrent(); cleanup.forEach((close) => close()); player.destroy();
+      disposed = true; cancelCurrent(); subtitles.destroy(); cleanup.forEach((close) => close()); player.destroy();
       document.documentElement.classList.remove('overlay-document');
     };
   });

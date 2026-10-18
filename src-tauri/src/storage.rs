@@ -227,7 +227,13 @@ impl Store {
         let db=self.db.lock().map_err(error)?;
         let mut stmt=db.prepare("SELECT id,role,text,source,user_name,created_at FROM (SELECT rowid,id,role,text,source,user_name,created_at FROM messages WHERE profile_id=?1 ORDER BY rowid DESC LIMIT 300) ORDER BY rowid ASC").map_err(error)?;
         let rows=stmt.query_map([id],|r|Ok(json!({"id":r.get::<_,String>(0)?,"role":r.get::<_,String>(1)?,"text":r.get::<_,String>(2)?,"source":r.get::<_,String>(3)?,"user":r.get::<_,String>(4)?,"createdAt":r.get::<_,i64>(5)?}))).map_err(error)?;
-        rows.collect::<Result<Vec<_>,_>>().map_err(error)
+        let mut messages=rows.collect::<Result<Vec<_>,_>>().map_err(error)?;
+        for message in &mut messages {
+            if message["role"]=="assistant" {
+                message["text"]=json!(crate::speech_text::display_text(message["text"].as_str().unwrap_or_default()));
+            }
+        }
+        Ok(messages)
     }
     pub fn add_message(&self,role:&str,text:&str,source:&str,user:&str) -> Result<Value,String> {
         let id=uuid::Uuid::new_v4().to_string();
