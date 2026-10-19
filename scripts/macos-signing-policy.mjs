@@ -39,10 +39,14 @@ export function designatedRequirement(identity) {
   return `designated => identifier "${MACOS_IDENTIFIER}" and certificate leaf = H"${identity.sha1}"`;
 }
 
-export function assertPinnedRequirement(output, identity) {
+export function extractDesignatedRequirement(output) {
   const lines = output.split(/\r?\n/).map(line => line.trim()).filter(line => /^(?:#\s*)?designated\s*=>/.test(line));
   assert.equal(lines.length, 1, 'Exactly one designated requirement must be present');
-  const actual = lines[0].replace(/^#\s*/, '').replace(/\s+/g, ' ').replace(/H"([0-9A-Fa-f]{40})"/g, (_, hash) => `H"${hash.toLowerCase()}"`);
+  return lines[0].replace(/^#\s*/, '').replace(/\s+/g, ' ').replace(/H"([0-9A-Fa-f]{40})"/g, (_, hash) => `H"${hash.toLowerCase()}"`);
+}
+
+export function assertPinnedRequirement(output, identity) {
+  const actual = extractDesignatedRequirement(output);
   assert.equal(actual, designatedRequirement(identity), 'The macOS designated requirement must bind exactly the app ID and pinned certificate; weaker/name-only/hash-only identities are rejected');
 }
 

@@ -26,6 +26,14 @@ function securityInput(args) { return runNative('/usr/bin/security', ['-i'], { i
 function stateFile(directory) { return join(directory, 'state.json'); }
 function saveState(directory, state) { writeFileSync(stateFile(directory), JSON.stringify(state), { mode: 0o600 }); }
 
+export function searchListRestoreCommand(state) {
+  // A failed initial read must never be mistaken for an originally empty
+  // keychain search list. No keychain has been created before this snapshot.
+  if (state.snapshotTaken !== true) return null;
+  assert.ok(Array.isArray(state.oldKeychains) && state.oldKeychains.every(value => typeof value === 'string' && !/[\r\n\0]/.test(value)), 'Invalid runner keychain snapshot');
+  return ['list-keychains', '-d', 'user', '-s', ...state.oldKeychains];
+}
+
 export function runnerDirectory(target, suffix = '') {
   requireDisposableMac();
   assert.ok(['aarch64-apple-darwin', 'x86_64-apple-darwin'].includes(target), 'Unsupported macOS target');
@@ -38,7 +46,7 @@ export function prepareIdentity(directory, identity, p12, password) {
   assert.match(password, /^[A-Za-z0-9_-]{32,256}$/, 'The signing archive needs a generated, single-line strong password');
   assert.ok(Buffer.isBuffer(p12) && p12.length > 100 && p12.length < 1024 * 1024, 'Invalid signing archive size');
   mkdirSync(directory, { mode: 0o700 });
-  const state = { keychain: join(directory, 'identity.keychain-db'), certificate: join(directory, 'certificate.pem'), oldKeychains: [], trustAdded: false };
+  const state = { keychain: join(directory, 'identity.keychain-db'), certificate: join(directory, 'certificate.pem'), oldKeychains: [], snapshotTaken: false, trustAdded: false };
   saveState(directory, state);
   try {
     privateFile(state.certificate, identity.certificate.toString());
@@ -46,6 +54,7 @@ export function prepareIdentity(directory, identity, p12, password) {
     privateFile(archive, p12);
     const keychainPassword = randomBytes(32).toString('hex');
     state.oldKeychains = runNative('/usr/bin/security', ['list-keychains', '-d', 'user']).split(/\r?\n/).map(line => line.trim().replace(/^"|"$/g, '')).filter(Boolean);
+    state.snapshotTaken = true;
     saveState(directory, state);
     // `security -p/-P/-k` normally leaks passwords through process argv. Its
     // documented interactive mode reads these commands from a pipe instead.
@@ -87,7 +96,7 @@ export function cleanupIdentity(directory) {
   if (existsSync(state.keychain)) {
     try { runNative('/usr/bin/security', ['delete-keychain', state.keychain]); } catch { errors.push('temporary signing keychain'); }
   }
-  try { runNative('/usr/bin/security', ['list-keychains', '-d', 'user', '-s', ...state.oldKeychains]); } catch { errors.push('runner keychain search list'); }
+  try { const restore = searchListRestoreCommand(state); if (restore) runNative('/usr/bin/security', restore); } catch { errors.push('runner keychain search list'); }
   rmSync(directory, { recursive: true, force: true });
   assert.equal(errors.length, 0, `Failed to clean ${errors.join(', ')}; discard this disposable runner`);
 }

@@ -8,8 +8,8 @@ import { collect, platformForTarget } from './collect-release.mjs';
 import { rustInventory, nodeInventory } from './dependency-inventories.mjs';
 import { assertCanPublishLatest, createUpdaterManifest, updaterArtifacts, updaterSignature, canonicalRepository, legacyAssetRepository } from './updater-manifest.mjs';
 import { assertMicrophonePermissions, assertMacosIdentity } from './verify-macos-permissions.mjs';
-import { validateSigningPolicy, designatedRequirement, assertPinnedRequirement, signingCommand, quoteSecurityInput } from './macos-signing-policy.mjs';
-import { requireDisposableMac } from './macos-release-signing.mjs';
+import { validateSigningPolicy, designatedRequirement, extractDesignatedRequirement, assertPinnedRequirement, signingCommand, quoteSecurityInput } from './macos-signing-policy.mjs';
+import { requireDisposableMac, searchListRestoreCommand } from './macos-release-signing.mjs';
 
 test('persistent macOS signing fails closed before reading an unprovisioned or misdirected certificate', () => {
   const policy = { schemaVersion: 1, mode: 'self-signed', identifier: 'studio.streamer-ai.cohost', certificateSha256: 'a'.repeat(64), certificateFile: 'release/macos-signing-certificate.pem' };
@@ -22,6 +22,7 @@ test('macOS designated requirements reject name-only, binary-specific and weaken
   const identity = { identifier: 'studio.streamer-ai.cohost', sha1: 'a'.repeat(40) };
   const expected = designatedRequirement(identity);
   assert.doesNotThrow(() => assertPinnedRequirement(`# ${expected}\n`, identity));
+  assert.equal(extractDesignatedRequirement(`Identifier=studio.streamer-ai.cohost\n# ${expected}\n`), expected);
   assert.doesNotThrow(() => assertPinnedRequirement(expected.replace('a'.repeat(40), 'A'.repeat(40)), identity));
   for (const invalid of [
     'designated => identifier "studio.streamer-ai.cohost"',
@@ -43,6 +44,11 @@ test('macOS signer pins the exact key before bundling and never puts passwords i
     assert.throws(() => signingCommand(change, context, context.app));
   }
   assert.throws(() => signingCommand(args, context, '/build/release-escape/other.app'));
+  const tauriArgs = ['--force', '-s', context.sha1, '--options', 'runtime', '--entitlements', '/source/Entitlements.plist', context.app];
+  const tauriCommand = signingCommand(tauriArgs, context, context.app);
+  assert.deepEqual(tauriCommand.slice(0, 7), tauriArgs.slice(0, 7));
+  assert.equal(tauriCommand.filter(value => value.startsWith('--timestamp')).join(''), '--timestamp=none');
+  assert.throws(() => signingCommand(['--timestamp', ...args], context, context.app), /override/, 'The pinned Tauri signer supplies no timestamp; an added flag needs review');
   assert.equal(quoteSecurityInput('quote"slash\\'), '"quote\\"slash\\\\"');
   for (const input of ['line\nbreak', 'line\rbreak', 'zero\0byte']) assert.throws(() => quoteSecurityInput(input));
 });
@@ -53,6 +59,14 @@ test('private macOS signing cannot run on a user or self-hosted machine', () => 
   assert.throws(() => requireDisposableMac({ ...env, GITHUB_ACTIONS: '' }, 'darwin'));
   assert.throws(() => requireDisposableMac({ ...env, RUNNER_ENVIRONMENT: 'self-hosted' }, 'darwin'));
   assert.throws(() => requireDisposableMac(env, 'linux'));
+});
+
+test('macOS cleanup restores only a successfully captured keychain search list', () => {
+  assert.equal(searchListRestoreCommand({ oldKeychains: [], snapshotTaken: false }), null);
+  assert.equal(searchListRestoreCommand({ oldKeychains: [] }), null);
+  assert.deepEqual(searchListRestoreCommand({ oldKeychains: [], snapshotTaken: true }), ['list-keychains', '-d', 'user', '-s']);
+  assert.deepEqual(searchListRestoreCommand({ oldKeychains: ['/original/login.keychain-db'], snapshotTaken: true }), ['list-keychains', '-d', 'user', '-s', '/original/login.keychain-db']);
+  assert.throws(() => searchListRestoreCommand({ oldKeychains: null, snapshotTaken: true }));
 });
 
 test('macOS packaging preserves app and code-signing identities across versions', () => {

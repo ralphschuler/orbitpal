@@ -6,7 +6,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { provisionIdentity } from './provision-macos-identity.mjs';
-import { validateSigningPolicy, designatedRequirement } from './macos-signing-policy.mjs';
+import { validateSigningPolicy, extractDesignatedRequirement } from './macos-signing-policy.mjs';
 import { cleanupIdentity, prepareIdentity, requireDisposableMac, runnerDirectory, runNative, signingContext } from './macos-release-signing.mjs';
 import { verifyPinnedSignature } from './verify-macos-permissions.mjs';
 
@@ -26,6 +26,7 @@ try {
   });
   assert.notEqual(identities[0].identity.sha256, identities[1].identity.sha256, 'Fixture keys must actually differ, even though certificate display names match');
   const outputs = [];
+  const oldRequirement = join(work, 'version-one.req');
   for (let index = 0; index < identities.length; index += 1) {
     const { identity, material } = identities[index];
     prepareIdentity(directories[index], identity, readFileSync(join(material, 'identity.p12')), readFileSync(join(material, 'password.txt'), 'utf8'));
@@ -35,9 +36,11 @@ try {
     const signing = signingContext(root, target, directories[index], identity, releaseDirectory);
     const environment = { ...process.env, ...signing };
     const sign = () => {
-      const result = spawnSync(process.execPath, [resolve(root, 'scripts/macos-codesign.mjs'), '--force', '-s', identity.sha1, '--options', 'runtime', app], { env: environment, stdio: ['ignore', 'pipe', 'pipe'], timeout: 90_000 });
+      // Match tauri-macos-sign 2.4.2 as locked by CLI2.12.3: no timestamp
+      // argument, with runtime and the configured entitlement path.
+      const result = spawnSync(process.execPath, [resolve(root, 'scripts/macos-codesign.mjs'), '--force', '-s', identity.sha1, '--options', 'runtime', '--entitlements', resolve(root, 'src-tauri/Entitlements.plist'), app], { env: environment, stdio: ['ignore', 'pipe', 'pipe'], timeout: 90_000 });
       assert.equal(result.status, 0, 'Fixture app signing failed; native diagnostics are withheld to protect signing inputs');
-      verifyPinnedSignature(app, identity);
+      return verifyPinnedSignature(app, identity);
     };
     const compile = version => {
       const source = join(work, `main-${index}-${version}.c`);
@@ -46,16 +49,17 @@ try {
       writeFileSync(join(app, 'Contents/Info.plist'), `<?xml version="1.0"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>studio.streamer-ai.cohost</string><key>CFBundleName</key><string>OrbitPal</string><key>CFBundleExecutable</key><string>orbitpal</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleShortVersionString</key><string>0.0.${version}</string></dict></plist>`);
     };
     compile(1);
-    sign();
+    const firstSignature = sign();
     if (index === 0) {
+      // Persist the actual requirement extracted from the sealed version-A
+      // app. Do not synthesize another expected requirement for this proof.
+      writeFileSync(oldRequirement, extractDesignatedRequirement(firstSignature).replace(/^designated => /, ''));
       cpSync(app, join(work, 'version-one.app'), { recursive: true });
       compile(2);
       sign();
     }
     outputs.push(app);
   }
-  const oldRequirement = join(work, 'version-one.req');
-  writeFileSync(oldRequirement, designatedRequirement(identities[0].identity).replace(/^designated => /, ''));
   runNative('/usr/bin/codesign', ['--verify', '--strict', '-R', oldRequirement, outputs[0]]);
   const different = spawnSync('/usr/bin/codesign', ['--verify', '--strict', '-R', oldRequirement, outputs[1]], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
   assert.notEqual(different.status, 0, 'The old requirement must reject another key with the same certificate name');
