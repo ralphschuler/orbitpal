@@ -2,9 +2,10 @@
 
 - **OrbitPal** is the new name of Streamer AI Cohost. The repository and new downloads use OrbitPal; app data, credentials, bot grants and the update signing identity stay unchanged. Existing clients keep using fixed former download URLs through GitHub redirects.
 - Choose the interface language independently of bot instructions, speech and conversation: English, German, French or Spanish.
+- Import glTF 2.0 JSON files with adjacent relative BIN and PNG/JPEG resources. OrbitPal packages them into one portable GLB, preserving scenes, rigs, morph targets and embedded animations.
 - Preserve the former MSI UpgradeCode and NSIS install identity during the rename. Existing macOS/AppImage updates can retain the old outer file name. See [migration details](https://github.com/ralphschuler/orbitpal/blob/main/docs/MIGRATING-TO-ORBITPAL.md).
 
-## Fixed in 0.7.1
+## Fixed in 0.8.0
 
 - Restore macOS microphone capture by signing the required Audio Input entitlement in hardened-runtime packages. Validate the actual signed app in both macOS release jobs.
 - Request the native microphone grant only when recording/listening is explicitly started. Show OS status and direct settings recovery; Stop, bot changes and updates cannot revive late permission results or automatically restart capture.

@@ -4,6 +4,8 @@ Neuer Name: Streamer AI Cohost heißt jetzt OrbitPal. Vorhandene Bots, Profile, 
 
 Die Oberfläche lässt sich unabhängig von Gespräch und Stimme zwischen Deutsch, Englisch, Französisch und Spanisch umschalten.
 
+Eigene glTF-2.0-Dateien mit zugehörigen lokalen BIN- und PNG/JPEG-Dateien werden jetzt beim Import zu einer einzelnen portablen GLB zusammengefasst. Skelett, Mundformen und mitgelieferte Animationen bleiben erhalten.
+
 Mikrofonaufnahme unter macOS repariert: Die signierten App-Pakete enthalten jetzt die für den Hardened Runtime erforderliche Audio-Input-Freigabe. Beim bewussten Start prüft die App zusätzlich die macOS-Berechtigung. Im Regiepult kannst du den Status prüfen und direkt die Mikrofoneinstellungen öffnen. Bestätige die Freigabe bei Bedarf und starte die Aufnahme anschließend selbst erneut. [Hilfe nach einem Update](MICROPHONE-PERMISSIONS.md).
 
 Keine automatische Aufnahme, kein Zurücksetzen von Systemberechtigungen. Die macOS-Pakete bleiben ad hoc signiert und nicht notarisiert; bei Updates kann die Systemfreigabe erneut erforderlich sein.

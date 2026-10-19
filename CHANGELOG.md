@@ -1,14 +1,12 @@
 # Changelog
 
-## 0.8.0 — unreleased
+## 0.8.0 — 2026-10-19
 
 - Add English, German, French and Spanish interfaces with a saved app-wide selection, reactive labels/help, localized native tray menus and number/date formatting. Keep conversation content, bot instructions, voice/STT choices and extension permissions independent of the interface language.
 - Import glTF 2.0 JSON packages with local relative BIN and PNG/JPEG resources or matching Base64 data. Bundle them into a validated portable GLB while preserving scenes, rigs, morph targets and authored animations. Bound resources and reject missing files, external URLs, folder escapes, redirected files and unsupported compressed buffers.
 - Document curated avatar creators/libraries, export paths and per-model licensing; include the macOS microphone fix described below.
 
 - Rename the product, repository, executable and new release artifacts to OrbitPal while retaining installed data, bundle/keychain IDs, profile formats and bot grants. Preserve old clients with fixed legacy initial update URLs, keep signed-version verification, pin Windows installer identity, and validate installer migration on disposable Windows CI runners.
-
-## 0.7.1 — 2026-10-19
 
 - Fix macOS microphone capture in hardened-runtime release packages by signing the required Audio Input entitlement alongside the usage description. Verify the entitlement in each actual signed macOS release bundle.
 - Check/request the native macOS microphone grant only on an explicit recording/listening start. Expose the real OS status and a microphone-settings link, distinguish WebView denial from native authorization, and preserve Stop/bot-change cancellation without silent recording restarts or permission resets.
