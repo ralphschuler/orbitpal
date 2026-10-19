@@ -11,7 +11,7 @@ fn reply_id(state:&crate::AppState,requested:Option<&str>)->Result<String,String
     if state.store.contains_message(&id)?{return Err("Anfrage-ID wurde bereits verwendet".into());}Ok(id)
 }
 
-pub async fn send(app:tauri::AppHandle,text:String,source:String,user:String,selected:Vec<String>,bot_id:Option<String>,request_id:Option<String>)->Result<Value,String> {
+pub async fn send(app:tauri::AppHandle,text:String,source:String,user:String,selected:Vec<String>,bot_id:Option<String>,request_id:Option<String>,reply_route_id:Option<String>)->Result<Value,String> {
     if text.trim().is_empty(){return Err("Nachricht ist leer".into());}
     if text.len()>20_000{return Err("Nachricht ist zu lang (maximal 20.000 Bytes)".into());}
     if !public_source(&source){return Err("Ungültige Nachrichtenquelle".into());}
@@ -22,7 +22,7 @@ pub async fn send(app:tauri::AppHandle,text:String,source:String,user:String,sel
     let id=reply_id(&state,request_id.as_deref())?;
     let cancel=Arc::new(AtomicBool::new(false));
     *state.cancel.lock().map_err(|e|e.to_string())?=Some(cancel.clone());
-    let result=run(&app,&id,&text,&source,&user,viewer,&selected,cancel.clone(),bot_id.as_deref(),None).await;
+    let result=run(&app,&id,&text,&source,&user,viewer,&selected,cancel.clone(),bot_id.as_deref(),None,reply_route_id.as_deref()).await;
     *state.cancel.lock().map_err(|e|e.to_string())?=None;
     match &result {
         Err(e)=>{event(&app,&id,"error",e);let _=app.emit("cohost://agent",json!({"kind":"status","turnId":id,"status":"idle"}));},
@@ -40,16 +40,17 @@ pub async fn send_autopilot(app:tauri::AppHandle,bot_id:String,request_id:Option
     let id=reply_id(&state,request_id.as_deref())?;
     let ticket=state.autopilot.admit(&bot_id,&crate::autopilot::config(&profile)?)?;
     let cancel=ticket.cancel.clone();*state.cancel.lock().map_err(|error|error.to_string())?=Some(cancel.clone());
-    let result=run(&app,&id,"Gelegenheit für einen kurzen eigenen Beitrag. Prüfe, ob du jetzt etwas Sinnvolles beitragen möchtest.","autopilot","Autopilot",false,&[],cancel,Some(&bot_id),Some(&ticket)).await;
+    let result=run(&app,&id,"Gelegenheit für einen kurzen eigenen Beitrag. Prüfe, ob du jetzt etwas Sinnvolles beitragen möchtest.","autopilot","Autopilot",false,&[],cancel,Some(&bot_id),Some(&ticket),None).await;
     *state.cancel.lock().map_err(|error|error.to_string())?=None;
     if let Err(error)=&result{event(&app,&id,"error",error);}
     let _=app.emit("cohost://agent",json!({"kind":"status","turnId":id,"status":"idle"}));result
 }
-async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewer:bool,selected:&[String],cancel:Arc<AtomicBool>,bot_id:Option<&str>,autopilot:Option<&crate::autopilot::Ticket>)->Result<Value,String> {
+async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewer:bool,selected:&[String],cancel:Arc<AtomicBool>,bot_id:Option<&str>,autopilot:Option<&crate::autopilot::Ticket>,reply_route_id:Option<&str>)->Result<Value,String> {
     let state=app.state::<crate::AppState>();
     let active=state.store.profile()?;
     let store=state.store.scoped(bot_id.unwrap_or(active["id"].as_str().unwrap_or("nova")))?;
     let profile=store.profile()?;
+    let chat_route=if matches!(source,"twitch"|"youtube") {Some(state.chat.resolve_route(source,reply_route_id,&profile).await?)} else {None};
     let screen_ticket=state.screen_context.ticket(profile["id"].as_str().ok_or("Bot-ID fehlt")?,cancel.clone())?;
     let docs=store.documents()?;
     let model=&profile["model"];
@@ -257,7 +258,7 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
         crate::screen_context::current_grant(&profile,&store.profile()?)?;
         // The in-memory job is deliberately absent from history until actual
         // presentation. Failed synthesis, Stop and restart leave no unheard reply.
-        state.overlay.say_profile(app,&profile,id,&text,&speech_text,&emotion,source,user,user_text,&queued_emotes,cancel.clone())?;
+        state.overlay.say_profile(app,&profile,id,&text,&speech_text,&emotion,source,user,user_text,&queued_emotes,cancel.clone(),chat_route.clone())?;
         Ok(json!({"id":id,"text":text,"speechText":speech_text,"voice":crate::overlay::public_voice(&profile["voice"]),"emotion":emotion,"emotes":queued_emotes,"source":source,"user":user,"botId":profile["id"]}))
     };
     if let Some(ticket)=autopilot{state.autopilot.commit(profile["id"].as_str().ok_or("Bot-ID fehlt")?,ticket,commit)}else{commit()}
