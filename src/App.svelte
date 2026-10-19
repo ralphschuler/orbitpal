@@ -816,7 +816,7 @@
       if(systemPermission.active||updateInstalling||busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing)return;
       const participants=bots.filter(bot=>botEnabled(bot)||bot.id===profile.id);
       // Chat keeps the full audio guard. Autonomous preparation may interrupt
-      // its own walking track later through the fresh rendered-frame gate.
+      // its own ambient track later through the fresh rendered-frame gate.
       for(const bot of running&&!emoteSoundPlaying&&!externalEmotePlaying?participants:[]){
         const config=bot.id===profile.id?profile:bot.profile;
         if(!config||config.chat.mode==='manual')continue;

@@ -198,7 +198,7 @@ async fn emote_playback(State(app):State<tauri::AppHandle>,Query(q):Query<Access
 }
 fn emote_playback_event(profile:&Value,output:&str,id:&str,playing:bool,activity:Option<&str>)->Result<Value,String>{
     let activity=activity.unwrap_or("foreground");
-    if !matches!(activity,"foreground"|"ambient-walk"){return Err("Ungültige Emote-Audioaktivität".into());}
+    if !matches!(activity,"foreground"|"ambient"){return Err("Ungültige Emote-Audioaktivität".into());}
     let bot_id=profile["id"].as_str().filter(|id|crate::storage::valid_id(id)).ok_or("Bot-ID fehlt oder ist ungültig")?;
     if !matches!(output,"overlay"|"obs"){return Err("Emote-Audioausgabe muss overlay oder obs sein".into());}
     let parsed=uuid::Uuid::parse_str(id).map_err(|_|"Emote-Audiostatus benötigt eine UUID")?;
@@ -703,14 +703,14 @@ mod tests{
     #[test]
     fn external_model_audio_classification_preserves_output_and_identity_validation(){
         let profile=json!({"id":"nova","output":{"mode":"obs"}});let id=uuid::Uuid::new_v4().to_string();
-        for activity in ["foreground","ambient-walk"]{
+        for activity in ["foreground","ambient"]{
             let event=emote_playback_event(&profile,"obs",&id,true,Some(activity)).unwrap();
             assert_eq!(event,json!({"botId":"nova","output":"obs","id":id,"playing":true,"activity":activity}));
             assert!(emote_playback_event(&profile,"overlay",&id,true,Some(activity)).is_err());
             assert!(emote_playback_event(&profile,"obs","not-a-uuid",false,Some(activity)).is_err());
             assert!(emote_playback_event(&profile,"overlay",&id,false,Some(activity)).is_ok());
         }
-        for activity in ["", "idle", "AMBIENT-WALK", "speech"]{
+        for activity in ["", "idle", "AMBIENT", "speech"]{
             assert!(emote_playback_event(&profile,"obs",&id,true,Some(activity)).is_err());
             assert!(emote_playback_event(&profile,"obs",&id,false,Some(activity)).is_err());
         }

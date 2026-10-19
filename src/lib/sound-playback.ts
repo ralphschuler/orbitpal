@@ -1,20 +1,25 @@
-/** Only the renderer's own walking track is exempt from autonomous quiet time. */
-export type SoundActivity = 'foreground' | 'ambient-walk';
+/** Only the renderer's own autonomous tracks are exempt from quiet time. */
+export type SoundActivity = 'foreground' | 'ambient';
 export type SoundPlaybackReport = { id: string; playing: boolean; activity: SoundActivity };
 
-export function foregroundSoundPlaying(effect: boolean, model: boolean, activity: SoundActivity): boolean {
-  return effect || model && activity !== 'ambient-walk';
+/** Ownership wins even when an explicit emote reuses the walking ClipAction. */
+export function renderedModelSoundActivity(hasEmote: boolean, source?: 'manual' | 'ambient'): SoundActivity {
+  return hasEmote && source !== 'ambient' ? 'foreground' : 'ambient';
 }
 
-/** Separate, immutable IDs keep overlapping foreground and walking leases exact. */
+export function foregroundSoundPlaying(effect: boolean, model: boolean, activity: SoundActivity): boolean {
+  return effect || model && activity !== 'ambient';
+}
+
+/** Separate, immutable IDs keep overlapping foreground and ambient leases exact. */
 export class SoundPlaybackReports {
   private ids = new Map<SoundActivity, string>();
   constructor(private createId = () => crypto.randomUUID() as string) {}
 
-  update(foreground: boolean, ambientWalk: boolean): SoundPlaybackReport[] {
+  update(foreground: boolean, ambient: boolean): SoundPlaybackReport[] {
     const active: SoundPlaybackReport[] = [], ended: SoundPlaybackReport[] = [];
-    for (const activity of ['foreground', 'ambient-walk'] as const) {
-      const playing = activity === 'foreground' ? foreground : ambientWalk;
+    for (const activity of ['foreground', 'ambient'] as const) {
+      const playing = activity === 'foreground' ? foreground : ambient;
       let id = this.ids.get(activity);
       if (playing && !id) { id = this.createId(); this.ids.set(activity, id); }
       if (!id) continue;

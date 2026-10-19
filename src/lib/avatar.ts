@@ -10,7 +10,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createAvatarLoader } from './avatar-loader';
 import { disposeAvatarObject as disposeObject } from './avatar-resources';
 import { ModelAudioController } from './avatar-audio';
-import type { SoundActivity } from './sound-playback';
+import { renderedModelSoundActivity, type SoundActivity } from './sound-playback';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { VRMExpressionMorphTargetBind, VRMLookAtBoneApplier, VRMLookAtExpressionApplier, VRMUtils, type VRM, type VRMExpression } from '@pixiv/three-vrm';
 import { configureBundledAccessories, discoverGenericHumanoid, humanoidArmRest, humanoidFrame, humanoidRotation, humanoidWaveRaise, poseGenericArm, rawHumanoidRig, rotateGenericBone, type GenericHumanoidRig } from './avatar-rig';
@@ -1151,7 +1151,7 @@ export class AvatarStage {
       const action = emote ?? (this.walking ? this.walkingAction : undefined);
       const audible = loaded && action?.enabled && action.isScheduled() && action.getEffectiveWeight() > 0.00001;
       this.modelAudio.present(audible && action ? {
-        activity: emote ? 'foreground' : 'ambient-walk',
+        activity: renderedModelSoundActivity(!!emote, this.emoteSource),
         token: emote ? `emote:${this.emoteSource === 'ambient' ? this.ambientSession + ':' + this.ambientGesture : this.emoteNonce}` : `walk:${this.ambientSession}`,
         animation: emote ? this.clips.indexOf(action.getClip()) : this.walkingAudioIndex,
         time: action.time, loop: !emote,

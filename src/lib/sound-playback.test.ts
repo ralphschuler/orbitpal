@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AutopilotScheduler } from './autopilot';
 import { DesktopMotionController } from './desktop-motion';
+import { sampleAmbientMotion } from './autopilot-motion';
 import { ExternalEmotePlayback } from './emote-playback';
-import { foregroundSoundPlaying, SoundPlaybackReports, type SoundActivity } from './sound-playback';
+import { foregroundSoundPlaying, renderedModelSoundActivity, SoundPlaybackReports, type SoundActivity } from './sound-playback';
 
 afterEach(() => vi.useRealTimers());
 
@@ -18,12 +19,12 @@ describe('actual sound ownership and autonomous quiet time', () => {
       reports.forEach(report => receiver.accept({ ...report, botId: 'nova', output: 'overlay' }));
       return reports;
     };
-    expect(accept(false, true)).toEqual([{ id: 'id-1', playing: true, activity: 'ambient-walk' }]);
+    expect(accept(false, true)).toEqual([{ id: 'id-1', playing: true, activity: 'ambient' }]);
     expect(actual.mock.calls).toEqual([[true]]); expect(blocking).not.toHaveBeenCalled();
     vi.advanceTimersByTime(12_000); accept(false, true);
     expect(accept(true, true)).toEqual([
       { id: 'id-2', playing: true, activity: 'foreground' },
-      { id: 'id-1', playing: true, activity: 'ambient-walk' },
+      { id: 'id-1', playing: true, activity: 'ambient' },
     ]);
     expect(blocking.mock.calls).toEqual([[true]]); expect(actual.mock.calls).toEqual([[true]]);
     expect(accept(false, true)).toContainEqual({ id: 'id-2', playing: false, activity: 'foreground' });
@@ -53,15 +54,15 @@ describe('actual sound ownership and autonomous quiet time', () => {
     const receiver = new ExternalEmotePlayback(actual, blocking);
     const base = { botId: 'nova', output: 'obs', id: 'foreground', playing: true };
     receiver.accept(base); // Legacy reports always block autonomous speech.
-    receiver.accept({ ...base, activity: 'ambient-walk' });
-    for (const changed of [{activity:'ambient-walk'}, {botId:'other'}, {output:'overlay'}, {id:'old'}]) {
+    receiver.accept({ ...base, activity: 'ambient' });
+    for (const changed of [{activity:'ambient'}, {botId:'other'}, {output:'overlay'}, {id:'old'}]) {
       receiver.accept({ ...base, ...changed, playing: false } as any);
     }
     receiver.accept({ ...base, activity: 'unknown' } as any);
     expect(actual.mock.calls).toEqual([[true]]); expect(blocking.mock.calls).toEqual([[true]]);
     receiver.accept({ ...base, playing: false });
     expect(blocking.mock.calls).toEqual([[true], [false]]);
-    const ambient = { ...base, id: 'walk', activity: 'ambient-walk' as const };
+    const ambient = { ...base, id: 'walk', activity: 'ambient' as const };
     receiver.accept(ambient);
     receiver.accept({ ...ambient, playing: false, activity: undefined });
     expect(actual.mock.calls).toEqual([[true], [false], [true]]);
@@ -75,7 +76,7 @@ describe('actual sound ownership and autonomous quiet time', () => {
     vi.useFakeTimers();
     const actual = vi.fn(), blocking = vi.fn(), timers = vi.spyOn(globalThis, 'setTimeout');
     const receiver = new ExternalEmotePlayback(actual, blocking);
-    const ambient = { botId: 'nova', output: 'obs', id: 'walk', playing: true, activity: 'ambient-walk' as const };
+    const ambient = { botId: 'nova', output: 'obs', id: 'walk', playing: true, activity: 'ambient' as const };
     receiver.accept(ambient);
     const old = timers.mock.calls[0][0] as () => void;
     receiver.accept({ ...ambient, id: 'emote', activity: 'foreground' });
@@ -97,7 +98,7 @@ describe('actual sound ownership and autonomous quiet time', () => {
       const position = motion.sample({ seed: 'audio-step-fixture', startedAt: 1000, now, delta: .016,
         viewport: { width: 1200, height: 800 }, figure: { width: 180, height: 300 }, margin: 24, paused: false });
       if (position.walking) walkingFrames++;
-      const blocked = foregroundSoundPlaying(false, position.walking, 'ambient-walk');
+      const blocked = foregroundSoundPlaying(false, position.walking, 'ambient');
       const claim = scheduler.nextClaim(blocked);
       if (claim) { attempts++; scheduler.finish(claim.botId); }
     }
@@ -109,6 +110,34 @@ describe('actual sound ownership and autonomous quiet time', () => {
       now += 14_999; expect(scheduler.nextClaim()).toBeUndefined();
       now += 1; const claim = scheduler.nextClaim()!; expect(claim.botId).toBe('nova'); scheduler.finish(claim.botId);
     }
-    expect(foregroundSoundPlaying(true, true, 'ambient-walk')).toBe(true);
+    expect(foregroundSoundPlaying(true, true, 'ambient')).toBe(true);
+  });
+
+  it.each([false, true])('does not let automatic gesture sounds starve a 120s speech interval (wander=%s)', wander => {
+    let now = 1000;
+    const current = new AutopilotScheduler({ now: () => now, random: () => 0 });
+    const old = new AutopilotScheduler({ now: () => now, random: () => 0 });
+    const candidate = { botId: 'nova', seed: 'ambient-audio', config: { speak: true, minSeconds: 120, maxSeconds: 180, maxTurnsPerHour: 50 } };
+    current.sync([candidate]); old.sync([candidate]);
+    const motion = { active: true, wander, gestures: true, startedAt: now, seed: candidate.seed };
+    let attempts = 0, oldAttempts = 0, gestures = 0, lastGesture = '';
+    for (let frame = 0; frame < 24_000; frame++) {
+      now += 50;
+      const rendered = sampleAmbientMotion(motion, now);
+      if (rendered.gesture && rendered.gesture.key !== lastGesture) { gestures++; lastGesture = rendered.gesture.key; }
+      // A bounded 0.5s embedded sound at the gesture's start already suffices
+      // to reproduce starvation; the entire gesture need not be audible.
+      const sound = !!rendered.gesture && rendered.gesture.elapsed < .5;
+      const activity = renderedModelSoundActivity(!!rendered.gesture, rendered.gesture ? 'ambient' : undefined);
+      const claim = current.nextClaim(foregroundSoundPlaying(false, sound, activity));
+      if (claim) { attempts++; current.finish(claim.botId); }
+      const oldClaim = old.nextClaim(foregroundSoundPlaying(false, sound, 'foreground'));
+      if (oldClaim) { oldAttempts++; old.finish(oldClaim.botId); }
+    }
+    expect(gestures).toBeGreaterThan(20); expect(oldAttempts).toBe(0); expect(attempts).toBeGreaterThanOrEqual(9);
+    // Manual/reply ownership, including the very same Walk/Wave action, wins.
+    expect(foregroundSoundPlaying(false, true, renderedModelSoundActivity(true, 'manual'))).toBe(true);
+    expect(foregroundSoundPlaying(false, true, renderedModelSoundActivity(true, undefined))).toBe(true);
+    expect(foregroundSoundPlaying(true, true, renderedModelSoundActivity(true, 'ambient'))).toBe(true);
   });
 });

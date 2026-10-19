@@ -132,7 +132,7 @@
     if (!targetBot) return;
     const reports = soundPlaybackReports.update(
       foregroundSoundPlaying(effectSoundPlaying, modelSoundPlaying, modelSoundActivity),
-      modelSoundPlaying && modelSoundActivity === 'ambient-walk',
+      modelSoundPlaying && modelSoundActivity === 'ambient',
     );
     for (const report of reports) {
       const payload = {botId: targetBot, output: native ? 'overlay' : 'obs', ...report};

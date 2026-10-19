@@ -24,7 +24,7 @@ function validEvent(event: unknown): event is ExternalEmotePlaybackEvent {
   return identifier(value.botId) && identifier(value.id)
     && (value.output === 'obs' || value.output === 'overlay')
     && typeof value.playing === 'boolean'
-    && (value.activity === undefined || value.activity === 'foreground' || value.activity === 'ambient-walk');
+    && (value.activity === undefined || value.activity === 'foreground' || value.activity === 'ambient');
 }
 
 /** Tracks host-validated external SFX reports to pause microphone activation.
@@ -82,7 +82,7 @@ export class ExternalEmotePlayback {
   private update(): void {
     const playing = this.leases.size > 0;
     if (playing !== this.playing) { this.playing = playing; this.onChange(playing); }
-    const blocking = [...this.leases.values()].some(lease => lease.activity !== 'ambient-walk');
+    const blocking = [...this.leases.values()].some(lease => lease.activity !== 'ambient');
     if (blocking !== this.blocking) { this.blocking = blocking; this.onBlockingChange?.(blocking); }
   }
 }

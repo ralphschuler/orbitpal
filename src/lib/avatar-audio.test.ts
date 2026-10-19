@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { AvatarStage } from './avatar';
 import { avatarBinding } from './emote-capabilities';
 import { sampleAmbientMotion } from './autopilot-motion';
+import { renderedModelSoundActivity } from './sound-playback';
 import { ModelAudioController, MODEL_AUDIO_EXTENSION as EXT, modelAudioPlan, validateModelWav } from './avatar-audio';
 
 function wav(seconds = 0.5) {
@@ -95,7 +96,7 @@ describe('pinned MSFT audio draft subset',()=>{
 });
 
 describe('model audio presentation ownership and lifetime',()=>{
-  it('reports actual source starts with renderer ownership, even when walking and explicit emotes share a clip',async()=>{
+  it.each([false,true])('reports actual source ownership for automatic animation and explicit reuse (gesture=%s)',async gesture=>{
     class Node { connect=vi.fn();disconnect=vi.fn(); }
     class Source extends Node {
       onended:(()=>void)|null=null;playbackRate={value:1};buffer:any;
@@ -116,12 +117,12 @@ describe('model audio presentation ownership and lifetime',()=>{
     try{
       await controller.load(model(),async()=>wav().buffer);await controller.unlock();
       expect(reports).not.toHaveBeenCalled();
-      controller.present({...frame(.01,'same-action'),activity:'ambient-walk'},1);
+      controller.present({...frame(.01,'same-action'),activity:renderedModelSoundActivity(gesture,gesture?'ambient':undefined)},1);
       const staleEnd=Context.current.sources[0].onended!;
-      expect(reports.mock.calls).toEqual([[true,'ambient-walk']]);
+      expect(reports.mock.calls).toEqual([[true,'ambient']]);
       // Same token/index as the walking mixer action; explicit ownership wins.
-      controller.present({...frame(.01,'same-action'),activity:'foreground'},1);
-      expect(reports.mock.calls).toEqual([[true,'ambient-walk'],[false,'ambient-walk'],[true,'foreground']]);
+      controller.present({...frame(.01,'same-action'),activity:renderedModelSoundActivity(true,'manual')},1);
+      expect(reports.mock.calls).toEqual([[true,'ambient'],[false,'ambient'],[true,'foreground']]);
       staleEnd();expect(reports).toHaveBeenCalledTimes(3);
       controller.stop();expect(reports).toHaveBeenLastCalledWith(false,'foreground');
       controller.present(frame(.31,'same-action'),1);expect(reports).toHaveBeenCalledTimes(4);

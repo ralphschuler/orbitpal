@@ -209,7 +209,7 @@ export class ModelAudioController {
     }
     if (!this.plan || !Number.isFinite(presentation.time) || presentation.time < 0) return;
     const { token, time, rate, loop } = presentation;
-    const activity = presentation.activity === 'ambient-walk' ? 'ambient-walk' : 'foreground';
+    const activity = presentation.activity === 'ambient' ? 'ambient' : 'foreground';
     const events = this.plan.animations[presentation.animation] ?? [];
     let previous = this.time;
     if (token !== this.token || activity !== this.activity) {
