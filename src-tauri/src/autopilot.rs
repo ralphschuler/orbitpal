@@ -14,25 +14,18 @@ pub struct Config {
     pub speak: bool,
     pub gestures: bool,
     pub wander: bool,
-    pub screen_context: bool,
-    pub screen_server_id: String,
-    pub screen_tool_name: String,
-    pub screen_tool_arguments: String,
     pub instructions: String,
 }
 impl Default for Config {
-    fn default() -> Self { Self { min_seconds:60, max_seconds:180, max_turns_per_hour:12, speak:true, gestures:true, wander:true, screen_context:false, screen_server_id:String::new(), screen_tool_name:String::new(), screen_tool_arguments:"{}".into(), instructions:String::new() } }
+    fn default() -> Self { Self { min_seconds:60, max_seconds:180, max_turns_per_hour:12, speak:true, gestures:true, wander:true, instructions:String::new() } }
 }
 pub fn config(profile:&Value)->Result<Config,String> {
-    let value=profile.get("autopilot").filter(|value|!value.is_null()).cloned().unwrap_or_else(||json!({}));
+    let mut value=profile.get("autopilot").filter(|value|!value.is_null()).cloned().unwrap_or_else(||json!({}));
+    if let Some(fields)=value.as_object_mut(){for key in ["screenContext","screenServerId","screenToolName","screenToolArguments"]{fields.remove(key);}}
     let config:Config=serde_json::from_value(value).map_err(|error|format!("Ungültige Autopilot-Einstellungen: {error}"))?;
     if !(15..=3600).contains(&config.min_seconds)||config.max_seconds<config.min_seconds||config.max_seconds>3600{return Err("Autopilot-Abstände müssen zwischen 15 und 3600 Sekunden liegen; das Maximum darf nicht kleiner als das Minimum sein".into());}
     if !(1..=120).contains(&config.max_turns_per_hour){return Err("Autopilot erlaubt 1 bis 120 Sprechversuche pro Stunde".into());}
     if config.instructions.len()>4000{return Err("Autopilot-Anweisungen dürfen höchstens 4000 Bytes umfassen".into());}
-    if config.screen_server_id.len()>160||config.screen_tool_name.len()>256{return Err("Autopilot-Bildschirmwerkzeug oder Server-ID ist zu lang".into());}
-    if config.screen_tool_arguments.len()>8000{return Err("Autopilot-Bildschirmargumente dürfen höchstens 8000 Bytes umfassen".into());}
-    if !serde_json::from_str::<Value>(&config.screen_tool_arguments).map_err(|_|"Autopilot-Bildschirmargumente müssen gültiges JSON sein")?.is_object(){return Err("Autopilot-Bildschirmargumente müssen ein JSON-Objekt sein".into());}
-    if config.screen_context&&(config.screen_server_id.trim().is_empty()||config.screen_tool_name.trim().is_empty()){return Err("Für Bildschirmkontext bitte genau einen MCP-Server und ein Beobachtungswerkzeug auswählen".into());}
     Ok(config)
 }
 
@@ -134,25 +127,14 @@ pub fn set_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:Str
 #[tauri::command]
 pub async fn send_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String)->Result<Value,String>{main_only(window.label())?;crate::agent::send_autopilot(app,bot_id).await}
 
-/// Only a fixed, operator-selected tool is usable; the model cannot substitute
-/// its name/arguments or obtain the server's general tool catalog.
-pub fn screen_server(profile:&Value,config:&Config)->Result<Value,String>{
-    if !config.screen_context{return Err("Autopilot-Bildschirmkontext ist ausgeschaltet".into());}
-    if profile["model"]["toolsEnabled"].as_bool()!=Some(true)||profile["model"]["visionEnabled"].as_bool()!=Some(true){return Err("Autopilot-Bildschirmkontext benötigt die Werkzeug- und Bildfreigabe dieses Bots".into());}
-    let server=profile["mcpServers"].as_array().and_then(|servers|servers.iter().find(|server|server["id"].as_str()==Some(&config.screen_server_id))).ok_or("Autopilot-Bildschirmserver ist diesem Bot nicht zugeordnet")?;
-    if server["transport"]=="builtin"||server["builtin"]=="cohost-control"{return Err("Der Cohost-Control-Server steuert die App und ist kein Bildschirm-Beobachtungsserver".into());}
-    if !crate::mcp::permitted(server,&config.screen_tool_name,false){return Err("Autopilot-Bildschirmwerkzeug ist für diesen Bot nicht freigegeben".into());}
-    Ok(server.clone())
-}
-
 #[cfg(test)]
 mod tests{
     use super::*;
     #[test]fn configuration_is_optional_bounded_and_never_persists_activation(){
         assert_eq!(config(&json!({})).unwrap(),Config::default());
-        for bad in [json!({"active":true}),json!({"enabled":true}),json!({"minSeconds":14}),json!({"maxSeconds":59}),json!({"maxTurnsPerHour":121}),json!({"screenToolArguments":"[]"}),json!({"screenContext":true})]{assert!(config(&json!({"autopilot":bad})).is_err(),"{bad}");}
+        for bad in [json!({"active":true}),json!({"enabled":true}),json!({"minSeconds":14}),json!({"maxSeconds":59}),json!({"maxTurnsPerHour":121})]{assert!(config(&json!({"autopilot":bad})).is_err(),"{bad}");}
         assert!(config(&json!({"autopilot":{"instructions":"x".repeat(4001)}})).is_err());
-        assert!(config(&json!({"autopilot":{"screenToolArguments":format!("{{\"x\":\"{}\"}}","x".repeat(8000))}})).is_err());
+        assert_eq!(config(&json!({"autopilot":{"screenContext":true,"screenToolArguments":"old legacy data"}})).unwrap(),Config::default());
     }
     #[test]fn admission_enforces_start_spacing_hour_cap_and_keeps_failed_attempts(){
         let hub=AutopilotHub::default();let start=Instant::now();let config=Config{min_seconds:15,max_seconds:30,max_turns_per_hour:2,..Config::default()};
@@ -175,11 +157,7 @@ mod tests{
         let next=hub.admit_at("nova",&config,now+Duration::from_secs(120)).unwrap();hub.stop_all();assert!(next.cancel.load(Ordering::SeqCst));assert!(!hub.any_active());assert!(hub.commit("nova",&next,||Ok(())).is_err());
         hub.set_at("nova",true,config.clone(),now+Duration::from_secs(121)).unwrap();assert_ne!(started.seed,hub.runtime("nova",&config).seed);assert!(hub.commit("nova",&next,||Ok(())).is_err());
     }
-    #[test]fn screen_tool_requires_current_bot_grants_and_both_model_permissions(){
-        let config=Config{screen_context:true,screen_server_id:"screen".into(),screen_tool_name:"capture".into(),..Config::default()};
-        let mut profile=json!({"model":{"toolsEnabled":true,"visionEnabled":true},"mcpServers":[{"id":"screen","enabled":true,"allowedTools":["capture"]}]});
-        assert!(screen_server(&profile,&config).is_ok());profile["model"]["visionEnabled"]=json!(false);assert!(screen_server(&profile,&config).is_err());profile["model"]["visionEnabled"]=json!(true);profile["mcpServers"][0]["allowedTools"]=json!(["other"]);assert!(screen_server(&profile,&config).is_err());
-        profile["mcpServers"][0]["allowedTools"]=json!(["capture"]);profile["mcpServers"][0]["transport"]=json!("builtin");assert!(screen_server(&profile,&config).is_err());
+    #[test]fn only_the_studio_can_start_autopilot(){
         assert!(main_only("main").is_ok());for label in ["avatar-nova","main-spoof",""]{assert!(main_only(label).is_err());}
     }
     #[test]fn speech_failure_does_not_poison_next_ticket_and_profile_mutation_is_atomic(){

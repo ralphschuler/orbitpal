@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Play, Pause, Eye, Sparkles, Footprints, MessageCircle } from '@lucide/svelte';
+  import { Play, Pause, Sparkles, Footprints, MessageCircle } from '@lucide/svelte';
   import HelpTip from './HelpTip.svelte';
   interface Props {
     config: any;
@@ -8,38 +8,16 @@
     disabled?: boolean;
     pending?: boolean;
     previewing?: boolean;
-    servers: any[];
     onStart: () => void;
     onStop: () => void;
     onPreview: () => void;
-    onLoadTools: (serverId: string) => Promise<any[]>;
   }
-  let { config = $bindable(), botName, active, disabled = false, pending = false, previewing = false, servers, onStart, onStop, onPreview, onLoadTools }: Props = $props();
-  let tools = $state<any[]>([]);
-  let loading = $state(false);
-  let toolError = $state('');
-  let loadedServer = $state('');
-  const availableServers = $derived(servers.filter(server => server.enabled));
-  const selectedServer = $derived(availableServers.find(server => server.id === config.screenServerId));
-  const allowedTools = $derived(loadedServer === config.screenServerId ? tools.filter(tool => (selectedServer?.allowedTools || []).some((name: string) => name === '*' || name === tool.name)) : []);
-  const argsError = $derived.by(() => {
-    if (!config.screenContext) return '';
-    try { const value = JSON.parse(config.screenToolArguments || '{}'); return value && typeof value === 'object' && !Array.isArray(value) ? '' : 'Die Werkzeugargumente müssen ein JSON-Objekt sein.'; }
-    catch { return 'Die Werkzeugargumente enthalten kein gültiges JSON.'; }
-  });
-  async function loadTools() {
-    const id = config.screenServerId;
-    if (!id || loading) return;
-    loading = true; toolError = '';
-    try { const result = await onLoadTools(id); if (id === config.screenServerId) { tools = result; loadedServer = id; } }
-    catch (error) { toolError = error instanceof Error ? error.message : String(error); }
-    finally { loading = false; }
-  }
+  let { config = $bindable(), botName, active, disabled = false, pending = false, previewing = false, onStart, onStop, onPreview }: Props = $props();
 </script>
 
 <section class="settings-panel autopilot-intro" aria-label="Autopilot steuern">
   <div class="autopilot-heading"><div><span class="eyebrow">EIN EIGENES KLEINES LEBEN</span><h2>{botName} macht auch mal den Anfang.</h2><p>Herumlaufen, kleine Gesten und gelegentlich ein eigener Kommentar. Persönlichkeit, Skills, Wissen und Erinnerungen bleiben die dieses Bots.</p></div><span class="autopilot-status" class:active>{active ? 'Autopilot läuft' : 'Pausiert'}</span></div>
-  <div class="autopilot-actions">{#if active}<button class="button primary" onclick={onStop} disabled={pending}><Pause size={16}/>Autopilot pausieren</button>{:else}<button class="button primary" onclick={onStart} disabled={disabled || pending || !!argsError}>{pending ? 'Wird gestartet …' : 'Autopilot starten'}<Play size={15}/></button>{/if}<button class="button secondary" onclick={onPreview} disabled={disabled || active}>{previewing ? 'Vorschau beenden' : 'Bewegung ansehen'}<Footprints size={15}/></button></div>
+  <div class="autopilot-actions">{#if active}<button class="button primary" onclick={onStop} disabled={pending}><Pause size={16}/>Autopilot pausieren</button>{:else}<button class="button primary" onclick={onStart} disabled={disabled || pending}>{pending ? 'Wird gestartet …' : 'Autopilot starten'}<Play size={15}/></button>{/if}<button class="button secondary" onclick={onPreview} disabled={disabled || active}>{previewing ? 'Vorschau beenden' : 'Bewegung ansehen'}<Footprints size={15}/></button></div>
   <p class="field-note">Start gilt nur für diese App-Sitzung. „Stop“ oder Escape beendet alle Autopiloten und laufenden Ausgaben. Die Bewegungsvorschau ist stumm und verwendet keine KI.</p>
 </section>
 
@@ -58,18 +36,6 @@
   </section>
 </div>
 
-<section class="settings-panel autopilot-screen"><div class="section-heading"><Eye size={20}/><div><h2>Bildschirm als Kontext</h2><p>Eine frische Beobachtung vor einem spontanen Beitrag.</p></div></div>
-  <div class="toggle-row"><div><strong>Bildschirmkontext verwenden <HelpTip text="Ruft nur das hier festgelegte MCP-Beobachtungswerkzeug mit diesen festen Argumenten auf. Es erhält dadurch keine Erlaubnis zu klicken oder den Computer zu bedienen. Echte Werkzeugbilder gehen an das ausgewählte bildfähige Modell; bei Cloud-Modellen werden sie dorthin übertragen. Ohne passende Bildfreigabe oder Sehfähigkeit funktioniert die Bildanalyse nicht."/></strong><small>Benötigt einen für diesen Bot freigegebenen MCP-Server und ein bildfähiges Dialogmodell.</small></div><input type="checkbox" role="switch" aria-label="Bildschirmkontext im Autopilot" bind:checked={config.screenContext}/></div>
-  {#if config.screenContext}
-    <div class="field-row"><label>MCP-Server<select bind:value={config.screenServerId} onchange={() => { tools = []; loadedServer = ''; config.screenToolName = ''; }}><option value="">Freigegebenen Server wählen</option>{#each availableServers as server}<option value={server.id}>{server.name || server.id}</option>{/each}</select></label><div class="tool-load"><button class="button secondary" onclick={loadTools} disabled={!selectedServer || loading}>{loading ? 'Lädt …' : 'Werkzeuge laden'}</button></div></div>
-    {#if !availableServers.length}<p class="field-note">Gib diesem Bot zuerst einen MCP-Server unter „Skills & MCP“ frei.</p>{/if}
-    {#if allowedTools.length}<label>Beobachtungswerkzeug<select bind:value={config.screenToolName}><option value="">Nur lesendes Werkzeug wählen</option>{#each allowedTools as tool}<option value={tool.name}>{tool.name}</option>{/each}</select></label>{:else}<label>Beobachtungswerkzeug<input bind:value={config.screenToolName} placeholder="Exakter Werkzeugname, z. B. get_window_state"/></label>{/if}
-    <label>Feste Werkzeugargumente (JSON)<textarea class="json-arguments" rows="4" maxlength="8000" spellcheck="false" bind:value={config.screenToolArguments} placeholder={'{"include_screenshot": true}'}></textarea></label>
-    <p class="field-note">Wähle ein reines Beobachtungswerkzeug. Der Autopilot erhält keine weiteren MCP-Werkzeuge und kann diese Argumente nicht verändern. Ein Werkzeug ohne Bildausgabe liefert keine Sicht auf deinen Bildschirm.</p>
-    {#if argsError}<p class="inline-error" role="status">{argsError}</p>{/if}{#if toolError}<p class="inline-error" role="status">{toolError}</p>{/if}
-  {/if}
-</section>
-
 <style>
   .autopilot-intro { margin-bottom: 20px; border-color: #42636f; background: radial-gradient(ellipse at top right, #223946 0%, #151f2d 68%); }
   .autopilot-heading { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
@@ -81,8 +47,5 @@
   .autopilot-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-block: 20px 14px; }
   .autopilot-settings { margin-bottom: 20px; }
   .toggle-row strong { display: flex; gap: 7px; align-items: center; }
-  .tool-load { align-self: flex-end; padding-bottom: 14px; }
-  .json-arguments { font-family: ui-monospace, monospace; }
-  .inline-error { color: #f1a8a8; }
   @media (max-width: 650px) { .autopilot-heading { flex-direction: column-reverse; gap: 8px; } }
 </style>

@@ -15,7 +15,8 @@
     {"id":"freuen","name":"Freuen","action":"celebrate","duration":2.6,"intensity":1,"allowChat":true}
   ],
   "allowSkillScripts": false,
-  "autopilot": { "minSeconds": 60, "maxSeconds": 180, "maxTurnsPerHour": 12, "speak": true, "gestures": true, "wander": true, "screenContext": false, "screenServerId": "", "screenToolName": "", "screenToolArguments": "{}", "instructions": "" },
+  "autopilot": { "minSeconds": 60, "maxSeconds": 180, "maxTurnsPerHour": 12, "speak": true, "gestures": true, "wander": true, "instructions": "" },
+  "screenContext": { "enabled": false, "displayId": "" },
   "mcpServers": [],
   "skillsEnabled": ["stream-begruessung"],
   "memory": { "enabled": true, "maxMessages": 30 },

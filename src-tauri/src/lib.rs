@@ -18,6 +18,8 @@ mod control_mcp;
 mod updater;
 mod avatar_metadata;
 mod autopilot;
+mod screen_capture;
+mod screen_context;
 
 use serde_json::{json,Value};
 use std::sync::{Mutex,Arc,atomic::{AtomicBool,Ordering}};
@@ -33,6 +35,7 @@ pub struct AppState {
     control_mcp:control_mcp::ControlMcp,
     updater:updater::UpdateState,
     autopilot:autopilot::AutopilotHub,
+    screen_context:screen_context::ScreenState,
 }
 
 #[tauri::command]
@@ -94,7 +97,8 @@ async fn save_profile(state:State<'_,AppState>,app:tauri::AppHandle,profile:Valu
     let _profile_switch=if old["id"]!=profile["id"]{Some(state.generation.try_lock().map_err(|_|"Profilwechsel während einer laufenden Antwort nicht möglich. Bitte zuerst abbrechen.".to_owned())?)}else{None};
     // An identical save (also used before ordinary messages) does not disturb
     // autonomous sessions. Changed settings revoke any in-flight snapshot.
-    let (profile,runtime)=if old!=profile{state.autopilot.change_profile(old["id"].as_str().ok_or("Bot-ID fehlt")?,||store.save_profile(profile))?}else{(store.save_profile(profile)?,None)};
+    let write=||state.screen_context.change_profile(old["id"].as_str().ok_or("Bot-ID fehlt")?,||store.profile(),&profile,||store.save_profile(profile.clone()));
+    let (profile,runtime)=if old!=profile{state.autopilot.change_profile(old["id"].as_str().ok_or("Bot-ID fehlt")?,write)?}else{(write()?,None)};
     if old!=profile&&state.overlay.has_autopilot_speech(old["id"].as_str().ok_or("Bot-ID fehlt")?){state.overlay.publish(&app,json!({"kind":"stop","botId":old["id"]}));}
     if let Some(runtime)=runtime{autopilot::publish(&app,runtime);}
     // Bindings are per bot; revoking one bot must not disconnect another bot's
@@ -254,12 +258,12 @@ pub fn run(){
         .setup(|app|{
             let root=app.path().app_data_dir()?;
             let store=storage::Store::new(root).map_err(std::io::Error::other)?;
-            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default()});
+            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default(),screen_context:screen_context::ScreenState::default()});
             tauri::async_runtime::block_on(overlay::start(app.handle().clone())).map_err(std::io::Error::other)?;
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update])
+        .invoke_handler(tauri::generate_handler![get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update])
         .run(tauri::generate_context!()).expect("Streamer AI Cohost konnte nicht gestartet werden");
 }
 

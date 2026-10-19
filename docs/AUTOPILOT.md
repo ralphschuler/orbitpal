@@ -32,15 +32,11 @@ Text, Stimme und eingeplante Emotes verwenden denselben Wiedergabeablauf wie nor
 
 ## Optionaler Bildschirmkontext
 
-Bildschirmkontext bleibt zunächst ausgeschaltet. Für die Nutzung müssen ein MCP-Server installiert und diesem Bot passende Werkzeuge freigegeben sein. Zusätzlich braucht das gewählte Dialogmodell Bildverarbeitung sowie die aktivierten Werkzeug- und Bildfreigaben.
+Unter **Bildschirm als Kontext** lässt sich die eingebaute Bildschirmaufnahme dieses Bots einschalten. Dafür sind weder MCP-Server noch Skills oder Werkzeugfreigaben nötig. Ein bildfähiges Modell, die allgemeine Bildfreigabe und passende Betriebssystemrechte werden benötigt. Dieselbe Einstellung steht unter **Modelle** und gilt auch für normale Gespräche.
 
-Unter **Bildschirm als Kontext** einen Server und genau ein **reines Beobachtungswerkzeug** wählen. **Werkzeuge laden** verbindet den ausgewählten Server und zeigt dessen für den Bot freigegebene Werkzeuge; dabei wird noch kein Screenshot angefordert. Werkzeugname und JSON-Argumente werden gespeichert. Die Argumente müssen zur konkreten MCP-Implementierung passen, etwa zur Auswahl eines Fensters und zur Rückgabe eines Bildes. Ein bloßer Dateipfad oder Text mit einer Bildreferenz ist keine Bildausgabe.
+Unmittelbar vor jedem Modellaufruf nimmt die App einen frischen Screenshot des Hauptbildschirms oder des ausdrücklich ausgewählten Monitors auf. Auch Werkzeug-Folgerunden bekommen ein neues Bild; frühere Bildschirmbilder werden nicht angesammelt. Bilder gehen an den gewählten Anbieter und verlassen bei Cloud-/Remote-Modellen den Rechner. Es wird kein fortlaufendes Bildschirmvideo an das Modell übertragen und kein Screenshot im Gesprächsverlauf oder in Hindsight gespeichert.
 
-Vor einem spontanen Modellbeitrag ruft die App dieses fest konfigurierte Werkzeug einmal auf. Das Modell kann weder den Werkzeugnamen noch diese Argumente austauschen und erhält im Autopiloten keine allgemeine MCP-Steuerung oder Skill-Skriptausführung. Ein MCP-Server läuft dennoch mit seinen eigenen Betriebssystemrechten: Der Betreiber muss tatsächlich ein Beobachtungswerkzeug auswählen, kein Werkzeug mit verändernder Wirkung.
-
-Echte Werkzeugbilder werden durch die bestehende Bildverarbeitung an den Dialoganbieter weitergegeben. Bei Cloud-Anbietern verlassen sie damit den Rechner; ein lokales Dialogmodell hält die Modellverarbeitung lokal, sofern auch die beteiligten MCP-, Sprach- und Gedächtnisdienste lokal laufen. Es gibt keinen fortlaufenden Bildschirmvideostream. Ohne aktive Sitzung und fälligen Gesprächsversuch fordert der Autopilot keine Beobachtung an.
-
-Fehlgeschlagene Beobachtungen erscheinen im Aktivitätsprotokoll. Der Bot erhält dann die Information, dass kein Bildschirmkontext verfügbar ist, und soll ohne Bildschirmbezug sprechen oder schweigen. Sichtbare Texte, Chat, Dokumente und Werkzeugantworten bleiben unzuverlässige Inhalte und können keine neuen Rechte vergeben.
+Bei fehlender Freigabe, verschwundenem Monitor oder Aufnahmefehler wird die Anfrage mit einer konkreten Fehlermeldung abgebrochen. Allgemeine MCP-Steuerung und Skill-Skripte bleiben im Autopiloten gesperrt. Sichtbare Texte können keine neuen Rechte vergeben. Details zu Einrichtung, Datenschutz, Limits und der derzeit fehlenden Wayland-Unterstützung stehen unter [Bildschirm als Kontext](SCREEN-CONTEXT.md).
 
 ## Vorbild und Grenzen
 
