@@ -265,3 +265,9 @@ Die Linux-GTK-Abhängigkeit GLib 0.18.5 enthält einen dokumentierten Upstream-B
 - [OpenAI Whisper-Modell](https://developers.openai.com/api/docs/models/whisper-1)
 - [OpenAI-Dateitranskription](https://developers.openai.com/api/docs/guides/speech-to-text)
 - [ElevenLabs Speech to Text](https://elevenlabs.io/docs/api-reference/speech-to-text/convert)
+
+### macOS-Bildschirmfreigabe
+
+Bei aktiviertem Bildschirmkontext zeigt die App den Status unter **macOS-Bildschirmfreigabe**. **Freigabe anfragen** löst ausschließlich mit deinem Klick die macOS-Systemabfrage aus. **Bildschirmfreigabe öffnen** führt zu Datenschutz & Sicherheit → Bildschirmaufnahme beziehungsweise Bildschirm- & Systemaudioaufnahme. Fehlt OrbitPal in der Liste, kannst du die App über **+** hinzufügen. Nach Änderungen die App bei Bedarf beenden und neu öffnen, anschließend die Anfrage selbst erneut senden. **Status erneut prüfen** und die Rückkehr aus den Systemeinstellungen nehmen keinen Screenshot auf. Die OS-Freigabe gilt für OrbitPal; pro Bot bleiben Bildschirmkontext, Bildübertragung und Modelldestination getrennt kontrolliert. Eine reine Statusabfrage kann eine erste Anfrage, frühere Ablehnung und einen nötigen Neustart nicht unterscheiden. Ein gewährter OS-Status beweist allein noch keine erfolgreiche Aufnahme. Nach einem Update kann die Freigabe erneut nötig sein.
+
+Siehe [Apple: Zugriff auf Bildschirm- und Systemaudioaufnahmen steuern](https://support.apple.com/guide/mac-help/control-access-to-screen-and-system-audio-recording-mchld6aa7d23/mac).
