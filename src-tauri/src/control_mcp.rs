@@ -285,6 +285,7 @@ fn execute(app: &tauri::AppHandle, command: Command) -> Result<Value, String> {
             Ok(json!({"botId":bot_id,"windowOpen":crate::overlay::is_open(app,&bot_id),"outputMode":if show {"overlay"} else {"studio"}}))
         },
         Command::StopOutput => {
+            state.screen_context.portal.close_all();
             if let Some(cancel) = state.cancel.lock().map_err(|_| "Aktive Antwort konnte nicht abgebrochen werden")?.as_ref() { cancel.store(true,Ordering::Relaxed); }
             state.overlay.publish(app,json!({"kind":"stop"}));
             app.emit("cohost://control",json!({"action":"stop"})).map_err(|_| "Ausgabe wurde gestoppt; das Regiepult konnte nicht benachrichtigt werden")?;

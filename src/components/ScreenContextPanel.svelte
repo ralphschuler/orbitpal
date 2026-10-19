@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from '../lib/i18n';
-  import { onDestroy } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { Eye } from '@lucide/svelte';
   import { call, native, prettyError } from '../lib/api';
   import HelpTip from './HelpTip.svelte';
@@ -9,21 +9,30 @@
 
   interface ScreenContextConfig { enabled: boolean; displayId: string }
   interface CaptureDisplay { id: string; name: string; primary: boolean }
+  interface ScreenSession { backend: 'native' | 'wayland'; phase: string; displayId: string; message: string }
   interface Props {
+    botId: string;
     config: ScreenContextConfig;
     visionEnabled: boolean;
     disabled?: boolean;
     permissionContext?: () => string;
   }
-  let { config = $bindable(), visionEnabled, disabled = false, permissionContext = () => '' }: Props = $props();
+  let { botId, config = $bindable(), visionEnabled, disabled = false, permissionContext = () => '' }: Props = $props();
   let displays = $state<CaptureDisplay[] | null>(null);
   let loading = $state(false);
   let error = $state('');
+  let session = $state<ScreenSession | null>(null);
+  let disposed = false;
+  let statusRevision = 0;
   let request = 0;
   let enabling = $state(false);
   let alive = true;
   async function toggleScreen(enabled: boolean) {
-    if (!enabled) { config.enabled = false; systemPermission.invalidate(); return; }
+    if (!enabled) {
+      config.enabled = false; systemPermission.invalidate();
+      if (session?.backend === 'wayland') await disconnectWayland();
+      return;
+    }
     if (enabling || disabled) return;
     const expected = JSON.stringify(config); const context = permissionContext();
     const current = () => alive && !disabled && JSON.stringify(config) === expected && permissionContext() === context;
@@ -33,7 +42,45 @@
   }
   const missingDisplay = $derived(displays !== null && !!config.displayId && !displays.some(display => display.id === config.displayId));
 
-  onDestroy(() => { alive = false; ++request; systemPermission.invalidate(); });
+  onMount(() => {
+    void refreshSession();
+    const timer = setInterval(() => { void refreshSession(); }, 1500);
+    return () => clearInterval(timer);
+  });
+  onDestroy(() => { alive = false; disposed = true; ++request; ++statusRevision; systemPermission.invalidate(); });
+
+  async function refreshSession() {
+    if (!native) return;
+    const targetBot = botId;
+    const revision = ++statusRevision;
+    const action = request;
+    try {
+      const result = await call<ScreenSession>('get_screen_session', { botId: targetBot });
+      if (!disposed && targetBot === botId && revision === statusRevision && action === request) session = result;
+    } catch (cause) { if (!disposed && targetBot === botId && revision === statusRevision && action === request) error = prettyError(cause); }
+  }
+
+  async function selectWayland() {
+    if (loading || enabling || disabled || disposed) return;
+    const targetBot = botId; const context = permissionContext(); const expected = JSON.stringify(config);
+    const revision = ++request; loading = true; error = '';
+    const current = () => !disposed && !disabled && targetBot === botId && revision === request && context === permissionContext() && expected === JSON.stringify(config);
+    try {
+      const result = await call<ScreenSession>('select_screen_source', { botId: targetBot });
+      if (!current()) return;
+      if (result.backend !== 'wayland' || result.phase !== 'ready' || !/^wayland:[0-9a-f-]{36}$/.test(result.displayId)) throw new Error('Die Wayland-Quelle wurde nicht verbunden.');
+      ++statusRevision; config.displayId = result.displayId; session = result;
+    } catch (cause) { if (current()) error = prettyError(cause); }
+    finally { if (!disposed && revision === request) loading = false; }
+  }
+
+  async function disconnectWayland() {
+    const targetBot = botId; const revision = ++request; ++statusRevision; error = '';
+    const current = () => !disposed && targetBot === botId && revision === request;
+    try { await call('disconnect_screen_source', { botId: targetBot }); if (current()) await refreshSession(); }
+    catch (cause) { if (current()) error = prettyError(cause); }
+    finally { if (current()) loading = false; }
+  }
 
   async function loadDisplays() {
     if (loading) return;
@@ -60,9 +107,19 @@
   <p class="field-note">{$t("Das Bild wird an das ausgewählte Dialogmodell übertragen. Bei Cloud- oder Remote-Anbietern verlässt es deinen Rechner und kann sichtbare private Inhalte enthalten. Benötigt ein bildfähiges Modell und die aktivierte Einstellung „Bilder an das Modell senden“.")}</p>
   {#if config.enabled}
     <ScreenCapturePermissions {disabled} {permissionContext}/>
+    {#if session?.backend === 'wayland'}
+      <p class="field-note">{$t("Unter Wayland wählst du die Quelle im Freigabedialog deines Desktops. Diese Sitzung ersetzt nicht die Bildfreigabe dieses Bots. Die Auswahl bleibt nur für diese App-Sitzung bestehen; anschließend die Einstellungen speichern.")}</p>
+      <div class="display-choice">
+        <button class="button secondary" onclick={selectWayland} disabled={disabled || loading}>{loading ? $t("Wayland-Auswahl läuft …") : $t("Wayland-Quelle auswählen / erneut verbinden")}</button>
+        <button class="button secondary" onclick={disconnectWayland} disabled={disabled || (!loading && session.phase === 'closed')}>{$t("Bildschirmfreigabe trennen")}</button>
+      </div>
+      <p class="field-note" role="status">{$t(session.message)}</p>
+      {#if session.phase !== 'ready'}<p class="screen-warning" role="status">{$t("Keine verbundene Wayland-Quelle. Anfragen mit Bildschirmkontext werden abgewiesen; die App verwendet keinen anderen Bildschirm.")}</p>{/if}
+    {:else}
     <div class="display-choice"><label>{$t("Bildschirm")}<select bind:value={config.displayId} disabled={disabled || loading}><option value="">{$t("Hauptbildschirm (automatisch)")}</option>{#if config.displayId && !displays?.some(display => display.id === config.displayId)}<option value={config.displayId}>{missingDisplay ? $t("Nicht verfügbar") : $t("Gespeicherte Auswahl")} · {config.displayId}</option>{/if}{#each displays || [] as display (display.id)}<option value={display.id}>{display.name || display.id}{display.primary ? ' · ' + $t('Hauptbildschirm') : ''}</option>{/each}</select></label><button class="button secondary" onclick={loadDisplays} disabled={disabled || loading}>{loading ? $t("Lädt …") : $t("Bildschirme laden")}</button></div>
+    {/if}
     {#if !visionEnabled}<p class="screen-warning" role="status">{$t("Die Bildübertragung ist für diesen Bot ausgeschaltet. Aktiviere „Bilder an das Modell senden“ unter Modelle, damit Bildschirmkontext funktioniert.")}</p>{/if}
-    {#if missingDisplay}<p class="screen-warning" role="status">{$t("Der ausgewählte Bildschirm ist nicht verfügbar. Wähle einen erreichbaren Bildschirm; die App wechselt nicht automatisch auf einen anderen.")}</p>{/if}
+    {#if session?.backend !== 'wayland' && missingDisplay}<p class="screen-warning" role="status">{$t("Der ausgewählte Bildschirm ist nicht verfügbar. Wähle einen erreichbaren Bildschirm; die App wechselt nicht automatisch auf einen anderen.")}</p>{/if}
     {#if displays?.length === 0}<p class="screen-warning" role="status">{$t("Das Betriebssystem hat keine Bildschirme gemeldet. Bildschirmkontext ist so nicht verfügbar.")}</p>{/if}
     {#if !native}<p class="screen-warning" role="status">{$t("Bildschirmaufnahmen sind nur in der Desktop-App verfügbar. Die Browseransicht kann deinen Bildschirm nicht aufnehmen.")}</p>{/if}
     <p class="field-note">{$t("Das Betriebssystem kann eine Freigabe für Bildschirmaufnahmen verlangen. Vor dem Start wird die Freigabe geprüft; bei fehlender Freigabe hilft ein Dialog beim Anfragen und erneuten Prüfen. Screenshots bleiben nur während der Anfrage im Arbeitsspeicher, werden als JPEG auf höchstens 1.280 Pixel Kantenlänge verkleinert und nicht als Datei gespeichert.")}</p>

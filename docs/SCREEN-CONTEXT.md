@@ -6,7 +6,7 @@ Die Desktop-App kann vor jedem Aufruf des Dialogmodells einen frischen Screensho
 
 1. Den Bot auswählen und unter **Modelle** oder **Autopilot** die Einstellung **Bildschirm bei jeder Anfrage mitsenden** aktivieren. Beide Ansichten verwenden dieselbe Einstellung dieses Bots.
 2. Ein bildfähiges Dialogmodell verwenden und **Bilder an das Modell senden** erlauben. Ein reines Textmodell erhält dadurch keine Sehfähigkeit. Unterstützte API-, lokale, Codex- und Claude-Code-Adapter verwenden ihre bestehende Bildübertragung.
-3. Den **Hauptbildschirm** verwenden oder mit **Bildschirme laden** einen bestimmten Monitor auswählen. Das Laden der Liste nimmt noch kein Bild auf. Einen nicht mehr verfügbaren ausgewählten Monitor ersetzt die App nicht unbemerkt durch einen anderen.
+3. Auf macOS, Windows oder X11 den **Hauptbildschirm** verwenden oder mit **Bildschirme laden** einen bestimmten Monitor auswählen. Unter Wayland stattdessen **Wayland-Quelle auswählen / erneut verbinden** anklicken und genau einen Monitor im Systemdialog auswählen. Der Desktop bestimmt die angebotenen Quellen; es gibt dort keinen automatischen Hauptbildschirm. Einen verschwundenen Monitor ersetzt die App nicht unbemerkt durch einen anderen.
 4. Änderungen speichern. Je nach Betriebssystem muss die App zusätzlich für Bildschirmaufnahmen freigegeben werden. Die Browser-Vorschau kann keine native Aufnahme erstellen.
 
 ## Umfang und Daten
@@ -30,4 +30,12 @@ Fehlende Betriebssystemrechte, ein verschwundener Monitor, Aufnahmefehler oder f
 - **macOS:** native CoreGraphics-Aufnahme; die Bildschirmaufnahme-Freigabe muss vom Betriebssystem erteilt sein.
 - **Windows:** native GDI-Aufnahme des ausgewählten Monitors. Geschützte Inhalte können vom Betriebssystem ausgenommen werden.
 - **Linux mit X11:** native X11/RandR-Aufnahme ohne zusätzlichen MCP-Server.
-- **Linux mit Wayland:** derzeit nicht unterstützt. Die App lehnt die Aufnahme ausdrücklich ab und verwendet keinen unvollständigen XWayland-Bildschirm. Für eine spätere Unterstützung ist ein eigener ScreenCast-/PipeWire-Aufnahmeablauf mit Systemauswahl und Sitzungsfreigabe erforderlich.
+- **Linux mit Wayland:** eigener ScreenCast-/PipeWire-Backend mit ausdrücklicher Systemauswahl und flüchtiger Sitzungsfreigabe. Die reale Abnahme auf aktuellen GNOME- und KDE-Sitzungen steht noch aus; siehe [Validierung und Voraussetzungen](WAYLAND-VALIDATION.md). Kein XWayland- oder Datei-Screenshot-Ersatz.
+
+## Wayland-Sitzung
+
+Die Systemfreigabe und die Bildfreigabe des Bots sind getrennt. Der Systemdialog kann geöffnet werden, ohne ein Bild an ein Modell zu senden. Anschließend die ausgewählte Quelle und die Bot-Einstellungen speichern. Beim nächsten Modellaufruf gelten erneut die aktuelle Bot-, Quellen- und Modellauswahl sowie die Bildfreigabe. Die angezeigte Sitzung wird regelmäßig aus dem nativen Zustand aktualisiert.
+
+Eine Sitzung gilt nur während dieser App-Laufzeit. **Bildschirmfreigabe trennen**, globales **Stop**, geänderte gespeicherte Bildschirm-/Modelleinstellungen, Widerruf im Desktop oder eine entfernte PipeWire-Quelle beenden sie. Ausschalten im geöffneten Bildschirm-Panel trennt sie sofort. Ein Botwechsel im Studio verwirft ausstehende Anfragen des bisherigen Bots; seine ausdrücklich ausgewählte Quelle bleibt ausschließlich ihm zugeordnet. So können mehrere Bots eigene Quellen gleichzeitig verwenden. Der neue Bot erhält keine Freigabe des bisherigen Bots. Nach Neustart oder Trennung ist ein erneuter sichtbarer Klick erforderlich; die App stellt keine Freigabe im Hintergrund wieder her.
+
+Zwischen Modellanfragen bleibt nur die freigegebene Portalverbindung offen. Es gibt dann keinen Video-Aufnahmestream und keinen Bildcache. Für jede Anfrage entsteht ein neuer kurzer PipeWire-Stream, der ein Bild liefert und wieder geschlossen wird. Lesbare CPU-Puffer in RGBx/RGBA/BGRx/BGRA werden begrenzt geprüft und über denselben JPEG-Pfad verarbeitet. Beschädigte, nicht lesbare oder nicht unterstützte Puffer führen zu einem Fehler. Ein bereits gesendetes Bild kann auch unter Wayland nicht zurückgerufen werden.

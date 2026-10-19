@@ -1,14 +1,15 @@
 # Release trust and signing activation
 
-Status on 2026-10-19: updater signatures are mandatory. This change prepares platform signing and protected environments; it does **not** claim that Apple/Windows identities, notarization, environment rules or real installation acceptance have been configured or verified. Issue #17 remains open until those operational steps are recorded by a maintainer.
+Status on 2026-10-19: updater signatures are mandatory. Published macOS releases through **v0.9.0** use ad-hoc signing; the next release pipeline requires the prepared, pinned persistent self-signed identity. Apple Developer ID/notarization, Windows Authenticode, protected signing environments and real installation/permission acceptance remain unconfigured or unverified. Issue #17 remains open until those operational steps are recorded by a maintainer.
 
-## Four different assurances
+## Signing and provenance assurances
 
 | Mechanism | What it establishes | Current boundary |
 | --- | --- | --- |
 | Tauri/minisign updater signature | The installed app's trusted key authorized the payload and signed version | Required independently of OS signing |
 | Authenticode | A Windows publisher identity signed executable/installer bytes | No production identity configured |
-| Developer ID and notarization | Apple identity and Apple's distribution assessment | Current packages use ad-hoc signing |
+| Persistent self-signed macOS certificate | The reviewed certificate key and stable certificate-bound designated requirement identify the app | Prepared for the next release; actual update/privacy acceptance remains pending |
+| Developer ID and notarization | Apple identity and Apple's distribution assessment | No Developer ID/notarization configured; the prepared self-signed identity provides neither |
 | GitHub/Sigstore provenance | A specific GitHub workflow/ref/commit produced matching file digests | New release workflow gate; first real tagged run still needs observation |
 
 Provenance is not a malware scan, a reproducible-build claim or an assertion of a particular SLSA level. The release manifest, source ZIP and checksum list are generated later by the publication job and are not presented as platform build subjects.
@@ -53,9 +54,11 @@ This is a pending activation procedure, not evidence that a protected environmen
 
 ## macOS identity and notarization
 
-Use a maintainer-owned **Developer ID Application** identity for distribution outside the App Store. [Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/) documents `APPLE_CERTIFICATE` (base64 PKCS#12), `APPLE_CERTIFICATE_PASSWORD` and the exact `APPLE_SIGNING_IDENTITY`. For App Store Connect API notarization use `APPLE_API_ISSUER`, `APPLE_API_KEY` and `APPLE_API_KEY_PATH`. Materialize a protected API-key secret only in the runner's temporary directory with restrictive permissions, then remove it in an `always()` cleanup step. Do not print certificate/private-key contents.
+The prepared [persistent self-signed identity](RELEASING.md#persistent-self-signed-macos-identity) pins the public certificate and exact designated requirement for both architectures. The build uses a temporary private keychain, checks the actual signed output and cleans up the runner identity; signing failures stop publication without an ad-hoc fallback. The hosted CI fixture demonstrates continuity between two synthetic app versions and rejects a different key or modified signed resources. It does not establish real OrbitPal updates or macOS microphone/screen permission retention. The transition from the ad-hoc releases through v0.9.0 may require renewed permission.
 
-The [macos.json.example](release-signing/macos.json.example) overlay requires the maintainer's verified identity. Replace the workflow's hardcoded ad-hoc `signingIdentity: "-"` configuration; leaving that override would defeat the intended identity. Preserve hardened runtime, `Info.plist`, microphone entitlements and stable bundle ID `studio.streamer-ai.cohost`. Apply OS signing/notarization before final updater payload/signature collection; changing an app after signing invalidates those proofs.
+For a future Apple-verified distribution path, obtain a maintainer-owned **Developer ID Application** identity. [Tauri's macOS signing guide](https://v2.tauri.app/distribute/sign/macos/) documents `APPLE_CERTIFICATE` (base64 PKCS#12), `APPLE_CERTIFICATE_PASSWORD` and the exact `APPLE_SIGNING_IDENTITY`. For App Store Connect API notarization use `APPLE_API_ISSUER`, `APPLE_API_KEY` and `APPLE_API_KEY_PATH`. Materialize a protected API-key secret only in the runner's temporary directory with restrictive permissions, then remove it in an `always()` cleanup step. Do not print certificate/private-key contents.
+
+The [macos.json.example](release-signing/macos.json.example) overlay is an inactive starting point for that separately reviewed migration. The current pipeline has no hardcoded ad-hoc override: it requires the pinned self-signed policy and signer wrapper. A Developer ID migration must deliberately adapt those identity/requirement checks and runner setup, preserving fail-closed signing, hardened runtime, `Info.plist`, microphone entitlements, cleanup and the stable bundle ID `studio.streamer-ai.cohost`. Apply OS signing/notarization before final updater payload/signature collection and build attestation; changing an app afterwards invalidates those proofs.
 
 Before calling a release notarized, require successful submission, stapling and ticket validation following [Apple's notarization documentation](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution). Run `codesign --verify --deep --strict --verbose=2`, `xcrun stapler validate` and the appropriate `spctl --assess` for the app/distribution container. Keep `verify-macos-permissions.mjs`. Check downloaded Apple Silicon and Intel packages on clean supported Macs, including first launch, microphone prompt, screen capture and a real updater transition. None of these identity/acceptance checks has been run with production credentials here.
 

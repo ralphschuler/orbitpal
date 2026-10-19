@@ -2,8 +2,8 @@
 //! checks and on spawn_blocking. No files, shell commands, MCP or capture cache.
 //!
 //! macOS uses CoreGraphics, Windows uses GDI, Linux uses pure-Rust X11/RandR.
-//! Wayland is deliberately rejected: screenshot portals may write temporary
-//! files and XWayland is not an honest substitute for the complete desktop.
+//! Wayland uses the separate explicit ScreenCast/PipeWire session backend;
+//! this module never substitutes an XWayland or filesystem screenshot.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use image::{codecs::jpeg::JpegEncoder, imageops::{resize, FilterType}, ExtendedColorType, RgbImage};
 use serde::Serialize;
@@ -38,15 +38,14 @@ fn selected(displays:&[CaptureDisplay],requested:Option<&str>)->Result<usize,Str
     if matches.next().is_some(){return Err("Die Bildschirmauswahl ist nicht eindeutig. Bitte die verfügbaren Bildschirme aktualisieren.".into());}
     Ok(index)
 }
-fn dimensions(width:u64,height:u64)->Result<usize,String>{
+pub(crate) fn dimensions(width:u64,height:u64)->Result<usize,String>{
     if width==0||height==0||width>MAX_SOURCE_EDGE||height>MAX_SOURCE_EDGE||width.checked_mul(height).is_none_or(|pixels|pixels>MAX_SOURCE_PIXELS){return Err("Bildschirmgröße wird nicht unterstützt (maximal 16.384 Pixel je Kante und 64 Megapixel).".into());}
     usize::try_from(width*height*4).map_err(|_|"Bildschirmgröße überschreitet den verfügbaren Adressraum.".into())
 }
-#[cfg(any(target_os="macos",target_os="windows",test))]
-fn rgb_from_rows(bytes:&[u8],width:u32,height:u32,stride:usize,channels:[usize;3])->Result<RgbImage,String>{
+pub(crate) fn rgb_from_rows(bytes:&[u8],width:u32,height:u32,stride:usize,channels:[usize;3])->Result<RgbImage,String>{
     dimensions(width.into(),height.into())?;
     let row=width as usize*4;
-    let required=stride.checked_mul(height as usize).ok_or("Ungültige Zeilenlänge der Bildschirmaufnahme")?;
+    let required=stride.checked_mul(height as usize-1).and_then(|length|length.checked_add(row)).ok_or("Ungültige Zeilenlänge der Bildschirmaufnahme")?;
     if stride<row||required>bytes.len()||stride>row+4096||channels.iter().any(|offset|*offset>3){return Err("Unvollständige oder ungültige Pixeldaten der Bildschirmaufnahme.".into());}
     let mut rgb=Vec::with_capacity(width as usize*height as usize*3);
     for y in 0..height as usize{for pixel in bytes[y*stride..y*stride+row].chunks_exact(4){rgb.extend_from_slice(&[pixel[channels[0]],pixel[channels[1]],pixel[channels[2]]]);}}
@@ -64,7 +63,7 @@ impl Write for BoundedJpeg{
     }
     fn flush(&mut self)->io::Result<()>{Ok(())}
 }
-fn encode(image:RgbImage)->Result<crate::vision::ValidatedImage,String>{
+pub(crate) fn encode(image:RgbImage)->Result<crate::vision::ValidatedImage,String>{
     dimensions(image.width().into(),image.height().into())?;
     let size=fitted(image.width(),image.height());
     let image=if size==(image.width(),image.height()){image}else{resize(&image,size.0,size.1,FilterType::Lanczos3)};
@@ -178,7 +177,7 @@ mod platform{
     use x11rb::{connection::Connection,image::{Image,PixelLayout},protocol::{randr::{ConnectionExt as _,MonitorInfo},xproto::ConnectionExt as _},rust_connection::RustConnection};
     struct Monitor{info:CaptureDisplay,geometry:MonitorInfo}
     fn monitors()->Result<(RustConnection,usize,Vec<Monitor>),String>{
-        if std::env::var_os("WAYLAND_DISPLAY").is_some_and(|value|!value.is_empty())||std::env::var("XDG_SESSION_TYPE").is_ok_and(|value|value.eq_ignore_ascii_case("wayland")){return Err("Native Bildschirmaufnahme unter Wayland ist in dieser Version nicht verfügbar. Für die Aufnahme wird eine X11-Sitzung benötigt; es werden keine temporären Dateien oder XWayland-Ersatzbilder erzeugt.".into());}
+        if crate::screen_portal::is_wayland(){return Err("Unter Wayland wird die Quelle ausdrücklich im ScreenCast-Freigabedialog ausgewählt; es gibt keinen automatischen Hauptbildschirm oder XWayland-Ersatz.".into());}
         let (connection,screen)=x11rb::connect(None).map_err(|_|"X11-Bildschirmverbindung nicht verfügbar. Bitte eine laufende lokale X11-Sitzung verwenden.".to_owned())?;
         let version=connection.randr_query_version(1,5).map_err(|_|"X11/RandR ist nicht verfügbar")?.reply().map_err(|_|"X11/RandR-Version konnte nicht ermittelt werden")?;
         if version.major_version<1||(version.major_version==1&&version.minor_version<5){return Err("Für die native Bildschirmauswahl wird X11/RandR 1.5 oder neuer benötigt.".into());}

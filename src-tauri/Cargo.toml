@@ -55,6 +55,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphic
 
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+zbus = { version = "6.0", default-features = false, features = ["tokio", "proxy"] }
+pipewire = "0.10.1"
 # Pure Rust X11/RandR transport: no libxcb generator or portal temp files.
 x11rb = { version = "0.14", default-features = false, features = ["randr", "image"] }
 
