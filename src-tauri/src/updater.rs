@@ -2,7 +2,7 @@
 //! and restart are a separate, explicitly confirmed operator action. Models, MCP
 //! clients and avatar webviews never receive these commands or candidate IDs.
 use serde::Serialize;
-use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
+use std::sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::Emitter;
 #[cfg(target_os = "linux")]
@@ -18,7 +18,7 @@ const CANDIDATE_LIFETIME: Duration = Duration::from_secs(60 * 60);
 #[derive(Default)]
 pub struct UpdateState {
     operation: tokio::sync::Mutex<()>,
-    candidate: Mutex<Option<Candidate<Update>>>,
+    lifecycle: Mutex<UpdateLifecycle<Update>>,
     installing: AtomicBool,
 }
 impl UpdateState {
@@ -28,6 +28,56 @@ impl UpdateState {
         } else { Ok(()) }
     }
 }
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum DownloadPhase { Downloading, Cancelled, Installing }
+struct DownloadControl { id:String, phase:Mutex<DownloadPhase>, cancelled:tokio::sync::Notify }
+impl DownloadControl {
+    fn new(id:&str)->Self{Self{id:id.into(),phase:Mutex::new(DownloadPhase::Downloading),cancelled:tokio::sync::Notify::new()}}
+    fn cancel(&self)->Result<bool,String>{
+        let mut phase=self.phase.lock().map_err(|_|"Update-Status ist nicht verfügbar.")?;
+        if *phase!=DownloadPhase::Downloading{return Ok(*phase==DownloadPhase::Cancelled);}
+        *phase=DownloadPhase::Cancelled;self.cancelled.notify_one();Ok(true)
+    }
+    fn begin_install(&self)->Result<bool,String>{
+        let mut phase=self.phase.lock().map_err(|_|"Update-Status ist nicht verfügbar.")?;
+        if *phase==DownloadPhase::Cancelled{return Ok(false);}
+        if *phase!=DownloadPhase::Downloading{return Err("Die Update-Installation läuft bereits.".into());}
+        *phase=DownloadPhase::Installing;Ok(true)
+    }
+    fn while_downloading(&self,publish:impl FnOnce()){
+        if let Ok(phase)=self.phase.lock(){if *phase==DownloadPhase::Downloading{publish();}}
+    }
+    async fn wait_cancelled(&self){
+        loop{if self.phase.lock().map(|phase|*phase==DownloadPhase::Cancelled).unwrap_or(true){return;}self.cancelled.notified().await;}
+    }
+}
+struct UpdateLifecycle<T>{candidate:Option<Candidate<T>>,active:Option<Arc<DownloadControl>>,cancelled_id:Option<String>}
+impl<T> Default for UpdateLifecycle<T>{fn default()->Self{Self{candidate:None,active:None,cancelled_id:None}}}
+impl<T> UpdateLifecycle<T>{
+    fn start(&mut self,id:&str,confirmed:bool,now:Instant)->Result<Option<(T,Arc<DownloadControl>)>,String>{
+        if !confirmed{return Err("Download und Installation benötigen deine ausdrückliche Bestätigung.".into());}
+        if self.cancelled_id.as_deref()==Some(id){return Ok(None);}
+        approved_candidate(&self.candidate,id,confirmed,now)?;
+        let update=self.candidate.take().ok_or("Bitte zuerst erneut nach Updates suchen.")?.update;
+        let control=Arc::new(DownloadControl::new(id));self.active=Some(control.clone());Ok(Some((update,control)))
+    }
+    fn cancel(&mut self,id:&str)->Result<bool,String>{
+        if let Some(active)=&self.active{if active.id==id{let cancelled=active.cancel()?;if cancelled{self.cancelled_id=Some(id.to_owned());}return Ok(cancelled);}return Ok(false);}
+        if self.candidate.as_ref().is_some_and(|candidate|candidate.id==id){self.candidate=None;self.cancelled_id=Some(id.to_owned());return Ok(true);}
+        Ok(self.cancelled_id.as_deref()==Some(id))
+    }
+}
+struct ActiveDownload<'a>{state:&'a UpdateState,control:Arc<DownloadControl>}
+impl Drop for ActiveDownload<'_>{fn drop(&mut self){if let Ok(mut lifecycle)=self.state.lifecycle.lock(){if lifecycle.active.as_ref().is_some_and(|active|Arc::ptr_eq(active,&self.control)){lifecycle.active=None;}}}}
+#[derive(Serialize)]
+pub struct InstallOutcome { cancelled:bool }
+async fn download_until_cancelled<T>(control:&DownloadControl,download:impl std::future::Future<Output=Result<T,String>>)->Result<Option<T>,String>{
+    // Dropping the plugin download future drops its request/stream and buffers.
+    // Cancellation wins when both futures are already ready. A second atomic
+    // phase check below also covers cancellation during synchronous verification.
+    tokio::select!{biased;_=control.wait_cancelled()=>Ok(None),result=download=>result.map(Some)}
+}
+
 struct Candidate<T> { id: String, created: Instant, update: T }
 struct Installing<'a>(&'a AtomicBool);
 impl Drop for Installing<'_> {
@@ -123,7 +173,7 @@ pub async fn check_update(window: tauri::WebviewWindow, app: tauri::AppHandle, s
     let _operation = state.updater.operation.try_lock().map_err(|_| "Eine Update-Prüfung oder Installation läuft bereits.".to_owned())?;
     state.updater.ensure_idle()?;
     // Failed/replaced checks must invalidate the previously shown confirmation.
-    *state.updater.candidate.lock().map_err(|_| "Update-Status ist nicht verfügbar.")? = None;
+    {let mut lifecycle=state.updater.lifecycle.lock().map_err(|_| "Update-Status ist nicht verfügbar.")?;lifecycle.candidate=None;lifecycle.cancelled_id=None;}
     let unavailable = support(&app);
     let mut result = UpdateCheck {
         current_version: app.package_info().version.to_string(), update: None,
@@ -151,7 +201,7 @@ pub async fn check_update(window: tauri::WebviewWindow, app: tauri::AppHandle, s
         });
         // Downloads can take longer than a small manifest request.
         update.timeout = Some(Duration::from_secs(10 * 60));
-        *state.updater.candidate.lock().map_err(|_| "Update-Status ist nicht verfügbar.")? = Some(Candidate { id, created: Instant::now(), update });
+        state.updater.lifecycle.lock().map_err(|_| "Update-Status ist nicht verfügbar.")?.candidate = Some(Candidate { id, created: Instant::now(), update });
     }
     Ok(result)
 }
@@ -176,8 +226,18 @@ fn progress(window: &tauri::WebviewWindow, id: &str, phase: &str, downloaded: u6
     let _ = window.emit("cohost://update", Progress { candidate_id: id, phase, downloaded, total, message });
 }
 
+fn cancel_download<T>(label:&str,lifecycle:&Mutex<UpdateLifecycle<T>>,id:&str)->Result<bool,String>{
+    main_only(label)?;lifecycle.lock().map_err(|_|"Update-Status ist nicht verfügbar.")?.cancel(id)
+}
+
 #[tauri::command]
-pub async fn install_update(window: tauri::WebviewWindow, app: tauri::AppHandle, state: tauri::State<'_, crate::AppState>, candidate_id: String, confirmed: bool) -> Result<(), String> {
+pub fn cancel_update(window:tauri::WebviewWindow,state:tauri::State<'_,crate::AppState>,candidate_id:String)->Result<InstallOutcome,String>{
+    let cancelled=cancel_download(window.label(),&state.updater.lifecycle,&candidate_id)?;
+    Ok(InstallOutcome{cancelled})
+}
+
+#[tauri::command]
+pub async fn install_update(window: tauri::WebviewWindow, app: tauri::AppHandle, state: tauri::State<'_, crate::AppState>, candidate_id: String, confirmed: bool) -> Result<InstallOutcome, String> {
     main_only(window.label())?;
     if let Some(reason) = support(&app) { return Err(reason); }
     let _operation = state.updater.operation.try_lock().map_err(|_| "Eine Update-Prüfung oder Installation läuft bereits.".to_owned())?;
@@ -186,34 +246,36 @@ pub async fn install_update(window: tauri::WebviewWindow, app: tauri::AppHandle,
     let _generation = state.generation.try_lock().map_err(|_| "Bitte die aktuelle Antwort vor dem Update beenden.".to_owned())?;
     if state.autopilot.any_active(){return Err("Bitte alle Autopiloten vor dem Update stoppen.".into());}
     if state.overlay.has_any_pending_speech() { return Err("Bitte die vorbereitete oder laufende Sprachausgabe vor dem Update beenden.".into()); }
-    let update = {
-        let mut slot = state.updater.candidate.lock().map_err(|_| "Update-Status ist nicht verfügbar.")?;
-        approved_candidate(&slot, &candidate_id, confirmed, Instant::now())?;
-        // Consumed on confirmation: errors require a fresh check and a new click.
-        slot.take().ok_or("Bitte zuerst erneut nach Updates suchen.")?.update
+    let (update,control) = {
+        let mut lifecycle=state.updater.lifecycle.lock().map_err(|_| "Update-Status ist nicht verfügbar.")?;
+        // Candidate consumption and publication of its cancellation generation
+        // share one lock. An immediate Cancel cannot fall into a registration gap.
+        let Some(value)=lifecycle.start(&candidate_id,confirmed,Instant::now())? else{return Ok(InstallOutcome{cancelled:true});};
+        state.updater.installing.store(true,Ordering::SeqCst);value
     };
+    let _installing = Installing(&state.updater.installing);
+    let _active=ActiveDownload{state:&state.updater,control:control.clone()};
     trusted_asset(&update.download_url, &update.version)?;
     if !newer_stable(&app.package_info().version.to_string(), &update.version)? { return Err("Diese Version ist kein neueres stabiles Update.".into()); }
-    state.updater.installing.store(true, Ordering::SeqCst);
-    let _installing = Installing(&state.updater.installing);
     // Invalidate gestures/sound preparation already dispatched to native/OBS
     // renderers before confirmation. Their late decodes must not start audio
     // behind the update dialog while the native runtime is locked.
     state.overlay.publish(&app, serde_json::json!({"kind":"stop"}));
-    progress(&window, &candidate_id, "downloading", 0, None, None);
+    control.while_downloading(||progress(&window, &candidate_id, "downloading", 0, None, None));
     let mut downloaded = 0u64;
     let mut last_progress = Instant::now();
-    let downloaded_bytes = update.download(|chunk, total| {
+    let downloaded_bytes = download_until_cancelled(&control,async{update.download(|chunk, total| {
         downloaded = downloaded.saturating_add(chunk as u64);
         if last_progress.elapsed() >= Duration::from_millis(100) || total == Some(downloaded) {
-            progress(&window, &candidate_id, "downloading", downloaded, total, None);
+            control.while_downloading(||progress(&window, &candidate_id, "downloading", downloaded, total, None));
             last_progress = Instant::now();
         }
-    }, || {}).await;
+    }, || {}).await.map_err(|error|format!("Update-Download oder Signaturprüfung fehlgeschlagen: {error}"))}).await;
     let bytes = match downloaded_bytes {
-        Ok(bytes) => bytes,
+        Ok(Some(bytes)) => bytes,
+        Ok(None)=>return Ok(InstallOutcome{cancelled:true}),
         Err(error) => {
-            let message = format!("Update-Download oder Signaturprüfung fehlgeschlagen: {error}");
+            let message = error;
             progress(&window, &candidate_id, "error", downloaded, None, Some(&message));
             return Err(message);
         }
@@ -223,6 +285,9 @@ pub async fn install_update(window: tauri::WebviewWindow, app: tauri::AppHandle,
         progress(&window, &candidate_id, "error", downloaded, None, Some(message));
         return Err(message.into());
     }
+    // This transition and Cancel contend for the same mutex. Once Installing
+    // wins, replacement is deliberately non-cancellable on every platform.
+    if !control.begin_install()?{return Ok(InstallOutcome{cancelled:true});}
     progress(&window, &candidate_id, "installing", downloaded, Some(downloaded), None);
     // The plugin verifies the signature again inside install(). On Windows it
     // exits only after launching the installer successfully (which relaunches).
@@ -297,6 +362,42 @@ mod tests {
         state.installing.store(true, Ordering::SeqCst);
         { let _guard = Installing(&state.installing); assert!(state.ensure_idle().is_err()); }
         assert!(state.ensure_idle().is_ok());
+    }
+    #[tokio::test]
+    async fn cancelled_slow_download_drops_its_future_and_late_bytes_never_install(){
+        struct Dropped(Arc<AtomicBool>);impl Drop for Dropped{fn drop(&mut self){self.0.store(true,Ordering::SeqCst);}}
+        let control=Arc::new(DownloadControl::new("slow-candidate"));let dropped=Arc::new(AtomicBool::new(false));
+        let (sender,receiver)=tokio::sync::oneshot::channel::<Vec<u8>>();let guard=Dropped(dropped.clone());let downloading=control.clone();
+        let task=tokio::spawn(async move{download_until_cancelled(&downloading,async move{let _guard=guard;let _=receiver.await;Ok(vec![1,2,3])}).await});
+        tokio::task::yield_now().await;assert!(control.cancel().unwrap());assert!(task.await.unwrap().unwrap().is_none());
+        assert!(dropped.load(Ordering::SeqCst));assert!(sender.send(vec![9;100]).is_err());assert!(!control.begin_install().unwrap());
+        let progress=AtomicBool::new(false);control.while_downloading(||progress.store(true,Ordering::SeqCst));assert!(!progress.load(Ordering::SeqCst));
+    }
+    #[tokio::test]
+    async fn cancellation_after_verification_rejects_ready_bytes_before_install(){
+        let control=DownloadControl::new("verified");let bytes=download_until_cancelled(&control,async{Ok(vec![1,2,3])}).await.unwrap().unwrap();
+        assert_eq!(bytes.len(),3);assert!(control.cancel().unwrap());assert!(!control.begin_install().unwrap());
+        let control=DownloadControl::new("simultaneously-ready");assert!(control.cancel().unwrap());
+        assert!(download_until_cancelled(&control,async{Ok(vec![1])}).await.unwrap().is_none());
+    }
+    #[test]
+    fn cancel_and_install_have_one_atomic_winner_and_installation_cannot_be_cancelled(){
+        for _ in 0..64{
+            let control=Arc::new(DownloadControl::new("race"));let barrier=Arc::new(std::sync::Barrier::new(2));
+            let cancelled=control.clone();let ready=barrier.clone();let task=std::thread::spawn(move||{ready.wait();cancelled.cancel().unwrap()});
+            barrier.wait();let installing=control.begin_install().unwrap();let cancelled=task.join().unwrap();assert_ne!(installing,cancelled);
+            if installing{assert!(!control.cancel().unwrap());}else{assert!(!control.begin_install().unwrap());}
+        }
+    }
+    #[test]
+    fn cancellation_is_main_only_candidate_bound_and_requires_a_fresh_check(){
+        let now=Instant::now();let lifecycle=Mutex::new(UpdateLifecycle{candidate:Some(Candidate{id:"old".into(),created:now,update:()}),..UpdateLifecycle::default()});
+        for label in ["avatar","avatar-nova","mcp",""]{assert!(cancel_download(label,&lifecycle,"old").is_err());}
+        assert!(lifecycle.lock().unwrap().candidate.is_some());assert!(!cancel_download("main",&lifecycle,"other").unwrap());
+        assert!(cancel_download("main",&lifecycle,"old").unwrap());assert!(lifecycle.lock().unwrap().start("old",true,now).unwrap().is_none());
+        {let mut state=lifecycle.lock().unwrap();state.cancelled_id=None;assert!(state.start("old",true,now).is_err());state.candidate=Some(Candidate{id:"new".into(),created:now,update:()});assert!(state.start("new",false,now).is_err());}
+        let control=lifecycle.lock().unwrap().start("new",true,now).unwrap().unwrap().1;
+        assert!(!cancel_download("main",&lifecycle,"old").unwrap());assert!(control.begin_install().unwrap());assert!(!cancel_download("main",&lifecycle,"new").unwrap());
     }
     #[test]
     fn automatic_checks_are_app_wide_persistent_and_absent_from_bot_exports() {
