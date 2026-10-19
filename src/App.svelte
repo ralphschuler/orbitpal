@@ -201,6 +201,10 @@
   let player: SpeechPlayer;
   let emoteSequence: EmoteSequence;
   let emoteAudio: EmoteAudioPlayer;
+  let modelAudioStop = $state(0);
+  let modelSoundPlaying = false;
+  let effectSoundPlaying = false;
+  function modelAudioPlaying(value:boolean){modelSoundPlaying=value;emoteSoundPlaying=value||effectSoundPlaying;}
   let emoteSoundPlaying = $state(false);
   let emoteRevision = 0;
   let automaticEmoteRevision = 0;
@@ -215,7 +219,7 @@
   let answeringSpeechId = "";
   const presentedReplies = new Set<string>();
   const undisplayedReplies = new Set<string>();
-  function clearEmotes(){++emoteRevision;emoteSequence?.stop();emoteAudio?.stop();profile.avatar.emote=undefined;}
+  function clearEmotes(){modelAudioStop++;++emoteRevision;emoteSequence?.stop();emoteAudio?.stop();profile.avatar.emote=undefined;}
   function applyEmote(emote:EmotePayload){
     if(emoteOutput.botId!==profile.id)return;
     presentAdmittedEmote(liveAvatar,emote,()=>{profile.avatar.emote={...emote,action:emote.action,nonce:emote.nonce||crypto.randomUUID(),duration:(emote.duration||2.5)*1000,intensity:emote.intensity??1};
@@ -735,7 +739,7 @@
     subtitleLifetime=new SubtitleLifetime(text=>subtitleText=text);
     player=new SpeechPlayer(v=>level=v,v=>speaking=v);
     externalEmotes=new ExternalEmotePlayback(value=>externalEmotePlaying=value);
-    emoteAudio=new EmoteAudioPlayer(text=>notify(text,true),value=>emoteSoundPlaying=value);
+    emoteAudio=new EmoteAudioPlayer(text=>notify(text,true),value=>{effectSoundPlaying=value;emoteSoundPlaying=value||modelSoundPlaying;});
     emoteSequence=new EmoteSequence(applyEmote);
     const cleanup:(()=>void)[]=[];let disposed=false;
     window.addEventListener('focus',refreshOutputDisplays);cleanup.push(()=>window.removeEventListener('focus',refreshOutputDisplays));
@@ -839,7 +843,7 @@
       {#if page==='studio'}
         <section class="crew-panel"><div class="crew-heading"><div><h2>{$t("Deine Stream-Crew")} <span>{$t('{count} Ausgaben aktiv',{count:formatNumber(liveBots.length,$locale)})}</span></h2><p>{$t("Mehrere Figuren gleichzeitig. Jede mit eigenem Modell und eigener Stimme.")}</p></div><button class="button secondary small" disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending} onclick={()=>{botDialog=true;botCopy=false;botCharacter='nova'}}><Plus size={14}/>{$t("Bot hinzufügen")}</button></div><div class="crew-list">{#each bots as bot}<article class="crew-card" class:editing={bot.id===profile.id}><button class="crew-identity" onclick={()=>selectBot(bot.id)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending}><span class="bot-initial">{bot.name.charAt(0)}</span><span><strong>{bot.name}</strong><small>{bot.id===profile.id?$t("Zum Bearbeiten ausgewählt"):bot.profile?.model?.provider||$t("Eigenes Profil")}</small></span></button><div class="crew-actions"><button class="button small" class:secondary={!(botEnabled(bot))} class:live-output={botEnabled(bot)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending} onclick={()=>toggleBotLive(bot)}><Monitor size={12}/>{botEnabled(bot)?$t("Ausgabe beenden"):$t("Figur zeigen")}</button><button class="icon-button" title={$t('Eigener OBS-Link für {name}',{name:bot.name})} onclick={()=>copyBotObs(bot)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending}><Copy size={14}/></button></div></article>{/each}</div><p class="crew-note">{$t("Der Live-Chat ist die gemeinsame Eingabe. Eigene Ansprache und Antwortmodus legst du pro Bot unter Verbindungen fest. Antworten werden nacheinander gesprochen.")}</p></section>
         <div class="studio-layout"><section class="stage-column"><div class="studio-stage"><div class="stage-top"><span class="stage-identity"><span class="stage-dot" class:alive={running||speaking}></span>{profile.name}<span class="soft-label">{$t("Dein KI-Cohost")}</span></span><button class="stage-tool" onclick={()=>page='character'} title={$t("Charakter bearbeiten")}><Settings2 size={17}/></button></div>
-          {#if profile.output.mode==='studio'}<Avatar bind:this={liveAvatar} {profile} {speaking} {level} {emotion} autopilot={motionRuntime} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath,overlayUrl)} onModelLoaded={info=>renderedModel=info}/>{:else}<div class="stage-away"><Monitor size={48} strokeWidth={1}/><h2>{profile.output.mode==='overlay'?$t("Auf deinem Desktop."):$t("Bereit für deinen Stream.")}</h2><p>{profile.output.mode==='overlay'?$t("Dein Charakter läuft im eigenen Figurenfenster."):$t("Füge den kopierten Link als Browserquelle in OBS ein.")}</p><button class="button dark" onclick={useStudio}>{$t("Zur Studioansicht")}</button></div>{/if}
+          {#if profile.output.mode==='studio'}<Avatar bind:this={liveAvatar} audioEnabled={true} audioStop={modelAudioStop} onAudioPlaying={modelAudioPlaying} {profile} {speaking} {level} {emotion} autopilot={motionRuntime} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath,overlayUrl)} onModelLoaded={info=>renderedModel=info}/>{:else}<div class="stage-away"><Monitor size={48} strokeWidth={1}/><h2>{profile.output.mode==='overlay'?$t("Auf deinem Desktop."):$t("Bereit für deinen Stream.")}</h2><p>{profile.output.mode==='overlay'?$t("Dein Charakter läuft im eigenen Figurenfenster."):$t("Füge den kopierten Link als Browserquelle in OBS ein.")}</p><button class="button dark" onclick={useStudio}>{$t("Zur Studioansicht")}</button></div>{/if}
           <div class="stage-caption">{#if subtitleText}<p>{subtitleText}</p>{:else if !hadSubtitle}<h2>{$t('Hi, ich bin {name}.',{name:profile.name})}</h2><p>{profile.tagline}</p>{/if}</div><div class="stage-bottom"><span><span class="stage-dot" class:alive={busy||speaking||running}></span>{$t(activeStatus)}</span><span><Volume2 size={13}/>{profile.voice.provider==='system'?$t("Systemstimme"):profile.voice.provider==='elevenlabs'?'ElevenLabs':$t("Eigene Sprach-API")}</span></div></div>
           <div class="output-strip"><div class="output-label"><Monitor size={17}/><span>{$t("Darstellung")}</span></div><div class="segmented"><button class:selected={profile.output.mode==='studio'} onclick={useStudio}>{$t("Studio")}</button><button class:selected={profile.output.mode==='overlay'} onclick={openCharacterWindow}>{$t("Desktop-Overlay")} <MoveUpRight size={12}/></button><button class:selected={profile.output.mode==='obs'} onclick={copyObs}>{$t("OBS")} <Copy size={12}/></button></div></div>
           <div class="emote-toolbar"><span>{$t("Emotes")}</span>{#if hostEmoteError&&profile.output.mode!=='studio'&&(!liveAvatar||renderedModel.status!=='ready')}<span role="status" title={hostEmoteError}>{$t("Emote-Liste nicht verfügbar")}</span>{/if}{#each profile.emotes || [] as emote}<button disabled={!emoteAvailable(emote)} onclick={()=>triggerEmote(emote.id)} title={$t('{name} ausführen',{name:emote.name})}>{#if emote.action==='wave'}<Hand size={14}/>{:else if emote.action==='hide'}<EyeOff size={14}/>{:else}<PartyPopper size={14}/>{/if}{emote.name}</button>{/each}<button class="emote-edit" onclick={()=>page='character'} title={$t("Emotes bearbeiten")}><Plus size={14}/></button></div>

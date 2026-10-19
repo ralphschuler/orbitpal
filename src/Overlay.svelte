@@ -46,6 +46,10 @@
   let soundActivationNeeded = $state(false);
   let player: SpeechPlayer;
   let emoteAudio: EmoteAudioPlayer;
+  let modelAudioStop = $state(0);
+  let modelSoundPlaying = false;
+  let effectSoundPlaying = false;
+  function modelAudioPlaying(value:boolean){modelSoundPlaying=value;reportCombinedSound();}
   let emoteRevision = 0;
   let soundPlaybackId = '';
   let soundPlaying = false;
@@ -94,6 +98,7 @@
     manualController?.abort();
     const controller = new AbortController(); manualController = controller;
     presentationLeases.clear(current?.presentation);
+    modelAudioStop++;
     ++emoteRevision; const revision = emoteRevision;
     emoteSequence.stop(); emoteAudio?.stop();
     let presentation: PresentationTicket | undefined;
@@ -116,7 +121,9 @@
     }
   }
 
-  function reportSoundPlaying(playing: boolean) {
+  function reportSoundPlaying(playing: boolean) {effectSoundPlaying=playing;reportCombinedSound();}
+  function reportCombinedSound() {
+    const playing=effectSoundPlaying||modelSoundPlaying;
     soundPlaying = playing;
     if (!playing) presentationLeases.soundEnded();
     if (playing) soundPlaybackId ||= crypto.randomUUID();
@@ -190,6 +197,7 @@
     manualController?.abort(); manualController = undefined;
     current?.controller.abort();
     presentationLeases.clear();
+    modelAudioStop++;
     ++emoteRevision;
     const job = current;
     current = undefined;
@@ -319,7 +327,7 @@
     document.documentElement.classList.add('overlay-document');
     player = new SpeechPlayer((value) => { level = value; }, (state) => { speaking = state; });
     emoteAudio = new EmoteAudioPlayer((message) => { soundNotice = message; soundActivationNeeded = /gesperrt|aktivieren|klick/i.test(message); },reportSoundPlaying);
-    const soundHeartbeat=window.setInterval(()=>{if(soundPlaying&&!disposed)reportSoundPlaying(true);},4000);
+    const soundHeartbeat=window.setInterval(()=>{if(soundPlaying&&!disposed)reportCombinedSound();},4000);
     const cleanup: (() => void)[] = [];
     if (native) {
       const initialRevision = profileRevision;
@@ -355,7 +363,7 @@
 </script>
 
 <div class="overlay-scene">
-  <Avatar bind:this={avatar} profile={renderProfile} {speaking} {level} {emotion} {autopilot} {desktop} onDesktopAnchor={value=>anchor=value} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  <Avatar bind:this={avatar} audioEnabled={profile.output.mode===(native?'overlay':'obs')} audioStop={modelAudioStop} onAudioPlaying={modelAudioPlaying} profile={renderProfile} {speaking} {level} {emotion} {autopilot} {desktop} onDesktopAnchor={value=>anchor=value} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
   {#if native && !desktop?.active && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>

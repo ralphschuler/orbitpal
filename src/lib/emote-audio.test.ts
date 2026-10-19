@@ -6,7 +6,7 @@ const audio = { base64: btoa('fixture'), mimeType: 'audio/wav' };
 class Param { value = 0; setValueAtTime = vi.fn(); exponentialRampToValueAtTime = vi.fn(); }
 class Node { connect = vi.fn(); disconnect = vi.fn(); }
 class Gain extends Node { gain = new Param(); }
-class Source extends Node { onended: (() => void) | null = null; buffer?: Buffer; start = vi.fn(); stop = vi.fn(); frequency = new Param(); type = ''; }
+class Source extends Node { onended: (() => void) | null = null; buffer?: Buffer; start = vi.fn(); stop = vi.fn(); frequency = new Param(); playbackRate = new Param(); type = ''; }
 class Buffer {
   constructor(public numberOfChannels = 1, public length = 24000, public sampleRate = 48000) {}
   get duration() { return this.length / this.sampleRate; }
@@ -28,7 +28,7 @@ class Context {
 
 describe('optional emote audio', () => {
   beforeEach(() => { Context.instances = []; vi.stubGlobal('AudioContext', Context); });
-  afterEach(() => { vi.unstubAllGlobals(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
   it('creates no audio context and performs no fetch when no sound is selected', async () => {
     const resolver = vi.fn(); const player = new EmoteAudioPlayer();
@@ -89,5 +89,29 @@ describe('optional emote audio', () => {
     await expect(player.prepare([{ sound: SOUND }], async () => { throw new Error('unavailable'); })).resolves.toBeUndefined();
     expect(warning).toHaveBeenCalled(); const context = Context.instances[0]; context.state = 'suspended'; player.play({ sound: 'builtin:cheer' });
     expect(context.oscillators).toHaveLength(0); expect(context.resume).not.toHaveBeenCalled(); player.destroy();
+  });
+  it('keeps embedded channels explicit, supports clip offsets/rates and halts while preserving only the current model cache',async()=>{
+    const ordinary=new EmoteAudioPlayer();const resolver=vi.fn(async()=>audio);
+    await ordinary.prepare([{sound:'model:0'}],resolver);expect(resolver).not.toHaveBeenCalled();ordinary.destroy();
+    const player=new EmoteAudioPlayer(undefined,undefined,true);
+    await player.prepare([{sound:'model:0'},{sound:'model:1'}],resolver);
+    const context=Context.instances.at(-1)!;
+    player.play({sound:'model:0',soundOffset:0.1,soundRate:2,soundVolume:0.5});
+    player.play({sound:'model:1'});
+    expect(context.sources[0].start).toHaveBeenCalledWith(10,0.1,0.4);
+    expect(context.sources[0].playbackRate.value).toBe(2);
+    player.stopSound('model:0');expect(context.sources[0].stop).toHaveBeenCalled();expect(context.sources[1].stop).not.toHaveBeenCalled();
+    player.setVolume(0);expect(context.gains[0].gain.value).toBe(0);
+    player.halt();expect(context.sources[1].stop).toHaveBeenCalled();expect(player.isPrepared('model:1')).toBe(true);
+    player.stop();expect(player.isPrepared('model:1')).toBe(false);player.destroy();
+  });
+  it('bounds model decode waits and discards a result arriving after its timeout',async()=>{
+    vi.useFakeTimers();const player=new EmoteAudioPlayer(undefined,undefined,true);await player.unlock();
+    const context=Context.instances[0];let finish!:(value:Buffer)=>void;
+    context.decodeAudioData.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+    const pending=player.prepare([{sound:'model:0'}],async()=>audio);
+    await vi.advanceTimersByTimeAsync(5000);await pending;
+    expect(player.isPrepared('model:0')).toBe(false);finish(new Buffer());await Promise.resolve();
+    expect(player.isPrepared('model:0')).toBe(false);expect(context.sources).toHaveLength(0);player.destroy();
   });
 });

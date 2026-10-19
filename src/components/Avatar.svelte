@@ -19,9 +19,12 @@
     autopilot?: AutopilotVisualConfig;
     desktop?:DesktopLayout;
     onDesktopAnchor?:(anchor:DesktopAnchor|undefined)=>void;
+    audioEnabled?: boolean;
+    audioStop?: number;
+    onAudioPlaying?: (playing: boolean) => void;
   }
 
-  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, outputUrl = '', onModelLoaded, autopilot, desktop, onDesktopAnchor }: Props = $props();
+  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, outputUrl = '', onModelLoaded, autopilot, desktop, onDesktopAnchor, audioEnabled = false, audioStop = 0, onAudioPlaying }: Props = $props();
   let host: HTMLDivElement;
   let stage = $state<AvatarStage>();
   let failure = $state('');
@@ -44,7 +47,7 @@
 
   onMount(() => {
     try {
-      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor }, (message) => { emoteFailure = message; }, assetUrl);
+      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying }, (message) => { emoteFailure = message; }, assetUrl);
       stage = renderer;
       return () => { disposed = true; ++assetRequest; renderer.dispose(); };
     } catch (error) {
@@ -55,7 +58,7 @@
   });
 
   $effect(() => {
-    stage?.update({ profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor });
+    stage?.update({ profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying });
   });
 
   $effect(() => {
@@ -81,6 +84,8 @@
     });
   });
 </script>
+
+<svelte:window onpointerdown={() => { if (audioEnabled) void stage?.unlockModelAudio(); }} onkeydown={() => { if (audioEnabled) void stage?.unlockModelAudio(); }}/>
 
 <div class="avatar-stage" class:transparent role="img" aria-label={$t('{name}, animierter 3D-Charakter', { name: profile?.name || 'Nova' })}>
   <div class="canvas-host" bind:this={host}></div>

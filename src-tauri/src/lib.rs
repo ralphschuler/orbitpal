@@ -24,6 +24,7 @@ mod control_mcp;
 mod updater;
 mod avatar_metadata;
 mod motions;
+mod avatar_audio;
 mod gltf_import;
 mod autopilot;
 mod screen_capture;
