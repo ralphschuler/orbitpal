@@ -60,6 +60,14 @@ impl ScreenState{
         let grants=self.grants.lock().map_err(|_|"Bildschirmfreigaben sind nicht verfügbar")?;
         if grants.get(&ticket.bot_id).is_none_or(|grant|grant.revision!=ticket.revision){return Err("Bildschirmfreigabe wurde während der Anfrage geändert".into());}Ok(())
     }
+    /// A Studio selection change invalidates its old request context without
+    /// transferring or revoking the source explicitly selected for that bot.
+    pub fn cancel_inflight(&self,bot_id:&str)->Result<(),String>{
+        let mut grants=self.grants.lock().map_err(|_|"Bildschirmfreigaben sind nicht verfügbar")?;
+        let grant=grants.entry(bot_id.to_owned()).or_default();grant.revision=grant.revision.saturating_add(1);
+        for cancel in grant.turns.drain(..).filter_map(|turn|turn.upgrade()){cancel.store(true,Ordering::SeqCst);}
+        Ok(())
+    }
     /// Serialize grant revocation and persistence; an off/on change cannot
     /// revive a late frame, and saving another bot cannot cancel this bot.
     pub fn change_profile(&self,bot_id:&str,read_current:impl FnOnce()->Result<Value,String>,new:&Value,write:impl FnOnce()->Result<Value,String>)->Result<Value,String>{

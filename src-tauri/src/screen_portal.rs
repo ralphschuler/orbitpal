@@ -220,6 +220,27 @@ mod tests {
         let mut changed=profile("nova",&newer);changed["screenContext"]["displayId"]=json!("different");hub.reconcile(&changed).unwrap();assert!(newer.cancelled.load(Ordering::SeqCst));
         hub.close_all();assert!(other.cancelled.load(Ordering::SeqCst));
     }
+    #[test] fn studio_switch_cancels_old_tickets_but_keeps_two_independent_bot_leases() {
+        let state=crate::screen_context::ScreenState::default();
+        let first=state.portal.begin("nova",json!({"model":"first"})).unwrap();
+        let second=state.portal.begin("james",json!({"model":"second"})).unwrap();
+        let (sender,_first)=mpsc::sync_channel(1);first.ready(sender).unwrap();
+        let (sender,_second)=mpsc::sync_channel(1);second.ready(sender).unwrap();
+        let old_cancel=Arc::new(AtomicBool::new(false));let other_cancel=Arc::new(AtomicBool::new(false));
+        let old=state.ticket("nova",old_cancel.clone()).unwrap();
+        let other=state.ticket("james",other_cancel.clone()).unwrap();
+        state.cancel_inflight("nova").unwrap();
+        assert!(old_cancel.load(Ordering::SeqCst));assert!(state.check(&old).is_err());
+        assert!(!other_cancel.load(Ordering::SeqCst));assert!(state.check(&other).is_ok());
+        assert_eq!(first.snapshot().unwrap().phase,"ready");assert_eq!(second.snapshot().unwrap().phase,"ready");
+        let fresh=Arc::new(AtomicBool::new(false));assert!(state.check(&state.ticket("nova",fresh.clone()).unwrap()).is_ok());
+        assert!(state.portal.capture_for(&profile("nova",&first),fresh).is_ok());
+        assert!(state.portal.capture_for(&profile("james",&second),other_cancel.clone()).is_ok());
+        assert!(state.portal.capture_for(&profile("james",&first),other_cancel.clone()).is_err());
+        state.portal.close_bot("nova","fixture disconnect");
+        assert!(first.cancelled.load(Ordering::SeqCst));assert!(!second.cancelled.load(Ordering::SeqCst));
+        assert!(!other_cancel.load(Ordering::SeqCst));
+    }
     #[test] fn fresh_requests_have_no_cached_frame_and_late_results_are_discarded() {
         let hub=PortalState::default();let session=hub.begin("nova",json!({"model":"fixture"})).unwrap();
         let (sender,receiver)=mpsc::sync_channel::<FrameRequest>(1);session.ready(sender).unwrap();

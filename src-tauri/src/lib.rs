@@ -88,7 +88,7 @@ async fn create_bot(state:State<'_,AppState>,app:tauri::AppHandle,name:String,co
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Anlegen eines Bots beenden".to_owned())?;
     let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.create_bot(&name,copy_current)?;
-    state.screen_context.portal.close_bot(&previous,"Wayland-Freigabe durch Botwechsel geschlossen");
+    state.screen_context.cancel_inflight(&previous)?;
     state.overlay.publish(&app,json!({"kind":"profile","profile":overlay::public_profile(&profile)}));Ok(profile)
 }
 #[tauri::command]
@@ -96,7 +96,7 @@ async fn select_bot(state:State<'_,AppState>,app:tauri::AppHandle,id:String)->Re
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Botwechsel beenden".to_owned())?;
     let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.select_bot(&id)?;
-    if previous!=id{state.screen_context.portal.close_bot(&previous,"Wayland-Freigabe durch Botwechsel geschlossen");}
+    if previous!=id{state.screen_context.cancel_inflight(&previous)?;}
     state.overlay.publish(&app,json!({"kind":"profile","profile":overlay::public_profile(&profile)}));Ok(profile)
 }
 #[tauri::command]
@@ -267,7 +267,7 @@ async fn import_profile(state:State<'_,AppState>,app:tauri::AppHandle,source_pat
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Import beenden".to_owned())?;
     let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.import(std::path::Path::new(&source_path))?;
-    state.screen_context.portal.close_bot(&previous,"Wayland-Freigabe durch Botwechsel geschlossen");
+    state.screen_context.cancel_inflight(&previous)?;
     state.overlay.publish(&app,json!({"kind":"profile","profile":overlay::public_profile(&profile)}));Ok(profile)
 }
 
