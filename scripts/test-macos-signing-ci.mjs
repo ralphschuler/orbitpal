@@ -17,6 +17,7 @@ const target = process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple
 const work = mkdtempSync(join(process.env.RUNNER_TEMP, 'orbitpal-public-signing-fixtures-'));
 const directories = [runnerDirectory(target, '-fixture-a'), runnerDirectory(target, '-fixture-b')];
 
+let primaryFailure;
 try {
   const identities = ['a', 'b'].map(label => {
     const material = join(work, `material-${label}`);
@@ -39,7 +40,13 @@ try {
       // Match tauri-macos-sign 2.4.2 as locked by CLI2.12.3: no timestamp
       // argument, with runtime and the configured entitlement path.
       const result = spawnSync(process.execPath, [resolve(root, 'scripts/macos-codesign.mjs'), '--force', '-s', identity.sha1, '--options', 'runtime', '--entitlements', resolve(root, 'src-tauri/Entitlements.plist'), app], { env: environment, stdio: ['ignore', 'pipe', 'pipe'], timeout: 90_000 });
-      assert.equal(result.status, 0, 'Fixture app signing failed; native diagnostics are withheld to protect signing inputs');
+      // This process sees only fixture public metadata/keychain paths, never
+      // passwords/archive inputs or production secrets. Its bounded output
+      // makes real codesign failures reviewable instead of masking them.
+      if (result.error || result.status !== 0) {
+        console.error(`Fixture-only codesign diagnostics:\n${result.stderr?.toString().slice(0, 6000) || '(no diagnostics)'}`);
+        throw new Error(`Fixture app signing failed (exit ${Number.isInteger(result.status) ? result.status : 'unavailable'})`);
+      }
       return verifyPinnedSignature(app, identity);
     };
     const compile = version => {
@@ -69,11 +76,18 @@ try {
   const tampered = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', outputs[0]], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
   assert.notEqual(tampered.status, 0, 'Tampered app resources must be rejected');
   console.log('Verified fixture A→B code identity, rejection of a different signing key with the same name, and tamper rejection. No app was run and no TCC acceptance is claimed.');
+} catch (error) {
+  primaryFailure = error;
 } finally {
   let failed = false;
   // Nested preparations snapshot the preceding search list; restore LIFO.
   for (const directory of [...directories].reverse()) { try { cleanupIdentity(directory); } catch { failed = true; } }
   rmSync(work, { recursive: true, force: true });
-  assert.equal(failed, false, 'Fixture signing cleanup failed; discard this disposable runner');
+  if (failed) {
+    const cleanupFailure = new Error('Fixture signing cleanup failed; discard this disposable runner');
+    if (primaryFailure) throw new AggregateError([primaryFailure, cleanupFailure], 'Fixture signing and cleanup failed');
+    throw cleanupFailure;
+  }
   for (const directory of directories) assert.equal(existsSync(directory), false);
 }
+if (primaryFailure) throw primaryFailure;

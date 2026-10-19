@@ -15,10 +15,9 @@ export function requireDisposableMac(env = process.env, platform = process.platf
 
 export function runNative(program, args, options = {}) {
   const { operation, ...processOptions } = options;
-  const operations = ['list-keychains', 'create-keychain', 'unlock-keychain', 'import', 'set-keychain-settings', 'set-key-partition-list', 'find-certificate', 'add-trusted-cert', 'find-identity', 'remove-trusted-cert', 'delete-keychain'];
+  const operations = ['list-keychains', 'create-keychain', 'unlock-keychain', 'import', 'set-keychain-settings', 'set-key-partition-list', 'find-certificate', 'find-identity', 'delete-keychain'];
   const candidate = operation || args[0];
-  const securityProgram = program === '/usr/bin/security' || (program === '/usr/bin/sudo' && args[0] === '-n' && args[1] === '/usr/bin/security');
-  const step = securityProgram && operations.includes(candidate) ? `security/${candidate}` : program === '/usr/bin/clang' ? 'fixture/compile' : 'native/signature-check';
+  const step = program === '/usr/bin/security' && operations.includes(candidate) ? `security/${candidate}` : program === '/usr/bin/clang' ? 'fixture/compile' : 'native/signature-check';
   console.log(`macOS signing operation: ${step}`);
   const result = spawnSync(program, args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 90_000, maxBuffer: 4 * 1024 * 1024, ...processOptions });
   // Do not include native output, environment or argv in failures. `security`
@@ -34,13 +33,6 @@ export function runNative(program, args, options = {}) {
 
 function privateFile(path, contents) { writeFileSync(path, contents, { flag: 'wx', mode: 0o600 }); }
 function securityInput(args) { return runNative('/usr/bin/security', ['-i'], { operation: args[0], input: `${args.map(quoteSecurityInput).join(' ')}\n` }); }
-function runnerTrust(args) {
-  requireDisposableMac();
-  // User-domain trust requires an interactive Loginwindow authorization.
-  // Only this disposable hosted runner may use its administrative domain;
-  // noninteractive sudo must fail rather than request operator credentials.
-  return runNative('/usr/bin/sudo', ['-n', '/usr/bin/security', ...args], { operation: args[0] });
-}
 function stateFile(directory) { return join(directory, 'state.json'); }
 function saveState(directory, state) { writeFileSync(stateFile(directory), JSON.stringify(state), { mode: 0o600 }); }
 
@@ -84,7 +76,7 @@ export function prepareIdentity(directory, identity, p12, password) {
   validateSigningPassword(password);
   assert.ok(Buffer.isBuffer(p12) && p12.length > 100 && p12.length < 1024 * 1024, 'Invalid signing archive size');
   mkdirSync(directory, { mode: 0o700 });
-  const state = { keychain: join(directory, 'identity.keychain-db'), certificate: join(directory, 'certificate.pem'), oldKeychains: [], snapshotTaken: false, trustAdded: false };
+  const state = { keychain: join(directory, 'identity.keychain-db'), certificate: join(directory, 'certificate.pem'), oldKeychains: [], snapshotTaken: false };
   saveState(directory, state);
   try {
     privateFile(state.certificate, identity.certificate.toString());
@@ -107,13 +99,13 @@ export function prepareIdentity(directory, identity, p12, password) {
     assert.equal(certificates.length, 1, 'The signing keychain must contain only the reviewed certificate');
     const imported = new X509Certificate(certificates[0]);
     assert.equal(imported.fingerprint256.replaceAll(':', '').toLowerCase(), identity.sha256, 'The imported archive does not contain the pinned certificate');
-    // Limited to the code-signing policy in the disposable runner's admin
-    // domain. This does not install a trusted root on any app user's Mac.
-    state.trustAdded = true;
-    saveState(directory, state);
-    runnerTrust(['add-trusted-cert', '-d', '-r', 'trustRoot', '-p', 'codeSign', '-k', state.keychain, state.certificate]);
-    const identities = runNative('/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning', state.keychain]);
-    assert.ok(identities.toLowerCase().includes(identity.sha1), 'The pinned certificate has no usable private signing key');
+    // This is identity/key-pair discovery, not global certificate trust.
+    // Do not use -v (trusted identities only) or modify Trust Settings.
+    // The reviewed certificate is checked above; actual private-key signing,
+    // strict resource validation and the exact certificate-bound requirement
+    // are independently required by the fixture and bundle verifier.
+    const identities = runNative('/usr/bin/security', ['find-identity', '-p', 'codesigning', state.keychain]);
+    assert.ok(identities.toLowerCase().includes(identity.sha1), 'The pinned certificate has no private signing identity');
     return state;
   } catch (error) {
     try { cleanupIdentity(directory); } catch { throw new Error(`macOS identity setup and cleanup failed after ${error.operation || 'validation'}; discard the disposable runner`); }
@@ -128,9 +120,6 @@ export function cleanupIdentity(directory) {
   assert.equal(state.keychain, join(directory, 'identity.keychain-db'));
   assert.equal(state.certificate, join(directory, 'certificate.pem'));
   const errors = [];
-  if (state.trustAdded) {
-    try { runnerTrust(['remove-trusted-cert', '-d', state.certificate]); } catch { errors.push('temporary code-signing trust'); }
-  }
   if (existsSync(state.keychain)) {
     try { runNative('/usr/bin/security', ['delete-keychain', state.keychain]); } catch { errors.push('temporary signing keychain'); }
   }

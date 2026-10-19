@@ -125,7 +125,7 @@ jobs:
           MACOS_CODESIGN_P12: ${{ secrets.MACOS_CODESIGN_P12 }}
           MACOS_CODESIGN_PASSWORD: ${{ secrets.MACOS_CODESIGN_PASSWORD }}
         run: node scripts/macos-release-signing.mjs build
-      - name: Remove temporary macOS signing identity and trust
+      - name: Remove temporary macOS signing identity
         if: always() && runner.os == 'macOS'
         shell: bash
         env:
