@@ -1,10 +1,10 @@
 # Rust dependency maintenance
 
-This is the reproducible follow-up for [issue #19](https://github.com/ralphschuler/orbitpal/issues/19), reviewed on **2026-10-19** against the 0.8.0 lockfile. These entries are maintenance advisories. They are not evidence that an exploit was demonstrated in OrbitPal, and keeping this record does not fix the affected dependencies.
+This is the reproducible follow-up for [issue #19](https://github.com/ralphschuler/orbitpal/issues/19), reviewed on **2026-10-19** against the combined 0.9.0 source lockfile, including the Wayland portal dependencies. These entries are maintenance advisories. They are not evidence that an exploit was demonstrated in OrbitPal, and keeping this record does not fix the affected dependencies.
 
 ## Audit snapshot
 
-`cargo-audit 0.22.2` fetched the RustSec database online before scanning. The database's remote HEAD and the report's database revision both resolved to `999ec89d5d3f10f20be14750ec8c2d8b44e0ac9b` (2026-10-17). The scan contained 1,338 advisories and 613 locked package entries, with **0 vulnerability findings and 8 unmaintained package/version warnings across 5 advisory IDs**. No advisory IDs, architectures or operating systems were excluded. The lockfile SHA-256 was `6a59b8ae3f356fcdf7522256dd8bb2c4e72e312298b3bea5f49028803bb66950`.
+`cargo-audit 0.22.2` fetched the RustSec database online before scanning. The database's remote HEAD and the report's database revision both resolved to `999ec89d5d3f10f20be14750ec8c2d8b44e0ac9b` (2026-10-17). The scan contained 1,338 advisories and 637 locked package entries, with **0 vulnerability findings and 8 unmaintained package/version warnings across 5 advisory IDs**. No advisory IDs, architectures or operating systems were excluded. The lockfile SHA-256 was `185362a59a011f72f34818406b4ac45100385e726c379557ace9dd2514958918`.
 
 This is a dated result, not a permanent clean bill of health. `cargo audit` scans the lockfile, which includes optional package dependencies. `cargo tree` with OrbitPal's selected features is a separate check of the active build graph; it must not be used to hide warnings from the full audit.
 
@@ -26,9 +26,13 @@ The lockfile also records `keyring 3.6.3 → secret-service 4.0.0 → zbus 4.4.0
 - `secret-service` and zbus 4 belong to keyring's unselected `async-secret-service` feature. Reverse trees with `--target all` and specifically `x86_64-unknown-linux-gnu` have no active path to those old versions. The full lockfile audit still reports them.
 - [Keyring 4.2.0](https://github.com/open-source-cooperative/keyring-rs/releases/tag/v4.2.0) is a published alternative with split backend crates, not a compatible update to keyring 3's feature configuration. Evaluate it as a separate credential-store migration, including an isolated synthetic-entry compatibility check on all three operating systems. Preserve the existing service namespace and secret IDs; never inspect real credentials for a migration test.
 
+### Separate Wayland portal graph
+
+The integrated Wayland implementation adds a direct `OrbitPal → zbus 6.0.0` path and `pipewire 0.10.1`. Its 24 additional locked packages increase the previous snapshot from 613 to 637 entries; they do not migrate opener or keyring. Linux reverse trees confirm that opener still selects zbus 5.19.0 alongside the new direct zbus 6 path. The optional keyring/zbus 4 family remains in the full lockfile. Having zbus 6 installed therefore does not resolve the older families' maintenance warnings.
+
 ## Upgrade decisions
 
-At review, `tauri 2.12.4`, `tauri-plugin-opener 2.7.2` and `pdf-extract 0.12.1` were the latest published stable versions. `keyring 3.6.3` was the latest published 3.x version. No compatible released upgrade removed these five advisory families. The lockfile and features therefore remain unchanged.
+Fresh crates.io metadata at review confirmed `tauri 2.12.4`, `tauri-plugin-opener 2.7.2` and `pdf-extract 0.12.1` as the latest published stable versions, and `keyring 3.6.3` as the latest published 3.x version. The published consumer constraints still require `lopdf ^0.42` and opener's `zbus ^5.9`. No compatible released upgrade removed these five advisory families. This audit refresh changes no dependency versions or features.
 
 Do not force GTK/GLib binding generations, patch transitive crates to incompatible majors, point production dependencies at unreviewed upstream branches, replace the persistent Linux credential backend with a volatile one, or delete optional lockfile entries by hand. These changes would either break supported behavior or make the audit record misleading.
 
@@ -51,6 +55,9 @@ cargo tree --manifest-path src-tauri/Cargo.toml --locked --target all -i zvarian
 cargo tree --manifest-path src-tauri/Cargo.toml --locked --target all -i zvariant_derive@5.15.1
 cargo tree --manifest-path src-tauri/Cargo.toml --locked --target x86_64-unknown-linux-gnu -i zbus@4.4.0
 cargo tree --manifest-path src-tauri/Cargo.toml --locked --target x86_64-unknown-linux-gnu -i dbus-secret-service@4.1.0
+cargo tree --manifest-path src-tauri/Cargo.toml --locked --target x86_64-unknown-linux-gnu -i zbus@5.19.0
+cargo tree --manifest-path src-tauri/Cargo.toml --locked --target x86_64-unknown-linux-gnu -i zbus@6.0.0
+cargo tree --manifest-path src-tauri/Cargo.toml --locked --target all -i pipewire@0.10.1
 ```
 
 Keep generated reports outside commits. Record the database revision, audit tool version, package/version counts and selected feature paths when updating this document. A later dependency release or advisory change invalidates the dated conclusions above.
