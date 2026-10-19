@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync, truncateSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -11,7 +11,7 @@ import { rustInventory, nodeInventory } from './dependency-inventories.mjs';
 import { assertCanPublishLatest, createUpdaterManifest, updaterArtifacts, updaterSignature, canonicalRepository, legacyAssetRepository } from './updater-manifest.mjs';
 import { assertMicrophonePermissions } from './verify-macos-permissions.mjs';
 import { createSigningFixture } from './fixtures/updater-signing.mjs';
-import { verifyUpdaterPayload } from './verify-updater-payload.mjs';
+import { MAX_LEGACY_PAYLOAD_BYTES, verifyUpdaterPayload } from './verify-updater-payload.mjs';
 
 test('macOS microphone requires a signed audio-input entitlement as well as Info.plist', () => {
   const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
@@ -184,6 +184,18 @@ test('legacy non-prehashed Minisign Ed mode verifies the actual complete payload
     assert.equal(verifyUpdaterPayload({ path, publicKey, signature: signed, version: '0.4.0' }), signed);
     writeFileSync(path, 'different complete payload');
     assert.throws(() => verifyUpdaterPayload({ path, publicKey, signature: signed, version: '0.4.0' }), /payload cryptographic signature verification failed/);
+  } finally { rmSync(options.root, { recursive: true, force: true }); }
+});
+
+test('oversized legacy Ed payload is rejected before allocating its full contents', () => {
+  const options = manifestFixture();
+  try {
+    const path = payloadPaths(options)[0], data = readFileSync(path);
+    const signed = signature('0.4.0', keyId, data, { algorithm: 'Ed' });
+    // Extend a local fixture without constructing a correspondingly large JS
+    // string or Buffer. The verifier must reject its size before reading it.
+    truncateSync(path, MAX_LEGACY_PAYLOAD_BYTES + 1);
+    assert.throws(() => verifyUpdaterPayload({ path, publicKey, signature: signed, version: '0.4.0' }), /Legacy Minisign Ed payload exceeds 512 MiB/);
   } finally { rmSync(options.root, { recursive: true, force: true }); }
 });
 

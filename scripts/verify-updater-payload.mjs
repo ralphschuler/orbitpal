@@ -4,6 +4,8 @@
 import { createHash, createPublicKey, verify } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 
+export const MAX_LEGACY_PAYLOAD_BYTES = 512 * 1024 * 1024;
+
 export function decodeBase64(value, description) {
   if (typeof value !== 'string' || !value || value.length > 16_384 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
     throw new Error('Invalid ' + description + ': expected Tauri base64 contents');
@@ -101,6 +103,7 @@ export function verifyUpdaterPayload({ path, signature: encodedSignature, public
     } else {
       // Minisign's older Ed mode signs the complete message, as supported by
       // Tauri with allow_legacy=true. Official current packages use ED instead.
+      if (info.size > MAX_LEGACY_PAYLOAD_BYTES) throw new Error('Legacy Minisign Ed payload exceeds 512 MiB; re-sign the package using current streaming ED mode');
       message = readExact(fd, info.size);
     }
     if (!verify(null, message, key.key, signature.signature)) throw new Error('Updater payload cryptographic signature verification failed: ' + path);
