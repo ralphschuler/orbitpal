@@ -1,3 +1,8 @@
+## Fixed in 0.6.1
+
+- Characters return to their embedded idle animation after Autopilot walking instead of falling into a T-pose. Repeated walks preserve the idle animation's phase and paused-state setting.
+- Imported gestures blend back into idle without a bind-pose gap. Cancelling a gesture or previewing the idle clip itself also preserves a natural resting pose.
+
 ## Features
 
 - Explicit per-bot Autopilot with quiet periods, rolling speech budgets, roaming, silent gestures and optional fixed MCP screen observations.

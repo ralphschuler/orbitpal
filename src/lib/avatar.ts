@@ -382,6 +382,17 @@ export class AvatarStage {
 
   private get activeAnimationActions(): (THREE.AnimationAction | undefined)[] { return [this.idleAction, this.walkingAction, this.emote?.clip]; }
 
+  private resumeIdleAnimation(fadeSeconds = 0) {
+    const idle = this.idleAction;
+    if (!idle) return;
+    // A completed fadeOut disables the action. play()/fadeIn() alone do
+    // not re-enable it; preserve its phase and the operator's pause policy.
+    idle.enabled = true;
+    idle.setEffectiveWeight(1);
+    if (fadeSeconds > 0) idle.fadeIn(fadeSeconds);
+    idle.play();
+  }
+
   private setWalking(walking: boolean, immediate = false) {
     if (this.walking === walking && !immediate) return;
     const previous = this.walking;
@@ -394,7 +405,9 @@ export class AvatarStage {
     } else {
       const participated = previous || (action.enabled && action.isScheduled() && action.getEffectiveWeight() > 0.0001);
       if (immediate) action.stop(); else action.fadeOut(0.2);
-      if (participated && this.idleAction && !this.emote?.clip) this.idleAction.setEffectiveWeight(1).fadeIn(immediate ? 0 : 0.2).play();
+      if (participated && this.idleAction && !this.emote?.clip) {
+        this.resumeIdleAnimation(immediate ? 0 : 0.2);
+      }
     }
   }
 
@@ -533,7 +546,9 @@ export class AvatarStage {
       playing.setLoop(THREE.LoopOnce, 1);
       playing.clampWhenFinished = true;
       playing.setEffectiveTimeScale(Math.max(0.01, clip.duration) / active.duration);
-      playing.setEffectiveWeight(1).fadeIn(0.12).play();
+      playing.setEffectiveWeight(1);
+      if (playing !== this.idleAction) playing.fadeIn(0.12);
+      playing.play();
       active.clip = playing;
     }
     this.emote = active;
@@ -542,11 +557,15 @@ export class AvatarStage {
 
   private finishEmote() {
     if (this.emote?.clip) {
+      const sharedIdle = this.emote.clip === this.idleAction;
       this.emote.clip.stop();
-      if (this.idleAction) {
+      if (this.idleAction && sharedIdle) {
         this.idleAction.reset().setLoop(THREE.LoopRepeat, Infinity);
-        this.idleAction.setEffectiveTimeScale(1).setEffectiveWeight(1).fadeIn(0.18).play();
+        this.idleAction.setEffectiveTimeScale(1);
       }
+      // The outgoing action is stopped now, so idle must already own the
+      // complete pose. Natural endings cross-fade before reaching this point.
+      this.resumeIdleAnimation();
     }
     this.emote = undefined;
     this.emoteSource = undefined;
@@ -566,7 +585,11 @@ export class AvatarStage {
     if (progress >= 1) { this.finishEmote(); return; }
     if (active.clip) {
       if (!active.fading && progress > 0.85) {
-        active.clip.fadeOut(Math.min(0.35, active.duration * 0.15));
+        if (active.clip !== this.idleAction) {
+          const fade = Math.min(0.35, active.duration * 0.15);
+          active.clip.fadeOut(fade);
+          this.resumeIdleAnimation(fade);
+        }
         active.fading = true;
       }
       return;

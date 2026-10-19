@@ -1,6 +1,6 @@
 [package]
 name = "streamer-ai-cohost"
-version = "0.6.0"
+version = "0.6.1"
 description = "An extensible AI streaming companion"
 authors = ["Streamer AI Cohost"]
 edition = "2021"

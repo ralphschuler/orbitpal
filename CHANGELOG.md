@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1 — 2026-10-19
+
+- Restore embedded idle animations after Autopilot walking fades out. A completed fade disables the idle action; explicitly reactivate it without resetting its playback phase so characters do not fall back to their bind/T-pose. Preserve paused idle poses and active emote priority.
+- Blend imported emotes back into idle before they finish, restore idle immediately on cancellation, and avoid fading idle against itself during its explicit preview. Remove brief bind-pose gaps at the start/end of these transitions.
+
 ## 0.6.0 — 2026-10-19
 
 - Add an explicitly started per-bot Autopilot with independent roaming, silent gestures and spontaneous speech, randomized quiet periods, fair serialized turns and native rolling hourly limits. Stop cancels all sessions; saved/imported profiles cannot start them.
