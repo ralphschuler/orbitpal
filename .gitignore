@@ -14,6 +14,8 @@ work/
 *.sqlite3-*
 *.db
 *.pem
+# This exact path contains only the reviewed public release certificate.
+!/release/macos-signing-certificate.pem
 *.key
 *.p12
 *.pfx

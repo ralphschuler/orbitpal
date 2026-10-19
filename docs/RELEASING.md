@@ -32,9 +32,9 @@ The macOS bundle verifier pins the existing bundle/signing identifier, product a
 
 ## Persistent self-signed macOS identity
 
-`release/macos-signing-policy.json` selects the free, maintainer-owned self-signed mode for **both architectures**. Its public certificate pin starts unset: release validation fails closed until a maintainer provisions, independently reviews and commits the public certificate/pin. Missing secrets, a different certificate, a changed/expired identity, failed signing or a weaker designated requirement stop the release. There is no ad-hoc fallback.
+`release/macos-signing-policy.json` selects the free, maintainer-owned self-signed mode for **both architectures** and pins the reviewed public certificate in `release/macos-signing-certificate.pem`. The persistent identity was prepared on 2026-10-19 after the real disposable-key CI fixture passed. Matching archive/password are protected repository secrets; no private material is versioned. Missing secrets, a different certificate, a changed/expired identity, failed signing or a weaker designated requirement stop the release. There is no ad-hoc fallback.
 
-After independent review, run the offline preparation command with a new, protected absolute directory **outside this checkout**:
+The following command documents **first-time bootstrap only**, which is already complete for this repository. Do not rerun it for routine releases or replace the pinned identity. A deliberately planned identity rotation needs separate migration review. For a new deployment without an identity, run it only after independent review, using a new, protected absolute directory **outside its checkout**:
 
 ```sh
 node scripts/provision-macos-identity.mjs /ABSOLUTE/PROTECTED/NEW-DIRECTORY
