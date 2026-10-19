@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.10.0 — 2026-10-19
+
+- Show the Autopilot's actual speech blocker, next-attempt countdown and silent attempts. Allow short persona-based conversation starters without inventing screen, game or viewer events. Keep exact per-attempt claims across permission checks so pausing/restarting cannot revive an old request. Automatic walking and gesture sounds no longer restart autonomous quiet periods; actual audio still blocks microphone activation, ordinary chat playback and update installation.
+- Let desktop characters leave the visible area briefly and return naturally. Prepared speech, text-only replies and explicit emotes wait until the whole character has returned, stopped and rendered successfully. Stop, profile changes and output closure cancel waiting presentations.
+- Guide explicit microphone and screen-context starts through permission status, a system request, Settings and recheck actions. Returning from Settings never starts recording or replays an automatic conversation. Preserve separate per-bot image grants and current-request cancellation.
+- Add explicit per-bot Wayland ScreenCast/PipeWire source selection with fresh bounded in-memory frames, disconnect/reconnect and session cleanup. This backend remains experimental pending real GNOME/KDE capture and revocation acceptance (#26); no XWayland or screenshot-file fallback is used.
+- Import separate VRMA 1.0 motions per bot, retarget them to supported VRM 0/1 characters and include assigned motions in profile packages. Preserve body, expression, gaze and natural duration; arbitrary GLB/nonhumanoid targets are not supported by this motion workflow.
+- Bundle offline Draco, Meshopt and BasisU/KTX2 decoders for compressed avatars, with resource limits and existing import protections. Use the same renderer-aware loader in Studio, native outputs and OBS.
+- Offer and play only actions supported by the current character. Validate model/motion bindings before preparing and presenting emotes or sounds, and mark unavailable editor entries explicitly.
+- Add a bounded, explicitly versioned compatibility profile for the draft MSFT_audio_emitter extension. Embedded sounds follow actually rendered animation events, explicit audio activation, output routing, volume and Stop; model loading and idle clips remain silent. This is not universal glTF/VRM audio support.
+- Allow cancelling update download and pre-install verification, discard late callbacks and require a fresh check/confirmation for retry. Installation remains non-cancellable once replacement starts. Add OBS security headers, cryptographic updater-payload verification before publication and build-provenance verification.
+- Require a pinned persistent self-signed macOS identity while retaining the installed app ID and separate updater key. The first transition from ad-hoc releases through 0.9.0 may require permission approval again. Self-signing provides no Apple notarization or guaranteed TCC retention; Windows installers still have no Authenticode signature. Operational signing/install acceptance remains tracked in #17.
+- Complete current OrbitPal branding while preserving compatibility names, and add native TypeScript 7 checking alongside TypeScript 6 editor compatibility. Record the remaining upstream Rust maintenance migrations without suppressing advisories (#19).
+
+Automated checks use local fixtures and mocks. Real GNOME/KDE capture, installed-update/privacy behavior, physical multi-monitor roaming and live OBS/browser-engine/GPU acceptance are not established by those checks. Issues #17, #19 and #26 remain open.
+
 ## 0.9.0 — 2026-10-19
 
 - Expand native character windows to a selected monitor while Autopilot wandering is active. Use deterministic two-dimensional paths, pause for speech and emotes, and restore each bot's fixed physical window bounds and cursor preference when stopped. Keep the monitor-sized window transparent and click-through; the output-monitor choice grants no screen capture permission.

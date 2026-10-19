@@ -1,11 +1,15 @@
-OrbitPal 0.9.0
+OrbitPal 0.10.0
 
-Im Autopiloten kann das transparente Figurenfenster jetzt die Fläche eines gewählten Monitors nutzen. Die Figur kommt von links oder rechts herein, wandert in beide Bildschirmrichtungen und hält bei Sprache und Emotes an. Währenddessen werden Mausklicks durchgereicht. Stop stellt die bisherige feste Fenstergröße und Position wieder her. Die Monitorauswahl erlaubt keine Bildschirmaufnahme.
+Der Autopilot zeigt jetzt, warum er wartet und wann der nächste Sprechversuch ansteht. Er kann auch ohne neue Chatnachricht eine passende Frage beginnen. Automatische Lauf- und Gestensounds verhindern solche Beiträge nicht mehr. Pausieren und Neustarten verwerfen alte ausstehende Anfragen.
 
-Der Größenregler aktualisiert die Figur sofort im Studio, Desktop-Overlay und in verbundenen OBS-Quellen. Andere offene Einstellungen und Berechtigungen werden dabei nicht gespeichert. Änderungen speichern übernimmt die Größe und Monitorauswahl dauerhaft. Untertitel folgen der Figur.
+Die Desktopfigur darf kurz seitlich verschwinden. Vor Sprache, Text oder einer ausdrücklich ausgelösten Geste kehrt sie vollständig sichtbar zurück und bleibt stehen. Erst danach startet die vorbereitete Ausgabe. Stop verwirft wartende Antworten.
 
-Profilimporte werden vor dem Anwenden vollständig geprüft und bei Fehlern ohne teilweise Änderungen verworfen. MCP-/CLI-Ausgaben und Audiocaches sind begrenzt; UTF-8-Chatereignisse bleiben vollständig. Gesprächsverlauf, Text und Gesten starten mit der tatsächlichen Audiowiedergabe. Vorbereitete Antworten behalten ihre Stimme; abgebrochene oder verwaiste Audioaufträge werden aufgeräumt. Geschriebene Twitch-/YouTube-Antworten bleiben an ihre ursprüngliche Verbindung und ihr Konto gebunden.
+Separate VRMA-1.0-Bewegungen lassen sich pro Bot importieren und mit unterstützten VRM-0/1-Figuren verwenden. Komprimierte Avatare mit Draco, Meshopt und BasisU/KTX2 werden offline geladen. Emotes und Sounds werden gegen die tatsächlich geladene Figur geprüft. Eingebettete Animationssounds unterstützen ein begrenztes Profil des MSFT-Audioentwurfs, keinen allgemeinen glTF-/VRM-Soundstandard.
 
-Echte Mehrmonitor-/Compositor-Prüfungen stehen noch aus. Die Darstellung verwendet gemessene neutrale Modellgrenzen; ungewöhnlich große eigene Skelettanimationen können eine separate Modellprüfung brauchen. Native Bildschirmaufnahme unterstützt weiterhin macOS, Windows und Linux X11; Wayland-Aufnahme ist in dieser Version nicht enthalten.
+Fehlende Mikrofon- oder Bildschirmrechte führen bei bewusst gestarteten Funktionen durch Anfrage, Systemeinstellungen und erneute Prüfung. Die Rückkehr aus den Einstellungen startet keine Aufnahme. Unter Wayland gibt es eine ausdrückliche Quellenauswahl über ScreenCast/PipeWire; diese Aufnahme bleibt bis zur realen GNOME-/KDE-Abnahme experimentell.
 
-Vorhandene Bots, Profile, Zugangsdaten und Freigaben bleiben erhalten. Updates werden erst nach deiner Bestätigung heruntergeladen und installiert. Windows-Installer sind nicht per Authenticode signiert; macOS-Pakete bleiben ad hoc signiert und nicht notarisiert. Die separaten Updater-Signaturen enthalten die Release-Version.
+Update-Download und Prüfung können vor Installationsbeginn abgebrochen werden. Danach ist für einen neuen Versuch eine erneute Prüfung und Bestätigung nötig. Die Installation selbst bleibt nicht abbrechbar. Release-Pakete werden vor Veröffentlichung zusätzlich auf Signatur und Build-Herkunft geprüft.
+
+macOS verwendet erstmals eine dauerhafte selbstsignierte Identität. Beim Wechsel von 0.9.0 oder älter können Mikrofon-/Bildschirmrechte einmal erneut nötig sein; ihr Erhalt über Updates ist noch nicht praktisch bestätigt. Die App ist nicht von Apple notarisiert. Windows-Installer haben weiterhin keine Authenticode-Signatur. Vorhandene Bots, Profile, Zugangsdaten und die separate Updater-Vertrauensbasis bleiben erhalten.
+
+Signierungs-/Installationsabnahme (#17), ausstehende Rust-Abhängigkeitsmigrationen (#19) und echte Wayland-Abnahme (#26) bleiben offen. Automatische Prüfungen ersetzen keine echte Bildschirm-, Mehrmonitor-, OBS-/GPU- oder installierte Update-Prüfung.
