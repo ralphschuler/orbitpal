@@ -18,6 +18,7 @@ pnpm tauri dev
 
 ```sh
 pnpm check
+pnpm check:legacy
 pnpm test:run
 pnpm build
 cargo test --manifest-path src-tauri/Cargo.toml --locked
@@ -26,6 +27,8 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 Add focused regression tests for behavior changes, using local fixtures or mock servers. Tests must not call paid providers, connect real stream accounts, record microphones or read real credentials. Update documentation and both lockfiles when dependencies change. Run native builds for platform-specific changes when possible, and report platforms you could not check.
 
 Keep changes focused. Explain the user-visible problem, the resulting behavior, validation and limitations in the PR. Do not include app data, exported profiles, chat transcripts, provider recordings, secrets or compiled installers. New assets need a source, redistribution license and attribution. Do not claim measured performance or live provider validation without evidence.
+
+See [TypeScript checking](docs/TYPESCRIPT-CHECKING.md) for the native TypeScript 7 checker, the retained TypeScript 6 editor API and why CI runs both.
 
 ## Branches and review
 

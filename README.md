@@ -53,6 +53,7 @@ Node.js 22.12+, the pnpm version pinned in `package.json`, stable Rust and the [
 corepack enable
 pnpm install --frozen-lockfile
 pnpm check
+pnpm check:legacy
 pnpm test:run
 pnpm build
 cargo test --manifest-path src-tauri/Cargo.toml --locked
@@ -60,6 +61,8 @@ pnpm tauri dev
 ```
 
 `pnpm tauri build` creates native packages on the current platform with the release signing key configured as described in the [release process](docs/RELEASING.md). For an unsigned local development package, use `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`; these packages are not project releases. A browser-only preview has no native integrations. CI runs type checks, unit tests and builds; tagged releases build platform installers after validation. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+The [TypeScript checking guide](docs/TYPESCRIPT-CHECKING.md) explains the TypeScript 7 native checker and the TypeScript 6 compatibility path used by editors and CI.
 
 ## Data and current limits
 
