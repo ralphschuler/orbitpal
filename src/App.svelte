@@ -499,7 +499,9 @@
       if(epoch!==turnEpoch)return;
       partial='';
       speechPreparing=!!voice.enabled&&!presentedReplies.has(reply.id);
-      if(botConfig.output.mode==='studio'||!voice.enabled){
+      // External renderers own text-only presentation too: their figure must
+      // return before reporting a start, even when the voice is disabled.
+      if(botConfig.output.mode==='studio'){
         // Publish the reply from the player's real start callback. Synthesis and
         // decoding can take seconds; tokens, text and emotes stay private until then.
         let reporting=Promise.resolve();
