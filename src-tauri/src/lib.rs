@@ -10,6 +10,7 @@ mod agent;
 mod overlay;
 mod overlay_presentation;
 mod window_signals;
+mod overlay_http;
 mod memory;
 mod knowledge;
 mod runtime_command;

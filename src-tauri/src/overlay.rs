@@ -175,7 +175,7 @@ pub async fn start(app:tauri::AppHandle)->Result<(),String> {
     app.state::<crate::AppState>().overlay.port.store(listener.local_addr().map_err(|e|e.to_string())?.port(),std::sync::atomic::Ordering::Relaxed);
     let control=post(crate::control_mcp::http).get(crate::control_mcp::no_stream).delete(crate::control_mcp::no_stream).layer(axum::extract::DefaultBodyLimit::max(crate::control_mcp::MAX_REQUEST_BYTES));
     let routes=Router::new().route("/mcp",control).route("/events",get(events)).route("/speech/{id}",get(speech)).route("/emote-sound/{id}",get(emote_sound)).route("/emote-playback",post(emote_playback)).route("/playback",post(playback)).route("/assets/{name}",get(asset)).route("/",get(index)).route("/overlay",get(index)).route("/{*path}",get(frontend_asset)).with_state(app);
-    tauri::async_runtime::spawn(async move {let _=axum::serve(listener,routes).await;});Ok(())
+    tauri::async_runtime::spawn(async move {let _=axum::serve(listener,crate::overlay_http::with_security(routes)).await;});Ok(())
 }
 async fn playback(State(app):State<tauri::AppHandle>,Query(q):Query<Access>,Json(body):Json<Value>)->Response {
     if !allowed(&app,&q){return StatusCode::UNAUTHORIZED.into_response();}
