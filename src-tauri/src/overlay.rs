@@ -313,8 +313,8 @@ pub fn open(app:&tauri::AppHandle)->Result<(),String>{
 }
 pub fn close_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
     if !crate::storage::valid_id(bot_id){return Err("Ungültige Bot-ID".into());}
-    let state=app.state::<crate::AppState>();let store=state.store.scoped(bot_id)?;let mut profile=store.profile()?;
-    profile["output"]["streamingEnabled"]=json!(false);profile["output"]["mode"]=json!("studio");let profile=store.save_profile(profile)?;
+    let state=app.state::<crate::AppState>();let store=state.store.scoped(bot_id)?;
+    let profile=store.patch_output(json!({"streamingEnabled":false,"mode":"studio"}))?;
     state.overlay.publish(app,json!({"kind":"stop","botId":bot_id}));state.overlay.publish(app,json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile)}));
     if let Some(window)=app.get_webview_window(&format!("avatar-{bot_id}")){window.close().map_err(|error|error.to_string())?;}
     let _=app.emit("cohost://overlay-state",json!({"botId":bot_id,"active":false}));Ok(())
@@ -328,7 +328,7 @@ pub fn configure_for_bot(app:&tauri::AppHandle,bot_id:&str,always_on_top:bool,cl
 pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
     let state=app.state::<crate::AppState>();let store=state.store.scoped(bot_id)?;let mut profile=store.profile()?;
     if profile["output"]["mode"]!="overlay"||profile["output"]["streamingEnabled"]!=true{
-        profile["output"]["mode"]=json!("overlay");profile["output"]["streamingEnabled"]=json!(true);profile=store.save_profile(profile)?;
+        profile=store.patch_output(json!({"mode":"overlay","streamingEnabled":true}))?;
         state.overlay.publish(app,json!({"kind":"stop","botId":bot_id}));state.overlay.publish(app,json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile)}));
     }
     let label=format!("avatar-{bot_id}");
@@ -355,9 +355,8 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
         }
         if let tauri::WindowEvent::Destroyed=event{
             let state=handle.state::<crate::AppState>();
-            if let Ok(store)=state.store.scoped(&bot_id){if let Ok(mut profile)=store.profile(){if profile["output"]["mode"]=="overlay"{
-                profile["output"]["streamingEnabled"]=json!(false);profile["output"]["mode"]=json!("studio");
-                if let Ok(profile)=store.save_profile(profile){state.overlay.publish(&handle,json!({"kind":"stop","botId":bot_id}));state.overlay.publish(&handle,json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile)}));}
+            if let Ok(store)=state.store.scoped(&bot_id){if let Ok(profile)=store.profile(){if profile["output"]["mode"]=="overlay"{
+                if let Ok(profile)=store.patch_output(json!({"streamingEnabled":false,"mode":"studio"})){state.overlay.publish(&handle,json!({"kind":"stop","botId":bot_id}));state.overlay.publish(&handle,json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile)}));}
             }}}
             let _=handle.emit("cohost://overlay-state",json!({"botId":bot_id,"active":false}));let _=handle.emit("cohost://playback",json!({"botId":bot_id,"speaking":false,"output":"overlay"}));
         }
@@ -372,7 +371,8 @@ mod tests{
     fn public_profile_never_discloses_autopilot_screen_configuration_or_instructions(){
         let mut profile:Value=serde_json::from_str(include_str!("../../public/default-profile.json")).unwrap();
         profile["autopilot"]["instructions"]=json!("private instruction fixture");profile["autopilot"]["screenServerId"]=json!("private server fixture");profile["autopilot"]["screenToolArguments"]=json!("{\"private\":true}");
-        let public=public_profile(&profile);assert!(public.get("autopilot").is_none());assert!(!public.to_string().contains("private"));assert!(public.get("model").is_none());assert!(public.get("mcpServers").is_none());
+        profile["screenContext"]=json!({"enabled":true,"displayId":"private monitor fixture"});
+        let public=public_profile(&profile);assert!(public.get("autopilot").is_none());assert!(!public.to_string().contains("private"));assert!(public.get("screenContext").is_none());assert!(public.get("model").is_none());assert!(public.get("mcpServers").is_none());
     }
     #[test]
     fn obs_frontend_bundles_and_imported_models_have_distinct_asset_routes(){

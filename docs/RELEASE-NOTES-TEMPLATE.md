@@ -1,6 +1,16 @@
+## New in 0.7.0
+
+- Enable **Bildschirm als Kontext** for a bot to attach a fresh native screenshot before every normal chat, Autopilot and tool-follow-up dialog-model call. No MCP server or Skill is required. Choose the primary or an explicit monitor under Models or Autopilot; both show the same setting.
+- Screen images are processed in memory and sent to the selected provider. Cloud/remote providers receive the pixels; screenshot images are not retained in the app's history or Hindsight. Native capture supports macOS, Windows and Linux X11. Wayland screen sharing is not yet supported and fails with an explicit message.
+
+## Fixed in 0.7.0
+
+- Characters return to their embedded idle animation after Autopilot walking instead of falling into a T-pose. Repeated walks preserve the idle animation's phase and paused-state setting.
+- Imported gestures blend back into idle without a bind-pose gap. Cancelling a gesture or previewing the idle clip itself also preserves a natural resting pose.
+
 ## Features
 
-- Explicit per-bot Autopilot with quiet periods, rolling speech budgets, roaming, silent gestures and optional fixed MCP screen observations.
+- Explicit per-bot Autopilot with quiet periods, rolling speech budgets, roaming, silent gestures and optional native screen context.
 - Automatic VRM 0/1 and GLB 2 inspection, actual model-clip previews and embedded walking animations; speech moves mouths/jaws without artificial body wobble.
 
 - Multiple 3D cohosts with independent personas, voices, emotes and OBS outputs.

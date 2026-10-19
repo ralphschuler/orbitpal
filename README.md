@@ -24,7 +24,7 @@ The current source version is **0.6.0**. Consult the release notes for the versi
 - Secrets in the OS credential store, portable profiles and per-bot conversation storage.
 - Optional automatic update checks through GitHub Releases. Download, signature verification, installation and restart require your explicit confirmation in **Updates & Version**.
 
-Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, silent gestures and occasional spontaneous speech, with quiet periods and a rolling hourly limit. A separately configured MCP observation can provide fresh screen images; autonomous turns receive no general MCP control or Skill-script execution.
+Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, silent gestures and occasional spontaneous speech, with quiet periods and a rolling hourly limit. Built-in [screen context](docs/SCREEN-CONTEXT.md) can attach a fresh native screenshot before every dialog-model call, including normal chats and Autopilot, without MCP or Skills. Autonomous turns receive no general MCP control or Skill-script execution.
 
 ## Download and start
 

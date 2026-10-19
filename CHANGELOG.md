@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 — 2026-10-19
+
+- Add native, per-bot screen context shared by normal chats and Autopilot. Attach one fresh in-memory screenshot immediately before each dialog-provider call, including tool follow-ups, without MCP servers, Skills or tool permissions. Share the existing image adapters with API, local, Codex and Claude Code providers.
+- Add primary/explicit monitor selection, image-permission and cloud-transfer information, bounded JPEG encoding, capture cancellation and per-bot grant revocation. Reject unavailable monitors or permissions explicitly; do not retain images in history or memory. Imported/copied bots and old MCP screen settings keep native capture disabled.
+- Support native macOS, Windows and Linux X11 capture; report unsupported Wayland sessions without falling back to incomplete XWayland images or filesystem screenshot portals.
+
+- Restore embedded idle animations after Autopilot walking fades out. A completed fade disables the idle action; explicitly reactivate it without resetting its playback phase so characters do not fall back to their bind/T-pose. Preserve paused idle poses and active emote priority.
+- Blend imported emotes back into idle before they finish, restore idle immediately on cancellation, and avoid fading idle against itself during its explicit preview. Remove brief bind-pose gaps at the start/end of these transitions.
+
 ## 0.6.0 — 2026-10-19
 
 - Add an explicitly started per-bot Autopilot with independent roaming, silent gestures and spontaneous speech, randomized quiet periods, fair serialized turns and native rolling hourly limits. Stop cancels all sessions; saved/imported profiles cannot start them.

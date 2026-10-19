@@ -68,6 +68,7 @@ impl Store {
         self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key='extension_library_v1')",[],|row|row.get(0)).map_err(error)
     }
     fn effective_profile(&self,mut profile:Value)->Result<Value,String>{
+        crate::screen_context::migrate(&mut profile);
         if profile.get("autopilot").is_none_or(Value::is_null){profile["autopilot"]=serde_json::to_value(crate::autopilot::Config::default()).map_err(error)?;}
         // Before the one-time migration, keep legacy definitions intact so
         // startup can import them without losing their transport or grants.
@@ -200,6 +201,7 @@ impl Store {
         let mut profile=if copy_current{export_sanitize(sanitize(previous.clone()))}else{serde_json::from_str(DEFAULT_PROFILE).map_err(error)?};
         let id=new_bot_id(name);
         profile["id"]=json!(id);profile["name"]=json!(name);
+        profile["screenContext"]=json!(crate::screen_context::Config::default());
         profile["chat"]["trigger"]=json!(format!("@{}",bot_slug(name)));
         profile["chat"]["autoReply"]=json!(false);profile["chat"]["mode"]=json!("manual");
         profile["output"]["streamingEnabled"]=json!(false);profile["output"]["mode"]=json!("studio");
@@ -249,6 +251,29 @@ impl Store {
     }
     pub fn save_profile(&self, profile:Value) -> Result<Value,String> {
         let _mutation=EXTENSION_MUTATIONS.lock().map_err(error)?;
+        self.save_profile_locked(profile)
+    }
+    /// Overlay lifecycle changes may only patch their own output fields. Read
+    /// the current profile under the same mutation lock as its write so an old
+    /// window snapshot cannot restore revoked screen grants or model settings.
+    pub fn patch_output(&self,patch:Value)->Result<Value,String>{
+        let patch=patch.as_object().ok_or("Ausgabeänderungen müssen ein JSON-Objekt sein")?;
+        for (key,value) in patch{
+            match key.as_str(){
+                "mode" if value.as_str().is_some_and(|mode|["studio","overlay","obs"].contains(&mode))=>(),
+                "streamingEnabled" if value.is_boolean()=>(),
+                _=>return Err("Nur Ausgabemodus und Streaming-Aktivierung dürfen hier geändert werden".into()),
+            }
+        }
+        let _mutation=EXTENSION_MUTATIONS.lock().map_err(error)?;
+        let mut profile=self.profile()?;
+        let output=profile.get_mut("output").and_then(Value::as_object_mut).ok_or("Profilbereich output muss ein JSON-Objekt sein")?;
+        for (key,value) in patch{output.insert(key.clone(),value.clone());}
+        self.save_profile_locked(profile)
+    }
+    // Caller must hold EXTENSION_MUTATIONS; never acquire it again here.
+    fn save_profile_locked(&self,mut profile:Value)->Result<Value,String>{
+        crate::screen_context::migrate(&mut profile);
         validate_profile(&profile)?;
         if self.fixed_profile.as_ref().map(|id|profile["id"].as_str()!=Some(id.as_str())).unwrap_or(false){return Err("Ein Bot-Kontext darf kein anderes Profil überschreiben".into());}
         self.ensure_profile(&profile)?;
@@ -500,10 +525,9 @@ fn reset_imported_authority(profile:&mut Value,existing_ids:&[String])->Result<(
     visit(profile,&mut used);
     let fields=profile.as_object_mut().ok_or("Profil muss ein JSON-Objekt sein")?;
     if let Some(autopilot)=fields.get_mut("autopilot").and_then(Value::as_object_mut){
-        // Importing a character never imports a screen-observation grant or
-        // references an installed server selected by another operator.
-        autopilot.insert("screenContext".into(),json!(false));autopilot.insert("screenServerId".into(),json!(""));autopilot.insert("screenToolName".into(),json!(""));autopilot.insert("screenToolArguments".into(),json!("{}"));
+        for key in ["screenContext","screenServerId","screenToolName","screenToolArguments"]{autopilot.remove(key);}
     }
+    fields.insert("screenContext".into(),json!(crate::screen_context::Config::default()));
     for name in ["model","voice","stt","hindsight"]{
         let section=fields.entry(name).or_insert_with(||json!({}));
         if section.is_null(){*section=json!({});}
@@ -529,6 +553,7 @@ fn validate_profile(profile:&Value)->Result<(),String>{
     for section in ["model","voice","stt","avatar","output","chat","memory"] {if !profile[section].is_object(){return Err(format!("Profilbereich {section} muss ein JSON-Objekt sein"));}}
     if let Some(config)=profile.get("hindsight").filter(|value|!value.is_null()){crate::memory::validate_config(config)?;}
     crate::autopilot::config(profile)?;
+    crate::screen_context::config(profile)?;
     if matches!(profile["model"]["provider"].as_str(),Some("codex"|"claude-code")){crate::cli_provider::validate_options(&profile["model"])?;}
     if let Some(style)=profile["model"].get("responseStyle").filter(|value|!value.is_null()){
         if !style.as_str().is_some_and(|style|["default","short","normal","detailed"].contains(&style)){return Err("Antwortstil muss default, short, normal oder detailed sein".into());}
@@ -630,9 +655,51 @@ mod extension_tests{
     fn imported_autopilot_cannot_reuse_screen_grants_or_activate_sessions(){
         let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();let mut portable=store.profile().unwrap();
         portable["autopilot"]["screenContext"]=json!(true);portable["autopilot"]["screenServerId"]=json!("existing-screen-server");portable["autopilot"]["screenToolName"]=json!("capture");portable["autopilot"]["screenToolArguments"]=json!("{\"window\":\"private\"}");
+        portable["screenContext"]=json!({"enabled":true,"displayId":"private-monitor"});
         let source=fixture.0.join("autopilot.json");fs::write(&source,json!({"profile":portable}).to_string()).unwrap();let imported=store.import(&source).unwrap();
-        assert_eq!(imported["autopilot"]["screenContext"],false);assert_eq!(imported["autopilot"]["screenServerId"],"");assert_eq!(imported["autopilot"]["screenToolName"],"");assert_eq!(imported["autopilot"]["screenToolArguments"],"{}");
+        assert_eq!(imported["screenContext"],json!({"enabled":false,"displayId":""}));
+        for key in ["screenContext","screenServerId","screenToolName","screenToolArguments"]{assert!(imported["autopilot"].get(key).is_none());}
         let mut invalid=imported;invalid["autopilot"]["active"]=json!(true);assert!(store.save_profile(invalid).is_err());
+    }
+    #[test]
+    fn copied_bots_require_their_own_native_screen_grant(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();let mut original=store.profile().unwrap();
+        let id=original["id"].as_str().unwrap().to_owned();original["screenContext"]=json!({"enabled":true,"displayId":"original-screen"});store.save_profile(original).unwrap();
+        let copied=store.create_bot("Screen copy",true).unwrap();assert_eq!(copied["screenContext"],json!({"enabled":false,"displayId":""}));
+        assert_eq!(store.bot_profile(&id).unwrap()["screenContext"],json!({"enabled":true,"displayId":"original-screen"}));
+    }
+    #[test]
+    fn output_patches_preserve_newer_screen_and_model_settings_and_other_bots(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();let mut original=store.profile().unwrap();
+        let id=original["id"].as_str().unwrap().to_owned();original["screenContext"]=json!({"enabled":true,"displayId":"old-screen"});original["model"]["model"]=json!("old-model");original["output"]["showSubtitles"]=json!(false);store.save_profile(original).unwrap();
+        let overlay=store.scoped(&id).unwrap();let old_window_snapshot=overlay.profile().unwrap();
+        let other=store.create_bot("Other output fixture",false).unwrap();
+        // The operator revokes access and changes the destination after the
+        // window took its snapshot, using a separate scoped Store connection.
+        let operator=store.scoped(&id).unwrap();let mut updated=operator.profile().unwrap();updated["screenContext"]=json!({"enabled":false,"displayId":"new-screen"});updated["model"]["model"]=json!("new-model");let updated=operator.save_profile(updated).unwrap();
+        assert_eq!(old_window_snapshot["screenContext"]["enabled"],true);assert_eq!(old_window_snapshot["model"]["model"],"old-model");
+        for (mode,enabled) in [("overlay",true),("studio",false)]{
+            let patched=overlay.patch_output(json!({"mode":mode,"streamingEnabled":enabled})).unwrap();
+            let mut expected=updated.clone();expected["output"]["mode"]=json!(mode);expected["output"]["streamingEnabled"]=json!(enabled);
+            assert_eq!(patched,expected);assert_eq!(operator.profile().unwrap(),expected);
+            assert_eq!(store.profile().unwrap(),other);assert_eq!(store.bot_profile(other["id"].as_str().unwrap()).unwrap(),other);
+        }
+    }
+    #[test]
+    fn output_patches_reject_unrelated_fields_and_invalid_values_without_writing(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();let before=store.profile().unwrap();
+        for patch in [json!(null),json!([]),json!({"screenContext":{"enabled":true}}),json!({"model":{"model":"other"}}),json!({"alwaysOnTop":true}),json!({"mode":"unknown"}),json!({"mode":null}),json!({"streamingEnabled":"true"}),json!({"mode":"overlay","streamingEnabled":true,"id":"other"})]{
+            assert!(store.patch_output(patch).is_err());assert_eq!(store.profile().unwrap(),before);
+        }
+        assert_eq!(store.patch_output(json!({})).unwrap(),before);
+    }
+    #[test]
+    fn loading_a_legacy_mcp_screen_profile_never_activates_native_capture(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();let mut original=store.profile().unwrap();
+        let id=original["id"].as_str().unwrap().to_owned();original.as_object_mut().unwrap().remove("screenContext");
+        original["autopilot"]["screenContext"]=json!(true);original["autopilot"]["screenServerId"]=json!("legacy-server");original["autopilot"]["screenToolName"]=json!("capture");original["autopilot"]["screenToolArguments"]=json!("{}");
+        store.db.lock().unwrap().execute("UPDATE bot_profiles SET profile=?1 WHERE id=?2",params![original.to_string(),id]).unwrap();
+        let loaded=store.profile().unwrap();assert_eq!(loaded["screenContext"],json!({"enabled":false,"displayId":""}));assert!(loaded["autopilot"].get("screenContext").is_none());
     }
     #[test]
     fn migration_deduplicates_transport_and_skill_without_granting_another_bot(){
