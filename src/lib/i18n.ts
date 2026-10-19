@@ -7,6 +7,7 @@ import panels from './locales/panels.json';
 import extensions from './locales/extensions.json';
 import system from './locales/system.json';
 import outputPresentation from './locales/output-presentation.json';
+import autopilotStatus from './locales/autopilot-status.json';
 import microphone from './locales/microphone.json';
 import gltf from './locales/gltf.json';
 import transports from './locales/transports.json';
@@ -31,7 +32,7 @@ function initialLocale():Locale {
 }
 const current=writable<Locale>(initialLocale());
 export const locale={subscribe:current.subscribe};
-export const catalogues = [outputPresentation,system, microphone, gltf, transports, panels, extensions, app] as TranslationCatalogue[];
+export const catalogues = [autopilotStatus,outputPresentation,system, microphone, gltf, transports, panels, extensions, app] as TranslationCatalogue[];
 const messages:TranslationCatalogue={en:{},fr:{},es:{}};
 for(const catalogue of catalogues)for(const language of ['en','fr','es'] as const)Object.assign(messages[language],catalogue[language]);
 const own=(language:Exclude<Locale,'de'>,key:string)=>Object.hasOwn(messages[language],key)?messages[language][key]:undefined;

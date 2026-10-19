@@ -2,10 +2,13 @@
   import { t } from '../lib/i18n';
   import { Play, Pause, Sparkles, Footprints, MessageCircle } from '@lucide/svelte';
   import HelpTip from './HelpTip.svelte';
+  import type { SpeechStatus } from '../lib/autopilot-status';
   interface Props {
     config: any;
     botName: string;
     active: boolean;
+    speechStatus: SpeechStatus;
+    lastAttemptSilent?: boolean;
     disabled?: boolean;
     pending?: boolean;
     previewing?: boolean;
@@ -13,12 +16,19 @@
     onStop: () => void;
     onPreview: () => void;
   }
-  let { config = $bindable(), botName, active, disabled = false, pending = false, previewing = false, onStart, onStop, onPreview }: Props = $props();
+  let { config = $bindable(), botName, active, speechStatus, lastAttemptSilent = false, disabled = false, pending = false, previewing = false, onStart, onStop, onPreview }: Props = $props();
 </script>
 
 <section class="settings-panel autopilot-intro" aria-label={$t("Autopilot steuern")}>
   <div class="autopilot-heading"><div><span class="eyebrow">{$t("EIN EIGENES KLEINES LEBEN")}</span><h2>{$t("{name} macht auch mal den Anfang.", { name: botName })}</h2><p>{$t("Herumlaufen, kleine Gesten und gelegentlich ein eigener Kommentar. Persönlichkeit, Skills, Wissen und Erinnerungen bleiben die dieses Bots.")}</p></div><span class="autopilot-status" class:active>{active ? $t("Autopilot läuft") : $t("Pausiert")}</span></div>
   <div class="autopilot-actions">{#if active}<button class="button primary" onclick={onStop} disabled={pending}><Pause size={16}/>{$t("Autopilot pausieren")}</button>{:else}<button class="button primary" onclick={onStart} disabled={disabled || pending}>{pending ? $t("Wird gestartet …") : $t("Autopilot starten")}<Play size={15}/></button>{/if}<button class="button secondary" onclick={onPreview} disabled={disabled || active}>{previewing ? $t("Vorschau beenden") : $t("Bewegung ansehen")}<Footprints size={15}/></button></div>
+  {#if active}
+    <div class="speech-status" class:waiting={speechStatus.waiting} aria-label={$t('Selbstständige Sprachausgabe')}>
+      <strong>{$t('Sprechstatus')}</strong><p aria-live="off">{$t(speechStatus.message,speechStatus.parameters)}</p>
+      {#if lastAttemptSilent}<small>{$t('Beim letzten Sprechversuch gab es keinen Beitrag.')}</small>{/if}
+      <small>{$t('Der Countdown gilt für den nächsten KI-Versuch. Das Modell kann schweigen; Antworten, Aufnahmen und Bearbeitungen verschieben ihn. Bewegung und Gesten laufen unabhängig weiter.')}</small>
+    </div>
+  {/if}
   <p class="field-note">{$t("Start gilt nur für diese App-Sitzung. „Stop“ oder Escape beendet alle Autopiloten und laufenden Ausgaben. Die Bewegungsvorschau ist stumm und verwendet keine KI.")}</p>
 </section>
 
@@ -46,6 +56,11 @@
   .autopilot-status { font-size: 11px; color: #a4b3c9; white-space: nowrap; border: 1px solid #4b5b72; border-radius: 6px; padding: 6px 10px; }
   .autopilot-status.active { color: #a5ddc7; border-color: #568b77; }
   .autopilot-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-block: 20px 14px; }
+  .speech-status { display:grid; gap:6px; padding:13px 15px; margin:0 0 15px; border:1px solid #42636f; border-radius:9px; background:#142b35; }
+  .speech-status.waiting { border-color:#6d6049; background:#302b23; }
+  .speech-status strong { color:#d3e4e9; font-size:12px; }
+  .speech-status p { margin:0; color:#d3e4e9; font-size:13px; font-variant-numeric:tabular-nums; }
+  .speech-status small { color:#a3b1c6; font-size:11px; line-height:1.6; }
   .autopilot-settings { margin-bottom: 20px; }
   .toggle-row strong { display: flex; gap: 7px; align-items: center; }
   @media (max-width: 650px) { .autopilot-heading { flex-direction: column-reverse; gap: 8px; } }
