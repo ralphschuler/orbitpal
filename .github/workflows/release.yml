@@ -183,7 +183,9 @@ jobs:
           pattern: release-*
           path: release-artifacts
           merge-multiple: true
-      - name: Require all signed updater targets and create the update manifest
+      - name: Cryptographically verify all five updater payloads and create the manifest
+        # Offline Node crypto reads only the embedded public key. Release
+        # signing secrets are never exposed to this job.
         env:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
         run: node scripts/updater-manifest.mjs release-artifacts
