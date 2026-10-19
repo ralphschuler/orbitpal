@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { DesktopMotionController } from './desktop-motion';
+import { AvatarPresentationGate, presentationAbortError, type PresentationRelease } from './avatar-presentation';
 import { desktopFraming, measureDesktopModel } from './desktop-framing';
 import type { DesktopLayout } from './output-presentation';
 export type DesktopAnchor={x:number;y:number;width:number;height:number;visible:boolean;viewport:{width:number;height:number}};
@@ -111,6 +112,10 @@ export class AvatarStage {
   private contentDepth = 1.35;
   private travelFraction = 0;
   private desktopMotion=new DesktopMotionController();
+  private desktopPresentationReady = false;
+  private presentation = new AvatarPresentationGate();
+  private presentationContext = '';
+  private assetState: 'ready' | 'loading' | 'error' = 'ready';
   private desktopFigure={width:1,height:1};
   private desktopModelBounds={center:new THREE.Vector3(0,1.45,0),size:new THREE.Vector3(2.05,2.9,1.35)};
   private lastDesktopAnchor=0;
@@ -139,8 +144,9 @@ export class AvatarStage {
   private vowelWeights: Record<Vowel, number> = { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 };
   private blinkAt = 2.4;
 
-  constructor(private host: HTMLElement, options: AvatarOptions, private onEmoteError?: (message: string) => void) {
+  constructor(private host: HTMLElement, options: AvatarOptions, private onEmoteError?: (message: string) => void, initialAssetUrl?: string) {
     this.options = options;
+    this.assetState = initialAssetUrl ? 'loading' : 'ready';
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
     this.renderer.setClearColor(0x000000, 0);
@@ -194,6 +200,9 @@ export class AvatarStage {
   }
 
   update(options: AvatarOptions) {
+    const context = JSON.stringify([options.profile?.id, options.profile?.avatar?.assetPath, options.autopilot?.active === true, options.autopilot?.seed, options.autopilot?.startedAt, options.desktop?.active === true]);
+    if (this.presentationContext && context !== this.presentationContext) this.presentation?.invalidate();
+    this.presentationContext = context;
     this.options = options;
     const avatar = options.profile?.avatar ?? {};
     this.ground.visible = !options.transparent;
@@ -232,6 +241,9 @@ export class AvatarStage {
     const next = url || '';
     if (next === this.asset) return;
     this.asset = next;
+    this.presentation.reset();
+    this.assetState = next ? 'loading' : 'ready';
+    this.desktopPresentationReady = false;
     const request = ++this.request;
     this.clearImported();
     this.robot.root.visible = true;
@@ -376,13 +388,23 @@ export class AvatarStage {
       this.desktopModelBounds=measureDesktopModel(this.imported);
       this.ambientActions = ambientGestureActions(this.clips, this.getModelInfo().proceduralGestures);
       this.robot.root.visible = false;
+      this.assetState = 'ready';
       this.cameraMode = '';
       this.update(this.options);
     } catch (error) {
       if (request !== this.request || this.disposed) return;
       this.robot.root.visible = true;
+      this.assetState = 'error';
+      this.presentation.fail(error);
       throw error;
     }
+  }
+
+  /** Hold wandering from the request through actual output completion. */
+  preparePresentation(signal: AbortSignal): Promise<PresentationRelease> {
+    if (signal.aborted || this.disposed) return Promise.reject(presentationAbortError());
+    if (this.emoteSource === 'ambient') this.finishEmote();
+    return this.presentation.acquire(signal);
   }
 
   get clipNames(): string[] { return this.clips.map((clip) => clip.name); }
@@ -444,7 +466,9 @@ export class AvatarStage {
       this.setWalking(false, true);
       this.ambientSession = session; this.ambientGesture = ''; this.travelFraction = 0;
     }
+    const presenting = this.presentation?.requested ?? false;
     const blocked = this.options.speaking || this.emoteSource === 'manual' || Boolean(this.asset && this.robot.root.visible);
+    const ambientBlocked = blocked || presenting;
     if ((!frame.active || reduced)&&!this.desktopActive) {
       if (this.emoteSource === 'ambient') this.finishEmote();
       this.setWalking(false, true); this.walkStrength = 0; this.travelFraction = 0;
@@ -452,10 +476,10 @@ export class AvatarStage {
       if (this.contactShadow) { this.contactShadow.position.x = 0; this.contactShadow.position.z = 0; }
       return;
     }
-    if (blocked || !frame.gesture || frame.gesture.key !== this.ambientGesture) {
+    if (ambientBlocked || !frame.gesture || frame.gesture.key !== this.ambientGesture) {
       if (this.emoteSource === 'ambient') this.finishEmote();
     }
-    if (blocked && frame.gesture) this.ambientGesture = frame.gesture.key;
+    if (ambientBlocked && frame.gesture) this.ambientGesture = frame.gesture.key;
     if (this.emoteSource === 'ambient' && this.emote && frame.gesture?.key === this.ambientGesture) {
       this.emote.start = this.time - frame.gesture.elapsed;
       if (this.emote.clip) {
@@ -471,9 +495,10 @@ export class AvatarStage {
       this.desktopFigure={width:Math.hypot(this.desktopModelBounds.size.x,this.desktopModelBounds.size.z)*scale*units,height:this.desktopModelBounds.size.y*scale*units};
       const movable=Boolean(config?.active&&config.wander&&this.canWalk());
       if(!movable)this.desktopMotion.reset();
-      const position=(reduced||!movable)?{x:width/2,y:height/2,walking:false,facing:1}:this.desktopMotion.sample({seed:config!.seed,startedAt:config!.startedAt,viewport:{width,height},figure:this.desktopFigure,margin:24,now:Date.now(),delta,paused:blocked||Boolean(this.emote)});
-      moving=movable&&position.walking&&!blocked&&!this.emote;
-      this.setWalking(moving,blocked);this.walkStrength=moving?THREE.MathUtils.damp(this.walkStrength,1,14,delta):0;this.walkingPhase=frame.ageSeconds;
+      const position=(reduced||!movable)?{x:width/2,y:height/2,walking:false,facing:1,presentationReady:this.desktopFigure.width<=width-48&&this.desktopFigure.height<=height-48}:this.desktopMotion.sample({seed:config!.seed,startedAt:config!.startedAt,viewport:{width,height},figure:this.desktopFigure,margin:24,now:Date.now(),delta,paused:ambientBlocked||Boolean(this.emote),presentationRequested:presenting});
+      this.desktopPresentationReady=position.presentationReady;
+      moving=movable&&position.walking&&(presenting||!blocked&&!this.emote);
+      this.setWalking(moving,!moving&&(blocked||presenting));this.walkStrength=moving?THREE.MathUtils.damp(this.walkStrength,1,14,delta):0;this.walkingPhase=frame.ageSeconds;
       const right=new THREE.Vector3(1,0,0),up=new THREE.Vector3(0,1,0);
       this.travel.position.set(0,0,0).addScaledVector(right,(position.x-width/2)/units).addScaledVector(up,(height/2-position.y)/units);
 
@@ -486,21 +511,22 @@ export class AvatarStage {
     const lane = motionLaneHalfWidth(this.camera.position.distanceTo(this.controls.target), this.camera.fov, this.camera.aspect, radius);
     const capable = this.canWalk() && lane > 0.03;
     const previous = this.travelFraction;
-    this.travelFraction = followAmbientPosition(previous, capable && config?.wander ? frame.x : previous, delta, blocked);
+    this.travelFraction = followAmbientPosition(previous, capable && config?.wander ? frame.x : previous, delta, ambientBlocked);
     moving = capable && Math.abs(this.travelFraction - previous) > 0.00001;
-    this.setWalking(moving && !blocked, blocked);
-    this.walkStrength = blocked ? 0 : THREE.MathUtils.damp(this.walkStrength, moving ? 1 : 0, 14, delta);
+    this.setWalking(moving && !ambientBlocked, ambientBlocked);
+    this.walkStrength = ambientBlocked ? 0 : THREE.MathUtils.damp(this.walkStrength, moving ? 1 : 0, 14, delta);
     this.walkingPhase = frame.ageSeconds;
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion); right.y = 0; right.normalize();
     this.travel.position.copy(right).multiplyScalar(this.travelFraction * lane);
     const direction = this.travelFraction >= previous ? 1 : -1;
-    const heading = moving && !blocked ? Math.atan2(right.x * direction, right.z * direction) - this.modelForwardYaw : 0;
+    const heading = moving && !ambientBlocked ? Math.atan2(right.x * direction, right.z * direction) - this.modelForwardYaw : 0;
     const angle = Math.atan2(Math.sin(heading - this.travel.rotation.y), Math.cos(heading - this.travel.rotation.y));
     this.travel.rotation.y += angle * (1 - Math.exp(-delta * 9));
     if (this.contactShadow) { this.contactShadow.position.x = this.travel.position.x; this.contactShadow.position.z = this.travel.position.z; }
     }
+    if (this.desktopActive && !this.desktopPresentationReady && frame.gesture) this.ambientGesture = frame.gesture.key;
     if (this.walkingAction && this.walkingClip && this.walkingAction.enabled && this.walkingAction.isScheduled()) this.walkingAction.time = (frame.ageSeconds * 0.8) % this.walkingClip.duration;
-    if (!blocked && !moving && frame.gesture && frame.gesture.key !== this.ambientGesture && this.ambientActions.length) {
+    if (!ambientBlocked && (!this.desktopActive || this.desktopPresentationReady) && !moving && frame.gesture && frame.gesture.key !== this.ambientGesture && this.ambientActions.length) {
       this.ambientGesture = frame.gesture.key;
       const action = this.ambientActions[Math.min(this.ambientActions.length - 1, Math.floor(frame.gesture.choice * this.ambientActions.length))];
       this.triggerEmote(action, frame.gesture.duration * 1000, 0.8, 'ambient');
@@ -870,12 +896,12 @@ export class AvatarStage {
     }
   }
 
-  /** Root-space authored jumps/tilts must not move the framed figure past a
-   * desktop edge. Keep intentional hide/entry movement, and do not alter the
+  /** Explicit root-space jumps/tilts must not move the framed figure past a
+   * desktop edge. Ambient gestures are skipped offscreen instead of clamped. Keep intentional hide/entry movement, and do not alter the
    * stored camera or the controller's paused waypoint. Skeleton deformation
    * remains governed by the authored asset's bounds. */
   private clampDesktopEmote() {
-    if (!this.desktopActive || !this.emote || this.emote.action === 'hide') return;
+    if (!this.desktopActive || !this.emote || this.emoteSource === 'ambient' || this.emote.action === 'hide') return;
     const root = this.asset ? this.imported : this.robot.root;
     root.updateWorldMatrix(true, true);
     const bounds = new THREE.Box3().setFromCenterAndSize(this.desktopModelBounds.center, this.desktopModelBounds.size).applyMatrix4(root.matrixWorld);
@@ -1013,7 +1039,14 @@ export class AvatarStage {
       this.lastDesktopAnchor=now;
       if(this.desktopActive){const root=this.asset?this.imported:this.robot.root;const center=root.localToWorld(this.desktopModelBounds.center.clone()).project(this.activeCamera);const width=this.host.clientWidth,height=this.host.clientHeight;const x=(center.x+1)*width/2,y=(1-center.y)*height/2;this.options.onDesktopAnchor?.({x,y,...this.desktopFigure,visible:center.z>=-1&&center.z<=1&&x+this.desktopFigure.width/2>0&&x-this.desktopFigure.width/2<width&&y+this.desktopFigure.height/2>0&&y-this.desktopFigure.height/2<height,viewport:{width,height}});}else this.options.onDesktopAnchor?.(undefined);
     }
-    this.renderer.render(this.scene, this.activeCamera);
+    try {
+      this.renderer.render(this.scene, this.activeCamera);
+      if (this.presentation.requested) {
+        const hostVisible = this.host.isConnected && this.host.clientWidth > 0 && this.host.clientHeight > 0 && getComputedStyle(this.host).visibility !== 'hidden';
+        const ready = hostVisible && !this.renderer.getContext().isContextLost() && this.assetState === 'ready' && !this.emote && !this.walking && this.walkStrength < 0.001 && (!this.desktopActive || this.desktopPresentationReady);
+        this.presentation.rendered(ready);
+      }
+    } catch (error) { this.presentation.fail(error); }
   };
 
   private clearImported() {
@@ -1067,6 +1100,7 @@ export class AvatarStage {
 
   dispose() {
     this.disposed = true;
+    this.presentation.dispose();
     ++this.request;
     cancelAnimationFrame(this.frame);
     this.observer.disconnect();

@@ -1,8 +1,9 @@
 <script lang="ts">
   import { t } from '../lib/i18n';
-  import { onMount, untrack } from 'svelte';
+  import { onMount, tick, untrack } from 'svelte';
   import { AvatarStage, type AvatarModelInfo, type DesktopAnchor } from '../lib/avatar';
   import type { AutopilotVisualConfig } from '../lib/autopilot-motion';
+  import { presentationAbortError, type PresentationRelease } from '../lib/avatar-presentation';
   import type { DesktopLayout } from '../lib/output-presentation';
 
   interface Props {
@@ -26,12 +27,22 @@
   let loading = $state(false);
   let emoteFailure = $state('');
   let assetRequest = 0;
+  let disposed = false;
+
+  export async function preparePresentation(signal: AbortSignal): Promise<PresentationRelease> {
+    if (signal.aborted || disposed) throw presentationAbortError();
+    await tick();
+    if (signal.aborted || disposed) throw presentationAbortError();
+    const renderer = stage;
+    if (!renderer || unavailable) throw new Error('Die Figur ist nicht für die Ausgabe verfügbar.');
+    return renderer.preparePresentation(signal);
+  }
 
   onMount(() => {
     try {
-      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor }, (message) => { emoteFailure = message; });
+      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor }, (message) => { emoteFailure = message; }, assetUrl);
       stage = renderer;
-      return () => { ++assetRequest; renderer.dispose(); };
+      return () => { disposed = true; ++assetRequest; renderer.dispose(); };
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
       unavailable = true;
