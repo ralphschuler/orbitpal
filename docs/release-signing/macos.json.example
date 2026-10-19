@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "macOS": {
+      "signingIdentity": "Developer ID Application: REPLACE WITH VERIFIED MAINTAINER NAME (TEAMID)",
+      "hardenedRuntime": true
+    }
+  }
+}

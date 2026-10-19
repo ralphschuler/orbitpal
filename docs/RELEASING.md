@@ -8,7 +8,7 @@ Linux CI and the Linux release build also run the focused `glib_variant_regressi
 
 1. Update the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Update `Cargo.lock` by running Cargo normally, then verify it with `node scripts/release-info.mjs`.
 2. Update `CHANGELOG.md` and the release-note template for the final behavior, complete the checks and merge the release commit.
-3. Update `docs/UPDATE-NOTES.md`. These plain-text release notes appear in the app's confirmation dialog. Create and push the matching tag, for example `v0.6.0`. The existing tag can also be selected through the manual release workflow.
+3. Update `docs/UPDATE-NOTES.md`. These plain-text release notes appear in the app's confirmation dialog. Create and push the matching tag, for example `v0.6.0`. For manual dispatch select that same tag as the workflow ref (`gh workflow run release.yml --ref vVERSION -f tag=vVERSION`); the workflow ref and built commit must agree for provenance.
 4. The workflow checks all version files and the presence of the updater signing key, reruns CI for the tagged commit, then builds all four targets. Every updater package must have its Tauri signature. Only when every build succeeds does its final job receive permission to create a release.
 
 Tags must match the version exactly. A prerelease suffix such as `v0.6.1-rc.1` creates a GitHub prerelease and never changes the stable update channel. Publication is serialized, and an older stable version cannot replace a newer one as GitHub's latest release. Existing releases are never overwritten automatically. If a publication failed after creating its draft, inspect that draft before removing it or creating a new version.
@@ -56,7 +56,9 @@ See [the update guide](UPDATING.md) for user confirmation, restart behavior, and
 
 ## Workflow boundaries
 
-Release workflows run only for pushed version tags or explicit manual dispatch. They do not run from `pull_request_target` or from untrusted pull-request artifacts. CI and build jobs have read-only repository permissions; only the final publication job has `contents: write`. Checkout tokens are not persisted, third-party actions are pinned to verified commit hashes, and no model or service credentials are provided.
+Release workflows run only for pushed version tags or explicit manual dispatch at that tag. They do not run from `pull_request_target` or from untrusted pull-request artifacts. CI has read-only permissions. The four build jobs additionally receive `id-token: write` and `attestations: write` to attest their own platform outputs; only the final publication job has `contents: write`, with no signing key or OIDC permission. Every downloaded platform file must pass GitHub CLI verification against the official workflow, tag and full commit before manifest generation. Checkout tokens are not persisted, third-party actions are pinned to verified commit hashes, and no model or service credentials are provided.
+
+See [release trust and signing activation](RELEASE-TRUST.md) for the provenance verification policy, inactive OS-signing/environment templates and the offline throwaway-key recovery/rotation exercise. Production OS identities, notarization, protected-environment settings and native key-rotation acceptance remain explicit maintainer activation work; the templates do not silently configure them.
 
 ## Product rename compatibility
 
