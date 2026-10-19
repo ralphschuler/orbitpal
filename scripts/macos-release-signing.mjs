@@ -91,6 +91,10 @@ export function prepareIdentity(directory, identity, p12, password) {
     securityInput(['create-keychain', '-p', keychainPassword, state.keychain]);
     chmodSync(state.keychain, 0o600);
     securityInput(['unlock-keychain', '-p', keychainPassword, state.keychain]);
+    // Private keychain creation does not add it to the user's search list.
+    // codesign requires that registration even with an explicit --keychain.
+    // Preserve the preceding list (including nested fixture preparations).
+    runNative('/usr/bin/security', ['list-keychains', '-d', 'user', '-s', state.keychain, ...state.oldKeychains.filter(path => path !== state.keychain)]);
     securityInput(['import', archive, '-k', state.keychain, '-f', 'pkcs12', '-t', 'agg', '-P', password, '-x', '-T', '/usr/bin/codesign']);
     rmSync(archive);
     runNative('/usr/bin/security', ['set-keychain-settings', '-lut', '3600', state.keychain]);
