@@ -23,7 +23,8 @@ mod macos {
     use block2::RcBlock;
     use objc2::{msg_send, runtime::{AnyClass, Bool}};
     use objc2_foundation::NSString;
-    use std::sync::Mutex;
+    use std::{sync::Mutex, time::Duration};
+    use tauri::Manager;
 
     #[link(name = "AVFoundation", kind = "framework")]
     unsafe extern "C" { static AVMediaTypeAudio: &'static NSString; }
@@ -38,23 +39,41 @@ mod macos {
         Ok(match value { 0 => Status::NotDetermined, 1 => Status::Restricted, 2 => Status::Denied, 3 => Status::Authorized, _ => Status::Unknown })
     }
 
-    pub async fn request() -> Result<Status, String> {
+    pub async fn request(app: &tauri::AppHandle) -> Result<Status, String> {
         let current = status()?;
         if current != Status::NotDetermined { return Ok(current); }
+        let guard = crate::permission_request::begin()?;
         let (send, receive) = tokio::sync::oneshot::channel();
-        {
-            let send = Mutex::new(Some(send));
+        let pending_app = app.clone();
+        app.run_on_main_thread(move || {
+            // A queued request must not create a late dialog after its waiting
+            // caller timed out. Recheck state because Settings may have changed.
+            if send.is_closed() { return; }
+            if let Err(error) = pending_app.state::<crate::AppState>().updater.ensure_idle() { let _ = send.send(Err(error)); return; }
+            let device = match device() { Ok(device) => device, Err(error) => { let _ = send.send(Err(error)); return; } };
+            match status() {
+                Ok(Status::NotDetermined) => {},
+                result => { let _ = send.send(result); return; },
+            }
+            // Retain the single-flight guard in the escaping native callback.
+            // Timing out the caller cannot allow a second outstanding dialog.
+            let completion = Mutex::new(Some((send, guard)));
             let callback = RcBlock::new(move |_granted: Bool| {
-                if let Ok(mut send) = send.lock() { if let Some(send) = send.take() { let _ = send.send(()); } }
+                if let Ok(mut completion) = completion.lock() {
+                    if let Some((send, _guard)) = completion.take() {
+                        // The callback boolean is not a durable permission
+                        // snapshot. Read AVFoundation again for the response.
+                        let _ = send.send(status());
+                    }
+                }
             });
             // AVFoundation copies the escaping block; the completion may run on
             // its own queue. It never starts a capture session or bypasses a denial.
-            unsafe { let _: () = msg_send![device()?, requestAccessForMediaType: AVMediaTypeAudio, completionHandler: &*callback]; }
-        }
-        tokio::time::timeout(std::time::Duration::from_secs(120), receive).await
-            .map_err(|_| "Die Mikrofonfreigabe wurde nicht beantwortet. Bitte erneut auf Start klicken.".to_owned())?
-            .map_err(|_| "macOS hat die Mikrofonfreigabe nicht beantwortet".to_owned())?;
-        status()
+            unsafe { let _: () = msg_send![device, requestAccessForMediaType: AVMediaTypeAudio, completionHandler: &*callback]; }
+        }).map_err(|_| "Die macOS-Mikrofonfreigabe konnte nicht angefragt werden.".to_owned())?;
+        crate::permission_request::receive(receive, Duration::from_secs(120),
+            "Die Mikrofonfreigabe wurde nicht rechtzeitig beantwortet. Bitte den macOS-Dialog oder die Systemeinstellungen prüfen und das Zuhören danach erneut starten.",
+            "macOS hat die Mikrofonfreigabe nicht beantwortet.").await
     }
 }
 
@@ -76,7 +95,11 @@ pub async fn request_microphone_permission(window: tauri::WebviewWindow, app: ta
     studio(window.label())?;
     app.state::<crate::AppState>().updater.ensure_idle()?;
     #[cfg(target_os = "macos")]
-    { Ok(Permission { platform: "macos", status: macos::request().await? }) }
+    {
+        macos::request(&app).await?;
+        app.state::<crate::AppState>().updater.ensure_idle()?;
+        current()
+    }
     #[cfg(not(target_os = "macos"))]
     { current() }
 }

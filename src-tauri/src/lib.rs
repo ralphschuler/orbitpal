@@ -27,6 +27,8 @@ mod screen_capture;
 mod screen_context;
 mod microphone_permission;
 mod screen_permission;
+#[cfg(any(target_os = "macos", test))]
+mod permission_request;
 mod ui_locale;
 
 use serde_json::{json,Value};

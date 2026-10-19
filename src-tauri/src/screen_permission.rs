@@ -4,6 +4,8 @@ use serde::Serialize;
 use tauri::Manager;
 #[cfg(target_os="macos")]
 use tauri_plugin_opener::OpenerExt;
+#[cfg(target_os="macos")]
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all="camelCase")]
@@ -35,6 +37,16 @@ fn current() -> Permission {
     #[cfg(not(target_os="macos"))]
     { Permission {platform:std::env::consts::OS,status:Status::SystemManaged} }
 }
+/// Capture paths may only inspect the current grant. They must never display a
+/// system dialog on behalf of a model, scheduled turn or saved bot setting.
+#[cfg(target_os="macos")]
+pub(crate) fn ensure_capture_access() -> Result<(), String> {
+    capture_access(macos::granted())
+}
+#[cfg(any(target_os="macos",test))]
+fn capture_access(granted: bool) -> Result<(), String> {
+    if granted { Ok(()) } else { Err("macOS hat die Bildschirmaufnahme nicht freigegeben. Bitte die Bildschirmfreigabe im OrbitPal-Studio prüfen und bei Bedarf in Systemeinstellungen → Datenschutz & Sicherheit → Bildschirmaufnahme erlauben. Die App gegebenenfalls neu starten.".into()) }
+}
 #[tauri::command]
 pub fn get_screen_capture_permission(window:tauri::WebviewWindow) -> Result<Permission,String> {
     studio(window.label())?;Ok(current())
@@ -45,14 +57,25 @@ pub async fn request_screen_capture_permission(window:tauri::WebviewWindow,app:t
     app.state::<crate::AppState>().updater.ensure_idle()?;
     #[cfg(target_os="macos")]
     {
+        if macos::granted() { return Ok(current()); }
+        let guard=crate::permission_request::begin()?;
         let (send,receive)=tokio::sync::oneshot::channel();
+        let pending_app=app.clone();
         app.run_on_main_thread(move||{
+            let _guard=guard;
+            // A timed-out/cancelled caller must not open a late OS dialog.
+            if send.is_closed(){return;}
+            if let Err(error)=pending_app.state::<crate::AppState>().updater.ensure_idle(){let _=send.send(Err(error));return;}
             if !macos::granted(){let _=macos::request();}
             // Re-read preflight; a request return value does not prove that
             // this process can capture yet after a settings/restart change.
-            let _=send.send(current());
+            let _=send.send(Ok(current()));
         }).map_err(|_|"Die macOS-Bildschirmfreigabe konnte nicht angefragt werden.".to_owned())?;
-        receive.await.map_err(|_|"Die macOS-Bildschirmfreigabe wurde unterbrochen.".to_owned())
+        crate::permission_request::receive(receive,Duration::from_secs(120),
+            "Die Bildschirmfreigabe wurde nicht rechtzeitig beantwortet. Bitte den macOS-Dialog oder die Systemeinstellungen prüfen und die Freigabe danach erneut prüfen.",
+            "Die macOS-Bildschirmfreigabe wurde unterbrochen.").await?;
+        app.state::<crate::AppState>().updater.ensure_idle()?;
+        Ok(current())
     }
     #[cfg(not(target_os="macos"))]
     { Ok(current()) }
@@ -77,5 +100,10 @@ mod tests {
         assert_eq!(macos_status(false),Status::NotGranted);assert_eq!(macos_status(true),Status::Authorized);
         assert_eq!(serde_json::to_value(Status::NotGranted).unwrap(),"notGranted");
         assert_ne!(Status::SystemManaged,Status::Authorized);
+    }
+    #[test]
+    fn capture_preflight_rejects_missing_or_revoked_access_without_requesting_it() {
+        assert!(capture_access(true).is_ok());
+        assert!(capture_access(false).unwrap_err().contains("Bildschirmfreigabe"));
     }
 }
