@@ -13,6 +13,12 @@ enum Transport {
     Stdio { _child:Child, input:ChildStdin, output:BufReader<ChildStdout>, pending:Vec<u8> },
     Http { client:reqwest::Client,url:String,session:Option<String>,token:Option<String>,protocol:String },
 }
+struct ExchangeError {message:String,terminal:bool}
+impl ExchangeError {
+    fn recoverable(message:impl Into<String>)->Self {Self {message:message.into(),terminal:false}}
+}
+impl From<String> for ExchangeError {fn from(message:String)->Self {Self {message,terminal:true}}}
+impl From<&str> for ExchangeError {fn from(message:&str)->Self {message.to_owned().into()}}
 impl McpHub {
     pub async fn connect(&self,config:&Value,token:Option<String>)->Result<Vec<Value>,String> {
         let id=config["id"].as_str().filter(|s|crate::storage::valid_id(s)).ok_or("MCP-Server benötigt eine gültige ID")?.to_owned();
@@ -139,7 +145,8 @@ impl Session {
         self.next+=1;let id=self.next;
         let response=match tokio::time::timeout(Duration::from_secs(50),self.exchange(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),Some(id))).await {
             Ok(Ok(response))=>response,
-            Ok(Err(error))=>return Err(self.abort(error).await),
+            Ok(Err(ExchangeError {message,terminal:true}))=>return Err(self.abort(message).await),
+            Ok(Err(ExchangeError {message,..}))=>return Err(message),
             Err(_)=>return Err(self.abort("MCP-Zeitlimit überschritten".into()).await),
         };
         if response["id"].as_u64()!=Some(id){return Err("MCP-Antwort gehört nicht zur angeforderten Operation".into());}
@@ -149,12 +156,12 @@ impl Session {
         Ok(result)
     }
     async fn notify(&mut self,method:&str,params:Value)->Result<(),String> {
-        self.exchange(json!({"jsonrpc":"2.0","method":method,"params":params}),None).await.map(|_|())
+        self.exchange(json!({"jsonrpc":"2.0","method":method,"params":params}),None).await.map(|_|()).map_err(|error|error.message)
     }
-    async fn exchange(&mut self,body:Value,expected:Option<u64>)->Result<Value,String> {
+    async fn exchange(&mut self,body:Value,expected:Option<u64>)->Result<Value,ExchangeError> {
         let mut mirrored=Vec::new();
         if self.modern && body["method"]=="tools/call" {
-            if let Some(tool)=self.tools.iter().find(|t|t["name"]==body["params"]["name"]) {mirror_headers(&tool["inputSchema"],&body["params"]["arguments"],&mut mirrored)?;}
+            if let Some(tool)=self.tools.iter().find(|t|t["name"]==body["params"]["name"]) {mirror_headers(&tool["inputSchema"],&body["params"]["arguments"],&mut mirrored).map_err(ExchangeError::recoverable)?;}
         }
         match &mut self.transport {
             Transport::Stdio {input,output,pending,..}=>{
@@ -188,7 +195,10 @@ impl Session {
                 let response=req.send().await.map_err(|e|format!("MCP HTTP: {e}"))?;
                 if let Some(s)=response.headers().get("mcp-session-id").and_then(|s|s.to_str().ok()){*session=Some(s.to_owned());}
                 let status=response.status();
-                if !status.is_success(){return Err(format!("MCP HTTP {}",status.as_u16()));}
+                // Discovery/version negotiation may legitimately return 400,
+                // 404 or 405 before a legacy initialization succeeds. A status
+                // response does not corrupt or exceed the transport framing.
+                if !status.is_success(){return Err(ExchangeError::recoverable(format!("MCP HTTP {}",status.as_u16())));}
                 if expected.is_none(){return Ok(json!({}));}
                 if response.content_length().is_some_and(|length|length>MAX_RESPONSE as u64){return Err("MCP-HTTP-Antwort überschreitet die Größenbegrenzung".into());}
                 let sse=response.headers().get("content-type").and_then(|v|v.to_str().ok()).unwrap_or_default().split(';').next().unwrap_or_default().trim().eq_ignore_ascii_case("text/event-stream");
@@ -209,7 +219,7 @@ impl Session {
                         budget.consume(chunk.len())?;
                         bytes.extend_from_slice(&chunk);
                     }
-                    serde_json::from_slice(&bytes).map_err(|e|format!("MCP JSON: {e}"))
+                    Ok(serde_json::from_slice(&bytes).map_err(|e|format!("MCP JSON: {e}"))?)
                 }
             },
         }
@@ -441,6 +451,49 @@ mod transport_tests {
         assert!(hub.call("fixture","fixture",json!({})).await.unwrap_err().contains("MCP JSON"));
         assert!(!hub.connected("fixture").await);
         task.abort();
+    }
+
+    #[tokio::test]
+    async fn legacy_http_initialization_survives_discovery_status_and_rpc_errors() {
+        use axum::{http::{HeaderMap,StatusCode},response::IntoResponse,routing::post,Json,Router};
+        for discovery_status in [Some(400),Some(404),Some(405),None] {
+            let calls=Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed=calls.clone();
+            let app=Router::new().route("/",post(move |headers:HeaderMap,Json(body):Json<Value>| {
+                let observed=observed.clone();
+                async move {
+                    let method=body["method"].as_str().unwrap_or_default();
+                    observed.lock().unwrap().push((method.to_owned(),headers.get("mcp-protocol-version").unwrap().to_str().unwrap().to_owned()));
+                    if method=="server/discover" {
+                        if let Some(status)=discovery_status {return StatusCode::from_u16(status).unwrap().into_response();}
+                        return Json(json!({"jsonrpc":"2.0","id":body["id"],"error":{"code":-32601,"message":"Method not found"}})).into_response();
+                    }
+                    if method=="initialize" {
+                        // Also cover a recoverable JSON-RPC initialization
+                        // error before an older protocol version succeeds.
+                        if discovery_status.is_none()&&body["params"]["protocolVersion"]=="2025-11-25" {
+                            return Json(json!({"jsonrpc":"2.0","id":body["id"],"error":{"code":-32601,"message":"Try the older initialization"}})).into_response();
+                        }
+                        return Json(json!({"jsonrpc":"2.0","id":body["id"],"result":{"protocolVersion":body["params"]["protocolVersion"],"capabilities":{"tools":{}}}})).into_response();
+                    }
+                    if method=="notifications/initialized" {return StatusCode::ACCEPTED.into_response();}
+                    Json(json!({"jsonrpc":"2.0","id":body["id"],"result":{"tools":[{"name":"fixture","inputSchema":{"type":"object"}}]}})).into_response()
+                }
+            }));
+            let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address=listener.local_addr().unwrap();
+            let server=tokio::spawn(async move {axum::serve(listener,app).await.unwrap();});
+            let hub=McpHub::default();
+            let tools=hub.connect(&json!({"id":"fixture","transport":"http","url":format!("http://{address}/")}),None).await.unwrap();
+            assert_eq!(tools.len(),1);
+            assert_eq!(tools[0]["name"],"fixture");
+            assert!(hub.connected("fixture").await);
+            let calls=calls.lock().unwrap();
+            assert_eq!(calls[0],("server/discover".into(),"2026-07-28".into()));
+            let version=if discovery_status.is_none() {"2025-06-18"}else{"2025-11-25"};
+            assert_eq!(calls.last().unwrap(),&("tools/list".into(),version.into()));
+            server.abort();
+        }
     }
 
     #[cfg(unix)]
