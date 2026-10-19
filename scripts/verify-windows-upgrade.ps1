@@ -115,7 +115,9 @@ $newEntry = Assert-OnlyVersion $expectedVersion 'OrbitPal'
 if ($newEntry.PSChildName -eq $oldEntry.PSChildName) { throw 'MSI upgrade retained the old version product code.' }
 $installCandidates = @($msiDirectory, (Join-Path $env:ProgramFiles 'OrbitPal'))
 if ($newEntry.PSObject.Properties['InstallLocation'] -and $newEntry.InstallLocation) { $installCandidates += $newEntry.InstallLocation.Trim('"') }
-$newBinaries = @($installCandidates | Select-Object -Unique | ForEach-Object { Join-Path $_ 'orbitpal.exe' } | Where-Object { Test-Path $_ })
+# MSI stores InstallLocation with a trailing separator. Deduplicate the resolved
+# executable paths, not directory strings that may name the same installation.
+$newBinaries = @($installCandidates | ForEach-Object { Join-Path $_ 'orbitpal.exe' } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | ForEach-Object { (Get-Item -LiteralPath $_).FullName } | Sort-Object -Unique)
 if ($newBinaries.Count -ne 1) { throw 'MSI upgrade did not produce exactly one OrbitPal executable.' }
 if (Test-Path $oldMsiBinary) { throw 'MSI upgrade left the old executable behind.' }
 foreach ($legacyLink in $legacyMsiLinks) { if (Test-Path $legacyLink) { throw "MSI upgrade left a dead legacy shortcut: $legacyLink" } }
