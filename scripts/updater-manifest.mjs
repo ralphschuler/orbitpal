@@ -1,7 +1,8 @@
-import { existsSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { releaseVersion, verifyTag } from './release-info.mjs';
+import { assertReleaseVersion, parsePublicKey, parseSignature, readSignatureAsset, verifyUpdaterPayload } from './verify-updater-payload.mjs';
 
 // Keep the generic Windows entry for compatibility. Current updaters prefer the
 // installer-specific entry, so an MSI installation stays on MSI.
@@ -28,44 +29,17 @@ export function releaseRepository(repository) {
   return repository;
 }
 
-function decodeBase64(value, description) {
-  if (!value || value.length > 16_384 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
-    throw new Error(`Invalid ${description}: expected Tauri base64 contents`);
-  }
-  const bytes = Buffer.from(value, 'base64');
-  if (bytes.toString('base64') !== value) throw new Error(`Invalid ${description}: noncanonical base64`);
-  return bytes;
-}
-
 export function publicKeyId(encoded) {
-  const lines = decodeBase64(encoded?.trim(), 'updater public key').toString('utf8').trim().split(/\r?\n/);
-  if (lines.length !== 2 || !lines[0].startsWith('untrusted comment:')) throw new Error('Invalid updater public key format');
-  const key = decodeBase64(lines[1], 'updater public key body');
-  if (key.length !== 42 || key.subarray(0, 2).toString() !== 'Ed') throw new Error('Invalid updater public key body');
-  return key.subarray(2, 10);
+  return parsePublicKey(encoded).keyId;
 }
 
+// Structural helper for format fixtures. Publication always calls the complete
+// payload verifier below before trusting any version metadata.
 export function updaterSignature(encoded, keyId, version) {
-  const signature = encoded.trim();
-  const lines = decodeBase64(signature, 'updater signature').toString('utf8').trim().split(/\r?\n/);
-  if (lines.length !== 4 || !lines[0].startsWith('untrusted comment:') || !lines[2].startsWith('trusted comment:')) {
-    throw new Error('Invalid updater signature format');
-  }
-  const body = decodeBase64(lines[1], 'updater signature body');
-  const global = decodeBase64(lines[3], 'updater signature global body');
-  if (body.length !== 74 || !['Ed', 'ED'].includes(body.subarray(0, 2).toString()) || global.length !== 64) {
-    throw new Error('Invalid updater signature body');
-  }
-  if (!body.subarray(2, 10).equals(keyId)) throw new Error('Updater signature does not match the configured public key');
-  const boundVersions = lines[2].split('\t').filter(field => field.startsWith('version:')).map(field => field.slice('version:'.length));
-  if (boundVersions.length !== 1 || boundVersions[0] !== version) throw new Error('Updater signature must be bound to the release version');
-  return signature;
-}
-
-function requireRegularAsset(path) {
-  if (!existsSync(path)) throw new Error(`Missing signed updater asset: ${path}`);
-  const info = lstatSync(path);
-  if (!info.isFile() || info.isSymbolicLink() || info.size === 0) throw new Error(`Updater asset is not a nonempty regular file: ${path}`);
+  const signature = parseSignature(encoded);
+  if (!signature.keyId.equals(keyId)) throw new Error('Updater signature does not match the configured public key');
+  assertReleaseVersion(signature.trustedComment, version);
+  return signature.encoded;
 }
 
 export function createUpdaterManifest({ root = process.cwd(), directory = join(root, 'release-artifacts'), repository, tag, date = new Date().toISOString(), notes }) {
@@ -79,15 +53,19 @@ export function createUpdaterManifest({ root = process.cwd(), directory = join(r
   const config = JSON.parse(readFileSync(join(root, 'src-tauri/tauri.conf.json'), 'utf8'));
   if (config.bundle?.createUpdaterArtifacts !== true) throw new Error('Releases require native Tauri v2 updater artifacts');
   if (config.plugins?.updater?.requireSignedVersion !== true) throw new Error('Releases require signed updater version binding');
-  const keyId = publicKeyId(config.plugins?.updater?.pubkey);
+  const publicKey = config.plugins?.updater?.pubkey;
+  parsePublicKey(publicKey);
+  const verified = new Map();
   const platforms = {};
   for (const [target, [platform, suffix]] of Object.entries(updaterArtifacts)) {
     const asset = `OrbitPal-v${version}-${platform}${suffix}`;
     const path = join(directory, asset);
-    requireRegularAsset(path);
-    requireRegularAsset(`${path}.sig`);
+    if (!verified.has(asset)) {
+      const signature = readSignatureAsset(path + '.sig');
+      verified.set(asset, verifyUpdaterPayload({ path, signature, publicKey, version }));
+    }
     platforms[target] = {
-      signature: updaterSignature(readFileSync(`${path}.sig`, 'utf8'), keyId, version),
+      signature: verified.get(asset),
       url: `https://github.com/${legacyAssetRepository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`,
     };
   }
@@ -131,6 +109,6 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
     const notes = readFileSync(join(root, 'docs/UPDATE-NOTES.md'), 'utf8');
     const manifest = createUpdaterManifest({ root, directory, repository, tag, notes });
     writeFileSync(join(directory, 'latest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-    console.log(`latest.json includes ${Object.keys(manifest.platforms).length} complete signed updater targets for ${version}.`);
+    console.log(`latest.json includes ${Object.keys(manifest.platforms).length} cryptographically verified updater targets for ${version}.`);
   }
 }

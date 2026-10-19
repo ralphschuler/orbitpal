@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync, truncateSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { releaseVersion, verifyTag } from './release-info.mjs';
@@ -8,6 +10,8 @@ import { collect, platformForTarget } from './collect-release.mjs';
 import { rustInventory, nodeInventory } from './dependency-inventories.mjs';
 import { assertCanPublishLatest, createUpdaterManifest, updaterArtifacts, updaterSignature, canonicalRepository, legacyAssetRepository } from './updater-manifest.mjs';
 import { assertMicrophonePermissions } from './verify-macos-permissions.mjs';
+import { createSigningFixture } from './fixtures/updater-signing.mjs';
+import { MAX_LEGACY_PAYLOAD_BYTES, verifyUpdaterPayload } from './verify-updater-payload.mjs';
 
 test('macOS microphone requires a signed audio-input entitlement as well as Info.plist', () => {
   const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
@@ -24,14 +28,7 @@ test('macOS microphone requires a signed audio-input entitlement as well as Info
   assert.throws(() => assertMicrophonePermissions({ bundle: { macOS: { infoPlist: 'Info.plist' } } }, usage, signed), /must sign/);
 });
 
-const keyId = Buffer.from('12345678');
-const publicKey = Buffer.from(`untrusted comment: fixture key\n${Buffer.concat([Buffer.from('Ed'), keyId, Buffer.alloc(32, 1)]).toString('base64')}\n`).toString('base64');
-
-// Structural packaging fixtures, deliberately not cryptographic signatures.
-// Artifact verification is performed by the native updater before installation.
-function signature(version = '0.4.0', id = keyId) {
-  return Buffer.from(`untrusted comment: signature fixture\n${Buffer.concat([Buffer.from('ED'), id, Buffer.alloc(64, 2)]).toString('base64')}\ntrusted comment: timestamp:1\tfile:fixture\tversion:${version}\n${Buffer.alloc(64, 3).toString('base64')}\n`).toString('base64');
-}
+const { keyId, publicKey, signature } = createSigningFixture();
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'cohost-release-'));
@@ -121,11 +118,144 @@ function manifestFixture() {
   mkdirSync(directory);
   for (const [platform, suffix] of Object.values(updaterArtifacts)) {
     const path = join(directory, `OrbitPal-v0.4.0-${platform}${suffix}`);
-    writeFileSync(path, `${platform} fixture`);
-    writeFileSync(`${path}.sig`, signature());
+    const data = Buffer.from(platform + suffix + ' fixture');
+    writeFileSync(path, data);
+    writeFileSync(path + '.sig', signature('0.4.0', keyId, data));
   }
   return { root, directory, repository: 'ralphschuler/orbitpal', tag: 'v0.4.0', date: '2026-10-19T10:00:00Z', notes: 'Fixture release notes.' };
 }
+
+function payloadPaths(options) {
+  return [...new Set(Object.values(updaterArtifacts).map(([platform, suffix]) => join(options.directory, 'OrbitPal-v0.4.0-' + platform + suffix)))];
+}
+
+test('all five updater payloads reject post-signing corruption and swapped signatures', () => {
+  const options = manifestFixture();
+  try {
+    const paths = payloadPaths(options);
+    assert.equal(paths.length, 5);
+    const signatures = paths.map(path => readFileSync(path + '.sig'));
+    for (const [index, path] of paths.entries()) {
+      const data = readFileSync(path);
+      writeFileSync(path, Buffer.concat([data, Buffer.from('tampered')]));
+      assert.throws(() => createUpdaterManifest(options), /payload cryptographic signature verification failed/);
+      writeFileSync(path, data);
+      writeFileSync(path + '.sig', signatures[(index + 1) % paths.length]);
+      assert.throws(() => createUpdaterManifest(options), /payload cryptographic signature verification failed/);
+      writeFileSync(path + '.sig', signatures[index]);
+    }
+    assert.doesNotThrow(() => createUpdaterManifest(options));
+  } finally { rmSync(options.root, { recursive: true, force: true }); }
+});
+
+test('a matching key ID cannot substitute a different public key', () => {
+  const options = manifestFixture();
+  try {
+    const configPath = join(options.root, 'src-tauri/tauri.conf.json');
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    config.plugins.updater.pubkey = createSigningFixture(keyId).publicKey;
+    writeFileSync(configPath, JSON.stringify(config));
+    assert.throws(() => createUpdaterManifest(options), /payload cryptographic signature verification failed/);
+  } finally { rmSync(options.root, { recursive: true, force: true }); }
+});
+
+test('trusted comments are authenticated before version binding is trusted', () => {
+  const options = manifestFixture();
+  try {
+    const path = payloadPaths(options)[0], data = readFileSync(path);
+    const valid = signature('0.4.0', keyId, data);
+    const edited = Buffer.from(Buffer.from(valid, 'base64').toString().replace('version:0.4.0', 'version:0.5.0')).toString('base64');
+    assert.throws(() => verifyUpdaterPayload({ path, publicKey, signature: edited, version: '0.5.0' }), /trusted-comment cryptographic signature verification failed/);
+    const lines = Buffer.from(valid, 'base64').toString().trimEnd().split('\n');
+    const global = Buffer.from(lines[3], 'base64'); global[0] ^= 1; lines[3] = global.toString('base64');
+    assert.throws(() => verifyUpdaterPayload({ path, publicKey, signature: Buffer.from(lines.join('\n')).toString('base64'), version: '0.4.0' }), /trusted-comment cryptographic signature verification failed/);
+    for (const comment of ['timestamp:1\tfile:fixture', 'timestamp:1\tversion:0.3.0', 'version:0.4.0\tversion:0.4.0']) {
+      const signed = signature('0.4.0', keyId, data, { trustedComment: comment });
+      assert.throws(() => verifyUpdaterPayload({ path, publicKey, signature: signed, version: '0.4.0' }), /bound to the release version/);
+    }
+  } finally { rmSync(options.root, { recursive: true, force: true }); }
+});
+
+test('legacy non-prehashed Minisign Ed mode verifies the actual complete payload', () => {
+  const options = manifestFixture();
+  try {
+    const path = payloadPaths(options)[0], data = readFileSync(path);
+    const signed = signature('0.4.0', keyId, data, { algorithm: 'Ed' });
+    assert.equal(verifyUpdaterPayload({ path, publicKey, signature: signed, version: '0.4.0' }), signed);
+    writeFileSync(path, 'different complete payload');
+    assert.throws(() => verifyUpdaterPayload({ path, publicKey, signature: signed, version: '0.4.0' }), /payload cryptographic signature verification failed/);
+  } finally { rmSync(options.root, { recursive: true, force: true }); }
+});
+
+test('oversized legacy Ed payload is rejected before allocating its full contents', () => {
+  const options = manifestFixture();
+  try {
+    const path = payloadPaths(options)[0], data = readFileSync(path);
+    const signed = signature('0.4.0', keyId, data, { algorithm: 'Ed' });
+    // Extend a local fixture without constructing a correspondingly large JS
+    // string or Buffer. The verifier must reject its size before reading it.
+    truncateSync(path, MAX_LEGACY_PAYLOAD_BYTES + 1);
+    assert.throws(() => verifyUpdaterPayload({ path, publicKey, signature: signed, version: '0.4.0' }), /Legacy Minisign Ed payload exceeds 512 MiB/);
+  } finally { rmSync(options.root, { recursive: true, force: true }); }
+});
+
+test('Node verification accepts the independent Tauri updater 2.14.0 public test vector', () => {
+  // Public fixture from tauri-plugin-updater 2.14.0 src/updater.rs (MIT OR Apache-2.0).
+  // No fixture private key is bundled; this is independent from our test signer.
+  const key = 'untrusted comment: minisign public key: A49EF4746FA6E6D7\nRWTX5qZvdPSepDGWg2bz8n6ArQnBMwgQK1geVosorcbLzcunD+KJ+cYe';
+  const signed = 'untrusted comment: signature from tauri secret key\nRUTX5qZvdPSepPF2zsjvP/L/TQtBLRnWRvaq+4omK1UEugtQp/USrGiI1v762sDy3id3aor7bRC9ETyeot6lMHHrWoZ5hjUM1Qc=\ntrusted comment: timestamp:1791649051\tfile:payload\tversion:2.0.0\nDDq2CLOEl5cQmC2eJRHlnZPVViOZsu1CjpPKQoei4A/XBfkDqGO0B+QMrcrHgEQ5qV3mne75tdFWhJpqUXh9AA==';
+  const root = mkdtempSync(join(tmpdir(), 'orbitpal-public-updater-vector-'));
+  try {
+    const path = join(root, 'payload'); writeFileSync(path, 'test');
+    const input = { path, publicKey: Buffer.from(key).toString('base64'), signature: Buffer.from(signed).toString('base64'), version: '2.0.0' };
+    assert.doesNotThrow(() => verifyUpdaterPayload(input));
+    assert.throws(() => verifyUpdaterPayload({ ...input, version: '3.0.0' }), /bound to the release version/);
+    writeFileSync(path, 'tesT');
+    assert.throws(() => verifyUpdaterPayload(input), /cryptographic signature verification failed/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('publication verification needs only the embedded public key and writes no manifest on failure', () => {
+  const options = manifestFixture();
+  try {
+    mkdirSync(join(options.root, 'docs')); writeFileSync(join(options.root, 'docs/UPDATE-NOTES.md'), 'Fixture release notes');
+    const path = payloadPaths(options).at(-1);
+    writeFileSync(path, 'corrupted last updater target');
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./updater-manifest.mjs', import.meta.url)), options.directory], {
+      cwd: options.root, encoding: 'utf8',
+      env: { RELEASE_TAG: options.tag, GITHUB_REPOSITORY: options.repository, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /payload cryptographic signature verification failed/);
+    assert.equal(existsSync(join(options.directory, 'latest.json')), false);
+    const data = Buffer.from('repaired last updater target'); writeFileSync(path, data); writeFileSync(path + '.sig', signature('0.4.0', keyId, data));
+    const success = spawnSync(process.execPath, [fileURLToPath(new URL('./updater-manifest.mjs', import.meta.url)), options.directory], {
+      cwd: options.root, encoding: 'utf8',
+      env: { RELEASE_TAG: options.tag, GITHUB_REPOSITORY: options.repository, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
+    });
+    assert.equal(success.status, 0, success.stderr);
+    assert.equal(Object.keys(JSON.parse(readFileSync(join(options.directory, 'latest.json'), 'utf8')).platforms).length, 6);
+  } finally { rmSync(options.root, { recursive: true, force: true }); }
+});
+
+test('signature files are bounded before reading their contents', () => {
+  const options = manifestFixture();
+  try {
+    writeFileSync(payloadPaths(options)[0] + '.sig', 'x'.repeat(16_385));
+    assert.throws(() => createUpdaterManifest(options), /16 KiB/);
+  } finally { rmSync(options.root, { recursive: true, force: true }); }
+});
+
+test('publication verifies payloads before manifest/upload without a signing secret', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
+  const publication = workflow.slice(workflow.indexOf('\n  publish:'));
+  assert.match(publication, /Cryptographically verify all five updater payloads/);
+  assert.doesNotMatch(publication, /secrets\.TAURI_SIGNING_PRIVATE_KEY/);
+  const verification = publication.indexOf('run: node scripts/updater-manifest.mjs release-artifacts');
+  assert.ok(verification > 0);
+  assert.ok(verification < publication.indexOf('node scripts/checksums.mjs'));
+  assert.ok(verification < publication.indexOf('gh release create'));
+});
 
 test('manifest maps both mac architectures, Linux and both Windows installers to immutable release URLs', () => {
   const options = manifestFixture();
@@ -140,7 +270,7 @@ test('manifest maps both mac architectures, Linux and both Windows installers to
     assert.match(manifest.platforms['windows-x86_64-msi'].url, /windows-x64.msi$/);
     assert.match(manifest.platforms['windows-x86_64-nsis'].url, /windows-x64-setup.exe$/);
     assert.deepEqual(manifest.platforms['windows-x86_64'], manifest.platforms['windows-x86_64-nsis']);
-    assert.equal(manifest.platforms['linux-x86_64'].signature, signature());
+    assert.equal(manifest.platforms['linux-x86_64'].signature, signature('0.4.0', keyId, readFileSync(join(options.directory, 'OrbitPal-v0.4.0-linux-x64.AppImage'))));
     assert.ok(!JSON.stringify(manifest).includes(options.root));
   } finally { rmSync(options.root, { recursive: true, force: true }); }
 });
@@ -159,9 +289,9 @@ test('manifest fails closed for incomplete targets, bad keys, unsigned versions 
     assert.throws(() => createUpdaterManifest(options), /base64/);
     writeFileSync(`${payload}.sig`, signature('0.4.0', Buffer.from('otherkey')));
     assert.throws(() => createUpdaterManifest(options), /public key/);
-    writeFileSync(`${payload}.sig`, signature('0.3.0'));
+    writeFileSync(`${payload}.sig`, signature('0.3.0', keyId, readFileSync(payload)));
     assert.throws(() => createUpdaterManifest(options), /bound to the release version/);
-    writeFileSync(`${payload}.sig`, signature());
+    writeFileSync(`${payload}.sig`, signature('0.4.0', keyId, readFileSync(payload)));
     writeFileSync(payload, '');
     assert.throws(() => createUpdaterManifest(options), /nonempty regular file/);
     writeFileSync(payload, 'restored payload');
@@ -241,13 +371,19 @@ test('signatures require one signed release version and canonical minisign conte
   assert.throws(() => updaterSignature('not a signature', keyId, '0.4.0'), /base64/);
 });
 
-test('manifest rejects symlinked payloads on Unix', { skip: process.platform === 'win32' }, () => {
+test('manifest rejects symlinked payloads and signatures on Unix', { skip: process.platform === 'win32' }, () => {
   const options = manifestFixture();
   try {
     const payload = join(options.directory, 'OrbitPal-v0.4.0-macos-x64.app.tar.gz');
-    rmSync(payload);
-    symlinkSync(join(options.directory, 'OrbitPal-v0.4.0-macos-arm64.app.tar.gz'), payload);
-    assert.throws(() => createUpdaterManifest(options), /nonempty regular file/);
+    const other = join(options.directory, 'OrbitPal-v0.4.0-macos-arm64.app.tar.gz');
+    for (const suffix of ['', '.sig']) {
+      const original = readFileSync(payload + suffix);
+      rmSync(payload + suffix);
+      symlinkSync(other + suffix, payload + suffix);
+      assert.throws(() => createUpdaterManifest(options), /nonempty regular file/);
+      rmSync(payload + suffix);
+      writeFileSync(payload + suffix, original);
+    }
   } finally { rmSync(options.root, { recursive: true, force: true }); }
 });
 
