@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { releaseVersion, verifyTag } from './release-info.mjs';
@@ -8,6 +8,39 @@ import { collect, platformForTarget } from './collect-release.mjs';
 import { rustInventory, nodeInventory } from './dependency-inventories.mjs';
 import { assertCanPublishLatest, createUpdaterManifest, updaterArtifacts, updaterSignature, canonicalRepository, legacyAssetRepository } from './updater-manifest.mjs';
 import { assertMicrophonePermissions } from './verify-macos-permissions.mjs';
+
+test('current product metadata uses OrbitPal while package and repository names use orbitpal', () => {
+  const read = file => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+  const pkg = JSON.parse(read('package.json'));
+  const config = JSON.parse(read('src-tauri/tauri.conf.json'));
+  assert.equal(pkg.name, 'orbitpal');
+  assert.equal(pkg.repository.url, `https://github.com/${canonicalRepository}.git`);
+  assert.equal(pkg.homepage, `https://github.com/${canonicalRepository}`);
+  assert.equal(pkg.bugs.url, `https://github.com/${canonicalRepository}/issues`);
+  assert.match(read('src-tauri/Cargo.toml'), /\[package\]\s+name = "orbitpal"/);
+  assert.match(read('src-tauri/Cargo.toml'), /\[lib\]\s+name = "orbitpal_lib"/);
+  assert.match(read('src-tauri/Cargo.lock'), /\[\[package\]\]\s+name = "orbitpal"/);
+  assert.equal(config.productName, 'OrbitPal');
+  assert.ok(config.app.windows.length > 0);
+  assert.ok(config.app.windows.every(window => window.title === 'OrbitPal'));
+  assert.match(read('index.html'), /<title>OrbitPal<\/title>/);
+  assert.match(read('src-tauri/Info.plist'), /<key>NSMicrophoneUsageDescription<\/key>\s*<string>OrbitPal /);
+});
+
+test('normal documentation navigation uses the canonical repository after the rename', () => {
+  const root = new URL('../', import.meta.url);
+  const files = [
+    ...readdirSync(root).filter(file => file.endsWith('.md')),
+    ...readdirSync(new URL('docs/', root), { recursive: true }).filter(file => file.endsWith('.md')).map(file => `docs/${file}`),
+  ];
+  assert.ok(files.includes('docs/AUDIT-2026-10-19.md'));
+  for (const file of files) {
+    const text = readFileSync(new URL(file, root), 'utf8');
+    assert.doesNotMatch(text, /\]\(https:\/\/github\.com\/ralphschuler\/streamer-ai-cohost(?:[\/#)]|$)/i, file);
+  }
+  // Explicit migration URLs, historical copyright/provenance and fixed legacy
+  // updater download prefixes are intentionally outside this navigation rule.
+});
 
 test('macOS microphone requires a signed audio-input entitlement as well as Info.plist', () => {
   const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));

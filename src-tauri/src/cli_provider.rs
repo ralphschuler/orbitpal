@@ -13,7 +13,7 @@ const WORKER_INSTRUCTIONS: &str = "You are a dialog worker for OrbitPal, not a c
 struct Workspace(PathBuf);
 impl Workspace {
     fn new() -> Result<Self, String> {
-        let path = std::env::temp_dir().join(format!("streamer-ai-cohost-cli-{}", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("orbitpal-cli-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&path).map_err(|e| format!("CLI-Arbeitsordner konnte nicht erstellt werden: {e}"))?;
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;
@@ -23,6 +23,27 @@ impl Workspace {
     }
 }
 impl Drop for Workspace { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::Workspace;
+
+    #[test]
+    fn renamed_worker_workspaces_remain_unique_private_and_ephemeral() {
+        let first = Workspace::new().unwrap();
+        let second = Workspace::new().unwrap();
+        let path = first.0.clone();
+        assert_ne!(path, second.0);
+        assert!(path.file_name().unwrap().to_str().unwrap().starts_with("orbitpal-cli-"));
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        drop(first);
+        assert!(!path.exists());
+        assert!(second.0.is_dir());
+    }
+}
 
 fn executable(config: &Value) -> Result<String, String> {
     let provider = config["provider"].as_str().unwrap_or_default();
