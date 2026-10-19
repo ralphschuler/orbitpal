@@ -13,9 +13,12 @@
     assetUrl?: string;
     onModelLoaded?: (info: AvatarModelInfo) => void;
     autopilot?: AutopilotVisualConfig;
+    audioEnabled?: boolean;
+    audioStop?: number;
+    onAudioPlaying?: (playing: boolean) => void;
   }
 
-  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, onModelLoaded, autopilot }: Props = $props();
+  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, onModelLoaded, autopilot, audioEnabled = false, audioStop = 0, onAudioPlaying }: Props = $props();
   let host: HTMLDivElement;
   let stage = $state<AvatarStage>();
   let failure = $state('');
@@ -26,7 +29,7 @@
 
   onMount(() => {
     try {
-      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot }, (message) => { emoteFailure = message; });
+      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, audioEnabled, audioStop, onAudioPlaying }, (message) => { emoteFailure = message; });
       stage = renderer;
       return () => { ++assetRequest; renderer.dispose(); };
     } catch (error) {
@@ -37,7 +40,7 @@
   });
 
   $effect(() => {
-    stage?.update({ profile, speaking, level, emotion, transparent, autopilot });
+    stage?.update({ profile, speaking, level, emotion, transparent, autopilot, audioEnabled, audioStop, onAudioPlaying });
   });
 
   $effect(() => {
@@ -60,6 +63,8 @@
     });
   });
 </script>
+
+<svelte:window onpointerdown={() => { if (audioEnabled) void stage?.unlockModelAudio(); }} onkeydown={() => { if (audioEnabled) void stage?.unlockModelAudio(); }}/>
 
 <div class="avatar-stage" class:transparent role="img" aria-label={$t('{name}, animierter 3D-Charakter', { name: profile?.name || 'Nova' })}>
   <div class="canvas-host" bind:this={host}></div>

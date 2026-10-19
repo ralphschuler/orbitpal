@@ -31,6 +31,10 @@
   let soundActivationNeeded = $state(false);
   let player: SpeechPlayer;
   let emoteAudio: EmoteAudioPlayer;
+  let modelAudioStop = $state(0);
+  let modelSoundPlaying = false;
+  let effectSoundPlaying = false;
+  function modelAudioPlaying(value:boolean){modelSoundPlaying=value;reportCombinedSound();}
   let emoteRevision = 0;
   let soundPlaybackId = '';
   let soundPlaying = false;
@@ -67,6 +71,7 @@
   }
 
   async function manualEmote(event: EmotePayload) {
+    modelAudioStop++;
     ++emoteRevision; const revision = emoteRevision;
     emoteSequence.stop(); emoteAudio?.stop();
     await ready;
@@ -76,7 +81,9 @@
     applyEmote(event);
   }
 
-  function reportSoundPlaying(playing: boolean) {
+  function reportSoundPlaying(playing: boolean) {effectSoundPlaying=playing;reportCombinedSound();}
+  function reportCombinedSound() {
+    const playing=effectSoundPlaying||modelSoundPlaying;
     soundPlaying = playing;
     if (playing) soundPlaybackId ||= crypto.randomUUID();
     const id = soundPlaybackId; const targetBot = botId;
@@ -142,6 +149,7 @@
   }
 
   function cancelCurrent() {
+    modelAudioStop++;
     ++emoteRevision;
     const job = current;
     current = undefined;
@@ -213,7 +221,7 @@
     if (!globalStop && (!targetBot || (botId && targetBot !== botId))) return;
     if (event.kind === 'profile') {
       botId ||= event.profile.id;
-      ++profileRevision; ++emoteRevision; emoteSequence.stop();emoteAudio?.stop(); profile = event.profile;
+      modelAudioStop++; ++profileRevision; ++emoteRevision; emoteSequence.stop();emoteAudio?.stop(); profile = event.profile;
       ++runtimeRevision; if(event.autopilotRuntime||event.profile?.autopilotRuntime)acceptAutopilot(event.autopilotRuntime||event.profile.autopilotRuntime);
       // Pin legacy OBS links without a bot parameter after their initial profile arrives.
       const url = new URL(overlayUrl); url.searchParams.set('bot', botId); overlayUrl = url.toString();
@@ -257,7 +265,7 @@
     document.documentElement.classList.add('overlay-document');
     player = new SpeechPlayer((value) => { level = value; }, (state) => { speaking = state; });
     emoteAudio = new EmoteAudioPlayer((message) => { soundNotice = message; soundActivationNeeded = /gesperrt|aktivieren|klick/i.test(message); },reportSoundPlaying);
-    const soundHeartbeat=window.setInterval(()=>{if(soundPlaying&&!disposed)reportSoundPlaying(true);},4000);
+    const soundHeartbeat=window.setInterval(()=>{if(soundPlaying&&!disposed)reportCombinedSound();},4000);
     const cleanup: (() => void)[] = [];
     if (native) {
       const initialRevision = profileRevision;
@@ -292,7 +300,7 @@
 </script>
 
 <div class="overlay-scene">
-  <Avatar {profile} {speaking} {level} {emotion} {autopilot} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  <Avatar audioEnabled={profile.output.mode===(native?'overlay':'obs')} audioStop={modelAudioStop} onAudioPlaying={modelAudioPlaying} {profile} {speaking} {level} {emotion} {autopilot} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
   {#if native && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>

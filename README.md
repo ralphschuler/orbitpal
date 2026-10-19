@@ -16,6 +16,7 @@ The current source version is **0.8.0** (unreleased). Consult the release notes 
 
 - Multiple independent bots with their own persona, voice, model, skills and permissions; show them together and queue their spoken turns.
 - 17 included characters, plus VRM/GLB/glTF imports, expressions and custom emotes with optional sounds and volume. Audio start synchronizes subtitles, gestures and optional stream-chat replies; compatible rigs animate while speaking. Subtitles expire 15 seconds after speech ends, with ElevenLabs voice tags kept only in the speech text.
+- Embedded animation sounds support a bounded, pinned MSFT draft subset: PCM16 WAV with Play/Stop events, explicit output activation, voice-volume control and cancellation. [Supported profile and limits](docs/AUDIO-EXTENSIONS.md).
 - Twitch EventSub and YouTube live chat, manual selection or automatic reply modes, a bounded queue and a global stop.
 - Local models through Ollama, LM Studio or compatible APIs; cloud models through OpenAI-compatible/Anthropic APIs; separately installed **Codex** and **Claude Code** CLIs with model and reasoning controls.
 - System voices, ElevenLabs and compatible TTS; local Whisper, OpenAI Whisper, ElevenLabs Scribe and compatible STT. Configurable microphone activation phrases.

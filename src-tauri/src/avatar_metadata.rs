@@ -43,6 +43,8 @@ pub struct AvatarInfo {
     pub vowels: Vec<String>,
     pub bones: Vec<String>,
     pub audio_extensions: Vec<String>,
+    #[serde(default)]
+    pub model_audio: Option<crate::avatar_audio::AudioSummary>,
     pub required_extensions: Vec<String>,
     pub used_extensions: Vec<String>,
     pub warnings: Vec<String>,
@@ -150,8 +152,11 @@ fn from_document(document: &Value, binary_length: Option<u64>) -> Result<AvatarI
     }
     if !external.is_empty() { return Err(format!("Die 3D-Datei enthält {} externe Ressourcen. Bitte Texturen, Puffer und weitere Ressourcen in einer einzelnen GLB-/VRM-Datei einbetten; es werden keine externen Dateien oder URLs nachgeladen.", external.len())); }
     let audio_extensions: Vec<String> = extensions.iter().filter(|name| { let name = name.to_ascii_lowercase(); name.contains("audio") || name.contains("sound") || name.contains("emitter") }).cloned().collect();
+    let model_audio = crate::avatar_audio::inspect(document, binary_length);
+    let audio_supported = model_audio.as_ref().is_ok_and(|summary| summary.is_some());
+    let supported = |name: &str| SUPPORTED_EXTENSIONS.contains(&name) || name == crate::avatar_audio::EXTENSION && audio_supported;
     for name in &required {
-        if !SUPPORTED_EXTENSIONS.contains(&name.as_str()) {
+        if !supported(name) {
             if audio_extensions.contains(name) { return Err(format!("Die erforderliche Audio-Erweiterung {name} wird vom Avatar-Renderer nicht unterstützt. Modell-Sounds können nicht automatisch abgespielt werden; bitte ohne diese erforderliche Erweiterung exportieren oder Emote-Sounds separat zuweisen.")); }
             if DECODER_EXTENSIONS.contains(&name.as_str()) { return Err(format!("Die erforderliche Komprimierung {name} benötigt einen nicht eingerichteten Decoder. Bitte als unkomprimierte, eingebettete GLB-/VRM-Datei exportieren.")); }
             return Err(format!("Die erforderliche glTF-Erweiterung {name} wird von den installierten Avatar-Loadern nicht unterstützt."));
@@ -161,9 +166,10 @@ fn from_document(document: &Value, binary_length: Option<u64>) -> Result<AvatarI
     // even for optional declarations, and fails without a configured decoder.
     if extensions.contains("KHR_draco_mesh_compression") { return Err("Draco-komprimierte Modelle benötigen einen nicht eingerichteten Decoder. Bitte unkomprimiert als GLB-/VRM-Datei exportieren.".into()); }
     let mut warnings = Vec::new();
-    for name in extensions.iter().filter(|name| !SUPPORTED_EXTENSIONS.contains(&name.as_str())) {
+    for name in extensions.iter().filter(|name| !supported(name)) {
         warnings.push(if audio_extensions.contains(name) { format!("Die optionale Audio-Erweiterung {name} wurde erkannt. Eingebettete Modell-Sounds werden damit nicht abgespielt; Emote-Sounds müssen separat zugewiesen werden.") } else { format!("Die optionale Erweiterung {name} wird nicht vollständig unterstützt. Vorhandene glTF-Basisdaten werden verwendet, soweit die Datei einen Fallback enthält.") });
     }
+    if let Err(detail) = &model_audio { warnings.push(detail.clone()); }
     validate_resources(document, binary_length)?;
     let vrm0 = document["extensions"].get("VRM");
     let vrm1 = document["extensions"].get("VRMC_vrm");
@@ -206,10 +212,10 @@ fn from_document(document: &Value, binary_length: Option<u64>) -> Result<AvatarI
         for skin in document["skins"].as_array().into_iter().flatten() { for joint in skin["joints"].as_array().into_iter().flatten().filter_map(Value::as_u64) { bones.insert(label(document["nodes"][joint as usize]["name"].as_str(), format!("node_{joint}"))); } }
         for mesh in document["meshes"].as_array().into_iter().flatten() { for name in mesh["extras"]["targetNames"].as_array().into_iter().flatten().filter_map(Value::as_str) { expressions.insert(label(Some(name), String::new())); if let Some(name) = vowel(name) { vowels.insert(name.into()); } } }
     }
-    if !audio_extensions.is_empty() && warnings.is_empty() { warnings.push("Modell-Audio wurde erkannt; die Avatar-Loader spielen eingebettete Sounds nicht ab.".into()); }
+    if !audio_extensions.is_empty() && warnings.is_empty() && !audio_supported { warnings.push("Modell-Audio wurde erkannt; die Avatar-Loader spielen eingebettete Sounds nicht ab.".into()); }
     Ok(AvatarInfo { format: format.into(), version: version.into(), container_version: Some(2), animations,
         expressions: expressions.into_iter().take(1024).collect(), vowels: vowels.into_iter().collect(), bones: bones.into_iter().take(4096).collect(),
-        audio_extensions, required_extensions: required, used_extensions: used, warnings, external_resources: Vec::new() })
+        audio_extensions, model_audio: model_audio.unwrap_or(None), required_extensions: required, used_extensions: used, warnings, external_resources: Vec::new() })
 }
 
 // Materials, node constraints and extended spring-bone colliders are nested in
@@ -412,6 +418,14 @@ mod tests {
             let info = inspect_bytes(&glb(document.clone(), None)).unwrap(); assert_eq!(info.audio_extensions, [name]); assert!(info.warnings[0].contains("nicht abgespielt"));
             document["extensionsRequired"] = json!([name]); assert!(inspect_bytes(&glb(document, None)).unwrap_err().contains("Audio-Erweiterung"));
         }
+    }
+
+    #[test]
+    fn pinned_model_audio_fixture_is_recognized_with_required_support() {
+        let info = inspect_bytes(include_bytes!("../../src/lib/fixtures/audio-draft-v1.glb")).unwrap();
+        assert_eq!(info.model_audio.unwrap().profile, crate::avatar_audio::PROFILE);
+        assert!(info.warnings.is_empty());
+        assert_eq!(info.audio_extensions, [crate::avatar_audio::EXTENSION]);
     }
     #[test]
     fn animation_only_vrma_and_future_nested_vrm_versions_are_rejected_explicitly() {
