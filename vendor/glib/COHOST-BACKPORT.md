@@ -73,3 +73,9 @@ original crate/license provenance. Remove this patch only when the complete
 Tauri GTK dependency graph supports an officially patched compatible release.
 Do not edit files in the Cargo registry cache or increase the vendored version
 merely to change vulnerability-scanner output.
+
+The separate `proc-macro-error` maintenance warning still enters this GTK
+generation through `glib-macros` and `gtk3-macros`. Its presence does not undo
+this source correction, and its removal alone would not make the correction
+obsolete. Track the complete supported runtime migration in the
+[dependency maintenance matrix](../../docs/DEPENDENCY-MAINTENANCE.md).
