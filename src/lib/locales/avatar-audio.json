@@ -8,7 +8,8 @@
     "Modell-Audio konnte nicht rechtzeitig als begrenztes PCM16-WAV vorbereitet werden.": "Model audio could not be prepared in time as bounded PCM16 WAV.",
     "Modell-Sounds: Klicke in diese Ausgabe, um Audio für künftige Animationen zu aktivieren.": "Model sounds: click this output to enable audio for future animations.",
     "Modell-Audio · {count} Animationsereignisse": "Model audio · {count} animation events",
-    "Modell-Sounds begleiten Emotes und aktive Laufanimationen in der gewählten Ausgabe. Voransichten und automatisches Idle bleiben stumm. Klicke zuerst in die Ausgabe; die Stimmlautstärke regelt auch Modell-Sounds.": "Model sounds accompany emotes and active walk animations in the selected output. Previews and automatic idle stay silent. Click the output first; voice volume also controls model sounds."
+    "Modell-Sounds begleiten Emotes und aktive Laufanimationen in der gewählten Ausgabe. Voransichten und automatisches Idle bleiben stumm. Klicke zuerst in die Ausgabe; die Stimmlautstärke regelt auch Modell-Sounds.": "Model sounds accompany emotes and active walk animations in the selected output. Previews and automatic idle stay silent. Click the output first; voice volume also controls model sounds.",
+    "Ungültige Emote-Audioaktivität": "Invalid emote audio activity"
   },
   "fr": {
     "Modell-Audio verwendet Funktionen oder eine Version außerhalb des unterstützten MSFT-Draft-Profils.": "Les sons du modèle utilisent des fonctions ou une version hors du profil MSFT pris en charge.",
@@ -19,7 +20,8 @@
     "Modell-Audio konnte nicht rechtzeitig als begrenztes PCM16-WAV vorbereitet werden.": "Les sons du modèle n’ont pas pu être préparés à temps en WAV PCM16 limité.",
     "Modell-Sounds: Klicke in diese Ausgabe, um Audio für künftige Animationen zu aktivieren.": "Sons du modèle : cliquez dans cette sortie pour activer les sons des prochaines animations.",
     "Modell-Audio · {count} Animationsereignisse": "Sons du modèle · {count} événements d’animation",
-    "Modell-Sounds begleiten Emotes und aktive Laufanimationen in der gewählten Ausgabe. Voransichten und automatisches Idle bleiben stumm. Klicke zuerst in die Ausgabe; die Stimmlautstärke regelt auch Modell-Sounds.": "Les sons accompagnent les emotes et les animations de marche actives dans la sortie choisie. Les aperçus et le repos automatique restent muets. Cliquez d’abord dans la sortie ; le volume de voix règle aussi ces sons."
+    "Modell-Sounds begleiten Emotes und aktive Laufanimationen in der gewählten Ausgabe. Voransichten und automatisches Idle bleiben stumm. Klicke zuerst in die Ausgabe; die Stimmlautstärke regelt auch Modell-Sounds.": "Les sons accompagnent les emotes et les animations de marche actives dans la sortie choisie. Les aperçus et le repos automatique restent muets. Cliquez d’abord dans la sortie ; le volume de voix règle aussi ces sons.",
+    "Ungültige Emote-Audioaktivität": "Activité audio d’emote non valide"
   },
   "es": {
     "Modell-Audio verwendet Funktionen oder eine Version außerhalb des unterstützten MSFT-Draft-Profils.": "El audio del modelo usa funciones o una versión fuera del perfil MSFT compatible.",
@@ -30,6 +32,7 @@
     "Modell-Audio konnte nicht rechtzeitig als begrenztes PCM16-WAV vorbereitet werden.": "El audio del modelo no se pudo preparar a tiempo como WAV PCM16 limitado.",
     "Modell-Sounds: Klicke in diese Ausgabe, um Audio für künftige Animationen zu aktivieren.": "Sonidos del modelo: haz clic en esta salida para activar el audio de futuras animaciones.",
     "Modell-Audio · {count} Animationsereignisse": "Audio del modelo · {count} eventos de animación",
-    "Modell-Sounds begleiten Emotes und aktive Laufanimationen in der gewählten Ausgabe. Voransichten und automatisches Idle bleiben stumm. Klicke zuerst in die Ausgabe; die Stimmlautstärke regelt auch Modell-Sounds.": "Los sonidos acompañan a emotes y animaciones de marcha activas en la salida elegida. Las vistas previas y la pose de reposo automática siguen en silencio. Haz clic primero en la salida; el volumen de voz también controla estos sonidos."
+    "Modell-Sounds begleiten Emotes und aktive Laufanimationen in der gewählten Ausgabe. Voransichten und automatisches Idle bleiben stumm. Klicke zuerst in die Ausgabe; die Stimmlautstärke regelt auch Modell-Sounds.": "Los sonidos acompañan a emotes y animaciones de marcha activas en la salida elegida. Las vistas previas y la pose de reposo automática siguen en silencio. Haz clic primero en la salida; el volumen de voz también controla estos sonidos.",
+    "Ungültige Emote-Audioaktivität": "Actividad de audio de emote no válida"
   }
 }

@@ -3,6 +3,7 @@
   import { onMount, tick, untrack } from 'svelte';
   import { AvatarStage, type AvatarModelInfo, type DesktopAnchor } from '../lib/avatar';
   import type { EmotePayload } from '../lib/presentation';
+  import type { SoundActivity } from '../lib/sound-playback';
   import type { AutopilotVisualConfig } from '../lib/autopilot-motion';
   import { presentationAbortError, type PresentationRelease } from '../lib/avatar-presentation';
   import type { DesktopLayout } from '../lib/output-presentation';
@@ -21,7 +22,7 @@
     onDesktopAnchor?:(anchor:DesktopAnchor|undefined)=>void;
     audioEnabled?: boolean;
     audioStop?: number;
-    onAudioPlaying?: (playing: boolean) => void;
+    onAudioPlaying?: (playing: boolean, activity: SoundActivity) => void;
   }
 
   let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, outputUrl = '', onModelLoaded, autopilot, desktop, onDesktopAnchor, audioEnabled = false, audioStop = 0, onAudioPlaying }: Props = $props();

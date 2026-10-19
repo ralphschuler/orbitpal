@@ -12,7 +12,7 @@
   import ModelFeatures from './components/ModelFeatures.svelte';
   import AutopilotPanel from './components/AutopilotPanel.svelte';
   import ScreenContextPanel from './components/ScreenContextPanel.svelte';
-  import { AutopilotScheduler, type AutopilotSchedule } from './lib/autopilot';
+  import { AutopilotScheduler, type AutopilotClaim, type AutopilotSchedule } from './lib/autopilot';
   import { speechBlocker, speechStatus } from './lib/autopilot-status';
   import { AutopilotRuntimeVersions, mayUpdateAutopilot, type AutopilotRuntime } from './lib/autopilot-runtime';
   import type { AvatarModelInfo } from './lib/avatar';
@@ -33,6 +33,7 @@
   import { EmoteSequence, type EmotePayload } from './lib/presentation';
   import { EmoteAudioPlayer } from './lib/emote-audio';
   import { ExternalEmotePlayback } from './lib/emote-playback';
+  import { foregroundSoundPlaying, type SoundActivity } from './lib/sound-playback';
   import { SubtitleLifetime } from './lib/subtitles';
   import { PlaybackWaiters, matchesPlayback, cancelPlaybackTurn } from './lib/playback-wait';
   import { call, onEvent, native, cloneDefaults, defaultAgents, defaultPersona, assetUrl, prettyError } from './lib/api';
@@ -203,12 +204,19 @@
   let emoteAudio: EmoteAudioPlayer;
   let modelAudioStop = $state(0);
   let modelSoundPlaying = false;
+  let modelSoundActivity: SoundActivity = 'foreground';
   let effectSoundPlaying = false;
-  function modelAudioPlaying(value:boolean){modelSoundPlaying=value;emoteSoundPlaying=value||effectSoundPlaying;}
+  function updateSoundPlaying(){
+    emoteSoundPlaying=modelSoundPlaying||effectSoundPlaying;
+    foregroundEmotePlaying=foregroundSoundPlaying(effectSoundPlaying,modelSoundPlaying,modelSoundActivity);
+  }
+  function modelAudioPlaying(value:boolean,activity:SoundActivity){modelSoundPlaying=value;modelSoundActivity=activity;updateSoundPlaying();}
   let emoteSoundPlaying = $state(false);
+  let foregroundEmotePlaying = $state(false);
   let emoteRevision = 0;
   let automaticEmoteRevision = 0;
   let externalEmotePlaying = $state(false);
+  let externalEmoteBlocking = $state(false);
   let externalEmotes: ExternalEmotePlayback;
   let emoteOutput = {botId:"",audio:false};
   let recorder: MediaRecorder | null = null;
@@ -265,7 +273,7 @@
   const hasUnsavedChanges = $derived(dirty||documentDirty);
   const autopilotBlocker = $derived(speechBlocker({
     permission:!!$systemPermission, update:updateInstalling, starting:autopilotPending, reply:busy||speaking||speechPreparing,
-    sound:emoteSoundPlaying||externalEmotePlaying, recording:microphone||microphoneStarting,
+    sound:foregroundEmotePlaying||externalEmoteBlocking, recording:microphone||microphoneStarting,
     transcription:transcribing, saving, botChange:switchingBot||creatingBot,
     extensions:extensionEditing, botDialog, updatesDialog:updatesOpen, unsaved:hasUnsavedChanges,
     draft:!!message.trim(), secretDraft:Object.values(secretInputs).some(value=>!!value.trim()),
@@ -548,8 +556,13 @@
     if(await persist(true)&&crewCurrent()){running=true;log(translate("Cohost gestartet."));}
   }
   async function stopAll(){systemPermission.cancel();++autopilotStartRevision;autopilots={};autopilotPreview=undefined;autopilotScheduler.stop();externalEmotes?.clear();turnEpoch++;wakeStopSignal++;subtitleLifetime?.cancel();running=false;busy=false;speechPreparing=false;partial='';queue=[];clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}microphoneStream?.getTracks().forEach(t=>t.stop());microphone=false;transcribing=false;player?.stop();clearEmotes();finishPlayback();answeringSpeechId='';answeringBotId='';answeringAutopilot=false;speaking=false;level=0;try{await call('stop_generation');}catch(e){if(native)notify(prettyError(e),true);}log(translate("Sprache und ausstehende Antworten gestoppt."));}
-  async function runMessage(text:string,source='operator',user='Streamer',botId=profile.id,replyRouteId?:string,interactive=true,onAccepted?:()=>void) {
+  async function runMessage(text:string,source='operator',user='Streamer',botId=profile.id,replyRouteId?:string,interactive=true,onAccepted?:()=>void,autopilotClaim?:AutopilotClaim) {
     const autonomous=source==='autopilot';
+    const sessionSeed=autonomous?autopilots[botId]?.seed:undefined;
+    const currentAutopilot=()=>!autonomous||(
+      !!autopilotClaim&&autopilotClaim.botId===botId&&autopilotScheduler.isCurrentClaim(autopilotClaim)
+      &&!!sessionSeed&&autopilots[botId]?.active===true&&autopilots[botId]?.seed===sessionSeed
+    );
     if((!autonomous&&!text.trim())||busy||updateInstalling||microphoneStarting||systemPermission.active)return;
     if(!autonomous)autopilotScheduler.activity();
     const selected=botId===profile.id;
@@ -560,14 +573,14 @@
     }
     const permissionCurrent = permissionLease();
     const botContext = JSON.stringify(botConfig);
-    const current = () => permissionCurrent() && botContext === JSON.stringify(botId === profile.id ? profileSnapshot() : $state.snapshot(bots.find(bot => bot.id === botId)?.profile));
+    const current = () => currentAutopilot() && permissionCurrent() && botContext === JSON.stringify(botId === profile.id ? profileSnapshot() : $state.snapshot(bots.find(bot => bot.id === botId)?.profile));
     if (!await ensureScreenFor([botConfig], interactive && !autonomous, current) || !current()) return;
     const requestId=crypto.randomUUID();
     const epoch=++turnEpoch;clearEmotes();automaticEmoteRevision=emoteRevision;emoteOutput={botId,audio:botConfig.output.mode==='studio'};busy=true;answeringBotId=botId;answeringSpeechId=requestId;answeringAutopilot=autonomous;speechPreparing=false;partial='';
     try {
       if(selected&&!autonomous&&(!await saveCurrentBot()||epoch!==turnEpoch))return;
       if(botConfig.output.mode==='overlay'&&!bots.find(bot=>bot.id===botId)?.live)await call('open_overlay',{botId});
-      if(epoch!==turnEpoch)return;
+      if(epoch!==turnEpoch||!currentAutopilot())return;
       onAccepted?.();
       if(selected&&!autonomous)history=[...history,{id:crypto.randomUUID(),role:'user',text,source,user,createdAt:new Date().toISOString()}];
       const reply=autonomous?await call('send_autopilot',{botId,requestId}):await call('send_message',{text,source,user,skillIds:[],botId,requestId,replyRouteId});
@@ -738,8 +751,8 @@
   onMount(()=>{
     subtitleLifetime=new SubtitleLifetime(text=>subtitleText=text);
     player=new SpeechPlayer(v=>level=v,v=>speaking=v);
-    externalEmotes=new ExternalEmotePlayback(value=>externalEmotePlaying=value);
-    emoteAudio=new EmoteAudioPlayer(text=>notify(text,true),value=>{effectSoundPlaying=value;emoteSoundPlaying=value||modelSoundPlaying;});
+    externalEmotes=new ExternalEmotePlayback(value=>externalEmotePlaying=value,value=>externalEmoteBlocking=value);
+    emoteAudio=new EmoteAudioPlayer(text=>notify(text,true),value=>{effectSoundPlaying=value;updateSoundPlaying();});
     emoteSequence=new EmoteSequence(applyEmote);
     const cleanup:(()=>void)[]=[];let disposed=false;
     window.addEventListener('focus',refreshOutputDisplays);cleanup.push(()=>window.removeEventListener('focus',refreshOutputDisplays));
@@ -800,9 +813,11 @@
       if(autoBlocked)autopilotScheduler.next(true);
       refreshSpeechSchedules();
       queue=queue.filter(q=>Date.now()-new Date(q.createdAt).getTime()<Math.max(profile.chat.expirySeconds,...bots.map(bot=>bot.profile?.chat?.expirySeconds||0))*1000);
-      if(systemPermission.active||updateInstalling||busy||speaking||speechPreparing||emoteSoundPlaying||externalEmotePlaying||microphone||microphoneStarting||transcribing)return;
+      if(systemPermission.active||updateInstalling||busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing)return;
       const participants=bots.filter(bot=>botEnabled(bot)||bot.id===profile.id);
-      for(const bot of running?participants:[]){
+      // Chat keeps the full audio guard. Autonomous preparation may interrupt
+      // its own walking track later through the fresh rendered-frame gate.
+      for(const bot of running&&!emoteSoundPlaying&&!externalEmotePlaying?participants:[]){
         const config=bot.id===profile.id?profile:bot.profile;
         if(!config||config.chat.mode==='manual')continue;
         const next=queue.find(item=>!(item.answeredBy||[]).includes(bot.id)&&Date.now()-new Date(item.createdAt).getTime()<config.chat.expirySeconds*1000&&(!config.chat.trigger||item.text.toLowerCase().includes(config.chat.trigger.toLowerCase())||item.eventType&&item.eventType!=='message'));
@@ -810,7 +825,7 @@
       }
       if(autoBlocked)return;
       const spontaneous=autopilotScheduler.nextClaim();
-      if(spontaneous){refreshSpeechSchedules();void autopilotScheduler.runClaim(spontaneous,()=>runMessage('', 'autopilot', 'Autopilot', spontaneous.botId));}
+      if(spontaneous){refreshSpeechSchedules();void autopilotScheduler.runClaim(spontaneous,()=>runMessage('', 'autopilot', 'Autopilot', spontaneous.botId,undefined,false,undefined,spontaneous));}
     },1000);
     return()=>{appAlive=false;systemPermission.cancel();disposed=true;autopilotScheduler.stop();turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
   });

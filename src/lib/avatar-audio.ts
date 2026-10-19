@@ -1,4 +1,5 @@
 import { EmoteAudioPlayer } from './emote-audio';
+import type { SoundActivity } from './sound-playback';
 
 export const MODEL_AUDIO_EXTENSION = 'MSFT_audio_emitter';
 export const MODEL_AUDIO_PROFILE = 'orbitpal-msft-audio-v1';
@@ -12,7 +13,7 @@ type Clip = { uri?: string; view?: number; bytes: number };
 type Emitter = { clip: number; volume: number };
 type AudioEvent = { time: number; emitter: number; action: 'play' | 'stop'; offset: number };
 export type ModelAudioPlan = { clips: Clip[]; emitters: Emitter[]; animations: AudioEvent[][] };
-export type AudioPresentation = { token: string; animation: number; time: number; rate: number; loop: boolean };
+export type AudioPresentation = { token: string; animation: number; time: number; rate: number; loop: boolean; activity?: SoundActivity };
 const object = (value: unknown): value is ObjectValue => Boolean(value && typeof value === 'object' && !Array.isArray(value));
 function fields(value: unknown, allowed: string[]): asserts value is ObjectValue {
   if (!object(value)) throw new Error(REFERENCE);
@@ -140,9 +141,10 @@ export class ModelAudioController {
   private token = '';
   private blockedToken = '';
   private time = 0;
+  private activity: SoundActivity = 'foreground';
   private player: AudioSink;
-  constructor(private warn: (message: string) => void, onPlaying?: (playing: boolean) => void, player?: AudioSink) {
-    this.player = player ?? new EmoteAudioPlayer(warn, onPlaying, true);
+  constructor(private warn: (message: string) => void, onPlaying?: (playing: boolean, activity: SoundActivity) => void, player?: AudioSink) {
+    this.player = player ?? new EmoteAudioPlayer(warn, playing => onPlaying?.(playing, this.activity), true);
   }
   async load(document: ObjectValue, resolveView: (index: number) => Promise<ArrayBuffer>) {
     this.clear();
@@ -207,10 +209,12 @@ export class ModelAudioController {
     }
     if (!this.plan || !Number.isFinite(presentation.time) || presentation.time < 0) return;
     const { token, time, rate, loop } = presentation;
+    const activity = presentation.activity === 'ambient-walk' ? 'ambient-walk' : 'foreground';
     const events = this.plan.animations[presentation.animation] ?? [];
     let previous = this.time;
-    if (token !== this.token) {
+    if (token !== this.token || activity !== this.activity) {
       this.player.halt(); this.token = token;
+      this.activity = activity;
       // Joining a clip midway must not replay already elapsed sound events.
       previous = time <= 0.25 ? -Number.EPSILON : time;
     } else if (time < previous) {

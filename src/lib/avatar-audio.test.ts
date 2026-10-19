@@ -95,6 +95,42 @@ describe('pinned MSFT audio draft subset',()=>{
 });
 
 describe('model audio presentation ownership and lifetime',()=>{
+  it('reports actual source starts with renderer ownership, even when walking and explicit emotes share a clip',async()=>{
+    class Node { connect=vi.fn();disconnect=vi.fn(); }
+    class Source extends Node {
+      onended:(()=>void)|null=null;playbackRate={value:1};buffer:any;
+      start=vi.fn();stop=vi.fn();
+    }
+    class Context {
+      static current:Context;
+      constructor(){Context.current=this;}
+      state='running';currentTime=1;destination=new Node();sources:Source[]=[];
+      createGain(){return Object.assign(new Node(),{gain:{value:1,setValueAtTime:vi.fn()}});}
+      createBufferSource(){const source=new Source();this.sources.push(source);return source;}
+      decodeAudioData=vi.fn(async()=>({numberOfChannels:1,length:4000,sampleRate:8000,duration:.5}));
+      close=vi.fn(async()=>{});
+    }
+    vi.stubGlobal('AudioContext',Context);
+    const reports=vi.fn((playing:boolean)=>{if(playing)expect(Context.current.sources.at(-1)!.start).toHaveBeenCalled();});
+    const controller=new ModelAudioController(vi.fn(),reports);controller.setEnabled(true);
+    try{
+      await controller.load(model(),async()=>wav().buffer);await controller.unlock();
+      expect(reports).not.toHaveBeenCalled();
+      controller.present({...frame(.01,'same-action'),activity:'ambient-walk'},1);
+      const staleEnd=Context.current.sources[0].onended!;
+      expect(reports.mock.calls).toEqual([[true,'ambient-walk']]);
+      // Same token/index as the walking mixer action; explicit ownership wins.
+      controller.present({...frame(.01,'same-action'),activity:'foreground'},1);
+      expect(reports.mock.calls).toEqual([[true,'ambient-walk'],[false,'ambient-walk'],[true,'foreground']]);
+      staleEnd();expect(reports).toHaveBeenCalledTimes(3);
+      controller.stop();expect(reports).toHaveBeenLastCalledWith(false,'foreground');
+      controller.present(frame(.31,'same-action'),1);expect(reports).toHaveBeenCalledTimes(4);
+      // Names and animation indices never grant an ambient exemption.
+      controller.present(frame(.01,'walk:legacy-with-no-kind'),1);
+      expect(reports).toHaveBeenLastCalledWith(true,'foreground');
+      controller.destroy();expect(reports).toHaveBeenLastCalledWith(false,'foreground');
+    }finally{controller.destroy();vi.unstubAllGlobals();}
+  });
   it('advances the real ambient animation mixer on consecutive rendered timeline frames without double time scaling',async()=>{
     const source=readFileSync(new URL('./fixtures/audio-draft-v1.glb',import.meta.url));
     const gltf=await new GLTFLoader().parseAsync(source.buffer.slice(source.byteOffset,source.byteOffset+source.byteLength) as ArrayBuffer,'');

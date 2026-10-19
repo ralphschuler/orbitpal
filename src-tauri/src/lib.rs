@@ -252,7 +252,7 @@ fn cancel_speech_job(app:tauri::AppHandle,window:tauri::WebviewWindow,id:String,
     overlay::cancel_playback(&app,&id,&bot_id,Some("Keine Abschlussmeldung der Sprachausgabe. Automatische Antworten pausiert."))
 }
 #[tauri::command]
-fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:String,playing:bool)->Result<Value,String>{overlay::report_emote_playback(&app,&bot_id,&output,&id,playing)}
+fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:String,playing:bool,activity:Option<String>)->Result<Value,String>{overlay::report_emote_playback(&app,&bot_id,&output,&id,playing,activity.as_deref())}
 #[tauri::command]
 async fn get_speech_audio(app:tauri::AppHandle,id:String,bot_id:String)->Result<Value,String>{overlay::speech_audio(&app,&id,&bot_id).await}
 #[tauri::command]

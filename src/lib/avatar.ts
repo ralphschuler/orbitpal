@@ -10,6 +10,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createAvatarLoader } from './avatar-loader';
 import { disposeAvatarObject as disposeObject } from './avatar-resources';
 import { ModelAudioController } from './avatar-audio';
+import type { SoundActivity } from './sound-playback';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { VRMExpressionMorphTargetBind, VRMLookAtBoneApplier, VRMLookAtExpressionApplier, VRMUtils, type VRM, type VRMExpression } from '@pixiv/three-vrm';
 import { configureBundledAccessories, discoverGenericHumanoid, humanoidArmRest, humanoidFrame, humanoidRotation, humanoidWaveRaise, poseGenericArm, rawHumanoidRig, rotateGenericBone, type GenericHumanoidRig } from './avatar-rig';
@@ -29,7 +30,7 @@ export interface AvatarOptions {
   onDesktopAnchor?:(anchor:DesktopAnchor|undefined)=>void;
   audioEnabled?: boolean;
   audioStop?: number;
-  onAudioPlaying?: (playing: boolean) => void;
+  onAudioPlaying?: (playing: boolean, activity: SoundActivity) => void;
 }
 
 export interface AvatarModelInfo {
@@ -167,7 +168,7 @@ export class AvatarStage {
   constructor(private host: HTMLElement, options: AvatarOptions, private onEmoteError?: (message: string) => void, initialAssetUrl?: string) {
     this.options = options;
     this.assetState = initialAssetUrl ? 'loading' : 'ready';
-    this.modelAudio = new ModelAudioController(message => this.onEmoteError?.(message), playing => this.options.onAudioPlaying?.(playing));
+    this.modelAudio = new ModelAudioController(message => this.onEmoteError?.(message), (playing, activity) => this.options.onAudioPlaying?.(playing, activity));
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     this.assetLoader = createAvatarLoader(this.renderer);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
@@ -1150,6 +1151,7 @@ export class AvatarStage {
       const action = emote ?? (this.walking ? this.walkingAction : undefined);
       const audible = loaded && action?.enabled && action.isScheduled() && action.getEffectiveWeight() > 0.00001;
       this.modelAudio.present(audible && action ? {
+        activity: emote ? 'foreground' : 'ambient-walk',
         token: emote ? `emote:${this.emoteSource === 'ambient' ? this.ambientSession + ':' + this.ambientGesture : this.emoteNonce}` : `walk:${this.ambientSession}`,
         animation: emote ? this.clips.indexOf(action.getClip()) : this.walkingAudioIndex,
         time: action.time, loop: !emote,

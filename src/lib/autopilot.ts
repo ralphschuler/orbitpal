@@ -187,6 +187,9 @@ export class AutopilotScheduler {
     return this.next(blocked) === undefined ? undefined : this.inFlight;
   }
 
+  /** Read-only identity check for an intent resuming after asynchronous work. */
+  isCurrentClaim(claim: AutopilotClaim): boolean { return this.inFlight === claim; }
+
   /** Own the full attempt, including permission checks and early returns. A late
    * finally after Stop/restart must never release a newer same-bot turn. */
   async runClaim(claim: AutopilotClaim, action: () => Promise<unknown>): Promise<void> {

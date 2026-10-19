@@ -12,6 +12,7 @@
   import { PresentationLeases, type PresentationTicket } from './lib/presentation-leases';
   import { presentAdmittedEmote } from './lib/emote-capabilities';
   import { EmoteAudioPlayer } from './lib/emote-audio';
+  import { foregroundSoundPlaying, SoundPlaybackReports, type SoundActivity } from './lib/sound-playback';
   import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
 
@@ -48,10 +49,11 @@
   let emoteAudio: EmoteAudioPlayer;
   let modelAudioStop = $state(0);
   let modelSoundPlaying = false;
+  let modelSoundActivity: SoundActivity = 'foreground';
   let effectSoundPlaying = false;
-  function modelAudioPlaying(value:boolean){modelSoundPlaying=value;reportCombinedSound();}
+  function modelAudioPlaying(value:boolean,activity:SoundActivity){modelSoundPlaying=value;modelSoundActivity=activity;reportCombinedSound();}
   let emoteRevision = 0;
-  let soundPlaybackId = '';
+  const soundPlaybackReports = new SoundPlaybackReports();
   let soundPlaying = false;
   const presentationLeases = new PresentationLeases(() => soundPlaying);
   let manualController: AbortController | undefined;
@@ -126,20 +128,24 @@
     const playing=effectSoundPlaying||modelSoundPlaying;
     soundPlaying = playing;
     if (!playing) presentationLeases.soundEnded();
-    if (playing) soundPlaybackId ||= crypto.randomUUID();
-    const id = soundPlaybackId; const targetBot = botId;
-    if (!id || !targetBot) return;
-    if (!playing) soundPlaybackId = '';
-    const payload = {botId: targetBot, output: native ? 'overlay' : 'obs', id, playing};
-    soundReporting = soundReporting.then(async () => {
-      try {
-        if(native) { await call('report_emote_playback',payload); return; }
-        const url = new URL('/emote-playback',overlayUrl); url.search=new URL(overlayUrl).search;url.searchParams.set('bot',targetBot);
-        const controller = new AbortController(); const timer=window.setTimeout(()=>controller.abort(),3000);
-        try { await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal,keepalive:true}); }
-        finally { window.clearTimeout(timer); }
-      } catch { /* A bounded host lease expires when an output disconnects. */ }
-    });
+    const targetBot = botId;
+    if (!targetBot) return;
+    const reports = soundPlaybackReports.update(
+      foregroundSoundPlaying(effectSoundPlaying, modelSoundPlaying, modelSoundActivity),
+      modelSoundPlaying && modelSoundActivity === 'ambient-walk',
+    );
+    for (const report of reports) {
+      const payload = {botId: targetBot, output: native ? 'overlay' : 'obs', ...report};
+      soundReporting = soundReporting.then(async () => {
+        try {
+          if(native) { await call('report_emote_playback',payload); return; }
+          const url = new URL('/emote-playback',overlayUrl); url.search=new URL(overlayUrl).search;url.searchParams.set('bot',targetBot);
+          const controller = new AbortController(); const timer=window.setTimeout(()=>controller.abort(),3000);
+          try { await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal,keepalive:true}); }
+          finally { window.clearTimeout(timer); }
+        } catch { /* A bounded host lease expires when an output disconnects. */ }
+      });
+    }
   }
 
   async function sendPlayback(id: string, state: boolean, targetBot: string, error?: string) {
