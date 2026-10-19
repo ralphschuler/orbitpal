@@ -1,4 +1,5 @@
 import { recordingToWav, type SynthesizedAudio } from './audio';
+import { systemPermission } from './system-permission';
 import { ensureMicrophonePermission, openMicrophone, reportMicrophoneFailure, MicrophonePermissionError } from './microphone-permission';
 
 export type WakeWordState = 'stopped' | 'starting' | 'listening' | 'capturing' | 'transcribing' | 'follow-up' | 'triggered' | 'paused' | 'retrying';
@@ -89,7 +90,7 @@ export class WakeWordListener {
     this.phrases = normalizeWakePhrases(options.phrases);
   }
 
-  async start(beforeListen?: () => Promise<boolean | void> | boolean | void): Promise<void> {
+  async start(beforeListen?: () => Promise<boolean | void> | boolean | void, stillCurrent: () => boolean = () => true): Promise<void> {
     this.stop();
     if (!this.phrases.length) throw new Error('Bitte mindestens eine Aktivierungsphrase mit höchstens 100 Zeichen eingeben.');
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
@@ -113,10 +114,12 @@ export class WakeWordListener {
       ]);
       if (!this.currentSession(session)) return;
       if (saved === false) { this.stop(); return; }
-      if (!await ensureMicrophonePermission(() => this.currentSession(session))) return;
-      await this.openStream(session);
+      if (!await ensureMicrophonePermission(() => this.currentSession(session) && stillCurrent())) { if (this.currentSession(session)) this.stop(); return; }
+      if (!stillCurrent()) { if (this.currentSession(session)) this.stop(); return; }
+      await this.openStream(session, stillCurrent);
     } catch (error) {
       if (!this.currentSession(session)) return;
+      if (!stillCurrent()) { this.stop(); return; }
       this.opening = false;
       const restart = this.restartReason(error);
       if (restart || !this.context) { this.stop(); throw new Error(restart || this.message(error)); }
@@ -147,7 +150,7 @@ export class WakeWordListener {
     }
   }
 
-  private async openStream(session: number): Promise<void> {
+  private async openStream(session: number, startupCurrent: () => boolean = () => true): Promise<void> {
     if (!this.currentSession(session)) return;
     this.opening = true;
     try {
@@ -155,8 +158,8 @@ export class WakeWordListener {
       if (!context || context.state === 'closed') throw new RestartRequired('Die Audioverarbeitung wurde geschlossen. Bitte das Zuhören erneut starten.');
       if (context.state !== 'running') await this.resumeContext(context, this.sessionAbort!.signal);
       if (!this.currentSession(session)) return;
-      const stream = await openMicrophone({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
-      if (!this.currentSession(session)) { stream.getTracks().forEach((track) => track.stop()); return; }
+      const stream = await openMicrophone({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }, () => this.currentSession(session) && startupCurrent());
+      if (!this.currentSession(session) || !startupCurrent()) { stream.getTracks().forEach((track) => track.stop()); if (this.currentSession(session)) this.stop(); return; }
       this.stream = stream;
       for (const track of stream.getAudioTracks()) {
         track.enabled = false;
@@ -216,6 +219,7 @@ export class WakeWordListener {
     ++this.epoch;
     ++this.session;
     this.requested = false;
+    systemPermission.invalidate();
     this.sessionAbort?.abort();
     this.sessionAbort = undefined;
     this.working = false;

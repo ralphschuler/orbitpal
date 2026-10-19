@@ -22,6 +22,15 @@ pub fn displays()->Result<Vec<CaptureDisplay>,String>{platform::displays()}
 /// A disconnected/unknown explicit monitor is an error, never a fallback.
 pub fn capture(display_id:Option<&str>)->Result<crate::vision::ValidatedImage,String>{encode(platform::capture(display_id)?) }
 
+#[cfg(any(target_os="macos",test))]
+fn with_access<T>(check:impl Fn()->Result<(),String>,capture:impl FnOnce()->Result<T,String>)->Result<T,String>{
+    check()?;
+    let pixels=capture()?;
+    // Drop the result if permission was revoked while the native call ran.
+    check()?;
+    Ok(pixels)
+}
+
 fn selected(displays:&[CaptureDisplay],requested:Option<&str>)->Result<usize,String>{
     let requested=requested.filter(|id|!id.is_empty());
     let mut matches=displays.iter().enumerate().filter(|(_,display)|requested.map(|id|display.id==id).unwrap_or(display.primary));
@@ -72,7 +81,6 @@ mod platform{
     use foreign_types::ForeignType;
     #[link(name="CoreGraphics",kind="framework")]
     unsafe extern "C"{
-        fn CGPreflightScreenCaptureAccess()->bool;
         fn CGBitmapContextCreate(data:*mut std::ffi::c_void,width:usize,height:usize,bits:usize,stride:usize,space:*mut std::ffi::c_void,info:u32)->*mut std::ffi::c_void;
     }
     fn monitors()->Result<Vec<(CaptureDisplay,CGDisplay)>,String>{
@@ -81,13 +89,17 @@ mod platform{
     }
     pub fn displays()->Result<Vec<CaptureDisplay>,String>{Ok(monitors()?.into_iter().map(|(info,_)|info).collect())}
     pub fn capture(requested:Option<&str>)->Result<RgbImage,String>{
+        // Permission checks never request access. Only an explicit Studio
+        // action can open the OS prompt, outside all model/background paths.
+        with_access(crate::screen_permission::ensure_capture_access,||{
         let monitors=monitors()?;let index=selected(&monitors.iter().map(|(info,_)|info.clone()).collect::<Vec<_>>(),requested)?;let native=&monitors[index].1;
         dimensions(native.pixels_wide(),native.pixels_high())?;
         // Preflight does not open a permission prompt. Never return a partial
         // wallpaper-only image when macOS has withheld screen-recording access.
-        if !unsafe{CGPreflightScreenCaptureAccess()}{return Err("macOS hat die Bildschirmaufnahme nicht freigegeben. Bitte OrbitPal unter Systemeinstellungen → Datenschutz & Sicherheit → Bildschirmaufnahme erlauben und die App gegebenenfalls neu starten.".into());}
+        crate::screen_permission::ensure_capture_access()?;
         let image=native.image().ok_or("macOS hat keine Bildschirmaufnahme geliefert. Berechtigung, gesperrten Bildschirm und Bildschirmverbindung prüfen.")?;
         convert(&image)
+        })
     }
     fn convert(image:&CGImage)->Result<RgbImage,String>{
         dimensions(image.width() as u64,image.height() as u64)?;
@@ -199,6 +211,18 @@ mod platform{use super::*;pub fn displays()->Result<Vec<CaptureDisplay>,String>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test]fn denied_access_never_reads_pixels_and_revoked_access_discards_the_frame(){
+        use std::cell::Cell;
+        let granted=Cell::new(false);let reads=Cell::new(0);
+        let check=||if granted.get(){Ok(())}else{Err("screen permission missing".into())};
+        assert!(with_access(check,||{reads.set(reads.get()+1);Ok(vec![1u8,2,3])}).is_err());
+        assert_eq!(reads.get(),0);
+        granted.set(true);
+        assert!(with_access(check,||{reads.set(reads.get()+1);granted.set(false);Ok(vec![1u8,2,3])}).is_err());
+        assert_eq!(reads.get(),1);
+        granted.set(true);
+        assert_eq!(with_access(check,||Ok(vec![4u8,5,6])).unwrap(),[4,5,6]);
+    }
     #[test]fn selection_uses_real_primary_and_never_falls_back_for_missing_explicit_ids(){
         let mut displays=vec![CaptureDisplay{id:"secondary".into(),name:"Second".into(),primary:false},CaptureDisplay{id:"primary".into(),name:"First".into(),primary:true}];
         assert_eq!(selected(&displays,None).unwrap(),1);assert_eq!(selected(&displays,Some("")).unwrap(),1);assert_eq!(selected(&displays,Some("secondary")).unwrap(),0);

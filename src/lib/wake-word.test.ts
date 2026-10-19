@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { systemPermission } from './system-permission';
 import { recordingToWav } from './audio';
 import { findWakePhrase, normalizeWakePhrases, WakeWordListener } from './wake-word';
 
@@ -93,6 +94,7 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
   }
 
   beforeEach(() => {
+    systemPermission.cancel();
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'] });
     volume = 0;
     permissionApi.native = false;
@@ -111,6 +113,7 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
 
   afterEach(() => {
     listeners.forEach((listener) => listener.stop());
+    systemPermission.cancel();
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
@@ -158,10 +161,13 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
     permissionApi.native = true;
     permissionApi.call.mockResolvedValue({ platform: 'macos', status: 'denied' });
     const { listener, onState } = setup();
-    await expect(listener.start()).rejects.toThrow('Datenschutz & Sicherheit');
+    const started = listener.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(systemPermission.active).toBe(true);
+    listener.stop(); await started;
     await vi.advanceTimersByTimeAsync(60_000);
     expect(getUserMedia).not.toHaveBeenCalled();
-    expect(permissionApi.call).toHaveBeenCalledExactlyOnceWith('request_microphone_permission');
+    expect(permissionApi.call).toHaveBeenCalledExactlyOnceWith('get_microphone_permission');
     expect(onState).toHaveBeenLastCalledWith('stopped');
     expect(contexts[0].state).toBe('closed');
     expect(vi.getTimerCount()).toBe(0);
@@ -182,6 +188,21 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
     expect(getUserMedia).not.toHaveBeenCalled();
     expect(onState).toHaveBeenLastCalledWith('stopped');
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('verwirft die Startabsicht bei einer geänderten STT-Zielkonfiguration im Berechtigungsdialog', async () => {
+    permissionApi.native = true;
+    permissionApi.call.mockResolvedValue({ platform: 'macos', status: 'denied' });
+    let destination = 'local-whisper'; const expected = destination;
+    const { listener, onState } = setup();
+    const started = listener.start(undefined, () => destination === expected);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(systemPermission.active).toBe(true);
+    destination = 'cloud-whisper'; systemPermission.invalidate();
+    await started;
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(onState).toHaveBeenLastCalledWith('stopped');
+    expect(systemPermission.active).toBe(false);
   });
 
   it('übergibt die Frage und deaktiviert Aufnahme vor dem Antwortcallback', async () => {
