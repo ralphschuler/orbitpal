@@ -21,7 +21,8 @@ export class EmoteSequence {
     for (const emote of emotes) {
       if (!emote || typeof emote.action !== 'string' || !emote.action.trim()) continue;
       const duration = Number(emote.duration);
-      const seconds = Number.isFinite(duration) ? Math.max(0.2, Math.min(15, duration)) : 2.5;
+      const maximum = emote.action.startsWith('vrma:') ? 120 : 15;
+      const seconds = Number.isFinite(duration) ? Math.max(0.001, Math.min(maximum, duration)) : 2.5;
       const apply = () => {
         if (generation === this.generation) this.applyEmote(emote);
       };

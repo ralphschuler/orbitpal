@@ -5,6 +5,8 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { VRMExpressionMorphTargetBind, VRMLoaderPlugin, VRMUtils, type VRM, type VRMExpression } from '@pixiv/three-vrm';
 import { configureBundledAccessories, discoverGenericHumanoid, humanoidArmRest, humanoidFrame, humanoidRotation, humanoidWaveRaise, poseGenericArm, rawHumanoidRig, rotateGenericBone, type GenericHumanoidRig } from './avatar-rig';
 import { AuthoredAnimationProperties, finishVrmAnimationFrame, selectEmoteAnimation, selectIdleAnimation } from './avatar-animation';
+import { ensureMotionLookAtProxy, isMotionAction, loadMotionClips, transferMotionPose, type MotionAsset } from './avatar-motion';
+import type { VRMLookAtQuaternionProxy } from '@pixiv/three-vrm-animation';
 import { ambientGestureActions, discoverWalkingLegs, followAmbientPosition, motionLaneHalfWidth, sampleAmbientMotion, sampleWalkingGait, selectWalkingAnimation, type AutopilotVisualConfig, type WalkingLegs } from './autopilot-motion';
 
 export interface AvatarOptions {
@@ -119,6 +121,9 @@ export class AvatarStage {
   private lastRenderTime = 0;
   private disposed = false;
   private asset = '';
+  private assetKey = '';
+  private motionAbort?: AbortController;
+  private motionLookAt?: VRMLookAtQuaternionProxy;
   private cameraMode = '';
   private time = 0;
   private mouthLevel = 0;
@@ -203,6 +208,7 @@ export class AvatarStage {
     }
     this.controls.enabled = !options.transparent;
     const emote = avatar.emote;
+    if (!emote && this.emoteSource === 'manual') this.finishEmote();
     if (!emote && this.emoteNonce !== undefined) {
       this.emoteNonce = undefined;
       this.finishEmote();
@@ -213,12 +219,15 @@ export class AvatarStage {
     }
   }
 
-  async loadAsset(url?: string): Promise<void> {
+  async loadAsset(url?: string, motions: readonly MotionAsset[] = [], outputUrl = '', botId = ''): Promise<void> {
     const next = url || '';
-    if (next === this.asset) return;
+    const key = JSON.stringify([next,botId,motions,outputUrl]);
+    if (key === this.assetKey) return;
+    this.assetKey = key;
     this.asset = next;
     const request = ++this.request;
     this.clearImported();
+    const abort = this.motionAbort = new AbortController();
     this.robot.root.visible = true;
     this.cameraMode = '';
     this.update(this.options);
@@ -343,7 +352,13 @@ export class AvatarStage {
         }
       }
       this.clips = gltf.animations;
-      if (gltf.animations.length) {
+      if (vrm && motions.length) {
+        this.motionLookAt = ensureMotionLookAtProxy(vrm);
+        try { this.clips = [...gltf.animations,...await loadMotionClips(vrm,motions,outputUrl,botId,abort.signal)]; }
+        catch (error) { if (abort.signal.aborted) return; this.onEmoteError?.(error instanceof Error ? error.message : String(error)); }
+        if (this.disposed || request !== this.request) return;
+      }
+      if (this.clips.length) {
         this.mixer = new THREE.AnimationMixer(gltf.scene);
         this.authoredProperties = new AuthoredAnimationProperties(gltf.scene);
         // Prefer the neutral action over e.g. 2H_Melee_Idle or Sit_Chair_Idle
@@ -375,7 +390,7 @@ export class AvatarStage {
     return {
       status: 'ready',
       format: !this.asset ? 'builtin' : this.vrm ? this.vrm.meta.metaVersion === '0' ? 'vrm0' : 'vrm1' : 'glb',
-      animations: this.clips.map((clip) => ({ name: clip.name, duration: Number.isFinite(clip.duration) ? clip.duration : 0 })),
+      animations: this.clips.filter(clip=>!isMotionAction(clip.name)).map((clip) => ({ name: clip.name, duration: Number.isFinite(clip.duration) ? clip.duration : 0 })),
       proceduralGestures: !this.asset || this.vrm || this.armRig ? ['wave', 'celebrate', 'nod', 'dance', 'hide'] : ['hide'],
     };
   }
@@ -541,6 +556,7 @@ export class AvatarStage {
         return;
       }
       const playing = this.mixer.clipAction(clip);
+      if (isMotionAction(action)) active.duration = clip.duration;
       if (this.idleAction !== playing) this.idleAction?.fadeOut(0.15);
       playing.reset();
       playing.setLoop(THREE.LoopOnce, 1);
@@ -556,6 +572,7 @@ export class AvatarStage {
   }
 
   private finishEmote() {
+    const motion = Boolean(this.emote && isMotionAction(this.emote.action));
     if (this.emote?.clip) {
       const sharedIdle = this.emote.clip === this.idleAction;
       this.emote.clip.stop();
@@ -569,6 +586,7 @@ export class AvatarStage {
     }
     this.emote = undefined;
     this.emoteSource = undefined;
+    if (motion) this.vrm?.humanoid.resetNormalizedPose();
     this.robot.root.position.set(0, 0, 0);
     this.robot.root.rotation.set(0, 0, 0);
     this.imported.position.set(0, 0, 0);
@@ -929,6 +947,7 @@ export class AvatarStage {
       this.authoredProperties?.restoreTransforms(this.activeAnimationActions);
       this.mixer.update(dt);
       this.authoredProperties?.captureTransforms(this.activeAnimationActions);
+      if (this.vrm && this.emote?.clip && isMotionAction(this.emote.action)) transferMotionPose(this.vrm,this.emote.clip.getClip());
     }
     this.animateSpeechJaw();
     this.animateWalkingGait(true);
@@ -946,7 +965,10 @@ export class AvatarStage {
       this.setVrmExpression(['angry'], /angry|wütend/i.test(emotion) ? 0.4 : 0, true);
       this.setVrmExpression(['surprised', 'surprise'], /surpris|überrasch/i.test(emotion) ? 0.55 : 0, true);
       this.lookAt.position.copy(this.camera.position);
-      finishVrmAnimationFrame(this.vrm, dt, this.authoredProperties, this.activeAnimationActions, this.mouthLevel > 0.005 ? [...this.mouthExpressions.values()] : []);
+      const autoLookAt = this.vrm.lookAt?.autoUpdate;
+      if (this.vrm.lookAt && this.motionLookAt && this.authored(this.motionLookAt,'quaternion')) this.vrm.lookAt.autoUpdate = false;
+      try { finishVrmAnimationFrame(this.vrm, dt, this.authoredProperties, this.activeAnimationActions, this.mouthLevel > 0.005 ? [...this.mouthExpressions.values()] : []); }
+      finally { if (this.vrm.lookAt && autoLookAt !== undefined) this.vrm.lookAt.autoUpdate = autoLookAt; }
     }
     this.compensateWalkingRootMotion();
     this.controls.update();
@@ -954,6 +976,9 @@ export class AvatarStage {
   };
 
   private clearImported() {
+    this.motionAbort?.abort();
+    this.motionAbort = undefined;
+    this.motionLookAt = undefined;
     this.finishEmote();
     this.mixer?.stopAllAction();
     if (this.mixer) this.mixer.uncacheRoot(this.mixer.getRoot());

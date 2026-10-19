@@ -292,7 +292,7 @@
 </script>
 
 <div class="overlay-scene">
-  <Avatar {profile} {speaking} {level} {emotion} {autopilot} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  <Avatar {profile} {speaking} {level} {emotion} {autopilot} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
   {#if native && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>

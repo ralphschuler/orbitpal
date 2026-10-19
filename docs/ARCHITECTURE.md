@@ -79,3 +79,7 @@ Credentials remain in the OS store. Local and remote provider choices are indepe
 Keyboard routing respects input fields and modal scope: `?`/F1 opens help, Ctrl/Cmd+S saves the current editor, Ctrl/Cmd+K focuses the studio composer, Ctrl/Cmd+Enter sends from the studio, and Alt/Option+1–7 navigates outside text entry. Escape dismisses a visible tooltip/help/dialog before falling back to global stop.
 
 The Linux GTK dependency uses vendored GLib 0.18.5 with the original upstream iterator correction for GHSA-wrw7-89jp-8q8g. Linux CI/release workflows verify source hashes and run a focused optimized regression. The version is unchanged; see [the backport record](../vendor/glib/COHOST-BACKPORT.md), [SECURITY.md](../SECURITY.md) and [RELEASING.md](RELEASING.md). Local/mock regression tests are distinct from live provider verification; no paid or live provider validation is claimed here.
+
+### Separate humanoid motions
+
+`motions.rs` validates bot-owned VRMA 1.0 files independently of avatar import and re-inspects assigned metadata on profile writes and serving. Transactional profile staging includes the motion files. `avatar-motion.ts` uses the matching official VRMA loader/retargeter for the shared AvatarStage, with bounded authenticated downloads and abort guards. Normalized humanoid motion is transferred without overwriting unrelated raw embedded tracks; authored gaze suppresses camera tracking only while active. See [VRMA-MOTIONS.md](VRMA-MOTIONS.md).
