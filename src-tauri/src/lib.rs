@@ -2,6 +2,7 @@ mod storage;
 mod providers;
 mod transcription;
 mod cli_provider;
+mod bounded_io;
 mod chat;
 mod mcp;
 mod agent;

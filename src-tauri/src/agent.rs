@@ -299,7 +299,7 @@ async fn run_script(store:&crate::storage::Store,profile:&Value,skills:&HashMap<
     command.current_dir(path.parent().ok_or("Skriptordner fehlt")?).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
     let child=command.spawn().map_err(|e|format!("Skill-Laufzeit nicht verfügbar: {e}"))?;
     let output=tokio::select! {
-        result=tokio::time::timeout(Duration::from_secs(30),child.wait_with_output())=>result.map_err(|_|"Skill-Skript nach 30 Sekunden abgebrochen".to_owned())?.map_err(|e|e.to_string())?,
+        result=tokio::time::timeout(Duration::from_secs(30),crate::bounded_io::capture_child(child,128_000,32_000,"Skill-Skriptausgabe"))=>result.map_err(|_|"Skill-Skript nach 30 Sekunden abgebrochen".to_owned())??,
         _=async {while !cancel.load(Ordering::Relaxed){tokio::time::sleep(Duration::from_millis(100)).await;}}=>return Err("Skill-Skript abgebrochen".into()),
     };
     Ok(json!({"success":output.status.success(),"exitCode":output.status.code(),"stdout":String::from_utf8_lossy(&output.stdout).chars().take(32_000).collect::<String>(),"stderr":String::from_utf8_lossy(&output.stderr).chars().take(8_000).collect::<String>()}))

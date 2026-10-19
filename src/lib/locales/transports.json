@@ -1,0 +1,47 @@
+{
+  "en": {
+    "MCP stdout überschreitet die Größenbegrenzung": "MCP stdout exceeds the size limit",
+    "MCP-HTTP-Antwort überschreitet die Größenbegrenzung": "The MCP HTTP response exceeds the size limit",
+    "MCP-SSE-Antwort überschreitet die Größenbegrenzung": "The MCP SSE response exceeds the size limit",
+    "CLI-Ausgabe überschreitet die Größenbegrenzung": "CLI output exceeds the size limit",
+    "Skill-Skriptausgabe überschreitet die Größenbegrenzung": "Skill script output exceeds the size limit",
+    "Codex-Appserver stdout überschreitet die Größenbegrenzung": "Codex app-server stdout exceeds the size limit",
+    "Codex-Appserver stderr überschreitet die Größenbegrenzung": "Codex app-server stderr exceeds the size limit",
+    "CLI-Fehlerausgabe konnte nicht überwacht werden": "CLI stderr could not be monitored",
+    "MCP-Werkzeugkatalog hat zu viele Seiten geliefert": "The MCP tool catalogue returned too many pages",
+    "MCP-Werkzeugkatalog enthält mehr als 1000 Werkzeuge": "The MCP tool catalogue contains more than 1000 tools",
+    "MCP-Werkzeugkatalog überschreitet die Größenbegrenzung": "The MCP tool catalogue exceeds the size limit",
+    "MCP SSE enthält ungültiges JSON: {detail}": "MCP SSE contains invalid JSON: {detail}",
+    "MCP-Verbindung beendet: {detail}. Server erneut verbinden.": "MCP connection closed: {detail}. Reconnect the server."
+  },
+  "fr": {
+    "MCP stdout überschreitet die Größenbegrenzung": "La sortie stdout MCP dépasse la limite de taille",
+    "MCP-HTTP-Antwort überschreitet die Größenbegrenzung": "La réponse HTTP MCP dépasse la limite de taille",
+    "MCP-SSE-Antwort überschreitet die Größenbegrenzung": "La réponse SSE MCP dépasse la limite de taille",
+    "CLI-Ausgabe überschreitet die Größenbegrenzung": "La sortie CLI dépasse la limite de taille",
+    "Skill-Skriptausgabe überschreitet die Größenbegrenzung": "La sortie du script Skill dépasse la limite de taille",
+    "Codex-Appserver stdout überschreitet die Größenbegrenzung": "La sortie stdout du serveur Codex dépasse la limite de taille",
+    "Codex-Appserver stderr überschreitet die Größenbegrenzung": "La sortie stderr du serveur Codex dépasse la limite de taille",
+    "CLI-Fehlerausgabe konnte nicht überwacht werden": "La sortie stderr CLI n’a pas pu être surveillée",
+    "MCP-Werkzeugkatalog hat zu viele Seiten geliefert": "Le catalogue d’outils MCP a renvoyé trop de pages",
+    "MCP-Werkzeugkatalog enthält mehr als 1000 Werkzeuge": "Le catalogue d’outils MCP contient plus de 1000 outils",
+    "MCP-Werkzeugkatalog überschreitet die Größenbegrenzung": "Le catalogue d’outils MCP dépasse la limite de taille",
+    "MCP SSE enthält ungültiges JSON: {detail}": "MCP SSE contient du JSON non valide : {detail}",
+    "MCP-Verbindung beendet: {detail}. Server erneut verbinden.": "Connexion MCP fermée : {detail}. Reconnectez le serveur."
+  },
+  "es": {
+    "MCP stdout überschreitet die Größenbegrenzung": "La salida stdout de MCP supera el límite de tamaño",
+    "MCP-HTTP-Antwort überschreitet die Größenbegrenzung": "La respuesta HTTP de MCP supera el límite de tamaño",
+    "MCP-SSE-Antwort überschreitet die Größenbegrenzung": "La respuesta SSE de MCP supera el límite de tamaño",
+    "CLI-Ausgabe überschreitet die Größenbegrenzung": "La salida de CLI supera el límite de tamaño",
+    "Skill-Skriptausgabe überschreitet die Größenbegrenzung": "La salida del script Skill supera el límite de tamaño",
+    "Codex-Appserver stdout überschreitet die Größenbegrenzung": "La salida stdout del servidor Codex supera el límite de tamaño",
+    "Codex-Appserver stderr überschreitet die Größenbegrenzung": "La salida stderr del servidor Codex supera el límite de tamaño",
+    "CLI-Fehlerausgabe konnte nicht überwacht werden": "No se pudo supervisar la salida stderr de CLI",
+    "MCP-Werkzeugkatalog hat zu viele Seiten geliefert": "El catálogo de herramientas MCP devolvió demasiadas páginas",
+    "MCP-Werkzeugkatalog enthält mehr als 1000 Werkzeuge": "El catálogo de herramientas MCP contiene más de 1000 herramientas",
+    "MCP-Werkzeugkatalog überschreitet die Größenbegrenzung": "El catálogo de herramientas MCP supera el límite de tamaño",
+    "MCP SSE enthält ungültiges JSON: {detail}": "MCP SSE contiene JSON no válido: {detail}",
+    "MCP-Verbindung beendet: {detail}. Server erneut verbinden.": "Conexión MCP cerrada: {detail}. Vuelve a conectar el servidor."
+  }
+}

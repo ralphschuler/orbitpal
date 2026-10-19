@@ -4,7 +4,7 @@ use crate::providers::Completion;
 use serde_json::{json, Value};
 use std::{collections::HashSet, path::PathBuf, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tauri::Emitter;
-use tokio::{io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader}, process::{Child, ChildStdin, ChildStdout, Command}};
+use tokio::{io::{AsyncWriteExt, BufReader}, process::{Child, ChildStdin, ChildStdout, Command}};
 
 const MAX_OUTPUT: usize = 4 * 1024 * 1024;
 const MAX_STDERR: usize = 64 * 1024;
@@ -37,20 +37,12 @@ fn process(command: &str, workspace: &Workspace) -> Result<Command,String> {
     cmd.env("NO_COLOR", "1");
     Ok(cmd)
 }
-async fn bounded_read(reader: impl AsyncRead + Unpin, limit: usize) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    reader.take((limit + 1) as u64).read_to_end(&mut bytes).await.map_err(|e| format!("CLI-Ausgabe konnte nicht gelesen werden: {e}"))?;
-    if bytes.len() > limit { return Err("CLI-Ausgabe überschreitet die Größenbegrenzung".into()); }
-    Ok(bytes)
-}
 async fn capture(mut command: Command, input: String) -> Result<(std::process::ExitStatus, Vec<u8>, Vec<u8>), String> {
     let mut child = command.spawn().map_err(|e| format!("CLI konnte nicht gestartet werden. Installation oder absoluten Programmpfad prüfen: {e}"))?;
     let mut stdin = child.stdin.take().ok_or("CLI-Standardeingabe fehlt")?;
-    let stdout = child.stdout.take().ok_or("CLI-Standardausgabe fehlt")?;
-    let stderr = child.stderr.take().ok_or("CLI-Fehlerausgabe fehlt")?;
     let writer = async move { stdin.write_all(input.as_bytes()).await.map_err(|e| e.to_string())?; stdin.shutdown().await.map_err(|e| e.to_string()) };
-    let ((), output, errors, status) = tokio::try_join!(writer, bounded_read(stdout, MAX_OUTPUT), bounded_read(stderr, MAX_STDERR), async { child.wait().await.map_err(|e| e.to_string()) })?;
-    Ok((status, output, errors))
+    let ((), output) = tokio::try_join!(writer, crate::bounded_io::capture_child(child, MAX_OUTPUT, MAX_STDERR, "CLI-Ausgabe"))?;
+    Ok((output.status, output.stdout, output.stderr))
 }
 async fn cancellable<T>(cancel: &AtomicBool, future: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
     tokio::pin!(future);
@@ -260,20 +252,19 @@ pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, _
     Ok(completion)
 }
 
-struct Rpc { child: Child, input: ChildStdin, output: BufReader<ChildStdout>, next: u64, bytes: usize }
+struct Rpc { child: Child, input: ChildStdin, output: BufReader<ChildStdout>, next: u64, budget: crate::bounded_io::ByteBudget, stderr: crate::bounded_io::Stderr }
 impl Rpc {
     async fn send(&mut self, value: Value) -> Result<(), String> {
-        self.input.write_all(format!("{value}\n").as_bytes()).await.map_err(|_| "Codex-Appserver-Verbindung wurde unterbrochen".to_owned())?;
-        self.input.flush().await.map_err(|e| e.to_string())
+        self.stderr.watch(async {
+            self.input.write_all(format!("{value}\n").as_bytes()).await.map_err(|_| "Codex-Appserver-Verbindung wurde unterbrochen".to_owned())?;
+            self.input.flush().await.map_err(|e| e.to_string())
+        }).await
     }
     async fn next_message(&mut self) -> Result<Value, String> {
         loop {
-            let mut line = String::new();
-            let size = self.output.read_line(&mut line).await.map_err(|e| format!("Codex-Appserver-Ausgabe: {e}"))?;
-            if size == 0 { return Err("Codex-Appserver hat die Verbindung beendet. CLI-Anmeldung und Version prüfen.".into()); }
-            self.bytes += size;
-            if self.bytes > MAX_OUTPUT { return Err("Codex-Appserver-Ausgabe ist zu groß".into()); }
-            let value: Value = serde_json::from_str(&line).map_err(|_| "Codex-Appserver hat ungültiges JSON geliefert".to_owned())?;
+            let line = self.stderr.watch(crate::bounded_io::line(&mut self.output, &mut self.budget)).await?
+                .ok_or("Codex-Appserver hat die Verbindung beendet. CLI-Anmeldung und Version prüfen.")?;
+            let value: Value = serde_json::from_slice(&line).map_err(|_| "Codex-Appserver hat ungültiges JSON geliefert".to_owned())?;
             if value.get("id").is_some() && value.get("method").is_some() {
                 // No native permission, dynamic tool, elicitation or auth-token bridge.
                 self.send(json!({"id":value["id"],"error":{"code":-32601,"message":"Native CLI capabilities are disabled in OrbitPal"}})).await?;
@@ -358,8 +349,8 @@ async fn codex_connection(command:&str,workspace:&Workspace)->Result<Rpc,String>
     let input_pipe = child.stdin.take().ok_or("Codex stdin fehlt")?;
     let output_pipe = child.stdout.take().ok_or("Codex stdout fehlt")?;
     let errors = child.stderr.take().ok_or("Codex stderr fehlt")?;
-    let _stderr = tokio::spawn(async move { let _ = bounded_read(errors, MAX_STDERR).await; });
-    let mut rpc = Rpc { child, input:input_pipe, output:BufReader::new(output_pipe), next:0, bytes:0 };
+    let stderr = crate::bounded_io::Stderr::new(errors, MAX_STDERR, "Codex-Appserver stderr");
+    let mut rpc = Rpc { child, input:input_pipe, output:BufReader::new(output_pipe), next:0, budget:crate::bounded_io::ByteBudget::new(MAX_OUTPUT, "Codex-Appserver stdout"), stderr };
     rpc.request("initialize",json!({"clientInfo":{"name":"orbitpal","title":"OrbitPal","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
     rpc.send(json!({"method":"initialized","params":{}})).await?;
     Ok(rpc)
@@ -498,5 +489,69 @@ mod vision_tests{
     #[test]
     fn claude_image_context_limit_is_explicit_and_never_drops_evidence(){
         let mut input=input();input.images[0].base64="A".repeat(10*1024*1024);assert!(claude_stream_input(&input).unwrap_err().contains("10 MiB"));
+    }
+}
+
+#[cfg(all(test,unix))]
+mod transport_tests {
+    use super::*;
+
+    fn fixture(script:&str)->(Rpc,u32) {
+        let mut command=Command::new("/bin/sh");
+        command.args(["-c",script]).stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+        let mut child=command.spawn().unwrap();
+        let pid=child.id().unwrap();
+        let input=child.stdin.take().unwrap();
+        let output=BufReader::new(child.stdout.take().unwrap());
+        let stderr=crate::bounded_io::Stderr::new(child.stderr.take().unwrap(),MAX_STDERR,"Codex-Appserver stderr");
+        (Rpc {child,input,output,next:0,budget:crate::bounded_io::ByteBudget::new(MAX_OUTPUT,"Codex-Appserver stdout"),stderr},pid)
+    }
+
+    async fn assert_terminated(pid:u32) {
+        for _ in 0..100 {
+            if unsafe {libc::kill(pid as i32,0)}==-1 {
+                assert_eq!(std::io::Error::last_os_error().raw_os_error(),Some(libc::ESRCH));
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("fixture worker was not terminated");
+    }
+
+    #[tokio::test]
+    async fn codex_rejects_incomplete_stdout_without_allocating_the_whole_line() {
+        let (mut rpc,pid)=fixture("printf '%5000000s' x; while :; do :; done");
+        let error=tokio::time::timeout(Duration::from_secs(10),rpc.next_message()).await.unwrap().unwrap_err();
+        assert!(error.contains("Codex-Appserver stdout")&&error.contains("Größenbegrenzung"),"{error}");
+        drop(rpc);
+        assert_terminated(pid).await;
+    }
+
+    #[tokio::test]
+    async fn codex_stderr_overflow_interrupts_silent_stdout_and_terminates_worker() {
+        let (mut rpc,pid)=fixture("printf '%70000s' x >&2; while :; do :; done");
+        let error=tokio::time::timeout(Duration::from_secs(10),rpc.next_message()).await.unwrap().unwrap_err();
+        assert!(error.contains("Codex-Appserver stderr")&&error.contains("Größenbegrenzung"),"{error}");
+        drop(rpc);
+        assert_terminated(pid).await;
+    }
+
+    #[tokio::test]
+    async fn codex_stderr_overflow_interrupts_a_blocked_stdin_write() {
+        let (mut rpc,pid)=fixture("printf '%70000s' x >&2; while :; do :; done");
+        let error=tokio::time::timeout(Duration::from_secs(10),rpc.send(json!({"fixture":"x".repeat(1024*1024)}))).await.unwrap().unwrap_err();
+        assert!(error.contains("Codex-Appserver stderr")&&error.contains("Größenbegrenzung"),"{error}");
+        drop(rpc);
+        assert_terminated(pid).await;
+    }
+
+    #[tokio::test]
+    async fn dropping_pending_rpc_preserves_cancellation() {
+        let (mut rpc,pid)=fixture("read unused");
+        let pending=tokio::time::timeout(Duration::from_millis(20),rpc.next_message()).await;
+        assert!(pending.is_err());
+        drop(rpc);
+        assert_terminated(pid).await;
     }
 }
