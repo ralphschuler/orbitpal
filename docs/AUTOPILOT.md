@@ -34,6 +34,8 @@ Die Bewegungszeitlinie verwendet den Sitzungsbeginn und denselben Zufallsstartwe
 
 Standardmäßig wartet der Bot nach Gesprächsaktivität zufällig **60 bis 180 Sekunden**. Er darf höchstens **zwölf Versuche in einer rollenden Stunde** unternehmen. Ein Versuch kann einen Kommentar, eine Frage oder bewusstes Schweigen ergeben. Fehler und Schweigen zählen ebenfalls zum Budget. Stoppen und erneutes Starten setzen das Stundenbudget während derselben App-Laufzeit nicht zurück.
 
+Auch ohne neue Chatnachricht oder Bildschirmaufnahme darf der Bot mit einer kurzen, unverfänglichen Frage oder Bemerkung aus seiner Persona ein Gespräch beginnen. Aussagen über konkrete Ereignisse, Bildschirm-, Spiel- oder Zuschauerinhalte benötigen weiterhin tatsächlich vorliegende Informationen; der Bot darf Wahrnehmungen nicht erfinden und kann sich bewusst fürs Schweigen entscheiden.
+
 Gespräche, laufende Sprachausgaben und Mikrofonaufnahmen haben Vorrang. Offene Änderungen, Eingabeentwürfe und Update-Dialoge verschieben neue spontane Beiträge. Versäumte Beiträge werden nicht nach einer Pause gesammelt nachgeholt. Mehrere Bots sprechen nacheinander, mit einer erneuten Ruhepause nach dem tatsächlichen Ausgabeende. Eine laufende Antwort lässt sich mit Stop abbrechen.
 
 ### Wenn die Figur läuft, aber nichts sagt
