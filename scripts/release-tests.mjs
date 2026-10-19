@@ -7,7 +7,66 @@ import { releaseVersion, verifyTag } from './release-info.mjs';
 import { collect, platformForTarget } from './collect-release.mjs';
 import { rustInventory, nodeInventory } from './dependency-inventories.mjs';
 import { assertCanPublishLatest, createUpdaterManifest, updaterArtifacts, updaterSignature, canonicalRepository, legacyAssetRepository } from './updater-manifest.mjs';
-import { assertMicrophonePermissions } from './verify-macos-permissions.mjs';
+import { assertMicrophonePermissions, assertMacosIdentity } from './verify-macos-permissions.mjs';
+import { validateSigningPolicy, designatedRequirement, assertPinnedRequirement, signingCommand, quoteSecurityInput } from './macos-signing-policy.mjs';
+import { requireDisposableMac } from './macos-release-signing.mjs';
+
+test('persistent macOS signing fails closed before reading an unprovisioned or misdirected certificate', () => {
+  const policy = { schemaVersion: 1, mode: 'self-signed', identifier: 'studio.streamer-ai.cohost', certificateSha256: 'a'.repeat(64), certificateFile: 'release/macos-signing-certificate.pem' };
+  for (const change of [{ mode: 'adhoc' }, { certificateSha256: null }, { certificateSha256: 'name only' }, { certificateFile: '../private-key' }, { identifier: 'new.identity' }, { schemaVersion: 2 }]) {
+    assert.throws(() => validateSigningPolicy({ ...policy, ...change }, 'certificate parsing must never be reached'), /policy|persistent|identifier|certificate|pin/i);
+  }
+});
+
+test('macOS designated requirements reject name-only, binary-specific and weakened signing identities', () => {
+  const identity = { identifier: 'studio.streamer-ai.cohost', sha1: 'a'.repeat(40) };
+  const expected = designatedRequirement(identity);
+  assert.doesNotThrow(() => assertPinnedRequirement(`# ${expected}\n`, identity));
+  assert.doesNotThrow(() => assertPinnedRequirement(expected.replace('a'.repeat(40), 'A'.repeat(40)), identity));
+  for (const invalid of [
+    'designated => identifier "studio.streamer-ai.cohost"',
+    'designated => identifier "studio.streamer-ai.cohost" and certificate leaf[subject.CN] = "OrbitPal Persistent Release Signing"',
+    `designated => cdhash H"${identity.sha1}"`,
+    expected.replace(identity.sha1, 'b'.repeat(40)),
+    `${expected} or true`,
+    `${expected}\n${expected}`,
+  ]) assert.throws(() => assertPinnedRequirement(invalid, identity));
+});
+
+test('macOS signer pins the exact key before bundling and never puts passwords into executable arguments', () => {
+  const context = { sha1: 'a'.repeat(40), releaseDirectory: '/build/release', app: '/build/release/bundle/macos/OrbitPal.app', keychain: '/private/identity.keychain-db', requirements: '/private/designated.req' };
+  const args = ['--force', '-s', context.sha1, '--options', 'runtime', context.app];
+  const result = signingCommand(args, context, context.app);
+  assert.equal(result.at(-1), context.app);
+  assert.deepEqual(result.slice(5, -1), ['--keychain', context.keychain, '--timestamp=none', '--identifier', 'studio.streamer-ai.cohost', '--requirements', context.requirements]);
+  for (const change of [args.map(value => value === context.sha1 ? 'same certificate name' : value), ['-s', context.sha1, '-s', context.sha1, context.app], ['-s', context.sha1, '-r=identifier only', context.app]]) {
+    assert.throws(() => signingCommand(change, context, context.app));
+  }
+  assert.throws(() => signingCommand(args, context, '/build/release-escape/other.app'));
+  assert.equal(quoteSecurityInput('quote"slash\\'), '"quote\\"slash\\\\"');
+  for (const input of ['line\nbreak', 'line\rbreak', 'zero\0byte']) assert.throws(() => quoteSecurityInput(input));
+});
+
+test('private macOS signing cannot run on a user or self-hosted machine', () => {
+  const env = { GITHUB_ACTIONS: 'true', RUNNER_ENVIRONMENT: 'github-hosted', RUNNER_TEMP: '/temporary', GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '1' };
+  assert.doesNotThrow(() => requireDisposableMac(env, 'darwin'));
+  assert.throws(() => requireDisposableMac({ ...env, GITHUB_ACTIONS: '' }, 'darwin'));
+  assert.throws(() => requireDisposableMac({ ...env, RUNNER_ENVIRONMENT: 'self-hosted' }, 'darwin'));
+  assert.throws(() => requireDisposableMac(env, 'linux'));
+});
+
+test('macOS packaging preserves app and code-signing identities across versions', () => {
+  const config = { identifier: 'studio.streamer-ai.cohost', productName: 'OrbitPal', version: '0.9.0' };
+  const info = { CFBundleIdentifier: config.identifier, CFBundleName: config.productName, CFBundleExecutable: 'orbitpal', CFBundleShortVersionString: config.version };
+  const details = `Identifier=${config.identifier}\nSignature=adhoc\nTeamIdentifier=not set\n`;
+  assert.equal(assertMacosIdentity(config, info, details).adHoc, true);
+  assert.doesNotThrow(() => assertMacosIdentity({ ...config, version: '0.10.0' }, { ...info, CFBundleShortVersionString: '0.10.0' }, details));
+  for (const field of ['CFBundleIdentifier', 'CFBundleName', 'CFBundleExecutable', 'CFBundleShortVersionString']) {
+    assert.throws(() => assertMacosIdentity(config, { ...info, [field]: 'different' }, details));
+  }
+  assert.throws(() => assertMacosIdentity({ ...config, identifier: 'new.identifier' }, info, details));
+  assert.throws(() => assertMacosIdentity(config, info, 'Identifier=another.signed.app\nSignature=adhoc\n'));
+});
 
 test('macOS microphone requires a signed audio-input entitlement as well as Info.plist', () => {
   const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));

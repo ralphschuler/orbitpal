@@ -59,6 +59,9 @@ jobs:
         run: node scripts/release-info.mjs
       - name: Check packaging logic
         run: node --test scripts/release-tests.mjs
+      - name: Verify persistent macOS signing with disposable fixture keys
+        if: runner.os == 'macOS'
+        run: node scripts/test-macos-signing-ci.mjs
       - name: Type and Svelte checks
         run: pnpm check
       - name: Frontend unit tests (local fixtures and mocks)
