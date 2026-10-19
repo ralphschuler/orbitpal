@@ -2,7 +2,7 @@
 
 The desktop control room is Svelte 5/TypeScript. Tauri 2 runs a Rust host. Three.js and three-vrm render bundled or imported characters. Local model runtimes, provider CLIs, Hindsight and MCP servers are separately installed services/processes.
 
-This document describes source version **0.5.0**.
+This document describes the current source tree. Published release notes identify the features available in each released package.
 
 ```mermaid
 flowchart LR
@@ -80,6 +80,11 @@ Keyboard routing respects input fields and modal scope: `?`/F1 opens help, Ctrl/
 
 The Linux GTK dependency uses vendored GLib 0.18.5 with the original upstream iterator correction for GHSA-wrw7-89jp-8q8g. Linux CI/release workflows verify source hashes and run a focused optimized regression. The version is unchanged; see [the backport record](../vendor/glib/COHOST-BACKPORT.md), [SECURITY.md](../SECURITY.md) and [RELEASING.md](RELEASING.md). Local/mock regression tests are distinct from live provider verification; no paid or live provider validation is claimed here.
 
+## Separate humanoid motions
+
+`motions.rs` validates bot-owned VRMA 1.0 files independently of avatar import and re-inspects assigned metadata on profile writes and serving. Transactional profile staging includes the motion files. `avatar-motion.ts` uses the matching official VRMA loader/retargeter for the shared AvatarStage, with bounded authenticated downloads and abort guards. Normalized humanoid motion is transferred without overwriting unrelated raw embedded tracks; authored gaze suppresses camera tracking only while active. See [VRMA-MOTIONS.md](VRMA-MOTIONS.md).
+
+The shared avatar loader also uses the version-matched local Draco, Meshopt and BasisU/KTX2 decoders in Studio, native windows and OBS. Resource validation, bounded worker/WASM memory and teardown remain independent of motion retargeting; see [compressed avatars](COMPRESSED-AVATARS.md).
 
 ## Native desktop presentation
 
@@ -90,3 +95,11 @@ Native geometry transitions and debounced normal-bounds writes run on Main. Work
 The monitor-sized transparent window always passes clicks through while expanded or restoring. Missing/coalesced restore acknowledgements trigger bounded replacement of that handle from the persisted fixed bounds, rather than declaring restoration complete. Replacement cancels its exact pending/playing speech jobs and checks the current output before reopening; it does not activate Autopilot or change its saved profile. Native errors still publish the conservative presentation state after partial mutations.
 
 The native-only renderer uses a separate frontal orthographic camera with a measured yaw envelope and deterministic 2D CSS-pixel waypoints. DPI is applied once when matching the original physical figure size, and canvas resolution retains its existing 1.75 pixel-ratio cap. Studio/OBS retain their perspective camera and existing choreography. Caption anchors follow the projected character. Tests cover real Three.js projections and portable queued-window models; real compositor/multi-monitor acceptance remains outstanding. See [Autopilot](AUTOPILOT.md) for usage and limits.
+
+Native roaming may leave the visible stage through a side edge. Prepared speech, text-only output and explicit gestures request a fully visible, stationary return; a confirmed render frame releases presentation. The figure remains visible through speech, gestures and their sound completion, while random offscreen gestures are skipped. Stop, output closure and bot/asset changes cancel pending presentation. A 20-second readiness timeout fails explicitly without starting an invisible or cancelled reply.
+
+## Native capture and operating-system identity
+
+Screen context attaches a fresh ephemeral image before each model call under separate per-bot image, source and destination checks. Native macOS permission status reads capture no pixels; system requests remain explicit Studio actions with cancellation guards. Wayland uses an explicitly selected, per-bot ScreenCast portal session and a new short-lived PipeWire stream per request, with no idle video/cache or XWayland fallback. Real GNOME/KDE capture acceptance remains pending; see [screen context](SCREEN-CONTEXT.md) and [Wayland validation](WAYLAND-VALIDATION.md).
+
+Published macOS packages through v0.9.0 were ad-hoc signed. The prepared next-release pipeline requires the pinned persistent self-signed certificate, exact designated requirement and runner cleanup, separately from updater signatures and provenance. This does not establish Apple notarization or real update/TCC permission retention; see [release trust](RELEASE-TRUST.md) and [macOS permissions](MACOS-PERMISSIONS.md).

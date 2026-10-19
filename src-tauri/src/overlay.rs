@@ -155,7 +155,7 @@ pub fn public_voice(voice:&Value)->Value{
     json!({"provider":provider,"voiceId":if matches!(provider,"system"|"browser"){json!(voice["voiceId"].as_str().unwrap_or_default())}else{Value::Null},"language":voice["language"].as_str().unwrap_or("de-DE"),"rate":voice["rate"].as_f64().unwrap_or(1.0).clamp(0.5,2.0),"volume":voice["volume"].as_f64().unwrap_or(0.85).clamp(0.0,1.0),"pitch":voice["pitch"].as_f64().unwrap_or(1.0).clamp(0.5,2.0),"enabled":voice["enabled"].as_bool().unwrap_or(true)})
 }
 pub fn public_profile(profile:&Value)->Value {
-    json!({"id":profile["id"],"name":profile["name"],"tagline":profile["tagline"],"avatar":profile["avatar"],"output":profile["output"],"emotes":profile["emotes"],"voice":public_voice(&profile["voice"])})
+    json!({"id":profile["id"],"name":profile["name"],"tagline":profile["tagline"],"avatar":profile["avatar"],"output":profile["output"],"emotes":profile["emotes"],"motions":profile["motions"],"voice":public_voice(&profile["voice"])})
 }
 #[derive(serde::Deserialize)]
 struct Access {session:Option<String>,bot:Option<String>}
@@ -174,7 +174,7 @@ pub async fn start(app:tauri::AppHandle)->Result<(),String> {
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e|e.to_string())?;
     app.state::<crate::AppState>().overlay.port.store(listener.local_addr().map_err(|e|e.to_string())?.port(),std::sync::atomic::Ordering::Relaxed);
     let control=post(crate::control_mcp::http).get(crate::control_mcp::no_stream).delete(crate::control_mcp::no_stream).layer(axum::extract::DefaultBodyLimit::max(crate::control_mcp::MAX_REQUEST_BYTES));
-    let routes=Router::new().route("/mcp",control).route("/events",get(events)).route("/speech/{id}",get(speech)).route("/emote-sound/{id}",get(emote_sound)).route("/emote-playback",post(emote_playback)).route("/playback",post(playback)).route("/assets/{name}",get(asset)).route("/",get(index)).route("/overlay",get(index)).route("/{*path}",get(frontend_asset)).with_state(app);
+    let routes=Router::new().route("/mcp",control).route("/events",get(events)).route("/speech/{id}",get(speech)).route("/emote-sound/{id}",get(emote_sound)).route("/motions/{id}",get(motion)).route("/emote-playback",post(emote_playback)).route("/playback",post(playback)).route("/assets/{name}",get(asset)).route("/",get(index)).route("/overlay",get(index)).route("/{*path}",get(frontend_asset)).with_state(app);
     tauri::async_runtime::spawn(async move {let _=axum::serve(listener,crate::overlay_http::with_security(routes)).await;});Ok(())
 }
 async fn playback(State(app):State<tauri::AppHandle>,Query(q):Query<Access>,Json(body):Json<Value>)->Response {
@@ -284,7 +284,8 @@ pub fn prepare_emote_profile(profile:&Value,id:&str,viewer:bool)->Result<Value,S
     let action=emote["action"].as_str().filter(|s|!s.trim().is_empty()&&s.chars().count()<=128).ok_or("Emote-Aktion fehlt oder ist zu lang (maximal 128 Zeichen)")?;
     let sound=if emote["sound"].is_null(){""}else{emote["sound"].as_str().ok_or("Emote-Sound muss eine Sound-ID sein")?};
     if !crate::emote_audio::valid_sound_id(sound){return Err("Emote-Sound-ID ist ungültig".into());}
-    Ok(json!({"botId":profile["id"],"id":id,"action":action,"nonce":uuid::Uuid::new_v4().to_string(),"duration":emote["duration"].as_f64().unwrap_or(2.5).clamp(0.2,15.0),"intensity":emote["intensity"].as_f64().unwrap_or(1.0).clamp(0.0,2.0),"sound":sound,"soundVolume":emote["soundVolume"].as_f64().unwrap_or(0.7).clamp(0.0,1.0)}))
+    let duration=if action.starts_with("vrma:"){crate::motions::duration(profile,action)?}else{emote["duration"].as_f64().unwrap_or(2.5).clamp(0.2,15.0)};
+    Ok(json!({"botId":profile["id"],"id":id,"action":action,"nonce":uuid::Uuid::new_v4().to_string(),"duration":duration,"intensity":emote["intensity"].as_f64().unwrap_or(1.0).clamp(0.0,2.0),"sound":sound,"soundVolume":emote["soundVolume"].as_f64().unwrap_or(0.7).clamp(0.0,1.0)}))
 }
 pub fn trigger_emote_profile(app:&tauri::AppHandle,profile:&Value,id:&str,viewer:bool)->Result<Value,String>{
     let payload=prepare_emote_profile(profile,id,viewer)?;
@@ -310,6 +311,14 @@ async fn speech(State(app):State<tauri::AppHandle>,Path(id):Path<String>,Query(q
     match speech_audio(&app,&id,&bot_id).await{
         Ok(audio)=>Json(audio).into_response(),
         Err(error)=>(StatusCode::BAD_GATEWAY,error).into_response(),
+    }
+}
+async fn motion(State(app):State<tauri::AppHandle>,Path(id):Path<String>,Query(q):Query<Access>)->Response{
+    if !allowed(&app,&q){return StatusCode::UNAUTHORIZED.into_response();}
+    let Some(bot_id)=q.bot.clone() else{return StatusCode::BAD_REQUEST.into_response();};
+    match tokio::task::spawn_blocking(move||{let state=app.state::<crate::AppState>();state.store.bot_profile(&bot_id).and_then(|profile|crate::motions::read(&state.store.root,&profile,&id))}).await{
+        Ok(Ok(bytes))=>([(header::CONTENT_TYPE,"model/gltf-binary"),(header::ACCESS_CONTROL_ALLOW_ORIGIN,"*"),(header::CACHE_CONTROL,"no-store")],bytes).into_response(),
+        _=>StatusCode::UNPROCESSABLE_ENTITY.into_response(),
     }
 }
 async fn emote_sound(State(app):State<tauri::AppHandle>,Path(id):Path<String>,Query(q):Query<Access>)->Response{

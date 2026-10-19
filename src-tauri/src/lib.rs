@@ -22,6 +22,7 @@ mod vision;
 mod control_mcp;
 mod updater;
 mod avatar_metadata;
+mod motions;
 mod gltf_import;
 mod autopilot;
 mod screen_capture;
@@ -155,6 +156,15 @@ fn import_emote_sound(state:State<'_,AppState>,source_path:String,bot_id:Option<
 fn get_emote_sound(state:State<'_,AppState>,sound_id:String,bot_id:String)->Result<Value,String>{
     let profile=state.store.bot_profile(&bot_id)?;
     emote_audio::read(&state.store.root,&profile,&sound_id)
+}
+#[tauri::command]
+async fn import_motion(window:tauri::Window,state:State<'_,AppState>,source_path:String,bot_id:String)->Result<motions::Motion,String>{
+    if window.label()!="main"{return Err("VRMA-Import ist nur im Steuerungsfenster verfügbar.".into());}
+    state.updater.ensure_idle()?;
+    let profile=state.store.bot_profile(&bot_id)?;
+    if profile["motions"].as_array().is_some_and(|motions|motions.len()>=motions::MAX_MOTIONS){return Err("Maximal 32 Bewegungsdateien pro Bot.".into());}
+    let root=state.store.root.clone();
+    tauri::async_runtime::spawn_blocking(move||motions::import(&root,&bot_id,std::path::Path::new(&source_path))).await.map_err(|_|"VRMA-Import wurde unterbrochen.".to_owned())?
 }
 #[tauri::command]
 async fn import_knowledge(state:State<'_,AppState>,source_path:String)->Result<Value,String>{
@@ -291,7 +301,7 @@ pub fn run(){
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source])
+        .invoke_handler(tauri::generate_handler![overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source])
         .build(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden").run(|app,event|{
             if matches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit){app.state::<AppState>().screen_context.portal.close_all();}
         });

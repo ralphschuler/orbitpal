@@ -236,7 +236,7 @@ impl Store {
             let original=self.profile_dir(&previous)?;
             let files=collect_files(&original,64*1024*1024)?;
             for (relative,bytes) in files{
-                let include=relative==Path::new("AGENTS.md")||relative==Path::new("PERSONA.md")||relative.starts_with("knowledge")||relative.starts_with("voice")||relative.starts_with("sounds");
+                let include=relative==Path::new("AGENTS.md")||relative==Path::new("PERSONA.md")||relative.starts_with("knowledge")||relative.starts_with("voice")||relative.starts_with("sounds")||relative.starts_with("motions");
                 if !include{continue;}
                 let target=directory.join(&relative);if let Some(parent)=target.parent(){fs::create_dir_all(parent).map_err(error)?;}
                 if relative==Path::new("PERSONA.md"){
@@ -287,6 +287,7 @@ impl Store {
         validate_profile(&profile)?;
         if self.fixed_profile.as_ref().map(|id|profile["id"].as_str()!=Some(id.as_str())).unwrap_or(false){return Err("Ein Bot-Kontext darf kein anderes Profil überschreiben".into());}
         self.ensure_profile(&profile)?;
+        let motion_directory=self.profile_dir(&profile)?;crate::motions::refresh(&mut profile,&motion_directory)?;
         let mut clean = sanitize(profile);
         let catalog=self.library_mcp()?;
         let mut bindings=Vec::new();
@@ -416,6 +417,7 @@ impl Store {
     }
     pub fn export(&self,destination:&Path) -> Result<(),String> {
         let mut profile=export_sanitize(sanitize(self.profile()?));
+        let motion_directory=self.profile_dir(&profile)?;crate::motions::refresh(&mut profile,&motion_directory)?;
         let mut avatar:Option<Value>=None;
         if let Some(name)=profile["avatar"]["assetPath"].as_str() {
             if !name.starts_with("builtin:"){
@@ -426,10 +428,14 @@ impl Store {
         }
         let directory=self.profile_dir(&profile)?;
         let mut files=Vec::new();let mut remaining=64*1024*1024;
-        for folder in ["knowledge","voice","sounds"] {
+        for folder in ["knowledge","voice","sounds","motions"] {
             let root=directory.join(folder);if !root.is_dir(){continue;}
-            for (relative,bytes) in collect_files(&root,remaining)? {
+            let resources=if folder=="motions"{profile["motions"].as_array().into_iter().flatten().map(|motion|{
+                let id=motion["id"].as_str().ok_or("VRMA-ID fehlt")?;Ok((PathBuf::from(id),crate::motions::read(&self.root,&profile,id)?))
+            }).collect::<Result<Vec<_>,String>>()?}else{collect_files(&root,remaining)?};
+            for (relative,bytes) in resources {
                 use base64::Engine;
+                if bytes.len()>remaining{return Err("Erweiterungen und Wissensdateien überschreiten 64 MB".into());}
                 remaining=remaining.saturating_sub(bytes.len());
                 files.push(json!({"path":format!("{folder}/{}",relative.to_string_lossy().replace('\\',"/")),"base64":base64::engine::general_purpose::STANDARD.encode(bytes)}));
             }
@@ -528,7 +534,10 @@ impl Store {
                         let (id,path)=path.split_once('/').ok_or("Skillpfad im Profilpaket ist unvollständig")?;
                         if !valid_id(id){return Err("Ungültiger Skillpfad im Profilpaket".into());}
                         let entries=skill_files.entry(id.into()).or_default();entries.retain(|(existing,_)|existing!=Path::new(path));entries.push((PathBuf::from(path),data));
-                    }else{profile_files.push((PathBuf::from(relative),data));}
+                    }else{
+                        if let Some(id)=relative.strip_prefix("motions/"){if !crate::motions::valid_id(id)||!profile["motions"].as_array().is_some_and(|motions|motions.iter().any(|motion|motion["id"]==id)){return Err("Ungültiger VRMA-Pfad im Profilpaket".into());}crate::motions::inspect(&data)?;}
+                        profile_files.push((PathBuf::from(relative),data));
+                    }
                 }
             }
             let skill_bytes=skill_files.values().flatten().try_fold(0usize,|sum,(_,data)|sum.checked_add(data.len()).ok_or("Profilpaket zu groß"))?;
@@ -543,6 +552,7 @@ impl Store {
             for (relative,data) in profile_files{
                 let target=profile_stage.join(relative);if let Some(parent)=target.parent(){fs::create_dir_all(parent).map_err(error)?;}stage.write(&target,&data)?;
             }
+            crate::motions::refresh(&mut profile,&profile_stage)?;
             // Missing library anchors are owned by this import too, so an
             // interrupted write cannot leave new empty directories behind.
             stage.directory(&self.root,&["library","skills"])?;
@@ -615,7 +625,7 @@ fn validate_package_file_count(count:usize)->Result<(),String>{
 }
 fn validate_package_path(relative:&str)->Result<(),String>{
     if !safe_relative(relative)||relative.len()>1024||relative.split('/').any(|part|part.is_empty()||part.len()>255||part.chars().any(|ch|ch.is_control()||matches!(ch,':'|'*'|'?'|'"'|'<'|'>'|'|'))||part.ends_with([' ','.']))
-        || !["skills/","knowledge/","voice/","sounds/"].iter().any(|prefix|relative.starts_with(prefix)){
+        || !["skills/","knowledge/","voice/","sounds/","motions/"].iter().any(|prefix|relative.starts_with(prefix)){
         return Err("Dateipfad außerhalb des Profils oder nicht plattformübergreifend im Paket".into());
     }Ok(())
 }
@@ -744,6 +754,7 @@ fn reset_imported_authority(profile:&mut Value,existing_ids:&[String])->Result<(
 }
 
 fn validate_profile(profile:&Value)->Result<(),String>{
+    crate::motions::validate_profile(profile)?;
     if !profile.is_object(){return Err("Profil muss ein JSON-Objekt sein".into());}
     if !profile["id"].as_str().map(valid_id).unwrap_or(false){return Err("Profil-ID fehlt oder ist ungültig".into());}
     for section in ["model","voice","stt","avatar","output","chat","memory"] {if !profile[section].is_object(){return Err(format!("Profilbereich {section} muss ein JSON-Objekt sein"));}}

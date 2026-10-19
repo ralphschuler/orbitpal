@@ -69,6 +69,18 @@ pub fn inspect_file(path: &Path) -> Result<AvatarInfo, String> {
 pub fn inspect_bytes(bytes: &[u8]) -> Result<AvatarInfo, String> { inspect(&mut Cursor::new(bytes), bytes.len() as u64) }
 
 fn inspect(reader: &mut (impl Read + Seek), length: u64) -> Result<AvatarInfo, String> {
+    let (document, binary_length, legacy_padding, binary_start) = container(reader, length)?;
+    let mut info = from_document(&document, binary_length)?;
+    compression::images(&document, reader, binary_start)?;
+    if legacy_padding { info.warnings.push(LEGACY_JSON_PADDING.into()); }
+    Ok(info)
+}
+
+pub(crate) fn container_bytes(bytes: &[u8]) -> Result<(Value, Option<u64>), String> {
+    container(&mut Cursor::new(bytes), bytes.len() as u64).map(|(document, binary, _, _)| (document, binary))
+}
+
+fn container(reader: &mut (impl Read + Seek), length: u64) -> Result<(Value, Option<u64>, bool, Option<u64>), String> {
     if !(20..=MAX_FILE_BYTES).contains(&length) { return Err(invalid("Avatar muss eine GLB-/VRM-Datei zwischen 20 Bytes und 256 MiB sein.")); }
     let header = read::<12>(reader)?;
     if &header[..4] != b"glTF" { return Err(invalid("Erwartet wird eine binäre GLB- oder VRM-Datei; JSON-glTF und andere Formate werden nicht importiert.")); }
@@ -105,10 +117,7 @@ fn inspect(reader: &mut (impl Read + Seek), length: u64) -> Result<AvatarInfo, S
         }
         reader.seek(SeekFrom::Start(offset)).map_err(|_| invalid("Ein Datenblock konnte nicht geprüft werden."))?;
     }
-    let mut info = from_document(&document, binary_length)?;
-    compression::images(&document, reader, binary_start)?;
-    if legacy_padding { info.warnings.push(LEGACY_JSON_PADDING.into()); }
-    Ok(info)
+    Ok((document, binary_length, legacy_padding, binary_start))
 }
 
 fn extension_names(document: &Value, key: &str) -> Result<Vec<String>, String> {
@@ -139,7 +148,7 @@ fn all_extensions(value: &Value, extensions: &mut BTreeSet<String>) {
 
 fn from_document(document: &Value, binary_length: Option<u64>) -> Result<AvatarInfo, String> {
     if document["asset"]["version"].as_str() != Some("2.0") || document["asset"]["minVersion"].as_str().is_some_and(|version| version != "2.0") { return Err(invalid("Unterstützt wird glTF 2.0; die angegebene Mindestversion wird nicht unterstützt.")); }
-    if document["extensions"].get("VRMC_vrm_animation").is_some() { return Err("Diese Datei ist eine VRMA-Animationsdatei, kein importierbares VRM-/GLB-Charaktermodell. Ein separater VRMA-Import ist derzeit nicht enthalten.".into()); }
+    if document["extensions"].get("VRMC_vrm_animation").is_some() { return Err("Diese Datei ist eine VRMA-Animationsdatei. Bitte den separaten Bewegungsimport unter der Figur verwenden.".into()); }
     validate_vrm_versions(document)?;
     let used = extension_names(document, "extensionsUsed")?;
     let required = extension_names(document, "extensionsRequired")?;
@@ -238,7 +247,7 @@ fn validate_vrm_versions(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_resources(document: &Value, binary_length: Option<u64>) -> Result<(), String> {
+pub(crate) fn validate_resources(document: &Value, binary_length: Option<u64>) -> Result<(), String> {
     use base64::Engine;
     let buffers = document["buffers"].as_array().map(Vec::as_slice).unwrap_or_default();
     for (index, buffer) in buffers.iter().enumerate() {

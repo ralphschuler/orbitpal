@@ -13,13 +13,14 @@
     emotion?: string;
     transparent?: boolean;
     assetUrl?: string;
+    outputUrl?: string;
     onModelLoaded?: (info: AvatarModelInfo) => void;
     autopilot?: AutopilotVisualConfig;
     desktop?:DesktopLayout;
     onDesktopAnchor?:(anchor:DesktopAnchor|undefined)=>void;
   }
 
-  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, onModelLoaded, autopilot, desktop, onDesktopAnchor }: Props = $props();
+  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, outputUrl = '', onModelLoaded, autopilot, desktop, onDesktopAnchor }: Props = $props();
   let host: HTMLDivElement;
   let stage = $state<AvatarStage>();
   let failure = $state('');
@@ -57,12 +58,15 @@
   $effect(() => {
     const renderer = stage;
     const url = assetUrl;
+    const motionKey = JSON.stringify(profile?.motions || []);
+    const botId = profile?.id || '';
+    const endpoint = outputUrl;
     if (!renderer) return;
     const request = ++assetRequest;
     failure = '';
     loading = Boolean(url);
     untrack(() => onModelLoaded?.({ status: 'loading', animations: [], proceduralGestures: [] }));
-    renderer.loadAsset(url).then(() => {
+    renderer.loadAsset(url,JSON.parse(motionKey),endpoint,botId).then(() => {
       if (request === assetRequest) onModelLoaded?.(renderer.getModelInfo());
     }).catch((error) => {
       if (request === assetRequest) {
