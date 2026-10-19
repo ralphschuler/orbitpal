@@ -55,7 +55,13 @@
     "createUpdaterArtifacts": true,
     "windows": {
       "wix": {
-        "upgradeCode": "A9976BDA-0F16-5FD9-A9C4-BDD0372B8376"
+        "upgradeCode": "A9976BDA-0F16-5FD9-A9C4-BDD0372B8376",
+        "fragmentPaths": [
+          "windows/legacy-msi-shortcuts.wxs"
+        ],
+        "componentGroupRefs": [
+          "OrbitPalLegacyMsiShortcuts"
+        ]
       },
       "nsis": {
         "template": "windows/installer.nsi",

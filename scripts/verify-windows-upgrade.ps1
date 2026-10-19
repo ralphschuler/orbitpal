@@ -91,6 +91,24 @@ if ((Get-Content $sentinel -Raw) -ne $sentinelValue) { throw 'NSIS cleanup unexp
 $msiDirectory = Join-Path $taskRoot 'msi-installed'
 Invoke-Installer 'msiexec.exe' @('/i', "`"$oldMsi`"", '/qn', '/norestart', "INSTALLDIR=`"$msiDirectory`"", '/L*v', "`"$(Join-Path $taskRoot 'old-msi.log')`"")
 $oldEntry = Assert-OnlyVersion '0.7.0' 'Streamer AI Cohost'
+$oldMsiInstallDirectory = $msiDirectory
+if ($oldEntry.PSObject.Properties['InstallLocation'] -and $oldEntry.InstallLocation) { $oldMsiInstallDirectory = $oldEntry.InstallLocation.Trim('"') }
+$oldMsiBinary = Join-Path $oldMsiInstallDirectory 'streamer-ai-cohost.exe'
+if (-not (Test-Path $oldMsiBinary)) { throw 'Legacy MSI executable missing from its registered install location.' }
+$commonDesktop = [Environment]::GetFolderPath('CommonDesktopDirectory')
+$commonPrograms = [Environment]::GetFolderPath('CommonPrograms')
+$legacyMsiRunLinks = @(
+  (Join-Path $desktop 'Streamer AI Cohost.lnk'),
+  (Join-Path $commonDesktop 'Streamer AI Cohost.lnk'),
+  (Join-Path $startMenu 'Streamer AI Cohost\Streamer AI Cohost.lnk'),
+  (Join-Path $commonPrograms 'Streamer AI Cohost\Streamer AI Cohost.lnk')
+) | Select-Object -Unique | Where-Object { (Test-Path $_) -and $shell.CreateShortcut($_).TargetPath -eq $oldMsiBinary }
+if (@($legacyMsiRunLinks).Count -ne 2) { throw 'Legacy MSI fixture did not create its expected desktop and Start menu links.' }
+$legacyMsiUninstall = Join-Path $oldMsiInstallDirectory 'Uninstall Streamer AI Cohost.lnk'
+if (-not (Test-Path $legacyMsiUninstall)) { throw 'Legacy MSI uninstall shortcut missing.' }
+$oldUninstallLink = $shell.CreateShortcut($legacyMsiUninstall)
+if ($oldUninstallLink.TargetPath -notmatch '\\msiexec\.exe$' -or $oldUninstallLink.Arguments -notmatch [regex]::Escape($oldEntry.PSChildName)) { throw 'Legacy MSI uninstall shortcut does not identify the installed old product.' }
+$legacyMsiLinks = @($legacyMsiRunLinks) + @($legacyMsiUninstall)
 Set-Content $sentinel -Value $sentinelValue -NoNewline
 Invoke-Installer 'msiexec.exe' @('/i', "`"$($newMsi[0].FullName)`"", '/qn', '/norestart', '/L*v', "`"$(Join-Path $taskRoot 'new-msi.log')`"")
 $newEntry = Assert-OnlyVersion $expectedVersion 'OrbitPal'
@@ -99,7 +117,8 @@ $installCandidates = @($msiDirectory, (Join-Path $env:ProgramFiles 'OrbitPal'))
 if ($newEntry.PSObject.Properties['InstallLocation'] -and $newEntry.InstallLocation) { $installCandidates += $newEntry.InstallLocation.Trim('"') }
 $newBinaries = @($installCandidates | Select-Object -Unique | ForEach-Object { Join-Path $_ 'orbitpal.exe' } | Where-Object { Test-Path $_ })
 if ($newBinaries.Count -ne 1) { throw 'MSI upgrade did not produce exactly one OrbitPal executable.' }
-if (Test-Path (Join-Path $msiDirectory 'streamer-ai-cohost.exe')) { throw 'MSI upgrade left the old executable behind.' }
+if (Test-Path $oldMsiBinary) { throw 'MSI upgrade left the old executable behind.' }
+foreach ($legacyLink in $legacyMsiLinks) { if (Test-Path $legacyLink) { throw "MSI upgrade left a dead legacy shortcut: $legacyLink" } }
 if ((Get-Content $sentinel -Raw) -ne $sentinelValue) { throw 'MSI upgrade changed existing app data.' }
 $shortcuts = @((Join-Path $startMenu 'OrbitPal.lnk'), (Join-Path $startMenu 'OrbitPal\OrbitPal.lnk'), (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\OrbitPal.lnk'), (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs\OrbitPal\OrbitPal.lnk'))
 if (-not @($shortcuts | Where-Object { (Test-Path $_) -and $shell.CreateShortcut($_).TargetPath -eq $newBinaries[0] }).Count) { throw 'MSI did not create a working OrbitPal Start menu shortcut.' }

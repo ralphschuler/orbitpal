@@ -189,11 +189,29 @@ test('renamed releases retain fixed legacy initial asset URLs for installed 0.7 
     }
     const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
     assert.equal(config.identifier, 'studio.streamer-ai.cohost', 'Keep the installed app data/keychain identity');
+    assert.equal(config.bundle.publisher ?? config.identifier.split('.')[1], 'streamer-ai', 'The locked Tauri Windows publisher default comes from the bundle identifier, not Cargo authors');
     assert.equal(config.productName, 'OrbitPal');
     assert.equal(config.bundle.windows.wix.upgradeCode, 'A9976BDA-0F16-5FD9-A9C4-BDD0372B8376', 'Preserve the former MSI upgrade identity');
     assert.deepEqual(config.bundle.linux.deb, {provides:['streamer-ai-cohost'],conflicts:['streamer-ai-cohost'],replaces:['streamer-ai-cohost']});
     assert.deepEqual(config.plugins.updater.endpoints, [`https://github.com/${canonicalRepository}/releases/latest/download/latest.json`]);
   } finally { rmSync(options.root, { recursive: true, force: true }); }
+});
+
+test('MSI rename removes only exact owned legacy shortcut names during a detected upgrade', () => {
+  const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+  assert.ok(config.bundle.windows.wix.fragmentPaths.includes('windows/legacy-msi-shortcuts.wxs'));
+  assert.ok(config.bundle.windows.wix.componentGroupRefs.includes('OrbitPalLegacyMsiShortcuts'));
+  const fragment = readFileSync(new URL('../src-tauri/windows/legacy-msi-shortcuts.wxs', import.meta.url), 'utf8');
+  const removeNames = [...fragment.matchAll(/<RemoveFile\b[^>]*\bName="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(removeNames, ['Streamer AI Cohost.lnk', 'Streamer AI Cohost.lnk', 'Uninstall Streamer AI Cohost.lnk']);
+  assert.equal([...fragment.matchAll(/<Condition>/g)].length, 3);
+  for (const condition of fragment.matchAll(/<Condition><!\[CDATA\[([^\]]+)\]\]><\/Condition>/g)) {
+    assert.match(condition[1], /WIX_UPGRADE_DETECTED AND ORBITPAL_LEGACY_MSI_DIR AND ORBITPAL_LEGACY_MSI_/);
+    assert.match(condition[1], /= "#1"$/);
+  }
+  for (const marker of ['InstallDir', 'Desktop Shortcut', 'Start Menu Shortcut', 'Uninstaller Shortcut']) { assert.ok(fragment.includes(`Name="${marker}"`)); }
+  assert.ok(fragment.includes('Key="Software\\streamer-ai\\Streamer AI Cohost"'));
+  assert.doesNotMatch(fragment, /<CustomAction\b|<Binary\b/);
 });
 
 test('the reviewed NSIS migration template stays tied to its locked upstream version', () => {
