@@ -80,3 +80,5 @@ The control MCP endpoint requires its own short-lived Bearer token, distinct fro
 Contributions from people and AI-assisted workflows are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and the [security policy](SECURITY.md).
 
 Application code is [MIT licensed](LICENSE). Bundled character assets and fonts keep their original licenses. In particular, Fox includes **CC BY 4.0** material requiring attribution. Keep [asset attribution](public/characters/ATTRIBUTION.md) and embedded notices when redistributing. This project is independent and is not endorsed by its integration providers or asset creators.
+
+Emotes only offer actions present on the current character and recheck availability before animation and sound. See [Emote availability](docs/EMOTE-AVAILABILITY.md).

@@ -1,8 +1,10 @@
 import * as THREE from 'three';
+import { availableActions, clipHasTarget, avatarBinding, currentEmotePayload, resolveAvailableAction, unavailableEmote, type AvailableAction } from './emote-capabilities';
+import type { EmotePayload } from './presentation';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { VRMExpressionMorphTargetBind, VRMLoaderPlugin, VRMUtils, type VRM, type VRMExpression } from '@pixiv/three-vrm';
+import { VRMExpressionMorphTargetBind, VRMLookAtBoneApplier, VRMLookAtExpressionApplier, VRMLoaderPlugin, VRMUtils, type VRM, type VRMExpression } from '@pixiv/three-vrm';
 import { configureBundledAccessories, discoverGenericHumanoid, humanoidArmRest, humanoidFrame, humanoidRotation, humanoidWaveRaise, poseGenericArm, rawHumanoidRig, rotateGenericBone, type GenericHumanoidRig } from './avatar-rig';
 import { AuthoredAnimationProperties, finishVrmAnimationFrame, selectEmoteAnimation, selectIdleAnimation } from './avatar-animation';
 import { ensureMotionLookAtProxy, isMotionAction, loadMotionClips, transferMotionPose, type MotionAsset } from './avatar-motion';
@@ -23,6 +25,7 @@ export interface AvatarModelInfo {
   format?: 'builtin' | 'glb' | 'vrm0' | 'vrm1';
   animations: { name: string; duration: number }[];
   proceduralGestures: string[];
+  actions?: AvailableAction[];
   error?: string;
 }
 
@@ -122,6 +125,8 @@ export class AvatarStage {
   private disposed = false;
   private asset = '';
   private assetKey = '';
+  private emoteReady = false;
+  private loadedEmoteBinding = '';
   private motionAbort?: AbortController;
   private motionLookAt?: VRMLookAtQuaternionProxy;
   private cameraMode = '';
@@ -215,6 +220,7 @@ export class AvatarStage {
     }
     if (emote && emote.nonce !== undefined && emote.nonce !== this.emoteNonce) {
       this.emoteNonce = emote.nonce;
+      if(emote.id&&!this.canPresentEmote(emote,options.profile)){this.onEmoteError?.(unavailableEmote);return;}
       this.triggerEmote(String(emote.action || ''), Number(emote.duration), Number(emote.intensity));
     }
   }
@@ -224,6 +230,8 @@ export class AvatarStage {
     const key = JSON.stringify([next,botId,motions,outputUrl]);
     if (key === this.assetKey) return;
     this.assetKey = key;
+    this.emoteReady = false;
+    const emoteBinding = JSON.stringify(avatarBinding(this.options.profile));
     this.asset = next;
     const request = ++this.request;
     this.clearImported();
@@ -231,7 +239,7 @@ export class AvatarStage {
     this.robot.root.visible = true;
     this.cameraMode = '';
     this.update(this.options);
-    if (!next) return;
+    if (!next) { this.emoteReady = !this.options.profile?.avatar?.assetPath || this.options.profile.avatar.assetPath === 'nova'; this.loadedEmoteBinding = emoteBinding; return; }
     try {
       // GLTFLoader can swallow a failed image request and finish with an
       // untextured material. Treat missing resources as an import error.
@@ -373,12 +381,15 @@ export class AvatarStage {
           this.walkingAction = this.mixer.clipAction(this.walkingClip);
         }
       }
-      this.ambientActions = ambientGestureActions(this.clips, this.getModelInfo().proceduralGestures);
+      this.emoteReady = true;
+      this.loadedEmoteBinding = emoteBinding;
+      this.ambientActions = ambientGestureActions(this.clips.filter(clip=>this.getModelInfo().actions?.some(action=>action.action===clip.name)), this.getModelInfo().proceduralGestures);
       this.robot.root.visible = false;
       this.cameraMode = '';
       this.update(this.options);
     } catch (error) {
       if (request !== this.request || this.disposed) return;
+      this.emoteReady = false;
       this.robot.root.visible = true;
       throw error;
     }
@@ -386,13 +397,56 @@ export class AvatarStage {
 
   get clipNames(): string[] { return this.clips.map((clip) => clip.name); }
 
+  private proceduralGestures(): string[] {
+    if (!this.asset) return ['wave','celebrate','nod','dance','hide'];
+    // Generic GLB names do not prove the native rig hierarchy/geometry. Authored
+    // clips remain available; procedural gestures require real VRM bones.
+    if (!this.vrm) return ['hide'];
+    const has=(names:string[])=>names.every(name=>this.humanoidPose.has(name));
+    const arms=has(['leftUpperArm','leftLowerArm','rightUpperArm','rightLowerArm']);
+    return ['hide',...(arms?['wave','celebrate']:[]),...(has(['head'])?['nod']:[]),...(arms&&has(['spine'])?['dance']:[])];
+  }
+  private hasLookAtTarget():boolean {
+    const vrm=this.vrm;
+    if(!vrm?.lookAt||!vrm.humanoid.getNormalizedBoneNode('head'))return false;
+    if(vrm.lookAt.applier instanceof VRMLookAtBoneApplier)return Boolean(vrm.humanoid.getRawBoneNode('leftEye')||vrm.humanoid.getRawBoneNode('rightEye'));
+    if(vrm.lookAt.applier instanceof VRMLookAtExpressionApplier)return ['lookUp','lookDown','lookLeft','lookRight'].some(name=>Boolean(vrm.expressionManager?.getExpression(name)?.binds.length));
+    return false;
+  }
+  private effectiveClip(clip:THREE.AnimationClip):boolean {
+    return clipHasTarget(this.imported,clip,node=>node!==this.motionLookAt||this.hasLookAtTarget());
+  }
   getModelInfo(): AvatarModelInfo {
+    const actions=availableActions(this.clips,this.proceduralGestures()).filter(action=>action.kind==='gesture'||this.clips.some(clip=>clip.name===action.action&&this.effectiveClip(clip)));
     return {
-      status: 'ready',
+      status: this.emoteReady ? 'ready' : 'loading',
       format: !this.asset ? 'builtin' : this.vrm ? this.vrm.meta.metaVersion === '0' ? 'vrm0' : 'vrm1' : 'glb',
-      animations: this.clips.filter(clip=>!isMotionAction(clip.name)).map((clip) => ({ name: clip.name, duration: Number.isFinite(clip.duration) ? clip.duration : 0 })),
-      proceduralGestures: !this.asset || this.vrm || this.armRig ? ['wave', 'celebrate', 'nod', 'dance', 'hide'] : ['hide'],
+      animations: actions.filter(action=>action.kind==='clip').map(action=>({name:action.action,duration:action.duration!})),
+      proceduralGestures: actions.filter(action=>action.kind==='gesture').map(action=>action.action), actions,
     };
+  }
+  canPresentEmote(event:EmotePayload,profile:any=this.options.profile):boolean {
+    if(this.disposed||!this.emoteReady||JSON.stringify(avatarBinding(profile))!==this.loadedEmoteBinding||!currentEmotePayload(profile,event))return false;
+    const action=resolveAvailableAction(this.getModelInfo().actions??[],event.action);
+    if(!action)return false;
+    const configured=(profile.emotes??[]).find((emote:any)=>emote.id===event.id);
+    if(!configured||resolveAvailableAction(this.getModelInfo().actions??[],configured.action)?.action!==event.action)return false;
+    if(action.kind==='gesture')return true;
+    let clip:THREE.AnimationClip|undefined;try{clip=selectEmoteAnimation(this.clips,action.action);}catch{return false;}
+    if(!clip||!this.mixer)return false;
+    // Expressions require actual binds; an empty placeholder cannot speak for
+    // a valid facial motion. Other tracks must address in-range scene properties.
+    if(clip.tracks.every(track=>track.name.endsWith('.weight'))&&this.vrm){
+      const expressions=Object.values(this.vrm.expressionManager?.expressionMap??{});
+      return clip.tracks.some(track=>expressions.some(expression=>track.name===`${expression.name}.weight`&&expression.binds.length>0))&&this.effectiveClip(clip);
+    }
+    return this.effectiveClip(clip);
+  }
+  presentEmote(event:EmotePayload,profile:any=this.options.profile):boolean {
+    if(!this.canPresentEmote(event,profile))return false;
+    const nonce=event.nonce??crypto.randomUUID();
+    if(!this.triggerEmote(event.action,(event.duration??2.5)*1000,event.intensity??1))return false;
+    this.emoteNonce=nonce;return true;
   }
 
   private get activeAnimationActions(): (THREE.AnimationAction | undefined)[] { return [this.idleAction, this.walkingAction, this.emote?.clip]; }
@@ -537,10 +591,12 @@ export class AvatarStage {
   }
 
   private triggerEmote(action: string, duration: number, intensity: number, source: 'manual' | 'ambient' = 'manual') {
+    const resolved=resolveAvailableAction(this.getModelInfo().actions??[],action);
+    if (!this.emoteReady || !resolved) { this.onEmoteError?.(unavailableEmote); return false; }
+    action=resolved.action;
     this.setWalking(false);
     this.finishEmote();
     this.onEmoteError?.('');
-    if (!action) return;
     const active: ActiveEmote = {
       action,
       start: this.time,
@@ -569,6 +625,7 @@ export class AvatarStage {
     }
     this.emote = active;
     this.emoteSource = source;
+    return true;
   }
 
   private finishEmote() {
@@ -976,6 +1033,8 @@ export class AvatarStage {
   };
 
   private clearImported() {
+    this.emoteReady = false;
+    this.loadedEmoteBinding = '';
     this.motionAbort?.abort();
     this.motionAbort = undefined;
     this.motionLookAt = undefined;

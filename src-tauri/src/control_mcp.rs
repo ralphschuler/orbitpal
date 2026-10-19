@@ -243,8 +243,8 @@ fn public_bot(profile: &Value, selected: bool, window_open: bool) -> Value {
     let mode = profile["output"]["mode"].as_str().filter(|mode| matches!(*mode, "studio" | "overlay" | "obs")).unwrap_or("unknown");
     json!({"id":profile["id"].as_str().unwrap_or_default(),"name":safe_name(&profile["name"],"Bot"),"selected":selected,"output":{"mode":mode,"enabled":profile["output"]["streamingEnabled"].as_bool().unwrap_or(false),"windowOpen":window_open}})
 }
-fn public_emotes(profile: &Value) -> Value {
-    let emotes: Vec<Value> = profile["emotes"].as_array().into_iter().flatten().filter(|emote| emote["allowChat"].as_bool() == Some(true) && emote["id"].as_str().is_some_and(crate::storage::valid_id)).take(100).map(|emote| json!({"id":emote["id"],"name":safe_name(&emote["name"],emote["id"].as_str().unwrap_or("Emote")),"duration":emote["duration"].as_f64().unwrap_or(2.5).clamp(0.2,15.0),"allowChat":true})).collect();
+fn public_emotes(root:&std::path::Path,profile: &Value) -> Value {
+    let emotes: Vec<Value> = crate::emote_capabilities::available_emotes(root,profile,true).iter().take(100).map(|emote| json!({"id":emote["id"],"name":safe_name(&emote["name"],emote["id"].as_str().unwrap_or("Emote")),"duration":emote["duration"].as_f64().unwrap_or(2.5).clamp(0.2,15.0),"allowChat":true})).collect();
     json!({"botId":profile["id"],"emotes":emotes,"onlyChatAllowed":true})
 }
 fn execute(app: &tauri::AppHandle, command: Command) -> Result<Value, String> {
@@ -263,7 +263,7 @@ fn execute(app: &tauri::AppHandle, command: Command) -> Result<Value, String> {
         },
         Command::ListEmotes { bot_id } => {
             let profile = state.store.bot_profile(&bot_id).map_err(|_| "Bot wurde nicht gefunden oder ist nicht verfügbar")?;
-            Ok(public_emotes(&profile))
+            Ok(public_emotes(&state.store.root,&profile))
         },
         Command::PerformEmote { bot_id, emote_id } => {
             state.updater.ensure_idle()?;
@@ -391,9 +391,9 @@ mod tests {
     }
     #[test]
     fn public_summaries_do_not_serialize_profiles_paths_keys_or_conversations() {
-        let profile = json!({"id":"nova","name":"Nova","agents":"private marker","history":["private marker"],"model":{"apiKeyId":"private marker"},"avatar":{"assetPath":"private marker"},"output":{"mode":"overlay","streamingEnabled":true},"emotes":[{"id":"wave","name":"Winken","allowChat":true,"sound":"private marker","action":"private marker"},{"id":"hidden","allowChat":false},{"id":"../bad","allowChat":true}]});
-        let public = json!({"bot":public_bot(&profile,true,false),"emotes":public_emotes(&profile)});
-        assert!(!public.to_string().contains("private marker")); assert_eq!(public["emotes"]["emotes"].as_array().unwrap().len(),1); assert_eq!(public["emotes"]["emotes"][0]["id"],"wave");
+        let profile = json!({"id":"nova","name":"Nova","agents":"private marker","history":["private marker"],"model":{"apiKeyId":"private marker"},"avatar":{"assetPath":"nova"},"output":{"mode":"overlay","streamingEnabled":true},"emotes":[{"id":"wave","name":"Winken","allowChat":true,"sound":"builtin:wave","action":"wave"},{"id":"hidden","allowChat":false},{"id":"../bad","allowChat":true}]});
+        let public = json!({"bot":public_bot(&profile,true,false),"emotes":public_emotes(std::path::Path::new("unused"),&profile)});
+        assert!(!public.to_string().contains("private marker"));assert!(!public.to_string().contains("builtin:wave")); assert_eq!(public["emotes"]["emotes"].as_array().unwrap().len(),1); assert_eq!(public["emotes"]["emotes"][0]["id"],"wave");
         assert!(tools().iter().all(|tool| tool["inputSchema"]["additionalProperties"] == false));
         for forbidden in ["send_message","set_secret","save_profile","grant_tool","read_file"] { assert!(!tools().iter().any(|tool| tool["name"] == forbidden)); }
         assert!(CONTROL_SKILL.starts_with("---\nname: cohost-control\n"));

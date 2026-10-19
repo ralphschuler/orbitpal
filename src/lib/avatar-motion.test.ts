@@ -75,7 +75,7 @@ describe('Official VRMA 1.0 loader and VRM 0/1 retargeting',()=>{
     const vrm=await target('1');ensureMotionLookAtProxy(vrm);
     const clip=createVRMAnimationClip((await parseMotion(file('greeting.vrma')))[0],vrm);clip.name=motionAction(id,0);
     const stage=Object.create(AvatarStage.prototype) as any;
-    Object.assign(stage,{vrm,mixer:new THREE.AnimationMixer(vrm.scene),clips:[clip],robot:{root:new THREE.Group()},imported:new THREE.Group(),humanoidPose:new Map(),humanoidBasis:new THREE.Quaternion(),time:0});
+    Object.assign(stage,{emoteReady:true,vrm,mixer:new THREE.AnimationMixer(vrm.scene),clips:[clip],robot:{root:new THREE.Group()},imported:vrm.scene,humanoidPose:new Map(),humanoidBasis:new THREE.Quaternion(),time:0});
     stage.triggerEmote(clip.name,15_000,1);
     expect(stage.emote.duration).toBe(1.25);expect(stage.emote.clip.timeScale).toBe(1);
     const action=stage.emote.clip;stage.finishEmote();

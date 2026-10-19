@@ -6,13 +6,14 @@
   interface Props {
     motions: MotionAsset[];
     compatible: boolean;
+    availableActions?: string[];
     disabled?: boolean;
     onImport: () => Promise<void>;
     onRemove: (id: string) => void;
     onPreview: (action: string, duration: number) => void;
     onAddEmote: (action: string, duration: number, name: string) => void;
   }
-  let { motions = [], compatible, disabled = false, onImport, onRemove, onPreview, onAddEmote }: Props = $props();
+  let { motions = [], compatible, availableActions = [], disabled = false, onImport, onRemove, onPreview, onAddEmote }: Props = $props();
   let importing = $state(false);
   async function importFile() { importing = true; try { await onImport(); } finally { importing = false; } }
 </script>
@@ -22,7 +23,7 @@
   {#if !compatible}<p class="notice">{$t('Wähle eine VRM-0- oder VRM-1-Figur, um VRMA-Bewegungen abzuspielen. Die Dateien bleiben diesem Bot zugewiesen.')}</p>{/if}
   {#if !motions.length}<p>{$t('Noch keine separaten Bewegungen. Eingebettete Modellanimationen findest du darüber.')}</p>{/if}
   {#each motions as motion (motion.id)}<div class="motion"><div class="motion-heading"><strong>{motion.name}</strong><button class="icon-button danger-text" disabled={disabled||importing} title={$t('Bewegung und zugehörige Emotes entfernen')} onclick={()=>onRemove(motion.id)}><Trash2 size={14}/></button></div>
-    {#each motion.clips as clip}<div class="clip"><div><strong>{clip.name} <span>{formatNumber(clip.duration,$locale,{maximumFractionDigits:2})} s</span></strong><small>{clip.body.length?$t('Körper'):''}{clip.expressions.length?(clip.body.length?' · ':'')+$t('Ausdrücke'):''}{clip.lookAt?((clip.body.length||clip.expressions.length)?' · ':'')+$t('Blickrichtung'):''}</small></div><button class="button secondary small" disabled={disabled||importing||!compatible} onclick={()=>onPreview(motionAction(motion.id,clip.index),clip.duration)}><Play size={13}/>{$t('Stumme Vorschau')}</button><button class="button secondary small" disabled={disabled||importing||!compatible} onclick={()=>onAddEmote(motionAction(motion.id,clip.index),clip.duration,clip.name)}><Plus size={13}/>{$t('Als Emote übernehmen')}</button></div>{/each}
+    {#each motion.clips as clip}<div class="clip"><div><strong>{clip.name} <span>{formatNumber(clip.duration,$locale,{maximumFractionDigits:2})} s</span></strong><small>{clip.body.length?$t('Körper'):''}{clip.expressions.length?(clip.body.length?' · ':'')+$t('Ausdrücke'):''}{clip.lookAt?((clip.body.length||clip.expressions.length)?' · ':'')+$t('Blickrichtung'):''}</small></div><button class="button secondary small" disabled={disabled||importing||!compatible||!availableActions.includes(motionAction(motion.id,clip.index))} onclick={()=>onPreview(motionAction(motion.id,clip.index),clip.duration)}><Play size={13}/>{$t('Stumme Vorschau')}</button><button class="button secondary small" disabled={disabled||importing||!compatible||!availableActions.includes(motionAction(motion.id,clip.index))} onclick={()=>onAddEmote(motionAction(motion.id,clip.index),clip.duration,clip.name)}><Plus size={13}/>{$t('Als Emote übernehmen')}</button></div>{/each}
   </div>{/each}
   <p>{$t('Originaltempo und natürliche Cliplänge bleiben erhalten. Maximal 32 Dateien, 16 MiB pro Datei, 64 MiB insgesamt und 120 Sekunden pro Clip. Emote-Sounds bleiben separat.')}</p>
 </section>

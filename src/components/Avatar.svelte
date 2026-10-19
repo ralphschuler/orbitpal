@@ -2,6 +2,7 @@
   import { t } from '../lib/i18n';
   import { onMount, untrack } from 'svelte';
   import { AvatarStage, type AvatarModelInfo } from '../lib/avatar';
+  import type { EmotePayload } from '../lib/presentation';
   import type { AutopilotVisualConfig } from '../lib/autopilot-motion';
 
   interface Props {
@@ -24,6 +25,8 @@
   let loading = $state(false);
   let emoteFailure = $state('');
   let assetRequest = 0;
+  export function canPresent(event:EmotePayload):boolean { return stage?.canPresentEmote(event,profile)??false; }
+  export function present(event:EmotePayload):boolean { return stage?.presentEmote(event,profile)??false; }
 
   onMount(() => {
     try {

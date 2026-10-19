@@ -6,12 +6,15 @@
   import { AutopilotRuntimeVersions, type AutopilotRuntime } from './lib/autopilot-runtime';
   import { SpeechPlayer } from './lib/audio';
   import { EmoteSequence, type EmotePayload } from './lib/presentation';
+  import { presentAdmittedEmote } from './lib/emote-capabilities';
   import { EmoteAudioPlayer } from './lib/emote-audio';
   import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
 
   type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
   type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void> };
+  let liveAvatar = $state<{canPresent:(event:EmotePayload)=>boolean;present:(event:EmotePayload)=>boolean}>();
+  const admittedEmotes=(events:EmotePayload[]=[])=>events.filter(event=>liveAvatar?.canPresent(event));
   let profile = $state<any>(cloneDefaults());
   let speaking = $state(false);
   let level = $state(0);
@@ -45,11 +48,11 @@
   const subtitles = new SubtitleLifetime((value) => { text = value; });
 
   function applyEmote(event: EmotePayload) {
-    profile.avatar.emote = {
+    presentAdmittedEmote(liveAvatar,event,()=>{profile.avatar.emote = {...event,
       action: event.action, nonce: event.nonce ?? `${Date.now()}-${Math.random()}`,
       duration: (event.duration ?? 2.5) * 1000, intensity: event.intensity ?? 1,
     };
-    if(profile.output.mode===(native?'overlay':'obs'))emoteAudio?.play(event);
+    if(profile.output.mode===(native?'overlay':'obs'))emoteAudio?.play(event);});
   }
 
   async function resolveSound(soundId: string) {
@@ -71,6 +74,7 @@
     emoteSequence.stop(); emoteAudio?.stop();
     await ready;
     if (disposed || revision !== emoteRevision) return;
+    if(!liveAvatar?.canPresent(event))return;
     if(profile.output.mode===(native?'overlay':'obs'))await emoteAudio?.prepare([event], resolveSound);
     if (disposed || revision !== emoteRevision) return;
     applyEmote(event);
@@ -178,7 +182,7 @@
       if (disposed || current !== job || job.finished) return;
       if (!event.voice) throw new Error('Stimme des Wiedergabeauftrags fehlt.');
       const voice = { ...event.voice };
-      if(plannedEmoteRevision===emoteRevision&&profile.output.mode===(native?'overlay':'obs'))await emoteAudio.prepare(Array.isArray(event.emotes) ? event.emotes : [], resolveSound);
+      if(plannedEmoteRevision===emoteRevision&&profile.output.mode===(native?'overlay':'obs'))await emoteAudio.prepare(admittedEmotes(Array.isArray(event.emotes) ? event.emotes : []), resolveSound);
       if (disposed || current !== job || job.finished) return;
       if (voice.enabled === false) { onStart(); return; }
       const speechText = voice.provider === 'elevenlabs' ? event.speechText || event.text : event.text;
@@ -292,7 +296,7 @@
 </script>
 
 <div class="overlay-scene">
-  <Avatar {profile} {speaking} {level} {emotion} {autopilot} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  <Avatar bind:this={liveAvatar} {profile} {speaking} {level} {emotion} {autopilot} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
   {#if native && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>

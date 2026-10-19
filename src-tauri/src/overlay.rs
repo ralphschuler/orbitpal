@@ -225,6 +225,7 @@ pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,e
         if !entry.start(|entry|{
             state.store.scoped(&entry.bot_id)?.add_message_with_id(&entry.id,"assistant",&entry.text,&entry.source,&entry.assistant_name).map(|_|())
         })?{return Ok(json!({"accepted":true,"started":false}));}
+        if let Ok(profile)=state.store.bot_profile(bot_id){entry.emotes=crate::emote_capabilities::pending(&state.store.root,&profile,&entry.emotes);}else{entry.emotes.clear();}
         // History persistence, acknowledgement and invalidation share this
         // lock. Stop cannot publish or persist a late start, and retries commit once.
         let _=app.emit("cohost://presentation",entry.presentation_event());
@@ -278,17 +279,19 @@ fn cancel_playback_if(app:&tauri::AppHandle,id:&str,bot_id:&str,expected:Option<
     if let Some(reason)=reason{event["error"]=json!(reason);}
     let _=app.emit("cohost://playback",event);Ok(json!({"cancelled":true}))
 }
-pub fn prepare_emote_profile(profile:&Value,id:&str,viewer:bool)->Result<Value,String>{
-    let emote=profile["emotes"].as_array().and_then(|a|a.iter().find(|e|e["id"].as_str()==Some(id))).ok_or("Emote wurde im Charakterprofil nicht gefunden")?;
+pub fn prepare_emote_profile(root:&std::path::Path,profile:&Value,id:&str,viewer:bool)->Result<Value,String>{
+    let emotes:Vec<_>=profile["emotes"].as_array().into_iter().flatten().filter(|emote|emote["id"].as_str()==Some(id)).collect();
+    let [emote]=emotes.as_slice() else{return Err("Emote wurde im Charakterprofil nicht gefunden oder ist nicht eindeutig".into());};
     if viewer&&emote["allowChat"].as_bool()!=Some(true){return Err("Dieses Emote ist für Zuschauer nicht freigegeben".into());}
-    let action=emote["action"].as_str().filter(|s|!s.trim().is_empty()&&s.chars().count()<=128).ok_or("Emote-Aktion fehlt oder ist zu lang (maximal 128 Zeichen)")?;
+    let (resolved,avatar_binding)=crate::emote_capabilities::admit(root,profile,emote)?;
+    let action=&resolved.action;
     let sound=if emote["sound"].is_null(){""}else{emote["sound"].as_str().ok_or("Emote-Sound muss eine Sound-ID sein")?};
     if !crate::emote_audio::valid_sound_id(sound){return Err("Emote-Sound-ID ist ungültig".into());}
-    let duration=if action.starts_with("vrma:"){crate::motions::duration(profile,action)?}else{emote["duration"].as_f64().unwrap_or(2.5).clamp(0.2,15.0)};
-    Ok(json!({"botId":profile["id"],"id":id,"action":action,"nonce":uuid::Uuid::new_v4().to_string(),"duration":duration,"intensity":emote["intensity"].as_f64().unwrap_or(1.0).clamp(0.0,2.0),"sound":sound,"soundVolume":emote["soundVolume"].as_f64().unwrap_or(0.7).clamp(0.0,1.0)}))
+    let duration=if action.starts_with("vrma:"){resolved.duration.ok_or("Die VRMA-Bewegung ist nicht verfügbar")?}else{emote["duration"].as_f64().unwrap_or(2.5).clamp(0.2,15.0)};
+    Ok(json!({"botId":profile["id"],"id":id,"action":action,"avatarBinding":avatar_binding,"emoteBinding":crate::emote_capabilities::emote_binding(emote),"nonce":uuid::Uuid::new_v4().to_string(),"duration":duration,"intensity":emote["intensity"].as_f64().unwrap_or(1.0).clamp(0.0,2.0),"sound":sound,"soundVolume":emote["soundVolume"].as_f64().unwrap_or(0.7).clamp(0.0,1.0)}))
 }
 pub fn trigger_emote_profile(app:&tauri::AppHandle,profile:&Value,id:&str,viewer:bool)->Result<Value,String>{
-    let payload=prepare_emote_profile(profile,id,viewer)?;
+    let payload=prepare_emote_profile(&app.state::<crate::AppState>().store.root,profile,id,viewer)?;
     let _=app.emit("cohost://emote",payload.clone());let mut event=payload.clone();event["kind"]=json!("emote");app.state::<crate::AppState>().overlay.publish(app,event);Ok(payload)
 }
 async fn events(State(app):State<tauri::AppHandle>,Query(q):Query<Access>)->Response {
@@ -620,10 +623,10 @@ mod tests{
     #[test]
     fn emote_sound_payload_uses_only_known_ids_and_keeps_viewer_grants(){
         let mut profile=json!({"id":"nova","emotes":[{"id":"wave","action":"wave","allowChat":false,"sound":"builtin:wave","soundVolume":0.35}]});
-        assert!(prepare_emote_profile(&profile,"wave",true).is_err());
-        let event=prepare_emote_profile(&profile,"wave",false).unwrap();assert_eq!(event["sound"],"builtin:wave");assert_eq!(event["soundVolume"],0.35);assert_eq!(event["botId"],"nova");
-        profile["emotes"][0]["sound"]=json!("https://untrusted.invalid/sound.mp3");assert!(prepare_emote_profile(&profile,"wave",false).is_err());
-        profile["emotes"][0]["sound"]=json!("custom:../../../private.wav");assert!(prepare_emote_profile(&profile,"wave",false).is_err());
+        assert!(prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",true).is_err());
+        let event=prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",false).unwrap();assert_eq!(event["sound"],"builtin:wave");assert_eq!(event["soundVolume"],0.35);assert_eq!(event["botId"],"nova");
+        profile["emotes"][0]["sound"]=json!("https://untrusted.invalid/sound.mp3");assert!(prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",false).is_err());
+        profile["emotes"][0]["sound"]=json!("custom:../../../private.wav");assert!(prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",false).is_err());
     }
     #[test]
     fn external_emote_playback_rejects_invalid_ids_and_output_modes(){

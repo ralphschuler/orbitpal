@@ -285,6 +285,18 @@ pub fn imported_asset_name(name: &str) -> bool {
     let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or_default();
     path.components().count() == 1 && ["vrm", "glb"].contains(&extension) && uuid::Uuid::parse_str(stem).ok().is_some_and(|id| id.to_string() == stem)
 }
+/// Read only the bounded JSON metadata; seek over BIN instead of loading it.
+pub(crate) fn imported_document(root: &Path, name: &str) -> Result<Value, String> {
+    if !imported_asset_name(name) { return Err("Unbekannte importierte Figur".into()); }
+    let directory = root.join("avatars");
+    if fs::symlink_metadata(&directory).map_err(|_| "Der Figurenordner ist nicht verfügbar.")?.file_type().is_symlink() { return Err("Der Figurenordner darf keine symbolische Verknüpfung sein.".into()); }
+    let path = directory.join(name);
+    let meta = fs::symlink_metadata(&path).map_err(|_| "Die 3D-Datei konnte nicht geöffnet werden.")?;
+    if !meta.is_file() || meta.file_type().is_symlink() { return Err("Bitte eine reguläre 3D-Datei verwenden.".into()); }
+    let mut file = File::open(path).map_err(|_| "Die 3D-Datei konnte nicht gelesen werden.")?;
+    let size = file.metadata().map_err(|_| "Die Dateigröße konnte nicht gelesen werden.")?.len();
+    container(&mut file,size).map(|(document,_,_)|document)
+}
 pub fn for_asset(root: &Path, asset: Option<&str>) -> Result<AvatarInfo, String> {
     if asset.is_none() || asset == Some("nova") || asset.is_some_and(|name| name.starts_with("builtin:")) {
         let catalog: Value = serde_json::from_str(include_str!("../../public/character-capabilities.json")).map_err(|_| "Die mitgelieferten Modelldaten sind ungültig.".to_owned())?;
