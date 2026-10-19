@@ -14,15 +14,25 @@ export function requireDisposableMac(env = process.env, platform = process.platf
 }
 
 export function runNative(program, args, options = {}) {
-  const result = spawnSync(program, args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 90_000, maxBuffer: 4 * 1024 * 1024, ...options });
+  const { operation, ...processOptions } = options;
+  const operations = ['list-keychains', 'create-keychain', 'unlock-keychain', 'import', 'set-keychain-settings', 'set-key-partition-list', 'find-certificate', 'add-trusted-cert', 'find-identity', 'remove-trusted-cert', 'delete-keychain'];
+  const candidate = operation || args[0];
+  const step = program === '/usr/bin/security' && operations.includes(candidate) ? `security/${candidate}` : program === '/usr/bin/clang' ? 'fixture/compile' : 'native/signature-check';
+  console.log(`macOS signing operation: ${step}`);
+  const result = spawnSync(program, args, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 90_000, maxBuffer: 4 * 1024 * 1024, ...processOptions });
   // Do not include native output, environment or argv in failures. `security`
   // diagnostics may contain a command that was supplied on its stdin.
-  assert.ok(!result.error && result.status === 0, `Native release operation failed: ${program.split('/').at(-1)}`);
+  if (result.error || result.status !== 0) {
+    const outcome = result.error?.code === 'ETIMEDOUT' ? 'timed out' : Number.isInteger(result.status) ? `exit ${result.status}` : 'could not start';
+    const error = new Error(`macOS signing operation failed: ${step} (${outcome}); native diagnostics are withheld`);
+    error.operation = step; // Static allowlisted metadata only, never argv/output.
+    throw error;
+  }
   return result.stdout;
 }
 
 function privateFile(path, contents) { writeFileSync(path, contents, { flag: 'wx', mode: 0o600 }); }
-function securityInput(args) { return runNative('/usr/bin/security', ['-i'], { input: `${args.map(quoteSecurityInput).join(' ')}\n` }); }
+function securityInput(args) { return runNative('/usr/bin/security', ['-i'], { operation: args[0], input: `${args.map(quoteSecurityInput).join(' ')}\n` }); }
 function stateFile(directory) { return join(directory, 'state.json'); }
 function saveState(directory, state) { writeFileSync(stateFile(directory), JSON.stringify(state), { mode: 0o600 }); }
 
@@ -98,7 +108,7 @@ export function prepareIdentity(directory, identity, p12, password) {
     assert.ok(identities.toLowerCase().includes(identity.sha1), 'The pinned certificate has no usable private signing key');
     return state;
   } catch (error) {
-    try { cleanupIdentity(directory); } catch { throw new Error('macOS identity setup and cleanup failed; discard the disposable runner'); }
+    try { cleanupIdentity(directory); } catch { throw new Error(`macOS identity setup and cleanup failed after ${error.operation || 'validation'}; discard the disposable runner`); }
     throw error;
   }
 }
