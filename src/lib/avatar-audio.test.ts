@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as THREE from 'three';
+import { AvatarStage } from './avatar';
+import { sampleAmbientMotion } from './autopilot-motion';
 import { ModelAudioController, MODEL_AUDIO_EXTENSION as EXT, modelAudioPlan, validateModelWav } from './avatar-audio';
 
 function wav(seconds = 0.5) {
@@ -91,6 +94,32 @@ describe('pinned MSFT audio draft subset',()=>{
 });
 
 describe('model audio presentation ownership and lifetime',()=>{
+  it('advances the real ambient animation mixer on consecutive rendered timeline frames without double time scaling',async()=>{
+    const source=readFileSync(new URL('./fixtures/audio-draft-v1.glb',import.meta.url));
+    const gltf=await new GLTFLoader().parseAsync(source.buffer.slice(source.byteOffset,source.byteOffset+source.byteLength) as ArrayBuffer,'');
+    const config={active:true,wander:false,gestures:true,startedAt:1_000_000,seed:'audio-ambient-fixture'};
+    let now=config.startedAt;
+    for(let offset=0;offset<45_000;offset+=10){const frame=sampleAmbientMotion(config,config.startedAt+offset);if(frame.gesture&&frame.gesture.elapsed>=0.5){now=config.startedAt+offset;break;}}
+    expect(now).toBeGreaterThan(config.startedAt);
+    const camera=new THREE.PerspectiveCamera(32,1.5,0.05,100);camera.position.set(0,1,7);
+    const root=new THREE.Group();root.visible=false;
+    const stage=Object.create(AvatarStage.prototype) as any;
+    Object.assign(stage,{options:{speaking:false,autopilot:config},asset:'fixture',robot:{root},imported:new THREE.Group(),travel:new THREE.Group(),
+      mixer:new THREE.AnimationMixer(gltf.scene),clips:gltf.animations,modelAudio:{stop:vi.fn()},humanoidPose:new Map(),humanoidBasis:new THREE.Quaternion(),
+      camera,controls:{target:new THREE.Vector3()},contentWidth:1,contentDepth:1,contentHeight:1,travelFraction:0,walkStrength:0,walking:false,
+      time:0,ambientSession:'',ambientGesture:'',ambientActions:['Wave']});
+    const clock=vi.spyOn(Date,'now').mockImplementation(()=>now);
+    try{
+      stage.updateAutopilot(0.1,false);stage.animateEmote(false);stage.mixer.update(0.2);
+      const first=stage.emote.clip.time;const y=gltf.scene.getObjectByName('Triangle')!.position.y;
+      now+=100;stage.time+=0.1;stage.updateAutopilot(0.1,false);stage.animateEmote(false);stage.mixer.update(0.2);
+      const frame=sampleAmbientMotion(config,now).gesture!;
+      expect(stage.emote.clip.time).toBeCloseTo(gltf.animations[0].duration*frame.elapsed/frame.duration,6);
+      expect(stage.emote.clip.time).toBeGreaterThan(first);
+      expect(gltf.scene.getObjectByName('Triangle')!.position.y).toBeGreaterThan(y);
+      expect(stage.emote.clip.getEffectiveTimeScale()).toBe(0);
+    }finally{clock.mockRestore();}
+  });
   it('does not decode in silent previews or autoplay on load, and requires explicit output activation',async()=>{
     const sink=new Sink();const resolve=vi.fn(async()=>wav().buffer);const controller=new ModelAudioController(vi.fn(),undefined,sink);
     await controller.load(model(),resolve);expect(resolve).not.toHaveBeenCalled();
