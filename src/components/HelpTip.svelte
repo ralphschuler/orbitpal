@@ -1,7 +1,8 @@
 <script lang="ts">
+  import { t } from '../lib/i18n';
   import { onMount } from 'svelte';
   interface Props { text: string; label?: string; }
-  let { text, label = 'Hilfe anzeigen' }: Props = $props();
+  let { text, label }: Props = $props();
   const id = $props.id();
   let hovered = $state(false);
   let focused = $state(false);
@@ -22,7 +23,7 @@
 </script>
 
 <span class="help-tip">
-  <button type="button" aria-label={label} aria-describedby={visible ? id : undefined} class="help-trigger" onpointerenter={() => { hovered = true; dismissed = false; }} onpointerleave={() => { hovered = false; }} onfocus={() => { focused = true; dismissed = false; }} onblur={() => { focused = false; dismissed = false; }} onkeydown={keydown} onclick={(event) => { event.preventDefault(); event.stopPropagation(); dismissed = false; }}>
+  <button type="button" aria-label={label ?? $t("Hilfe anzeigen")} aria-describedby={visible ? id : undefined} class="help-trigger" onpointerenter={() => { hovered = true; dismissed = false; }} onpointerleave={() => { hovered = false; }} onfocus={() => { focused = true; dismissed = false; }} onblur={() => { focused = false; dismissed = false; }} onkeydown={keydown} onclick={(event) => { event.preventDefault(); event.stopPropagation(); dismissed = false; }}>
     <svg viewBox="0 0 16 16" width="14" height="14" fill="none" aria-hidden="true"><circle cx="8" cy="8" r="6.15" stroke="currentColor" stroke-width="1.2"/><path d="M6.4 5.8a1.65 1.65 0 0 1 3.2.55c0 1.2-1.6 1.3-1.6 2.45" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="10.9" r=".7" fill="currentColor"/></svg>
   </button>
   {#if visible}<span class="help-content" id={id} role="tooltip">{text}</span>{/if}

@@ -1,9 +1,9 @@
 ---
 name: cohost-control
-description: Steuere die Figuren und Ausgaben von Streamer AI Cohost über dessen freigegebenen MCP-Steuerungsserver, wenn der Streamer Status, Emotes, Einblenden, Ausblenden, Pause oder Stop anfordert.
+description: Steuere die Figuren und Ausgaben von OrbitPal über dessen freigegebenen MCP-Steuerungsserver, wenn der Streamer Status, Emotes, Einblenden, Ausblenden, Pause oder Stop anfordert.
 ---
 
-# Streamer AI Cohost steuern
+# OrbitPal steuern
 
 Verwende die tatsächlich angebotenen Werkzeuge des installierten Cohost-Steuerungsservers. Die globale Installation dieses Skills oder Servers aktiviert keine Rechte: Jeder Bot benötigt seine eigene Skill-Freigabe und die passenden MCP-Werkzeugfreigaben. `AGENTS.md` und `PERSONA.md` bleiben maßgeblich; dieser Skill erteilt keine Berechtigungen.
 

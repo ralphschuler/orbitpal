@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t, locale, formatDate, formatNumber } from '../lib/i18n';
   import { onMount } from 'svelte';
   import { Download, RefreshCw, ShieldCheck, ExternalLink, X, CircleHelp } from '@lucide/svelte';
   import { openUrl } from '@tauri-apps/plugin-opener';
@@ -18,6 +19,8 @@
   let state = $state(emptyUpdateState());
   const installing = $derived(updateInProgress(state));
   const percent = $derived(state.total ? Math.min(100, Math.round(state.downloaded / state.total * 100)) : null);
+  const downloadedMiB = $derived(formatNumber(state.downloaded / 1048576, $locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
+  const totalMiB = $derived(formatNumber((state.total ?? 0) / 1048576, $locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
   let controller: UpdateController;
   const phaseLabels = { downloading: 'Update wird heruntergeladen …', installing: 'Signatur geprüft · Update wird installiert …', restarting: 'App wird neu gestartet …', idle: '', error: '' };
 
@@ -29,7 +32,7 @@
   async function releaseNotes() {
     const url = state.available?.releaseUrl;
     // Release text is untrusted. Only the fixed repository's version page may open.
-    if (!url || !/^https:\/\/github\.com\/ralphschuler\/streamer-ai-cohost\/releases\/tag\/v[0-9]+\.[0-9]+\.[0-9]+$/.test(url)) return;
+    if (!url || !/^https:\/\/github\.com\/ralphschuler\/(?:orbitpal|streamer-ai-cohost)\/releases\/tag\/v[0-9]+\.[0-9]+\.[0-9]+$/.test(url)) return;
     try { await openUrl(url); } catch (error) { state = { ...state, error: prettyError(error) }; }
   }
   onMount(() => {
@@ -60,30 +63,30 @@
 {#if open}
   <div class="modal-backdrop" role="presentation" onclick={event => { if (event.target === event.currentTarget) close(); }}>
     <div class="modal updates-dialog" role="dialog" aria-modal="true" aria-labelledby="updates-heading" tabindex="-1" use:focusTrap>
-      <div class="modal-heading"><div><span class="updates-eyebrow">Streamer AI Cohost · v{version}</span><h2 id="updates-heading">Updates</h2><p>Neue Versionen direkt aus GitHub Releases.</p></div><button class="icon-button" disabled={installing} onclick={close} aria-label="Updates schließen"><X size={20}/></button></div>
+      <div class="modal-heading"><div><span class="updates-eyebrow">OrbitPal · v{version}</span><h2 id="updates-heading">{$t("Updates")}</h2><p>{$t("Neue Versionen direkt aus GitHub Releases.")}</p></div><button class="icon-button" disabled={installing} onclick={close} aria-label={$t("Updates schließen")}><X size={20}/></button></div>
       {#if !native}
-        <p class="update-note">Update-Prüfung und Installation sind in der Desktop-App verfügbar.</p>
+        <p class="update-note">{$t("Update-Prüfung und Installation sind in der Desktop-App verfügbar.")}</p>
       {:else}
-        <div class="update-preference"><div><label for="automatic-updates">Automatisch nach Updates suchen</label><HelpTip text="Prüft kurz nach dem Start und danach alle sechs Stunden die öffentliche GitHub-Release-Datei. Dabei erhält GitHub deine IP-Adresse. Es werden keine Bot-Daten gesendet. Download und Installation erfordern immer deine Bestätigung."/></div><input id="automatic-updates" type="checkbox" role="switch" checked={state.automaticChecks} disabled={!state.settingsLoaded || state.savingSettings || installing} onchange={event => controller.setAutomatic(event.currentTarget.checked)}/></div>
+        <div class="update-preference"><div><label for="automatic-updates">{$t("Automatisch nach Updates suchen")}</label><HelpTip text={$t("Prüft kurz nach dem Start und danach alle sechs Stunden die öffentliche GitHub-Release-Datei. Dabei erhält GitHub deine IP-Adresse. Es werden keine Bot-Daten gesendet. Download und Installation erfordern immer deine Bestätigung.")}/></div><input id="automatic-updates" type="checkbox" role="switch" checked={state.automaticChecks} disabled={!state.settingsLoaded || state.savingSettings || installing} onchange={event => controller.setAutomatic(event.currentTarget.checked)}/></div>
         <div class="update-result" aria-live="polite">
           {#if installing}
-            <div class="update-status"><Download size={24}/><div><h3>{phaseLabels[state.phase]}</h3><p>{state.phase === 'downloading' ? `${(state.downloaded / 1048576).toFixed(1)} MiB${state.total ? ` von ${(state.total / 1048576).toFixed(1)} MiB` : ''}` : 'Bitte lasse die App geöffnet.'}</p></div></div>
-            {#if state.phase === 'downloading'}<progress aria-label="Update-Download" max="100" value={percent ?? undefined}></progress>{/if}
+            <div class="update-status"><Download size={24}/><div><h3>{$t(phaseLabels[state.phase])}</h3><p>{state.phase === 'downloading' ? (state.total ? $t('{downloaded} MiB von {total} MiB', { downloaded: downloadedMiB, total: totalMiB }) : $t('{downloaded} MiB', { downloaded: downloadedMiB })) : $t('Bitte lasse die App geöffnet.')}</p></div></div>
+            {#if state.phase === 'downloading'}<progress aria-label={$t("Update-Download")} max="100" value={percent ?? undefined}></progress>{/if}
           {:else if state.available}
-            <div class="update-status"><Download size={24}/><div><h3>Version {state.available.version} ist verfügbar.</h3><p>Installiert: v{state.available.currentVersion}{state.available.date ? ` · Veröffentlicht: ${new Date(state.available.date).toLocaleDateString('de-DE')}` : ''}</p></div></div>
+            <div class="update-status"><Download size={24}/><div><h3>{$t("Version {version} ist verfügbar.", { version: state.available.version })}</h3><p>{$t('Installiert: v{version}', { version: state.available.currentVersion })}{state.available.date ? ' · ' + $t('Veröffentlicht: {date}', { date: formatDate(state.available.date, {}, $locale) }) : ''}</p></div></div>
             {#if state.available.notes}<pre class="update-notes">{state.available.notes}</pre>{/if}
-            <button class="text-link" onclick={releaseNotes}><ExternalLink size={14}/>Release auf GitHub ansehen</button>
+            <button class="text-link" onclick={releaseNotes}><ExternalLink size={14}/>{$t("Release auf GitHub ansehen")}</button>
           {:else}
-            <div class="update-status"><ShieldCheck size={24}/><div><h3>{state.checking ? 'Suche nach einer neuen Version …' : state.lastChecked && !state.error ? 'Du bist auf dem neuesten Stand.' : 'Bereit für die nächste Version.'}</h3><p>Installierte Version: {version}</p></div></div>
+            <div class="update-status"><ShieldCheck size={24}/><div><h3>{state.checking ? $t("Suche nach einer neuen Version …") : state.lastChecked && !state.error ? $t("Du bist auf dem neuesten Stand.") : $t("Bereit für die nächste Version.")}</h3><p>{$t("Installierte Version: {version}", { version })}</p></div></div>
           {/if}
         </div>
-        {#if state.error}<p class="update-error" role="alert"><CircleHelp size={16}/>{state.error}</p>{/if}
+        {#if state.error}<p class="update-error" role="alert"><CircleHelp size={16}/>{$t(state.error)}</p>{/if}
         {#if state.available && !installing}
-          <p class="update-note"><ShieldCheck size={16}/>Das Paket wird vor der Installation kryptografisch geprüft. Mit deiner Bestätigung beginnt der Download; anschließend wird die App installiert und neu gestartet. Deine gespeicherten Profile bleiben erhalten.</p>
-          {#if !state.installSupported}<p class="update-warning">{state.unavailableReason || 'Bitte installiere diese Version über GitHub Releases.'}</p>{:else if busyReason}<p class="update-warning">{busyReason}</p>{/if}
+          <p class="update-note"><ShieldCheck size={16}/>{$t("Das Paket wird vor der Installation kryptografisch geprüft. Mit deiner Bestätigung beginnt der Download; anschließend wird die App installiert und neu gestartet. Deine gespeicherten Profile bleiben erhalten.")}</p>
+          {#if !state.installSupported}<p class="update-warning">{state.unavailableReason ? $t(state.unavailableReason) : $t("Bitte installiere diese Version über GitHub Releases.")}</p>{:else if busyReason}<p class="update-warning">{busyReason}</p>{/if}
         {/if}
-        <div class="modal-footer"><button class="button secondary" onclick={close} disabled={installing}>{state.available ? 'Später' : 'Schließen'}</button><button class="button secondary" onclick={() => controller.check()} disabled={installing || state.checking}><RefreshCw size={15}/>{state.checking ? 'Prüft …' : 'Jetzt prüfen'}</button>{#if state.available}<button class="button primary" onclick={() => state.available && controller.confirm(state.available.id, busyReason)} disabled={installing || state.checking || !state.installSupported || !!busyReason}><Download size={15}/>Bestätigen & installieren</button>{/if}</div>
-        {#if state.lastChecked}<p class="update-checked">Zuletzt geprüft: {new Date(state.lastChecked).toLocaleString('de-DE')}</p>{/if}
+        <div class="modal-footer"><button class="button secondary" onclick={close} disabled={installing}>{state.available ? $t("Später") : $t("Schließen")}</button><button class="button secondary" onclick={() => controller.check()} disabled={installing || state.checking}><RefreshCw size={15}/>{state.checking ? $t("Prüft …") : $t("Jetzt prüfen")}</button>{#if state.available}<button class="button primary" onclick={() => state.available && controller.confirm(state.available.id, busyReason)} disabled={installing || state.checking || !state.installSupported || !!busyReason}><Download size={15}/>{$t("Bestätigen & installieren")}</button>{/if}</div>
+        {#if state.lastChecked}<p class="update-checked">{$t('Zuletzt geprüft: {date}', { date: formatDate(state.lastChecked, { dateStyle: 'medium', timeStyle: 'medium' }, $locale) })}</p>{/if}
       {/if}
     </div>
   </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from '../lib/i18n';
   import { onMount, untrack } from 'svelte';
   import { AvatarStage, type AvatarModelInfo } from '../lib/avatar';
   import type { AutopilotVisualConfig } from '../lib/autopilot-motion';
@@ -60,20 +61,20 @@
   });
 </script>
 
-<div class="avatar-stage" class:transparent role="img" aria-label={`${profile?.name || 'Nova'}, animierter 3D-Charakter`}>
+<div class="avatar-stage" class:transparent role="img" aria-label={$t('{name}, animierter 3D-Charakter', { name: profile?.name || 'Nova' })}>
   <div class="canvas-host" bind:this={host}></div>
   {#if unavailable}
     <div class="render-fallback">
       <span class="fallback-mark">N</span>
-      <strong>3D-Darstellung nicht verfügbar</strong>
-      <span>{failure}</span>
+      <strong>{$t("3D-Darstellung nicht verfügbar")}</strong>
+      <span>{$t(failure)}</span>
     </div>
   {:else if loading}
-    <div class="asset-badge" role="status"><span class="spinner"></span> Figur wird geladen</div>
+    <div class="asset-badge" role="status"><span class="spinner"></span> {$t("Figur wird geladen")}</div>
   {:else if failure}
-    <div class="asset-badge error" role="status" title={failure}>Import fehlgeschlagen · Nova wird angezeigt<span>{failure}</span></div>
+    <div class="asset-badge error" role="status" title={$t(failure)}>{$t("Import fehlgeschlagen · Nova wird angezeigt")}<span>{$t(failure)}</span></div>
   {:else if emoteFailure}
-    <div class="asset-badge error" role="status" title={emoteFailure}>Emote nicht verfügbar<span>{emoteFailure}</span></div>
+    <div class="asset-badge error" role="status" title={$t(emoteFailure)}>{$t("Emote nicht verfügbar")}<span>{$t(emoteFailure)}</span></div>
   {/if}
 </div>
 

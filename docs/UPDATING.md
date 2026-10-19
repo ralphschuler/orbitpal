@@ -1,6 +1,6 @@
 # Updates
 
-Ab Version 0.6.0 prüft Streamer AI Cohost auf neue stabile Versionen aus den [offiziellen GitHub Releases](https://github.com/ralphschuler/streamer-ai-cohost/releases). Die Prüfung lädt zunächst nur die Versionsinformationen. Erst deine Bestätigung erlaubt das Herunterladen und Installieren eines Updates. Du kannst ein Angebot verschieben und später erneut prüfen.
+Ab Version 0.6.0 prüft OrbitPal auf neue stabile Versionen aus den [offiziellen GitHub Releases](https://github.com/ralphschuler/orbitpal/releases). Die Prüfung lädt zunächst nur die Versionsinformationen. Erst deine Bestätigung erlaubt das Herunterladen und Installieren eines Updates. Du kannst ein Angebot verschieben und später erneut prüfen.
 
 ## Vor der Installation
 
@@ -26,3 +26,7 @@ Versionen vor 0.6.0 enthalten keinen Updater. Installiere einmal manuell Version
 Die App verwendet den festen GitHub-Release-Kanal dieses Projekts und bietet nur neuere stabile Versionen an. Prereleases werden nicht automatisch angeboten. Jedes Update-Paket benötigt eine gültige Tauri-Signatur zum eingebauten öffentlichen Schlüssel sowie die zur angebotenen Version passende signierte Versionsnummer. MCP-Server, Skills, Chatnachrichten und Charaktere bekommen keine Berechtigung, selbst Updates auszulösen.
 
 Diese Update-Signatur bestätigt das Paket innerhalb der Anwendung. Windows-Installer haben weiterhin keine Authenticode-Signatur; macOS-Builds sind ad-hoc signiert und nicht Apple-notarisiert. Details zur Veröffentlichung und zum geschützten Signierschlüssel stehen im [Release-Handbuch](RELEASING.md).
+
+## Neuer Name ab 0.8.0
+
+OrbitPal hieß bisher Streamer AI Cohost. Profile, Schlüsselbund und Freigaben bleiben erhalten. Ein Update kann den bisherigen App-/AppImage-Dateinamen beibehalten. Lade neue Pakete ausschließlich aus dem offiziellen Repository `ralphschuler/orbitpal`. Details zu alten Download-Weiterleitungen und Windows-Installationsidentität stehen in [MIGRATING-TO-ORBITPAL.md](MIGRATING-TO-ORBITPAL.md).

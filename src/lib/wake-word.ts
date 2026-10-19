@@ -1,4 +1,5 @@
 import { recordingToWav, type SynthesizedAudio } from './audio';
+import { ensureMicrophonePermission, openMicrophone, reportMicrophoneFailure, MicrophonePermissionError } from './microphone-permission';
 
 export type WakeWordState = 'stopped' | 'starting' | 'listening' | 'capturing' | 'transcribing' | 'follow-up' | 'triggered' | 'paused' | 'retrying';
 
@@ -112,6 +113,7 @@ export class WakeWordListener {
       ]);
       if (!this.currentSession(session)) return;
       if (saved === false) { this.stop(); return; }
+      if (!await ensureMicrophonePermission(() => this.currentSession(session))) return;
       await this.openStream(session);
     } catch (error) {
       if (!this.currentSession(session)) return;
@@ -153,7 +155,7 @@ export class WakeWordListener {
       if (!context || context.state === 'closed') throw new RestartRequired('Die Audioverarbeitung wurde geschlossen. Bitte das Zuhören erneut starten.');
       if (context.state !== 'running') await this.resumeContext(context, this.sessionAbort!.signal);
       if (!this.currentSession(session)) return;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+      const stream = await openMicrophone({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
       if (!this.currentSession(session)) { stream.getTracks().forEach((track) => track.stop()); return; }
       this.stream = stream;
       for (const track of stream.getAudioTracks()) {
@@ -400,8 +402,9 @@ export class WakeWordListener {
 
   private restartReason(error: unknown): string | undefined {
     if (error instanceof RestartRequired) return error.message;
+    if (error instanceof MicrophonePermissionError) return error.message;
     const name = error instanceof Error ? error.name : '';
-    if (['NotAllowedError', 'SecurityError'].includes(name)) return 'Mikrofonzugriff wurde nicht freigegeben. Erlaube ihn in den Systemeinstellungen und starte das Zuhören erneut.';
+    if (['NotAllowedError', 'SecurityError'].includes(name)) return reportMicrophoneFailure(error);
     if (['NotFoundError', 'DevicesNotFoundError', 'OverconstrainedError'].includes(name)) return 'Kein passendes Mikrofon verfügbar. Schließe ein Mikrofon an, prüfe die Geräteeinstellungen und starte das Zuhören erneut.';
   }
 

@@ -1,14 +1,18 @@
-# Streamer AI Cohost
+# OrbitPal
 
-Eine eigenständige Desktop-App für einen konfigurierbaren KI-Stream-Charakter. Tauri + Rust bilden die native Anwendung, Svelte das Regiepult und Three.js den echten 3D-Charakter. Die Oberfläche ist deutsch.
+Eine eigenständige Desktop-App für einen konfigurierbaren KI-Stream-Charakter. Tauri + Rust bilden die native Anwendung, Svelte das Regiepult und Three.js den echten 3D-Charakter. Die Oberfläche unterstützt Deutsch, Englisch, Französisch und Spanisch. Diese Anleitung verwendet die deutschen Bezeichnungen.
 
-Diese Anleitung beschreibt **0.6.0**. Für veröffentlichte Pakete gelten zusätzlich die Hinweise des jeweiligen [Releases](https://github.com/ralphschuler/streamer-ai-cohost/releases/latest).
+Diese Anleitung beschreibt **OrbitPal 0.8.0** (zuvor Streamer AI Cohost). Für veröffentlichte Pakete gelten zusätzlich die Hinweise des jeweiligen [Releases](https://github.com/ralphschuler/orbitpal/releases/latest).
 
 Unter **Updates & Version** kannst du automatisch oder manuell nach neuen GitHub Releases suchen. Download und Installation beginnen erst mit **Bestätigen & installieren**. Speichere vorher Entwürfe und beende laufende Ausgaben und das Mikrofon. Details, unterstützte Paketformate und die einmalige manuelle Aktualisierung älterer Versionen stehen unter [Updates](UPDATING.md).
 
+## Sprache der Oberfläche
+
+Oben im Studio zwischen **Deutsch**, **English**, **Français** und **Español** wählen. Die Auswahl wirkt sofort und bleibt auf diesem Rechner gespeichert. Beim ersten Start wird eine passende System-/Browsersprache gewählt, andernfalls Englisch. Gespräch, Stimme, Spracherkennung, Persönlichkeit, Wissen und eigene Emotenamen bleiben davon unabhängig. Details stehen unter [Sprachen der Oberfläche](LOCALIZATION.md).
+
 ## Start
 
-Pakete und Prüfsummen stehen im [aktuellen Release](https://github.com/ralphschuler/streamer-ai-cohost/releases/latest). Die Build-Pipeline sieht Windows x64, macOS Apple Silicon/Intel und Linux x64 vor; verfügbare Pakete stehen beim jeweiligen Release. Windows-Pakete sind unsigniert, macOS-Apps ad-hoc signiert und ohne Developer-ID oder Notarisierung. Falls macOS den Start blockiert, kann die App nach dem ersten Öffnungsversuch in **Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen** freigegeben werden. Hinweise zu Plattformvoraussetzungen und Prüfsummen stehen unter [RELEASING.md](RELEASING.md).
+Pakete und Prüfsummen stehen im [aktuellen Release](https://github.com/ralphschuler/orbitpal/releases/latest). Die Build-Pipeline sieht Windows x64, macOS Apple Silicon/Intel und Linux x64 vor; verfügbare Pakete stehen beim jeweiligen Release. Windows-Pakete sind unsigniert, macOS-Apps ad-hoc signiert und ohne Developer-ID oder Notarisierung. Falls macOS den Start blockiert, kann die App nach dem ersten Öffnungsversuch in **Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen** freigegeben werden. Hinweise zu Plattformvoraussetzungen und Prüfsummen stehen unter [RELEASING.md](RELEASING.md).
 
 Die App benötigt zum Start weder ein kostenpflichtiges KI-Konto noch ein heruntergeladenes 3D-Modell. Nova ist als eigene prozedurale 3D-Figur enthalten. Für Dialoge muss ein lokales Modell, eine Cloud-API oder eine separat installierte und angemeldete Claude-Code-/Codex-CLI konfiguriert werden.
 
@@ -40,8 +44,8 @@ Die acht Bereiche sind **Regiepult**, **Charakter & Stimme**, **Modelle**, **Per
 ## Enthalten
 
 - Eigene animierte 3D-Roboterfigur Nova mit Blick, Blinzeln, Ruhebewegungen, Gesichtsausdrücken und sprachgesteuertem Mund.
-- 17 mitgelieferte Charaktere: Nova, Robot Expressive, Fox, KayKit-Ritter, -Magier, -Schurke und -Skelett sowie zehn CC0-VRM-Figuren aus [Open Source Avatars](https://www.opensourceavatars.com/en/finder). Quellen, Modellgrenzen und weitere Importmöglichkeiten stehen in [CHARACTERS.md](../CHARACTERS.md); die [Attributionshinweise](../public/characters/ATTRIBUTION.md) und [OSA-Metadaten](../public/characters/osa/CREDITS.json) gehören zu den Fremdmodellen. Die KayKit-Figuren enthalten Körperanimationen; die zehn OSA-VRMs besitzen Humanoidrigs und Vokalmorphs und verwenden die prozeduralen Gesten der App.
-- Import eigener VRM- und GLB-Modelle. Tatsächlich vorhandene Animationsclips stehen unter **Was deine Figur mitbringt** zur stummen Vorschau und Übernahme als eigenes Emote bereit. Die [Formatübersicht](AVATAR-SUPPORT.md) beschreibt die automatische VRM-0/1-/GLB-2-Erkennung und klar gemeldete Importgrenzen.
+- 17 mitgelieferte Charaktere: Nova, Robot Expressive, Fox, KayKit-Ritter, -Magier, -Schurke und -Skelett sowie zehn CC0-VRM-Figuren aus [Open Source Avatars](https://www.opensourceavatars.com/en/finder). Quellen, Modellgrenzen und weitere Importmöglichkeiten stehen in [CHARACTERS.md](../CHARACTERS.md); [Charaktere erstellen und finden](CHARACTER-SOURCES.md) nennt weitere Editoren und Bibliotheken; die [Attributionshinweise](../public/characters/ATTRIBUTION.md) und [OSA-Metadaten](../public/characters/osa/CREDITS.json) gehören zu den Fremdmodellen. Die KayKit-Figuren enthalten Körperanimationen; die zehn OSA-VRMs besitzen Humanoidrigs und Vokalmorphs und verwenden die prozeduralen Gesten der App.
+- Import eigener VRM-, GLB- und glTF-2.0-Modelle. glTF-Pakete vollständig entpacken und relative BIN-Dateien sowie PNG/JPEG-Texturen im Modellordner belassen; der Import bündelt sie zu einem portablen GLB. Tatsächlich vorhandene Animationsclips stehen unter **Was deine Figur mitbringt** zur stummen Vorschau und Übernahme als eigenes Emote bereit. Die [Formatübersicht](AVATAR-SUPPORT.md) beschreibt die automatische VRM-0/1-/GLB-2-Erkennung und den glTF-JSON-Import und klar gemeldete Importgrenzen.
 
 - Emote-Bibliothek pro Profil: Winken, Verstecken, Freuen sowie Nicken und Tanzen. Namen, Dauer, Intensität, optionaler Sound mit Lautstärke und Freigabe für Zuschauer-Anfragen sind konfigurierbar. Der Agent kann freigegebene Emotes als Werkzeug ausführen.
 - Dialogmodelle über Ollama, LM Studio, OpenAI-kompatible APIs, Anthropic Messages sowie die installierten Claude-Code- und Codex-CLIs. Begrenzte Werkzeugrunden und Abbruch; eintreffende Modelltexte werden intern gesammelt und mit der Sprachausgabe veröffentlicht.

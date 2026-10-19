@@ -1,4 +1,4 @@
-Streamer AI Cohost local dependency corrections
+OrbitPal local dependency corrections
 
 Linux GTK dependency: glib 0.18.5, MIT license.
 This distribution uses the original two-line upstream correction for

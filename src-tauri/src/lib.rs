@@ -17,9 +17,12 @@ mod vision;
 mod control_mcp;
 mod updater;
 mod avatar_metadata;
+mod gltf_import;
 mod autopilot;
 mod screen_capture;
 mod screen_context;
+mod microphone_permission;
+mod ui_locale;
 
 use serde_json::{json,Value};
 use std::sync::{Mutex,Arc,atomic::{AtomicBool,Ordering}};
@@ -256,6 +259,7 @@ async fn import_profile(state:State<'_,AppState>,app:tauri::AppHandle,source_pat
 pub fn run(){
     tauri::Builder::default().plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app|{
+            app.manage(ui_locale::UiLocaleState::default());
             let root=app.path().app_data_dir()?;
             let store=storage::Store::new(root).map_err(std::io::Error::other)?;
             app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default(),screen_context:screen_context::ScreenState::default()});
@@ -263,18 +267,15 @@ pub fn run(){
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update])
-        .run(tauri::generate_context!()).expect("Streamer AI Cohost konnte nicht gestartet werden");
+        .invoke_handler(tauri::generate_handler![ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update])
+        .run(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden");
 }
 
 fn setup_tray(app:&mut tauri::App)->Result<(),Box<dyn std::error::Error>>{
-    use tauri::{menu::{Menu,MenuItem},tray::TrayIconBuilder};
-    let studio=MenuItem::with_id(app,"studio","Studio anzeigen",true,None::<&str>)?;
-    let character=MenuItem::with_id(app,"character","Charakter anzeigen",true,None::<&str>)?;
-    let stop=MenuItem::with_id(app,"stop","Sprechen abbrechen",true,None::<&str>)?;
-    let quit=MenuItem::with_id(app,"quit","Streamer AI Cohost beenden",true,None::<&str>)?;
-    let menu=Menu::with_items(app,&[&studio,&character,&stop,&quit])?;
-    let mut tray=TrayIconBuilder::with_id("cohost").menu(&menu).tooltip("Streamer AI Cohost").show_menu_on_left_click(true);
+    use tauri::tray::TrayIconBuilder;
+    let menu=ui_locale::tray_menu(app.handle(),ui_locale::UiLocale::En)?;
+    if let Some(window)=app.get_webview_window("main"){window.set_title("OrbitPal")?;}
+    let mut tray=TrayIconBuilder::with_id("cohost").menu(&menu).tooltip("OrbitPal").show_menu_on_left_click(true);
     if let Some(icon)=app.default_window_icon(){tray=tray.icon(icon.clone());}
     let tray=tray.on_menu_event(|app,event|match event.id.as_ref(){
         "studio"=>{if let Some(w)=app.get_webview_window("main"){let _=w.unminimize();let _=w.show();let _=w.set_focus();}},

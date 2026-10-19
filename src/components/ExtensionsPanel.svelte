@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t, translate, locale, formatNumber } from '../lib/i18n';
   import { onMount, tick, untrack } from 'svelte';
   import { open } from '@tauri-apps/plugin-dialog';
   import { LibraryBig, Cable, BookOpen, Search, Plus, Upload, Check, Pencil, Trash2, X, Plug, Unplug, ShieldCheck, Users, FileText, FolderOpen, ArrowRight } from '@lucide/svelte';
@@ -42,7 +43,7 @@
   const loadedTools = $derived(toolCatalogs[serverId]);
   const items = $derived((tab === 'mcp' ? servers : skills).filter((item) => {
     const enabled = tab === 'mcp' ? mcpGrant(profile.mcpServers, item.id).enabled : (profile.skillsEnabled || []).includes(item.id);
-    return `${item.name || item.id} ${item.description || ''} ${item.id}`.toLocaleLowerCase('de-DE').includes(search.trim().toLocaleLowerCase('de-DE'))
+    return `${item.name || item.id} ${item.description || ''} ${item.id}`.toLocaleLowerCase($locale).includes(search.trim().toLocaleLowerCase($locale))
       && (filter === 'all' || (filter === 'enabled' ? enabled : !enabled));
   }));
 
@@ -85,7 +86,7 @@
     if (!native || operation) return;
     operation = 'grant';
     const name = profile.name;
-    try { if (await onSave()) onNotify(`Freigaben für ${name} gespeichert.`); }
+    try { if (await onSave()) onNotify(translate('Freigaben für {name} gespeichert.', { name })); }
     catch (error) { notifyError(error); }
     finally { operation = ''; }
   }
@@ -97,7 +98,7 @@
       const tools = await call<any[]>('mcp_connect', { serverId: server.id });
       if (!Array.isArray(tools)) throw new Error('Der Server hat keinen gültigen Werkzeugkatalog geliefert.');
       if (!disposed) toolCatalogs = { ...toolCatalogs, [server.id]: tools.filter((tool) => typeof tool.name === 'string') };
-      onNotify(`Werkzeuge von ${server.name || server.id} geladen. Botfreigaben wurden nicht verändert.`);
+      onNotify(translate('Werkzeuge von {name} geladen. Botfreigaben wurden nicht verändert.', { name: server.name || server.id }));
     } catch (error) { notifyError(error); }
     finally { operation = ''; }
   }
@@ -108,7 +109,7 @@
     try {
       await call('mcp_disconnect', { serverId: server.id });
       const next = { ...toolCatalogs }; delete next[server.id]; toolCatalogs = next;
-      onNotify('Die gemeinsame Serververbindung wurde getrennt. Botfreigaben bleiben gespeichert.');
+      onNotify(translate("Die gemeinsame Serververbindung wurde getrennt. Botfreigaben bleiben gespeichert."));
     } catch (error) { notifyError(error); }
     finally { operation = ''; }
   }
@@ -131,7 +132,7 @@
     if (operation) return;
     ++revision;
     editorFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
-    skillDraft = { id: '', existing: false, resources: [], content: '---\nname: mein-skill\ndescription: Beschreibe, wann dieser Skill verwendet wird.\n---\n\n# Mein Skill\n\nBeschreibe hier den Ablauf und die benötigten Werkzeuge.\n' };
+    skillDraft = { id: '', existing: false, resources: [], content: translate("---\nname: mein-skill\ndescription: Beschreibe, wann dieser Skill verwendet wird.\n---\n\n# Mein Skill\n\nBeschreibe hier den Ablauf und die benötigten Werkzeuge.\n") };
     editor = 'skill';
     void focusEditor(revision);
   }
@@ -174,13 +175,13 @@
         const saved = await call<any>('save_library_mcp', { server });
         const next = { ...toolCatalogs }; delete next[saved.id]; toolCatalogs = next;
         await onRefresh(); serverId = saved.id;
-        onNotify('MCP-Server in der gemeinsamen Bibliothek gespeichert. Die Botfreigaben bleiben separat.');
+        onNotify(translate("MCP-Server in der gemeinsamen Bibliothek gespeichert. Die Botfreigaben bleiben separat."));
       } else {
         if (!/^[A-Za-z0-9_-]{1,96}$/.test(skillDraft.id)) throw new Error('Die Skill-ID benötigt 1–96 Buchstaben, Zahlen, - oder _.');
         if (!skillDraft.existing && skills.some((skill) => skill.id.toLowerCase() === skillDraft.id.toLowerCase())) throw new Error('Diese Skill-ID ist bereits installiert. Öffne den vorhandenen Skill zum Bearbeiten oder wähle eine andere ID.');
         await call('save_skill', { id: skillDraft.id, content: skillDraft.content });
         await onRefresh(); skillId = skillDraft.id;
-        onNotify('Skill global gespeichert. Wähle separat, welche Bots ihn verwenden dürfen.');
+        onNotify(translate("Skill global gespeichert. Wähle separat, welche Bots ihn verwenden dürfen."));
       }
       if (!disposed && request === revision) closeEditor();
     } catch (error) { notifyError(error); }
@@ -191,18 +192,18 @@
     if (!native || operation || busy) return;
     operation = 'import';
     try {
-      const sourcePath = await open({ directory: true, multiple: false, title: 'Skillordner mit SKILL.md auswählen' });
+      const sourcePath = await open({ directory: true, multiple: false, title: translate("Skillordner mit SKILL.md auswählen") });
       if (typeof sourcePath !== 'string' || disposed) return;
       const imported = await call<any>('import_skill', { sourcePath });
       await onRefresh(); skillId = imported.id || skillId;
-      onNotify('Skillordner global importiert. Er ist dadurch bei keinem weiteren Bot aktiviert.');
+      onNotify(translate("Skillordner global importiert. Er ist dadurch bei keinem weiteren Bot aktiviert."));
     } catch (error) { notifyError(error); }
     finally { operation = ''; }
   }
 
   async function chooseExecutable() {
     const request = revision;
-    try { const path = await open({ multiple: false, title: 'MCP-Startprogramm auswählen' }); if (typeof path === 'string' && !disposed && request === revision) mcpDraft.command = path; }
+    try { const path = await open({ multiple: false, title: translate("MCP-Startprogramm auswählen") }); if (typeof path === 'string' && !disposed && request === revision) mcpDraft.command = path; }
     catch (error) { notifyError(error); }
   }
 
@@ -222,7 +223,7 @@
       await onRefresh();
       const next = { ...toolCatalogs }; delete next[target.id]; toolCatalogs = next;
       closeDelete();
-      onNotify(`${target.name} wurde global entfernt. Die Freigaben wurden bei allen Bots entzogen.`);
+      onNotify(translate('{name} wurde global entfernt. Die Freigaben wurden bei allen Bots entzogen.', { name: target.name }));
     } catch (error) { notifyError(error); }
     finally { operation = ''; }
   }
@@ -252,71 +253,71 @@
 
 <div class="extensions-workspace">
   <ControlMcpSetup {busy} onNotify={onNotify} onInstalled={async(id)=>{await onRefresh();selectTab('mcp');serverId=id;}}/>
-  {#if !native}<p class="desktop-note">Installationen und Freigaben bearbeitest du in der Desktop-App.</p>{/if}
+  {#if !native}<p class="desktop-note">{$t("Installationen und Freigaben bearbeitest du in der Desktop-App.")}</p>{/if}
   <div class="extension-columns">
-    <section class="library-column" aria-label="Gemeinsame Erweiterungsbibliothek">
-      <header class="scope-heading"><span class="scope-icon"><LibraryBig size={20}/></span><div><h2>Bibliothek für alle Bots</h2><p>Einmal installieren, gezielt freigeben.</p></div><HelpTip text="MCP-Server und Skills liegen gemeinsam in dieser Bibliothek. Das Hinzufügen installiert eine Erweiterung, gibt sie aber keinem Bot automatisch frei. Die Rechte legst du rechts für den ausgewählten Bot fest."/></header>
-      <div class="library-tabs" role="tablist" aria-label="Erweiterungsart"><button id={`${uid}-mcp-tab`} role="tab" aria-selected={tab === 'mcp'} aria-controls={`${uid}-list`} tabindex={tab === 'mcp' ? 0 : -1} class:chosen={tab === 'mcp'} onclick={() => selectTab('mcp')} onkeydown={tabKey}><Cable size={15}/>MCP <span>{servers.length}</span></button><button id={`${uid}-skills-tab`} role="tab" aria-selected={tab === 'skills'} aria-controls={`${uid}-list`} tabindex={tab === 'skills' ? 0 : -1} class:chosen={tab === 'skills'} onclick={() => selectTab('skills')} onkeydown={tabKey}><BookOpen size={15}/>Skills <span>{skills.length}</span></button></div>
-      <label class="library-search"><Search size={15}/><input aria-label="Erweiterungen suchen" bind:value={search} placeholder={tab === 'mcp' ? 'Server suchen …' : 'Skills suchen …'}/></label>
-      <label class="library-filter"><span>Zeigen</span><select aria-label="Bibliothek nach Botfreigabe filtern" bind:value={filter}><option value="all">Alle Installationen</option><option value="enabled">Für {profile.name} freigegeben</option><option value="disabled">Nicht freigegeben</option></select></label>
+    <section class="library-column" aria-label={$t("Gemeinsame Erweiterungsbibliothek")}>
+      <header class="scope-heading"><span class="scope-icon"><LibraryBig size={20}/></span><div><h2>{$t("Bibliothek für alle Bots")}</h2><p>{$t("Einmal installieren, gezielt freigeben.")}</p></div><HelpTip text={$t("MCP-Server und Skills liegen gemeinsam in dieser Bibliothek. Das Hinzufügen installiert eine Erweiterung, gibt sie aber keinem Bot automatisch frei. Die Rechte legst du rechts für den ausgewählten Bot fest.")}/></header>
+      <div class="library-tabs" role="tablist" aria-label={$t("Erweiterungsart")}><button id={`${uid}-mcp-tab`} role="tab" aria-selected={tab === 'mcp'} aria-controls={`${uid}-list`} tabindex={tab === 'mcp' ? 0 : -1} class:chosen={tab === 'mcp'} onclick={() => selectTab('mcp')} onkeydown={tabKey}><Cable size={15}/>MCP <span>{formatNumber(servers.length, $locale)}</span></button><button id={`${uid}-skills-tab`} role="tab" aria-selected={tab === 'skills'} aria-controls={`${uid}-list`} tabindex={tab === 'skills' ? 0 : -1} class:chosen={tab === 'skills'} onclick={() => selectTab('skills')} onkeydown={tabKey}><BookOpen size={15}/>Skills <span>{formatNumber(skills.length, $locale)}</span></button></div>
+      <label class="library-search"><Search size={15}/><input aria-label={$t("Erweiterungen suchen")} bind:value={search} placeholder={tab === 'mcp' ? $t("Server suchen …") : $t("Skills suchen …")}/></label>
+      <label class="library-filter"><span>{$t("Zeigen")}</span><select aria-label={$t("Bibliothek nach Botfreigabe filtern")} bind:value={filter}><option value="all">{$t("Alle Installationen")}</option><option value="enabled">{$t('Für {name} freigegeben', { name: profile.name })}</option><option value="disabled">{$t("Nicht freigegeben")}</option></select></label>
       <div class="library-list" id={`${uid}-list`} role="tabpanel" aria-labelledby={`${uid}-${tab}-tab`}>
         {#each items as item (item.id)}
           {@const enabled = tab === 'mcp' ? mcpGrant(profile.mcpServers, item.id).enabled : (profile.skillsEnabled || []).includes(item.id)}
           <button class="library-entry" class:selected={selected?.id === item.id} onclick={() => selectItem(item.id)} aria-pressed={selected?.id === item.id}>
             <span class="entry-symbol">{#if tab === 'mcp'}<Cable size={19}/>{:else}<BookOpen size={19}/>{/if}</span>
-            <span class="entry-copy"><strong>{item.name || item.id}</strong><small>{tab === 'mcp' ? item.transport === 'builtin' ? 'Steuerung dieser Software' : item.transport === 'stdio' ? 'Lokaler MCP-Prozess' : 'MCP über HTTP' : item.description || 'Wiederverwendbarer Ablauf'}</small><span class="entry-access" class:enabled>{#if enabled}<Check size={10}/>Für {profile.name} freigegeben{:else}Keine Botfreigabe{/if}</span></span>
+            <span class="entry-copy"><strong>{item.name || item.id}</strong><small>{tab === 'mcp' ? item.transport === 'builtin' ? $t("Steuerung dieser Software") : item.transport === 'stdio' ? $t("Lokaler MCP-Prozess") : $t("MCP über HTTP") : item.description || $t("Wiederverwendbarer Ablauf")}</small><span class="entry-access" class:enabled>{#if enabled}<Check size={10}/>{$t('Für {name} freigegeben', { name: profile.name })}{:else}{$t("Keine Botfreigabe")}{/if}</span></span>
             {#if selected?.id === item.id}<ArrowRight size={14}/>{/if}
           </button>
-        {:else}<div class="empty-library"><Search size={23}/><strong>{search || filter !== 'all' ? 'Keine passenden Einträge' : 'Die Bibliothek ist noch leer.'}</strong><p>{search || filter !== 'all' ? 'Passe Suche oder Filter an.' : tab === 'mcp' ? 'Füge einen Server hinzu. Die Botrechte wählst du danach.' : 'Importiere einen Skillordner oder erstelle einen eigenen Ablauf.'}</p></div>{/each}
+        {:else}<div class="empty-library"><Search size={23}/><strong>{search || filter !== 'all' ? $t("Keine passenden Einträge") : $t("Die Bibliothek ist noch leer.")}</strong><p>{search || filter !== 'all' ? $t("Passe Suche oder Filter an.") : tab === 'mcp' ? $t("Füge einen Server hinzu. Die Botrechte wählst du danach.") : $t("Importiere einen Skillordner oder erstelle einen eigenen Ablauf.")}</p></div>{/each}
       </div>
-      <footer class="library-actions">{#if tab === 'mcp'}<button class="ext-button library-primary" onclick={() => editMcp()} disabled={!native || !!operation || busy}><Plus size={15}/>MCP-Server hinzufügen</button>{:else}<button class="ext-button library-primary" onclick={importSkill} disabled={!native || !!operation || busy}><Upload size={15}/>Skillordner importieren</button><button class="ext-button quiet" onclick={newSkill} disabled={!native || !!operation || busy}><Plus size={14}/>Skill erstellen</button>{/if}<small>Installiert global. Aktiviert keine zusätzlichen Bots.</small></footer>
+      <footer class="library-actions">{#if tab === 'mcp'}<button class="ext-button library-primary" onclick={() => editMcp()} disabled={!native || !!operation || busy}><Plus size={15}/>{$t("MCP-Server hinzufügen")}</button>{:else}<button class="ext-button library-primary" onclick={importSkill} disabled={!native || !!operation || busy}><Upload size={15}/>{$t("Skillordner importieren")}</button><button class="ext-button quiet" onclick={newSkill} disabled={!native || !!operation || busy}><Plus size={14}/>{$t("Skill erstellen")}</button>{/if}<small>{$t("Installiert global. Aktiviert keine zusätzlichen Bots.")}</small></footer>
     </section>
 
-    <section class="details-column" aria-label={`Erweiterungsdetails für ${profile.name}`}>
+    <section class="details-column" aria-label={$t('Erweiterungsdetails für {name}', { name: profile.name })}>
       {#if editor}
-        <header class="scope-heading editor-heading"><span class="scope-icon"><Pencil size={19}/></span><div><h2>{editor === 'mcp' ? mcpDraft.id ? 'MCP global bearbeiten' : 'MCP global hinzufügen' : skillDraft.existing ? 'Skill global bearbeiten' : 'Skill global erstellen'}</h2><p>Änderungen gelten in der gemeinsamen Bibliothek.</p></div><button class="icon-control" onclick={closeEditor} aria-label="Editor schließen"><X size={18}/></button></header>
+        <header class="scope-heading editor-heading"><span class="scope-icon"><Pencil size={19}/></span><div><h2>{editor === 'mcp' ? mcpDraft.id ? $t("MCP global bearbeiten") : $t("MCP global hinzufügen") : skillDraft.existing ? $t("Skill global bearbeiten") : $t("Skill global erstellen")}</h2><p>{$t("Änderungen gelten in der gemeinsamen Bibliothek.")}</p></div><button class="icon-control" onclick={closeEditor} aria-label={$t("Editor schließen")}><X size={18}/></button></header>
         <form class="extension-editor" id={`${uid}-editor`} aria-busy={operation === 'save'} onsubmit={(event) => { event.preventDefault(); void saveEditor(); }}><fieldset disabled={operation === 'save'}>
-          <p class="scope-notice">{editor === 'mcp' ? 'Servereinstellungen werden von allen zugeordneten Bots gemeinsam verwendet. Speichern trennt eine bestehende Serververbindung; die Botrechte bleiben erhalten.' : 'Der Skillinhalt ist für alle Bots gleich, die diesen Skill verwenden. Persona und AGENTS.md bleiben eigene Dateien jedes Bots.'}</p>
+          <p class="scope-notice">{editor === 'mcp' ? $t("Servereinstellungen werden von allen zugeordneten Bots gemeinsam verwendet. Speichern trennt eine bestehende Serververbindung; die Botrechte bleiben erhalten.") : $t("Der Skillinhalt ist für alle Bots gleich, die diesen Skill verwenden. Persona und AGENTS.md bleiben eigene Dateien jedes Bots.")}</p>
           {#if editor === 'mcp'}
-            <label>Name<input bind:value={mcpDraft.name} maxlength="160" placeholder="Zum Beispiel OBS oder ComfyUI" required/></label>
-            <label>Verbindung<select bind:value={mcpDraft.transport}><option value="stdio">Lokaler Prozess · stdio</option><option value="http">Server-Adresse · HTTP</option></select></label>
+            <label>{$t("Name")}<input bind:value={mcpDraft.name} maxlength="160" placeholder={$t("Zum Beispiel OBS oder ComfyUI")} required/></label>
+            <label>{$t("Verbindung")}<select bind:value={mcpDraft.transport}><option value="stdio">{$t("Lokaler Prozess · stdio")}</option><option value="http">{$t("Server-Adresse · HTTP")}</option></select></label>
             {#if mcpDraft.transport === 'stdio'}
-              <label>Programm / Startbefehl<span class="editor-input-action"><input bind:value={mcpDraft.command} placeholder="npx, uvx oder absoluter Programmpfad" required/><button type="button" class="ext-button" onclick={chooseExecutable} disabled={!native}><FolderOpen size={14}/><span class="sr-only">Programm auswählen</span></button></span></label>
-              <label>Argumente <span>Ein Argument pro Zeile</span><textarea rows="3" bind:value={mcpDraft.argsText} placeholder="-y&#10;dein-mcp-paket"></textarea></label>
-              <label>Arbeitsordner <span>Optional</span><input bind:value={mcpDraft.cwd} placeholder="Absoluter Ordnerpfad"/></label>
-            {:else}<label>MCP-Endpunkt<input type="url" bind:value={mcpDraft.url} placeholder="http://127.0.0.1:8188/mcp" required/></label>{/if}
-            <label class="label-with-help"><span>Schlüsselbund-ID <HelpTip text="Hier steht nur der Name eines bereits hinterlegten Schlüssels, niemals dessen Wert. Bei HTTP verwendet die App ihn als Bearer-Token. Bei einem lokalen Prozess gibst du zusätzlich dessen Umgebungsvariablenname an. Ohne Zugangsdaten bleibt dieses Feld leer."/></span><input bind:value={mcpDraft.apiKeyId} placeholder="Optional: mcp-mein-server" autocomplete="off"/></label>
-            {#if mcpDraft.transport === 'stdio' && mcpDraft.apiKeyId}<label>Schlüssel an Umgebungsvariable übergeben<input bind:value={mcpDraft.tokenEnv} placeholder="Zum Beispiel API_KEY"/></label>{/if}
-            <p class="editor-hint">Lokale Server benötigen ihre installierte Laufzeit. Zugangsdaten bleiben im Betriebssystem-Schlüsselbund; hier werden nur Verweise bearbeitet.</p>
+              <label>{$t("Programm / Startbefehl")}<span class="editor-input-action"><input bind:value={mcpDraft.command} placeholder={$t("npx, uvx oder absoluter Programmpfad")} required/><button type="button" class="ext-button" onclick={chooseExecutable} disabled={!native}><FolderOpen size={14}/><span class="sr-only">{$t("Programm auswählen")}</span></button></span></label>
+              <label>{$t("Argumente")} <span>{$t("Ein Argument pro Zeile")}</span><textarea rows="3" bind:value={mcpDraft.argsText} placeholder="-y&#10;dein-mcp-paket"></textarea></label>
+              <label>{$t("Arbeitsordner")} <span>{$t("Optional")}</span><input bind:value={mcpDraft.cwd} placeholder={$t("Absoluter Ordnerpfad")}/></label>
+            {:else}<label>{$t("MCP-Endpunkt")}<input type="url" bind:value={mcpDraft.url} placeholder="http://127.0.0.1:8188/mcp" required/></label>{/if}
+            <label class="label-with-help"><span>{$t("Schlüsselbund-ID")} <HelpTip text={$t("Hier steht nur der Name eines bereits hinterlegten Schlüssels, niemals dessen Wert. Bei HTTP verwendet die App ihn als Bearer-Token. Bei einem lokalen Prozess gibst du zusätzlich dessen Umgebungsvariablenname an. Ohne Zugangsdaten bleibt dieses Feld leer.")}/></span><input bind:value={mcpDraft.apiKeyId} placeholder={$t("Optional: mcp-mein-server")} autocomplete="off"/></label>
+            {#if mcpDraft.transport === 'stdio' && mcpDraft.apiKeyId}<label>{$t("Schlüssel an Umgebungsvariable übergeben")}<input bind:value={mcpDraft.tokenEnv} placeholder={$t("Zum Beispiel API_KEY")}/></label>{/if}
+            <p class="editor-hint">{$t("Lokale Server benötigen ihre installierte Laufzeit. Zugangsdaten bleiben im Betriebssystem-Schlüsselbund; hier werden nur Verweise bearbeitet.")}</p>
           {:else}
-            <label>Skill-ID<input bind:value={skillDraft.id} readonly={skillDraft.existing} placeholder="stream-begruessung" required pattern={'[A-Za-z0-9_-]{1,96}'}/></label>
-            <label>SKILL.md<textarea class="skill-source" rows="16" bind:value={skillDraft.content} spellcheck="false" aria-label="Globalen Skillinhalt bearbeiten"></textarea></label>
-            {#if skillDraft.resources.length}<div class="skill-resources"><strong>Mitgelieferte Referenzen und Dateien</strong>{#each skillDraft.resources as resource}<span><FileText size={12}/>{typeof resource === 'string' ? resource : resource.path || resource.name || 'Ressource'}</span>{/each}</div>{/if}
-            <p class="editor-hint">Mit einem Skillordner importierst du auch Referenzen und Skripte. Hier bearbeitest du dessen SKILL.md; vorhandene Begleitdateien bleiben erhalten.</p>
+            <label>{$t("Skill-ID")}<input bind:value={skillDraft.id} readonly={skillDraft.existing} placeholder="stream-begruessung" required pattern={'[A-Za-z0-9_-]{1,96}'}/></label>
+            <label>SKILL.md<textarea class="skill-source" rows="16" bind:value={skillDraft.content} spellcheck="false" aria-label={$t("Globalen Skillinhalt bearbeiten")}></textarea></label>
+            {#if skillDraft.resources.length}<div class="skill-resources"><strong>{$t("Mitgelieferte Referenzen und Dateien")}</strong>{#each skillDraft.resources as resource}<span><FileText size={12}/>{typeof resource === 'string' ? resource : resource.path || resource.name || $t("Ressource")}</span>{/each}</div>{/if}
+            <p class="editor-hint">{$t("Mit einem Skillordner importierst du auch Referenzen und Skripte. Hier bearbeitest du dessen SKILL.md; vorhandene Begleitdateien bleiben erhalten.")}</p>
           {/if}
-          <footer class="editor-actions"><button type="button" class="ext-button quiet" onclick={closeEditor}>Abbrechen</button><button type="submit" class="ext-button library-primary" disabled={!native || !!operation || busy}><Check size={14}/>{operation === 'save' ? 'Speichert …' : 'Global speichern'}</button></footer>
+          <footer class="editor-actions"><button type="button" class="ext-button quiet" onclick={closeEditor}>{$t("Abbrechen")}</button><button type="submit" class="ext-button library-primary" disabled={!native || !!operation || busy}><Check size={14}/>{operation === 'save' ? $t("Speichert …") : $t("Global speichern")}</button></footer>
         </fieldset></form>
       {:else if selected}
-        <header class="scope-heading"><span class="bot-marker">{profile.name?.charAt(0) || 'B'}</span><div><h2>Freigaben für {profile.name}</h2><p>Diese Einstellungen gelten nur für diesen Bot.</p></div><HelpTip text="Die Bibliothek wird geteilt, die Berechtigungen nicht. Ein Bot erhält nur ausdrücklich freigegebene Skills und Werkzeuge. Zuschauerchat kann nur die zusätzlich für ihn freigegebenen Werkzeuge anfordern. Die App prüft diese Rechte bei jeder Ausführung."/></header>
-        <div class="selected-extension"><div class="selected-title"><span class="detail-symbol">{#if tab === 'mcp'}<Cable size={24}/>{:else}<BookOpen size={24}/>{/if}</span><div><h3>{selected.name || selected.id}</h3><p>{tab === 'mcp' ? selected.transport === 'stdio' ? 'Gemeinsam installierter MCP-Prozess' : 'Gemeinsam installierter MCP-Server' : selected.description || 'Gemeinsam installierter Skill'}</p></div><div class="global-actions"><button class="icon-control" onclick={() => tab === 'mcp' ? editMcp(selected) : editSkill(selected)} disabled={!native || !!operation || busy || tab==='mcp' && selected.transport==='builtin'} aria-label="Global bearbeiten" title="Global bearbeiten"><Pencil size={15}/></button><button class="icon-control danger" onclick={askDelete} disabled={!native || !!operation || busy} aria-label="Für alle Bots entfernen" title="Für alle Bots entfernen"><Trash2 size={15}/></button></div></div>
-          <div class="access-switch"><div><strong>Für {profile.name} verwenden</strong><p>{tab === 'mcp' ? 'Danach einzelne Werkzeuge und Zuschauerrechte auswählen.' : 'Der Bot darf die Anweisungen dieses Skills bei Bedarf laden.'}</p></div><input type="checkbox" role="switch" aria-label={`${selected.name || selected.id} für ${profile.name} verwenden`} checked={tab === 'mcp' ? grant.enabled : skillActive} disabled={!native || !!operation} onchange={(event) => { if (tab === 'mcp') void saveBot('mcpServers', setMcpEnabled(profile.mcpServers, selected, event.currentTarget.checked)); else void saveBot('skillsEnabled', setSkillEnabled(profile.skillsEnabled, selected.id, event.currentTarget.checked)); }}/></div>
-          {#if profile.model.toolsEnabled === false}<p class="scope-notice">Werkzeugaufrufe sind im Dialogmodell dieses Bots deaktiviert. Die hier gespeicherten Freigaben werden erst bei aktivierten Modellwerkzeugen verwendet.</p>{/if}
+        <header class="scope-heading"><span class="bot-marker">{profile.name?.charAt(0) || 'B'}</span><div><h2>{$t('Freigaben für {name}', { name: profile.name })}</h2><p>{$t("Diese Einstellungen gelten nur für diesen Bot.")}</p></div><HelpTip text={$t("Die Bibliothek wird geteilt, die Berechtigungen nicht. Ein Bot erhält nur ausdrücklich freigegebene Skills und Werkzeuge. Zuschauerchat kann nur die zusätzlich für ihn freigegebenen Werkzeuge anfordern. Die App prüft diese Rechte bei jeder Ausführung.")}/></header>
+        <div class="selected-extension"><div class="selected-title"><span class="detail-symbol">{#if tab === 'mcp'}<Cable size={24}/>{:else}<BookOpen size={24}/>{/if}</span><div><h3>{selected.name || selected.id}</h3><p>{tab === 'mcp' ? selected.transport === 'stdio' ? $t("Gemeinsam installierter MCP-Prozess") : $t("Gemeinsam installierter MCP-Server") : selected.description || $t("Gemeinsam installierter Skill")}</p></div><div class="global-actions"><button class="icon-control" onclick={() => tab === 'mcp' ? editMcp(selected) : editSkill(selected)} disabled={!native || !!operation || busy || tab==='mcp' && selected.transport==='builtin'} aria-label={$t("Global bearbeiten")} title={$t("Global bearbeiten")}><Pencil size={15}/></button><button class="icon-control danger" onclick={askDelete} disabled={!native || !!operation || busy} aria-label={$t("Für alle Bots entfernen")} title={$t("Für alle Bots entfernen")}><Trash2 size={15}/></button></div></div>
+          <div class="access-switch"><div><strong>{$t('Für {name} verwenden', { name: profile.name })}</strong><p>{tab === 'mcp' ? $t("Danach einzelne Werkzeuge und Zuschauerrechte auswählen.") : $t("Der Bot darf die Anweisungen dieses Skills bei Bedarf laden.")}</p></div><input type="checkbox" role="switch" aria-label={$t('{extension} für {name} verwenden', { extension: selected.name || selected.id, name: profile.name })} checked={tab === 'mcp' ? grant.enabled : skillActive} disabled={!native || !!operation} onchange={(event) => { if (tab === 'mcp') void saveBot('mcpServers', setMcpEnabled(profile.mcpServers, selected, event.currentTarget.checked)); else void saveBot('skillsEnabled', setSkillEnabled(profile.skillsEnabled, selected.id, event.currentTarget.checked)); }}/></div>
+          {#if profile.model.toolsEnabled === false}<p class="scope-notice">{$t("Werkzeugaufrufe sind im Dialogmodell dieses Bots deaktiviert. Die hier gespeicherten Freigaben werden erst bei aktivierten Modellwerkzeugen verwendet.")}</p>{/if}
           {#if tab === 'mcp'}
-            <div class="tools-heading"><div><h3>Werkzeuge</h3><p>{loadedTools ? `${loadedTools.length} Werkzeug${loadedTools.length === 1 ? '' : 'e'} geladen` : 'Lade die angebotenen Werkzeuge, bevor du Rechte vergibst.'}</p></div><button class="ext-button" onclick={() => loadTools(selected)} disabled={!native || !!operation || busy}><Plug size={14}/>{operation === 'tools' ? 'Lädt …' : 'Werkzeuge laden'}</button><HelpTip label="Werkzeugkatalog erklären" text="Diese Aktion verbindet den gemeinsam installierten MCP-Server und liest seinen Werkzeugkatalog. Sie führt keine Werkzeuge aus und aktiviert keinen Bot. Die Verbindung kann von mehreren Bots verwendet werden; eine Trennung betrifft daher alle Bots."/></div>
-            {#if loadedTools?.length}<div class="permissions-table"><div class="permissions-header"><span>Werkzeug</span><span>Bot</span><span>Chat <HelpTip text="Nur aktivieren, wenn Zuschauer dieses Werkzeug über deinen Cohost anfordern dürfen. Chatfreigaben benötigen immer auch die Botfreigabe. Das Entfernen der Botfreigabe entzieht beides."/></span></div>{#each loadedTools as tool (tool.name)}<div class="permission-row"><div><strong>{tool.name}</strong><p>{tool.description || 'Keine Beschreibung vom Server vorhanden.'}</p></div><input type="checkbox" aria-label={`${tool.name} für ${profile.name} erlauben`} checked={grant.allowedTools.includes(tool.name)} disabled={!native || !!operation || !grant.enabled} onchange={(event) => saveBot('mcpServers', setMcpTool(profile.mcpServers, selected.id, tool.name, event.currentTarget.checked))}/><input type="checkbox" aria-label={`${tool.name} für Zuschaueranfragen an ${profile.name} erlauben`} checked={grant.viewerAllowedTools.includes(tool.name)} disabled={!native || !!operation || !grant.enabled || !grant.allowedTools.includes(tool.name)} onchange={(event) => saveBot('mcpServers', setMcpTool(profile.mcpServers, selected.id, tool.name, event.currentTarget.checked, true))}/></div>{/each}</div>{:else if loadedTools}<div class="tools-empty"><Cable size={24}/><p>Der Server stellt derzeit keine Werkzeuge bereit.</p></div>{:else}<div class="tools-empty"><ShieldCheck size={28}/><p>{grant.allowedTools.length ? `${grant.allowedTools.length} Werkzeugfreigaben gespeichert` : 'Installiert bedeutet noch nicht freigegeben.'}</p><small>{grant.allowedTools.length ? 'Die gespeicherten Rechte bleiben erhalten. Lade den Werkzeugkatalog, um einzelne Freigaben zu prüfen und anzupassen.' : 'Auch bei aktiviertem Server bleiben alle Werkzeuge gesperrt, bis du sie hier auswählst.'}</small>{#if grant.allowedTools.length}<button class="ext-button quiet" disabled={!native || !!operation} onclick={() => saveBot('mcpServers', grant.allowedTools.reduce((bindings, tool) => setMcpTool(bindings, selected.id, tool, false), profile.mcpServers))}>Alle Werkzeugrechte entziehen</button>{/if}</div>{/if}
-            <div class="connection-footer"><p><Users size={14}/>Hostrechte gelten pro Bot. Ob Daten und Sitzungen getrennt bleiben, hängt zusätzlich vom verbundenen Server ab.</p>{#if loadedTools}<button class="ext-button quiet" onclick={() => disconnectServer(selected)} disabled={!native || !!operation || busy}><Unplug size={13}/>Gemeinsame Verbindung trennen</button>{/if}</div>
+            <div class="tools-heading"><div><h3>{$t("Werkzeuge")}</h3><p>{loadedTools ? loadedTools.length === 1 ? $t('1 Werkzeug geladen') : $t('{count} Werkzeuge geladen', { count: formatNumber(loadedTools.length, $locale) }) : $t("Lade die angebotenen Werkzeuge, bevor du Rechte vergibst.")}</p></div><button class="ext-button" onclick={() => loadTools(selected)} disabled={!native || !!operation || busy}><Plug size={14}/>{operation === 'tools' ? $t("Lädt …") : $t("Werkzeuge laden")}</button><HelpTip label={$t("Werkzeugkatalog erklären")} text={$t("Diese Aktion verbindet den gemeinsam installierten MCP-Server und liest seinen Werkzeugkatalog. Sie führt keine Werkzeuge aus und aktiviert keinen Bot. Die Verbindung kann von mehreren Bots verwendet werden; eine Trennung betrifft daher alle Bots.")}/></div>
+            {#if loadedTools?.length}<div class="permissions-table"><div class="permissions-header"><span>{$t("Werkzeug")}</span><span>{$t("Bot")}</span><span>{$t("Chat")} <HelpTip text={$t("Nur aktivieren, wenn Zuschauer dieses Werkzeug über deinen Cohost anfordern dürfen. Chatfreigaben benötigen immer auch die Botfreigabe. Das Entfernen der Botfreigabe entzieht beides.")}/></span></div>{#each loadedTools as tool (tool.name)}<div class="permission-row"><div><strong>{tool.name}</strong><p>{tool.description || $t("Keine Beschreibung vom Server vorhanden.")}</p></div><input type="checkbox" aria-label={$t('{tool} für {name} erlauben', { tool: tool.name, name: profile.name })} checked={grant.allowedTools.includes(tool.name)} disabled={!native || !!operation || !grant.enabled} onchange={(event) => saveBot('mcpServers', setMcpTool(profile.mcpServers, selected.id, tool.name, event.currentTarget.checked))}/><input type="checkbox" aria-label={$t('{tool} für Zuschaueranfragen an {name} erlauben', { tool: tool.name, name: profile.name })} checked={grant.viewerAllowedTools.includes(tool.name)} disabled={!native || !!operation || !grant.enabled || !grant.allowedTools.includes(tool.name)} onchange={(event) => saveBot('mcpServers', setMcpTool(profile.mcpServers, selected.id, tool.name, event.currentTarget.checked, true))}/></div>{/each}</div>{:else if loadedTools}<div class="tools-empty"><Cable size={24}/><p>{$t("Der Server stellt derzeit keine Werkzeuge bereit.")}</p></div>{:else}<div class="tools-empty"><ShieldCheck size={28}/><p>{grant.allowedTools.length ? $t('{count} Werkzeugfreigaben gespeichert', { count: formatNumber(grant.allowedTools.length, $locale) }) : $t("Installiert bedeutet noch nicht freigegeben.")}</p><small>{grant.allowedTools.length ? $t("Die gespeicherten Rechte bleiben erhalten. Lade den Werkzeugkatalog, um einzelne Freigaben zu prüfen und anzupassen.") : $t("Auch bei aktiviertem Server bleiben alle Werkzeuge gesperrt, bis du sie hier auswählst.")}</small>{#if grant.allowedTools.length}<button class="ext-button quiet" disabled={!native || !!operation} onclick={() => saveBot('mcpServers', grant.allowedTools.reduce((bindings, tool) => setMcpTool(bindings, selected.id, tool, false), profile.mcpServers))}>{$t("Alle Werkzeugrechte entziehen")}</button>{/if}</div>{/if}
+            <div class="connection-footer"><p><Users size={14}/>{$t("Hostrechte gelten pro Bot. Ob Daten und Sitzungen getrennt bleiben, hängt zusätzlich vom verbundenen Server ab.")}</p>{#if loadedTools}<button class="ext-button quiet" onclick={() => disconnectServer(selected)} disabled={!native || !!operation || busy}><Unplug size={13}/>{$t("Gemeinsame Verbindung trennen")}</button>{/if}</div>
           {:else}
-            <div class="skill-reading"><BookOpen size={30}/><h3>Ein Ablauf. Für deine Bots verfügbar.</h3><p>Der vollständige Skill und seine Referenzen werden bei Bedarf geladen. Eine Installation verändert weder die Persönlichkeit noch die AGENTS.md eines Bots.</p><button class="ext-button" onclick={() => editSkill(selected)} disabled={!native || !!operation}><FileText size={14}/>{operation === 'read-skill' ? 'Lädt …' : 'Inhalt öffnen'}</button></div>
-            <div class="script-access"><div><strong>Skill-Skripte für {profile.name} erlauben</strong><p>Gilt für alle freigegebenen Skills dieses Bots. Nur ausdrückliche Streamer-Aufträge können Skripte starten; Zuschauer erhalten diese Fähigkeit nicht.</p></div><input type="checkbox" role="switch" aria-label={`Skill-Skripte für ${profile.name} erlauben`} checked={profile.allowSkillScripts === true} disabled={!native || !!operation} onchange={(event) => saveBot('allowSkillScripts', event.currentTarget.checked)}/><HelpTip text="Ein Skill kann lokale Python- oder JavaScript-Skripte mitbringen. Mit dieser gesonderten Freigabe dürfen sie bei expliziten Streamer-Aufträgen ausgeführt werden. Aktiviere sie nur für Skills, deren Skripte du geprüft hast. Diese Freigabe ist unabhängig von der globalen Installation."/></div>
+            <div class="skill-reading"><BookOpen size={30}/><h3>{$t("Ein Ablauf. Für deine Bots verfügbar.")}</h3><p>{$t("Der vollständige Skill und seine Referenzen werden bei Bedarf geladen. Eine Installation verändert weder die Persönlichkeit noch die AGENTS.md eines Bots.")}</p><button class="ext-button" onclick={() => editSkill(selected)} disabled={!native || !!operation}><FileText size={14}/>{operation === 'read-skill' ? $t("Lädt …") : $t("Inhalt öffnen")}</button></div>
+            <div class="script-access"><div><strong>{$t('Skill-Skripte für {name} erlauben', { name: profile.name })}</strong><p>{$t("Gilt für alle freigegebenen Skills dieses Bots. Nur ausdrückliche Streamer-Aufträge können Skripte starten; Zuschauer erhalten diese Fähigkeit nicht.")}</p></div><input type="checkbox" role="switch" aria-label={$t('Skill-Skripte für {name} erlauben', { name: profile.name })} checked={profile.allowSkillScripts === true} disabled={!native || !!operation} onchange={(event) => saveBot('allowSkillScripts', event.currentTarget.checked)}/><HelpTip text={$t("Ein Skill kann lokale Python- oder JavaScript-Skripte mitbringen. Mit dieser gesonderten Freigabe dürfen sie bei expliziten Streamer-Aufträgen ausgeführt werden. Aktiviere sie nur für Skills, deren Skripte du geprüft hast. Diese Freigabe ist unabhängig von der globalen Installation.")}/></div>
           {/if}
-          <p class="saved-note" role="status">{operation === 'grant' ? 'Botfreigabe wird gespeichert …' : 'Botfreigaben werden unmittelbar gespeichert.'}</p>
+          <p class="saved-note" role="status">{operation === 'grant' ? $t("Botfreigabe wird gespeichert …") : $t("Botfreigaben werden unmittelbar gespeichert.")}</p>
         </div>
-      {:else}<div class="no-selection"><span class="scope-icon"><LibraryBig size={30}/></span><h2>Deine Bibliothek, deine Freigaben.</h2><p>Wähle links einen MCP-Server oder Skill. Rechts entscheidest du, was {profile.name} und sein Zuschauerchat verwenden dürfen.</p><p class="no-selection-note">Persona und AGENTS.md bleiben unter „Persönlichkeit &amp; Regeln“ pro Bot anpassbar.</p></div>{/if}
+      {:else}<div class="no-selection"><span class="scope-icon"><LibraryBig size={30}/></span><h2>{$t("Deine Bibliothek, deine Freigaben.")}</h2><p>{$t('Wähle links einen MCP-Server oder Skill. Rechts entscheidest du, was {name} und sein Zuschauerchat verwenden dürfen.', { name: profile.name })}</p><p class="no-selection-note">{$t('Persona und AGENTS.md bleiben unter „Persönlichkeit & Regeln“ pro Bot anpassbar.')}</p></div>{/if}
     </section>
   </div>
 </div>
 
-{#if deletion}<div class="extension-modal-backdrop" role="presentation"><div class="extension-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby={`${uid}-delete-title`} aria-describedby={`${uid}-delete-description`} tabindex="-1" bind:this={dialog}><span class="delete-symbol"><Trash2 size={24}/></span><h2 id={`${uid}-delete-title`}>Für alle Bots entfernen?</h2><p id={`${uid}-delete-description`}>„{deletion.name}“ wird aus der gemeinsamen Bibliothek gelöscht. Alle Bots verlieren ihre Freigaben für diese Erweiterung.{deletion.kind === 'skill' ? ' Der Skillordner und seine Begleitdateien werden entfernt.' : ' Eine bestehende Serververbindung wird getrennt.'}</p><p class="delete-alternative">Wenn nur {profile.name} die Erweiterung nicht mehr verwenden soll, brich ab und schalte seine Botfreigabe aus.</p><div class="delete-actions"><button class="ext-button" bind:this={cancelButton} onclick={closeDelete} disabled={operation === 'delete'}>Abbrechen</button><button class="ext-button delete-confirm" onclick={deleteGlobal} disabled={!!operation || busy}>{operation === 'delete' ? 'Entfernt …' : 'Für alle Bots entfernen'}</button></div></div></div>{/if}
+{#if deletion}<div class="extension-modal-backdrop" role="presentation"><div class="extension-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby={`${uid}-delete-title`} aria-describedby={`${uid}-delete-description`} tabindex="-1" bind:this={dialog}><span class="delete-symbol"><Trash2 size={24}/></span><h2 id={`${uid}-delete-title`}>{$t("Für alle Bots entfernen?")}</h2><p id={`${uid}-delete-description`}>{$t('„{name}“ wird aus der gemeinsamen Bibliothek gelöscht. Alle Bots verlieren ihre Freigaben für diese Erweiterung.', { name: deletion.name })}{deletion.kind === 'skill' ? ' ' + $t('Der Skillordner und seine Begleitdateien werden entfernt.') : ' ' + $t('Eine bestehende Serververbindung wird getrennt.')}</p><p class="delete-alternative">{$t('Wenn nur {name} die Erweiterung nicht mehr verwenden soll, brich ab und schalte seine Botfreigabe aus.', { name: profile.name })}</p><div class="delete-actions"><button class="ext-button" bind:this={cancelButton} onclick={closeDelete} disabled={operation === 'delete'}>{$t("Abbrechen")}</button><button class="ext-button delete-confirm" onclick={deleteGlobal} disabled={!!operation || busy}>{operation === 'delete' ? $t("Entfernt …") : $t("Für alle Bots entfernen")}</button></div></div></div>{/if}
 
 <style>
   .extensions-workspace { --ext-line: #344054; --ext-panel: #1b2330; --ext-soft: #222e40; --ext-muted: #a4b1c6; color: #e0e6f0; }

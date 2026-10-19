@@ -1,7 +1,7 @@
 {
-  "name": "streamer-ai-cohost",
+  "name": "orbitpal",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.8.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
@@ -37,11 +37,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ralphschuler/streamer-ai-cohost.git"
+    "url": "https://github.com/ralphschuler/orbitpal.git"
   },
-  "homepage": "https://github.com/ralphschuler/streamer-ai-cohost",
+  "homepage": "https://github.com/ralphschuler/orbitpal",
   "bugs": {
-    "url": "https://github.com/ralphschuler/streamer-ai-cohost/issues"
+    "url": "https://github.com/ralphschuler/orbitpal/issues"
   },
   "packageManager": "pnpm@11.25.0",
   "engines": {

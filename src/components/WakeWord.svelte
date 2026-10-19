@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t, translate } from '../lib/i18n';
   import { onDestroy, untrack } from 'svelte';
   import { Mic, MicOff, Settings2, Square, ChevronDown } from '@lucide/svelte';
   import { call, native, prettyError } from '../lib/api';
@@ -32,7 +33,7 @@
   const active = $derived(status !== 'stopped');
   $effect(() => { onActiveChange?.(active); });
   const local = $derived(sttProvider === 'whisper-local');
-  const providerName = $derived(({ 'whisper-local': 'Lokales Whisper', openai: 'OpenAI Whisper · Cloud', elevenlabs: 'ElevenLabs Scribe · Cloud', compatible: 'Konfigurierte STT-API' } as Record<string, string>)[sttProvider] || 'Keine Spracherkennung');
+  const providerName = $derived($t(({ 'whisper-local': 'Lokales Whisper', openai: 'OpenAI Whisper · Cloud', elevenlabs: 'ElevenLabs Scribe · Cloud', compatible: 'Konfigurierte STT-API' } as Record<string, string>)[sttProvider] || 'Keine Spracherkennung'));
   const phrases = $derived(normalizeWakePhrases(config?.phrases));
   const labels: Record<WakeWordState, string> = {
     stopped: 'Zuhören beendet', starting: 'Mikrofon wird aktiviert …', listening: 'Wartet auf Aktivierungsphrase', capturing: 'Audioabschnitt wird aufgenommen …',
@@ -55,7 +56,7 @@
     if (!lastNotification || Date.now() - lastNotificationAt >= 30_000 || (!recovering && message !== lastNotification)) {
       lastNotification = message;
       lastNotificationAt = Date.now();
-      onError(message);
+      onError(translate(message));
     }
   }
 
@@ -87,9 +88,9 @@
 
   async function startListening() {
     if (blocked || saving || destroyed) return;
-    if (!native) { showError('Sprachaktivierung ist in der Desktop-App verfügbar.'); return; }
+    if (!native) { showError("Sprachaktivierung ist in der Desktop-App verfügbar."); return; }
     if (!['whisper-local', 'openai', 'elevenlabs', 'compatible'].includes(sttProvider)) {
-      showError('Wähle unter Modelle zuerst einen Spracherkennungsanbieter.'); return;
+      showError("Wähle unter Modelle zuerst einen Spracherkennungsanbieter."); return;
     }
     stopListening();
     failure = '';
@@ -151,39 +152,39 @@
   onDestroy(() => { destroyed = true; stopListening(); onActiveChange?.(false); });
 </script>
 
-<section class="wake-word" class:listening={active && status !== 'paused'} aria-label="Sprachaktivierung">
+<section class="wake-word" class:listening={active && status !== 'paused'} aria-label={$t("Sprachaktivierung")}>
   <div class="wake-bar">
     <span class="wake-icon" aria-hidden="true">{#if active}<Mic size={17}/>{:else}<MicOff size={17}/>{/if}</span>
     <div class="wake-copy">
-      <strong>Sprachaktivierung <span>· {config?.enabled ? 'pro Bot' : 'ausgeschaltet'}</span></strong>
-      <span class="wake-status" role="status">{active ? labels[status] : config?.enabled ? phrases.map((phrase) => `„${phrase}“`).join(' / ') || 'Noch keine Phrase eingerichtet' : 'Mit einer eigenen Phrase ansprechen.'}</span>
+      <strong>{$t("Sprachaktivierung")} <span>· {config?.enabled ? $t("pro Bot") : $t("ausgeschaltet")}</span></strong>
+      <span class="wake-status" role="status">{active ? $t(labels[status]) : config?.enabled ? phrases.map((phrase) => `„${phrase}“`).join(' / ') || $t("Noch keine Phrase eingerichtet") : $t("Mit einer eigenen Phrase ansprechen.")}</span>
     </div>
-    <span class="provider-badge" class:local title="Dieser Anbieter verarbeitet die erkannten Audioabschnitte">{providerName}</span>
+    <span class="provider-badge" class:local title={$t("Dieser Anbieter verarbeitet die erkannten Audioabschnitte")}>{providerName}</span>
     {#if active}
-      <button class="wake-button stop" onclick={stopListening}><Square size={13}/>Zuhören stoppen</button>
+      <button class="wake-button stop" onclick={stopListening}><Square size={13}/>{$t("Zuhören stoppen")}</button>
     {:else if config?.enabled}
-      <button class="wake-button start" disabled={blocked || saving || !native} onclick={startListening} title={blocked ? 'Wartet, bis Antwort und andere Mikrofonaufnahme beendet sind.' : ''}>
-        <Mic size={14}/>{local ? 'Zuhören starten' : 'Zuhören starten · Audio senden'}
+      <button class="wake-button start" disabled={blocked || saving || !native} onclick={startListening} title={blocked ? $t("Wartet, bis Antwort und andere Mikrofonaufnahme beendet sind.") : ''}>
+        <Mic size={14}/>{local ? $t("Zuhören starten") : $t("Zuhören starten · Audio senden")}
       </button>
     {:else}
-      <button class="wake-button" onclick={() => expanded = true}>Einrichten</button>
+      <button class="wake-button" onclick={() => expanded = true}>{$t("Einrichten")}</button>
     {/if}
-    <button class="wake-settings" class:open={expanded} onclick={() => expanded = !expanded} aria-expanded={expanded} aria-controls={`wake-settings-${botId}`} aria-label="Sprachaktivierung einstellen"><Settings2 size={16}/><ChevronDown size={12}/></button>
+    <button class="wake-settings" class:open={expanded} onclick={() => expanded = !expanded} aria-expanded={expanded} aria-controls={`wake-settings-${botId}`} aria-label={$t("Sprachaktivierung einstellen")}><Settings2 size={16}/><ChevronDown size={12}/></button>
   </div>
-  {#if config?.enabled && !local}<p class="wake-disclosure">{active ? 'Audioübertragung aktiv: ' : ''}Auch Abschnitte vor der Aktivierungsphrase werden vom gewählten STT-Anbieter verarbeitet.</p>{/if}
-  {#if failure}<p class="wake-error" role="alert">{failure}</p>{/if}
+  {#if config?.enabled && !local}<p class="wake-disclosure">{active ? $t('Audioübertragung aktiv:') + ' ' : ''}{$t('Auch Abschnitte vor der Aktivierungsphrase werden vom gewählten STT-Anbieter verarbeitet.')}</p>{/if}
+  {#if failure}<p class="wake-error" role="alert">{$t(failure)}</p>{/if}
   {#if expanded}
     <div class="wake-details" id={`wake-settings-${botId}`}>
-      <label class="wake-toggle"><input type="checkbox" checked={config?.enabled === true} onchange={(event) => { stopListening(); updateConfig({ ...config, enabled: event.currentTarget.checked }); }}/><span>Aktivierungsphrase für diesen Bot verwenden</span></label>
+      <label class="wake-toggle"><input type="checkbox" checked={config?.enabled === true} onchange={(event) => { stopListening(); updateConfig({ ...config, enabled: event.currentTarget.checked }); }}/><span>{$t("Aktivierungsphrase für diesen Bot verwenden")}</span></label>
       <div class="wake-config">
-        <label class="wake-phrases">Aktivierungsphrasen <span>Eine pro Zeile · bis zu acht</span><textarea rows="2" bind:value={phraseDraft} disabled={active} placeholder="hey nova" spellcheck="false"></textarea></label>
+        <label class="wake-phrases">{$t("Aktivierungsphrasen")} <span>{$t("Eine pro Zeile · bis zu acht")}</span><textarea rows="2" bind:value={phraseDraft} disabled={active} placeholder="hey nova" spellcheck="false"></textarea></label>
         <div class="wake-explanation">
-          <p>Gesagt wird zum Beispiel <strong>„hey nova, wie geht es dir?“</strong>. Sagst du nur die Phrase, wartet der Cohost zehn Sekunden auf deine Frage. Ganze Wörter zählen; Großschreibung und Satzzeichen spielen keine Rolle.</p>
-          <p>Der gewählte STT-Anbieter verarbeitet jeden erkannten Audioabschnitt, auch <strong>vor</strong> der Aktivierungsphrase. {local ? 'Lokales Whisper benötigt einen separat gestarteten Whisper-Server.' : 'Bei einem Cloud-Anbieter verlässt dieses Audio deinen Rechner.'} Anbieter und Zugang richtest du unter „Modelle“ ein.</p>
-          <p>Das Mikrofon startet ausschließlich mit deinem Klick auf „Zuhören starten“. Bei Antworten, Emote-Sounds und anderen Aufnahmen pausiert es und hört danach automatisch weiter. Vorübergehende Fehler werden mit wachsendem Abstand bis zu fünfmal erneut versucht; sage den Abschnitt danach bitte noch einmal. „Stop“, ein Botwechsel oder entzogene Mikrofonrechte benötigen einen neuen Start.</p>
+          <p>{$t("Gesagt wird zum Beispiel")} <strong>{$t("„hey nova, wie geht es dir?“")}</strong>. {$t("Sagst du nur die Phrase, wartet der Cohost zehn Sekunden auf deine Frage. Ganze Wörter zählen; Großschreibung und Satzzeichen spielen keine Rolle.")}</p>
+          <p>{$t("Der gewählte STT-Anbieter verarbeitet jeden erkannten Audioabschnitt, auch vor der Aktivierungsphrase.")} {local ? $t("Lokales Whisper benötigt einen separat gestarteten Whisper-Server.") : $t("Bei einem Cloud-Anbieter verlässt dieses Audio deinen Rechner.")} {$t("Anbieter und Zugang richtest du unter „Modelle“ ein.")}</p>
+          <p>{$t("Das Mikrofon startet ausschließlich mit deinem Klick auf „Zuhören starten“. Bei Antworten, Emote-Sounds und anderen Aufnahmen pausiert es und hört danach automatisch weiter. Vorübergehende Fehler werden mit wachsendem Abstand bis zu fünfmal erneut versucht; sage den Abschnitt danach bitte noch einmal. „Stop“, ein Botwechsel oder entzogene Mikrofonrechte benötigen einen neuen Start.")}</p>
         </div>
       </div>
-      <div class="wake-footer"><span>{active ? 'Zum Bearbeiten das Zuhören stoppen.' : 'Gespeicherte Einstellungen starten keine Aufnahme.'}</span><button class="wake-button" disabled={saving || active} onclick={saveSettings}>{saving ? 'Speichert …' : 'Einstellungen speichern'}</button></div>
+      <div class="wake-footer"><span>{active ? $t("Zum Bearbeiten das Zuhören stoppen.") : $t("Gespeicherte Einstellungen starten keine Aufnahme.")}</span><button class="wake-button" disabled={saving || active} onclick={saveSettings}>{saving ? $t("Speichert …") : $t("Einstellungen speichern")}</button></div>
     </div>
   {/if}
 </section>

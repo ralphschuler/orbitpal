@@ -46,10 +46,14 @@ The generic `windows-x86_64` entry points to NSIS for compatibility. Installer-a
 
 After all platform builds finish, `scripts/updater-manifest.mjs` requires nonempty regular payload and signature files, validates signature format, configured key ID and signed version, and writes immutable URLs under `releases/download/vVERSION/`. These structural checks complement the cryptographic verification performed by the native updater before installation. Missing artifacts or mismatched signatures prevent publication. SHA-256 checksums include the manifest and signatures.
 
-The stable endpoint is `https://github.com/ralphschuler/streamer-ai-cohost/releases/latest/download/latest.json`. Publication first creates a complete draft, then makes it public and marks a stable release latest. Prereleases remain available for manual downloads. Do not move an existing release tag or replace published assets to repair a version; ship a new version instead.
+The stable endpoint is `https://github.com/ralphschuler/orbitpal/releases/latest/download/latest.json`. To support installed 0.6/0.7 clients after the rename, `latest.json` deliberately uses initial asset URLs under the fixed former `ralphschuler/streamer-ai-cohost` repository path; GitHub redirects them to the same releases. The manifest generator requires the official canonical repository and permits no asset-path override. Keep that redirect intact. See [the migration guide](MIGRATING-TO-ORBITPAL.md). Publication first creates a complete draft, then makes it public and marks a stable release latest. Prereleases remain available for manual downloads. Do not move an existing release tag or replace published assets to repair a version; ship a new version instead.
 
 See [the update guide](UPDATING.md) for user confirmation, restart behavior, and first-install limitations, and the [official Tauri updater documentation](https://v2.tauri.app/plugin/updater/) for the signature format and packaging requirements.
 
 ## Workflow boundaries
 
 Release workflows run only for pushed version tags or explicit manual dispatch. They do not run from `pull_request_target` or from untrusted pull-request artifacts. CI and build jobs have read-only repository permissions; only the final publication job has `contents: write`. Checkout tokens are not persisted, third-party actions are pinned to verified commit hashes, and no model or service credentials are provided.
+
+## Product rename compatibility
+
+The display/product name is OrbitPal, while bundle/data/keychain IDs remain stable. The Windows MSI UpgradeCode and NSIS registry identity are pinned to their pre-rename values. The Windows CI job performs a real installer migration smoke with pinned official 0.7.0 payloads on its disposable runner; it never starts the app. See [MIGRATING-TO-ORBITPAL.md](MIGRATING-TO-ORBITPAL.md) before changing product names, Windows templates or updater URLs.

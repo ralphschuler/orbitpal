@@ -3,6 +3,8 @@ import { recordingToWav } from './audio';
 import { findWakePhrase, normalizeWakePhrases, WakeWordListener } from './wake-word';
 
 vi.mock('./audio', () => ({ recordingToWav: vi.fn() }));
+const permissionApi = vi.hoisted(() => ({ native: false, call: vi.fn() }));
+vi.mock('./api', () => permissionApi);
 const wav = { audioBase64: 'local-fixture', mimeType: 'audio/wav' };
 
 describe('Aktivierungsphrasen', () => {
@@ -93,6 +95,8 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance'] });
     volume = 0;
+    permissionApi.native = false;
+    permissionApi.call.mockReset();
     listeners = [];
     createdRecorders = [];
     contexts = [];
@@ -148,6 +152,36 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
     const { listener } = setup();
     await listener.start(() => false);
     expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it('öffnet bei verweigerter nativer macOS-Freigabe kein Gerät und wiederholt die Anfrage nicht', async () => {
+    permissionApi.native = true;
+    permissionApi.call.mockResolvedValue({ platform: 'macos', status: 'denied' });
+    const { listener, onState } = setup();
+    await expect(listener.start()).rejects.toThrow('Datenschutz & Sicherheit');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(permissionApi.call).toHaveBeenCalledExactlyOnceWith('request_microphone_permission');
+    expect(onState).toHaveBeenLastCalledWith('stopped');
+    expect(contexts[0].state).toBe('closed');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('verwirft eine native Freigabe nach Stop ohne WebView-Aufnahme oder Neustart', async () => {
+    permissionApi.native = true;
+    const permission = deferred<{ platform: string; status: string }>();
+    permissionApi.call.mockReturnValue(permission.promise);
+    const { listener, onState } = setup();
+    const started = listener.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(permissionApi.call).toHaveBeenCalledOnce();
+    listener.stop();
+    permission.resolve({ platform: 'macos', status: 'authorized' });
+    await started;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(getUserMedia).not.toHaveBeenCalled();
+    expect(onState).toHaveBeenLastCalledWith('stopped');
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('übergibt die Frage und deaktiviert Aufnahme vor dem Antwortcallback', async () => {
@@ -443,7 +477,7 @@ describe('Mikrofon- und Antwortlebenszyklus mit lokalen Browser-Doubles', () => 
   });
 
   it.each([
-    ['NotAllowedError', 'Mikrofonzugriff wurde nicht freigegeben'],
+    ['NotAllowedError', 'Mikrofonzugriff wurde vom System oder von der WebView abgelehnt'],
     ['NotFoundError', 'Kein passendes Mikrofon verfügbar'],
   ])('fordert bei %s eine konkrete Benutzeraktion statt endlos erneut anzufragen', async (name, message) => {
     getUserMedia.mockRejectedValue(new DOMException('Browserfehler', name));

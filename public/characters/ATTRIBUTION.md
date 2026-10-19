@@ -4,7 +4,7 @@ Diese Hinweise gehören zu den hier enthaltenen GLB-Dateien und werden mit der A
 
 ## Nova
 
-Eigene prozedurale Figur von Streamer AI Cohost. Für Nova wird keine externe 3D-Datei geladen.
+Eigene prozedurale Figur von OrbitPal. Für Nova wird keine externe 3D-Datei geladen.
 
 ## Robot Expressive · RobotExpressive.glb
 
@@ -35,7 +35,7 @@ Die komplette animierte GLB-Datei ist **nicht ausschließlich CC0**. Die offizie
 
 Die Namen und Lizenzhinweise müssen bei einer Weitergabe erhalten bleiben. Bei öffentlicher Verwendung des Fox im Stream sind die erforderlichen Credits entsprechend dem Medium zugänglich anzugeben, beispielsweise in der Stream- oder Kanalbeschreibung. Eine geeignete kurze Angabe ist:
 
-> Fox: Modell PixelMannen (CC0), Rig/Animation tomkranis und glTF-Konvertierung AsoboStudio/scurest (CC BY 4.0). Quelle: https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Fox · Lizenz: https://creativecommons.org/licenses/by/4.0/ · Datei unverändert, Darstellung und Animation zur Laufzeit durch Streamer AI Cohost.
+> Fox: Modell PixelMannen (CC0), Rig/Animation tomkranis und glTF-Konvertierung AsoboStudio/scurest (CC BY 4.0). Quelle: https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Fox · Lizenz: https://creativecommons.org/licenses/by/4.0/ · Datei unverändert, Darstellung und Animation zur Laufzeit durch OrbitPal.
 
 Die Autoren unterstützen oder empfehlen diese App damit nicht. Die Fremd-Assets werden ohne Gewähr gemäß den beigefügten Lizenztexten bereitgestellt.
 

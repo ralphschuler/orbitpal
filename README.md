@@ -1,19 +1,21 @@
-# Streamer AI Cohost
+# OrbitPal
 
-[![CI](https://github.com/ralphschuler/streamer-ai-cohost/actions/workflows/ci.yml/badge.svg)](https://github.com/ralphschuler/streamer-ai-cohost/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/ralphschuler/streamer-ai-cohost)](https://github.com/ralphschuler/streamer-ai-cohost/releases)
+A desktop AI cohost for Twitch and YouTube, formerly **Streamer AI Cohost**. Existing profiles and credentials stay in place when updating. See [rename and update compatibility](docs/MIGRATING-TO-ORBITPAL.md).
+
+[![CI](https://github.com/ralphschuler/orbitpal/actions/workflows/ci.yml/badge.svg)](https://github.com/ralphschuler/orbitpal/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ralphschuler/orbitpal)](https://github.com/ralphschuler/orbitpal/releases)
 [![License: MIT](https://img.shields.io/badge/code-MIT-blue.svg)](LICENSE)
 
-Your own animated AI cohost for Twitch and YouTube. A native **Tauri 2 + Rust** desktop app with a **Svelte 5 + Three.js** control room, transparent character windows and OBS browser sources. The interface is currently German.
+Your own animated AI cohost for Twitch and YouTube. A native **Tauri 2 + Rust** desktop app with a **Svelte 5 + Three.js** control room, transparent character windows and OBS browser sources. The interface supports English, German, French and Spanish; its language is independent of each bot’s conversation and voice.
 
 **Early release:** expect rough edges and review provider settings before going live. Model runtimes, accounts, API keys and voices are supplied by you.
 
-The current source version is **0.6.0**. Consult the release notes for the version included in each published package.
+The current source version is **0.8.0** (unreleased). Consult the release notes for the version included in each published package.
 
 ## What it does
 
 - Multiple independent bots with their own persona, voice, model, skills and permissions; show them together and queue their spoken turns.
-- 17 included characters, plus VRM/GLB imports, expressions and custom emotes with optional sounds and volume. Audio start synchronizes subtitles, gestures and optional stream-chat replies; compatible rigs animate while speaking. Subtitles expire 15 seconds after speech ends, with ElevenLabs voice tags kept only in the speech text.
+- 17 included characters, plus VRM/GLB/glTF imports, expressions and custom emotes with optional sounds and volume. Audio start synchronizes subtitles, gestures and optional stream-chat replies; compatible rigs animate while speaking. Subtitles expire 15 seconds after speech ends, with ElevenLabs voice tags kept only in the speech text.
 - Twitch EventSub and YouTube live chat, manual selection or automatic reply modes, a bounded queue and a global stop.
 - Local models through Ollama, LM Studio or compatible APIs; cloud models through OpenAI-compatible/Anthropic APIs; separately installed **Codex** and **Claude Code** CLIs with model and reasoning controls.
 - System voices, ElevenLabs and compatible TTS; local Whisper, OpenAI Whisper, ElevenLabs Scribe and compatible STT. Configurable microphone activation phrases.
@@ -28,20 +30,20 @@ Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, sil
 
 ## Download and start
 
-Get published packages from the [latest release](https://github.com/ralphschuler/streamer-ai-cohost/releases/latest). The release pipeline targets Windows x64, macOS Apple Silicon/Intel, and Linux x64; each release identifies its available files and checksums. Windows packages are **unsigned**; macOS packages use **ad-hoc signing without notarization**. Platform trust prompts may appear. See [release details](docs/RELEASING.md).
+Get published packages from the [latest release](https://github.com/ralphschuler/orbitpal/releases/latest). The release pipeline targets Windows x64, macOS Apple Silicon/Intel, and Linux x64; each release identifies its available files and checksums. Windows packages are **unsigned**; macOS packages use **ad-hoc signing without notarization**. Platform trust prompts may appear. See [release details](docs/RELEASING.md).
 
-1. Open the app and choose a dialog provider under **Modelle**. Local runtimes must be running; cloud/CLI providers need your own login or key.
-2. Choose a character and voice under **Charakter & Stimme**.
-3. Send a message in **Regiepult**, then configure chat under **Twitch & YouTube**.
-4. Open a transparent character window or add the bot's **OBS-Link** as a browser source. Keep the desktop app running.
+1. Open the app and choose a dialog provider under **Models**. Local runtimes must be running; cloud/CLI providers need your own login or key.
+2. Choose a character and voice under **Character & voice**.
+3. Send a message in **Control room**, then configure chat under **Twitch & YouTube**.
+4. Open a transparent character window or add the bot's **OBS link** as a browser source. Keep the desktop app running.
 
 The app opens without an AI account. Nova and the included models work without downloading assets. Dialog and voice services require their respective configuration. CLI integrations usually use cloud inference; installing a CLI does not make its model local.
 
-Press **?** or **F1** for keyboard help. **Ctrl/Cmd+S** saves, **Ctrl/Cmd+K** focuses the composer, **Ctrl/Cmd+Enter** sends from the studio, and **Alt/Option+1–7** switches sections. **Esc** dismisses visible help or a dialog first; otherwise it stops output. Inline information buttons explain settings on hover or keyboard focus.
+Press **?** or **F1** for keyboard help. **Ctrl/Cmd+S** saves, **Ctrl/Cmd+K** focuses the composer, **Ctrl/Cmd+Enter** sends from the studio, and **Alt/Option+1–8** switches sections. **Esc** dismisses visible help or a dialog first; otherwise it stops output. Inline information buttons explain settings on hover or keyboard focus.
 
-From version 0.6.0, **Updates & Version** checks the stable GitHub release channel shortly after startup and every six hours. You may disable automatic checks, check manually or choose **Später**. The app downloads and installs only after **Bestätigen & installieren**; save edits and stop ongoing output/microphone use first. Linux in-app installation requires an AppImage; Debian packages update manually. Earlier versions require one manual upgrade. See [updates](docs/UPDATING.md).
+From version 0.6.0, **Updates & Version** checks the stable GitHub release channel shortly after startup and every six hours. You may disable automatic checks, check manually or choose **Later**. The app downloads and installs only after **Confirm & install**; save edits and stop ongoing output/microphone use first. Linux in-app installation requires an AppImage; Debian packages update manually. Earlier versions require one manual upgrade. See [updates](docs/UPDATING.md).
 
-[German user guide](docs/USER_GUIDE.de.md) · [Character sources and licenses](CHARACTERS.md) · [Model format support](docs/AVATAR-SUPPORT.md) · [Architecture](docs/ARCHITECTURE.md) · [Audit and follow-up issues](docs/AUDIT-2026-10-19.md)
+[German user guide](docs/USER_GUIDE.de.md) · [Character sources and licenses](CHARACTERS.md) · [Create or find characters](docs/CHARACTER-SOURCES.md) · [Model format support](docs/AVATAR-SUPPORT.md) · [Interface languages](docs/LOCALIZATION.md) · [Architecture](docs/ARCHITECTURE.md) · [Audit and follow-up issues](docs/AUDIT-2026-10-19.md)
 
 ## Development
 
@@ -63,7 +65,7 @@ pnpm tauri dev
 
 Cloud dialog providers receive the conversation context, relevant document excerpts and recalled memories. Cloud STT receives microphone segments, including segments before a wake phrase is detected. Hindsight may itself use cloud services even when its HTTP endpoint is local. All are independently configurable; see the [guide](docs/USER_GUIDE.de.md).
 
-With **Werkzeugbilder an das Modell senden** enabled, permitted MCP image results also reach the selected dialog provider. Images are bounded to four per turn, 5 MiB each and 12 MiB total; Claude Code additionally limits its encoded input envelope to 10 MiB. The app does not fetch arbitrary image URLs or local paths. Image content and tool results are untrusted and grant no new tool access.
+With **Send images to the model** enabled, permitted MCP image results also reach the selected dialog provider. Images are bounded to four per turn, 5 MiB each and 12 MiB total; Claude Code additionally limits its encoded input envelope to 10 MiB. The app does not fetch arbitrary image URLs or local paths. Image content and tool results are untrusted and grant no new tool access.
 
 Knowledge retrieval uses bounded local keyword search, not embeddings or model training. Image-only PDFs require prior OCR. Speech mouth motion is an audio/word-boundary approximation, not phoneme-accurate lip sync. Speaking turns are serialized; multiple characters can remain visible. Linux overlay behavior depends on the compositor. OAuth token creation/refresh and model downloads are external to this app.
 

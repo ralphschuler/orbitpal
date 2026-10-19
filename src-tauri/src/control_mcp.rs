@@ -38,7 +38,7 @@ impl ControlMcp {
     pub fn client_config(&self, app: &tauri::AppHandle) -> Result<Value, String> {
         let url = self.url(app)?;
         let token = self.bearer_token().to_owned();
-        Ok(json!({"url":url,"token":token,"mcpServers":{"streamer-ai-cohost":{"type":"http","url":url,"headers":{"Authorization":format!("Bearer {token}")}}}}))
+        Ok(json!({"url":url,"token":token,"mcpServers":{"orbitpal":{"type":"http","url":url,"headers":{"Authorization":format!("Bearer {token}")}}}}))
     }
     fn admit(&self, now: Instant) -> bool {
         let Ok(mut requests) = self.requests.lock() else { return false; };
@@ -56,8 +56,8 @@ enum Command {
     StopOutput, PauseAutoReplies,
 }
 
-fn server_info() -> Value { json!({"name":"streamer-ai-cohost-control","version":env!("CARGO_PKG_VERSION")}) }
-fn instruction() -> &'static str { "Control Streamer AI Cohost through bounded host actions. Installations do not grant tools to bots. Emote calls require allowChat=true. Show/hide require an idle dialog runtime. Stop is global. No dialog, filesystem, configuration or permission-writing tools are provided." }
+fn server_info() -> Value { json!({"name":"orbitpal-control","version":env!("CARGO_PKG_VERSION")}) }
+fn instruction() -> &'static str { "Control OrbitPal through bounded host actions. Installations do not grant tools to bots. Emote calls require allowChat=true. Show/hide require an idle dialog runtime. Stop is global. No dialog, filesystem, configuration or permission-writing tools are provided." }
 
 pub fn tools() -> Vec<Value> {
     let bot = json!({"type":"string","minLength":1,"maxLength":96,"pattern":"^[A-Za-z0-9_-]+$","description":"Exact bot ID returned by cohost_list_bots; do not guess."});
@@ -254,7 +254,7 @@ fn execute(app: &tauri::AppHandle, command: Command) -> Result<Value, String> {
         Command::Status => {
             let bots = state.store.list_bots().map_err(|_| "Botstatus konnte nicht gelesen werden")?;
             let dialog_busy = state.generation.try_lock().is_err();
-            Ok(json!({"application":"Streamer AI Cohost","version":env!("CARGO_PKG_VERSION"),"botCount":bots.len(),"dialogBusy":dialog_busy,"control":"local-authenticated","supportsNewDialogs":false}))
+            Ok(json!({"application":"OrbitPal","version":env!("CARGO_PKG_VERSION"),"botCount":bots.len(),"dialogBusy":dialog_busy,"control":"local-authenticated","supportsNewDialogs":false}))
         },
         Command::ListBots => {
             let bots = state.store.list_bots().map_err(|_| "Botliste konnte nicht gelesen werden")?;
@@ -337,7 +337,7 @@ mod tests {
     async fn modern_discovery_validates_metadata_and_mirrored_headers() {
         let control = ControlMcp::default(); let mut headers = headers(&control,MODERN,"server/discover",None);
         let (status,body) = fixture(&control,&headers,&request("server/discover",json!({}),true)).await;
-        assert_eq!(status,StatusCode::OK); assert_eq!(body["result"]["resultType"],"complete"); assert_eq!(body["result"]["supportedVersions"][0],MODERN); assert_eq!(body["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],"streamer-ai-cohost-control");
+        assert_eq!(status,StatusCode::OK); assert_eq!(body["result"]["resultType"],"complete"); assert_eq!(body["result"]["supportedVersions"][0],MODERN); assert_eq!(body["result"]["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],"orbitpal-control");
         headers.insert("mcp-method","tools/list".parse().unwrap());
         assert_eq!(fixture(&control,&headers,&request("server/discover",json!({}),true)).await.1["error"]["code"],-32020);
         headers.insert("mcp-method","tools/call".parse().unwrap()); headers.insert("mcp-name","=?base64?Y29ob3N0X3N0YXR1cw==?=".parse().unwrap());

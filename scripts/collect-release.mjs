@@ -26,7 +26,7 @@ function entries(root) {
 
 export function collect(root, target, output = resolve(root, 'release-artifacts')) {
   const platform = platformForTarget(target);
-  const prefix = `Streamer-AI-Cohost-v${releaseVersion(root)}-${platform}`;
+  const prefix = `OrbitPal-v${releaseVersion(root)}-${platform}`;
   const bundle = resolve(root, 'src-tauri/target', target, 'release/bundle');
   if (!existsSync(bundle)) throw new Error(`Bundle directory is missing: ${bundle}`);
   mkdirSync(output, { recursive: true });

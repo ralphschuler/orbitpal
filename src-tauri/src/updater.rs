@@ -9,8 +9,10 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
-const ENDPOINT: &str = "https://github.com/ralphschuler/streamer-ai-cohost/releases/latest/download/latest.json";
-const REPOSITORY: &str = "/ralphschuler/streamer-ai-cohost";
+const ENDPOINT: &str = "https://github.com/ralphschuler/orbitpal/releases/latest/download/latest.json";
+const REPOSITORY: &str = "/ralphschuler/orbitpal";
+// Only this same-owner former slug is allowed for installed 0.6/0.7 clients.
+const LEGACY_REPOSITORY: &str = "/ralphschuler/streamer-ai-cohost";
 const CANDIDATE_LIFETIME: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Default)]
@@ -90,8 +92,10 @@ fn newer_stable(current: &str, announced: &str) -> Result<bool, String> {
 // URL as well, so a release cannot send the downloader to an arbitrary host or
 // pair a newer announcement with an asset from an older release tag.
 fn trusted_asset(url: &url::Url, version: &str) -> Result<(), String> {
-    let prefix = format!("{REPOSITORY}/releases/download/v{version}/");
-    let name = url.path().strip_prefix(&prefix).unwrap_or_default();
+    let name = [REPOSITORY, LEGACY_REPOSITORY].iter().find_map(|repository| {
+        let prefix = format!("{repository}/releases/download/v{version}/");
+        url.path().strip_prefix(&prefix)
+    }).unwrap_or_default();
     if url.scheme() != "https" || url.host_str() != Some("github.com") || !url.username().is_empty() || url.password().is_some() || url.port().is_some() || url.query().is_some() || url.fragment().is_some() || name.is_empty() || name.contains('/') || !name.is_ascii() || name.contains('%') {
         return Err("Der Update-Katalog verweist nicht auf ein freigegebenes GitHub-Release-Paket.".into());
     }
@@ -271,6 +275,20 @@ mod tests {
             format!("{base}.exe").replace("github.com/", "user@github.com/"),
             format!("{base}/nested.exe"), format!("{base}%2f.exe"),
         ] { assert!(trusted_asset(&address.parse().unwrap(), "0.6.0").is_err(), "{address}"); }
+    }
+    #[test]
+    fn installer_rename_accepts_only_current_and_exact_legacy_repository_paths() {
+        assert_eq!(ENDPOINT, "https://github.com/ralphschuler/orbitpal/releases/latest/download/latest.json");
+        for repository in [REPOSITORY, LEGACY_REPOSITORY] {
+            for suffix in [".app.tar.gz", ".AppImage", "-setup.exe", ".msi"] {
+                let address = format!("https://github.com{repository}/releases/download/v0.8.0/OrbitPal-v0.8.0-windows-x64{suffix}");
+                assert!(trusted_asset(&address.parse().unwrap(), "0.8.0").is_ok(), "{address}");
+            }
+        }
+        for repository in ["/attacker/orbitpal", "/attacker/streamer-ai-cohost", "/ralphschuler/orbitpal-other", "/ralphschuler/other", "/ralphschuler/orbitpal/extra", "/ralphschuler/streamer-ai-cohost-other"] {
+            let address = format!("https://github.com{repository}/releases/download/v0.8.0/OrbitPal-v0.8.0-linux-x64.AppImage");
+            assert!(trusted_asset(&address.parse().unwrap(), "0.8.0").is_err(), "{address}");
+        }
     }
     #[test]
     fn install_guard_blocks_new_activity_and_recovers_after_failure() {

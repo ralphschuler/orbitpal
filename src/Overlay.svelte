@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { t } from './lib/i18n';
   import { onMount } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import Avatar from './components/Avatar.svelte';
@@ -291,7 +292,7 @@
 <div class="overlay-scene">
   <Avatar {profile} {speaking} {level} {emotion} {autopilot} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
   {#if native && !profile.output?.clickThrough}
-    <button class="overlay-drag" aria-label="Figurenfenster verschieben" title="Figurenfenster verschieben" onpointerdown={drag}>
+    <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>
     </button>
   {/if}
@@ -299,11 +300,11 @@
     <div class="overlay-subtitle"><strong>{profile.name}</strong><span>{text}</span></div>
   {/if}
   {#if failure}
-    <button class="overlay-audio" onclick={acknowledgeAudioFailure} title={failureDetail}>{failure}</button>
+    <button class="overlay-audio" onclick={acknowledgeAudioFailure} title={$t(failureDetail)}>{$t(failure)}</button>
   {:else if soundNotice}
-    <button class="overlay-audio" onclick={activateEmoteAudio} title={soundNotice}>{soundActivationNeeded ? 'Emote-Audio aktivieren' : 'Soundhinweis schließen'}</button>
+    <button class="overlay-audio" onclick={activateEmoteAudio} title={$t(soundNotice)}>{soundActivationNeeded ? $t("Emote-Audio aktivieren") : $t("Soundhinweis schließen")}</button>
   {:else if connectionFailure}
-    <div class="overlay-connection" role="status">{connectionFailure}</div>
+    <div class="overlay-connection" role="status">{$t(connectionFailure)}</div>
   {/if}
 </div>
 

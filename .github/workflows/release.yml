@@ -121,6 +121,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm tauri build --target "$RUST_TARGET" --bundles "$BUNDLES" --config '{"bundle":{"macOS":{"signingIdentity":"-"}}}'
+      - name: Verify signed macOS microphone access
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.target }}
+        run: node scripts/verify-macos-permissions.mjs "src-tauri/target/$RUST_TARGET/release/bundle/macos/OrbitPal.app"
       - name: Build Windows or Linux packages (updater signed, no OS code-signing identity)
         if: runner.os != 'macOS'
         shell: bash
@@ -187,7 +193,7 @@ jobs:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}
           RELEASE_VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          git archive --format=zip --prefix=streamer-ai-cohost/ --output="$PWD/release-artifacts/Streamer-AI-Cohost-v$RELEASE_VERSION-source.zip" "$RELEASE_TAG"
+          git archive --format=zip --prefix=orbitpal/ --output="$PWD/release-artifacts/OrbitPal-v$RELEASE_VERSION-source.zip" "$RELEASE_TAG"
           node scripts/checksums.mjs release-artifacts
       - name: Publish only after every platform and test job succeeded
         shell: bash
@@ -201,7 +207,7 @@ jobs:
             echo '::error::This release already exists. Published downloads are never overwritten automatically. Resolve an unfinished draft explicitly or use a new version.'
             exit 1
           fi
-          options=(--repo "$GITHUB_REPOSITORY" --verify-tag --draft --latest=false --title "Streamer AI Cohost $RELEASE_TAG" --notes-file docs/RELEASE-NOTES-TEMPLATE.md --generate-notes)
+          options=(--repo "$GITHUB_REPOSITORY" --verify-tag --draft --latest=false --title "OrbitPal $RELEASE_TAG" --notes-file docs/RELEASE-NOTES-TEMPLATE.md --generate-notes)
           if [ "$PRERELEASE" = true ]; then options+=(--prerelease); fi
           gh release create "$RELEASE_TAG" "${options[@]}" release-artifacts/*
           latest=true

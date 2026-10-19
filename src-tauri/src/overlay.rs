@@ -335,7 +335,7 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
     if let Some(window)=app.get_webview_window(&label){window.show().map_err(|error|error.to_string())?;window.set_focus().map_err(|error|error.to_string())?;let _=app.emit("cohost://overlay-state",json!({"botId":bot_id,"active":true}));return Ok(());}
     if let Some(legacy)=app.get_webview_window("avatar"){let _=legacy.close();}
     let window=tauri::WebviewWindowBuilder::new(app,&label,tauri::WebviewUrl::App(format!("index.html?overlay=1&bot={bot_id}").into()))
-        .title(format!("Streamer AI Cohost · {}",profile["name"].as_str().unwrap_or("Charakter"))).inner_size(520.,720.).transparent(true).decorations(false).shadow(false).resizable(true).visible(false)
+        .title(format!("OrbitPal · {}",profile["name"].as_str().unwrap_or("Charakter"))).inner_size(520.,720.).transparent(true).decorations(false).shadow(false).resizable(true).visible(false)
         .always_on_top(profile["output"]["alwaysOnTop"].as_bool().unwrap_or(false)).build().map_err(|error|error.to_string())?;
     if let Some(bounds)=store.window_bounds()?{
         let x=bounds["x"].as_i64().unwrap_or(0).clamp(-65535,65535)as i32;let y=bounds["y"].as_i64().unwrap_or(0).clamp(-65535,65535)as i32;

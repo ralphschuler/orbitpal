@@ -51,7 +51,7 @@ impl McpHub {
           if let Transport::Http {protocol,session,..}=&mut session.transport {*protocol="2025-11-25".into();*session=None;}
           for version in ["2025-11-25","2025-06-18","2025-03-26","2024-11-05"] {
             if let Transport::Http {protocol,..}=&mut session.transport {*protocol=version.into();}
-            match session.request("initialize",json!({"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"streamer-ai-cohost","version":env!("CARGO_PKG_VERSION")}})).await {
+            match session.request("initialize",json!({"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"orbitpal","version":env!("CARGO_PKG_VERSION")}})).await {
                 Ok(result)=>{
                     if let Transport::Http {protocol,..}=&mut session.transport {*protocol=result["protocolVersion"].as_str().unwrap_or(version).to_owned();}
                     capabilities=result["capabilities"].clone();
@@ -114,7 +114,7 @@ impl Session {
     async fn request(&mut self,method:&str,mut params:Value)->Result<Value,String> {
         if !params.is_object(){return Err("MCP-Parameter müssen ein JSON-Objekt sein".into());}
         if self.modern {
-            params["_meta"]=json!({"io.modelcontextprotocol/protocolVersion":self.protocol,"io.modelcontextprotocol/clientInfo":{"name":"streamer-ai-cohost","version":env!("CARGO_PKG_VERSION")},"io.modelcontextprotocol/clientCapabilities":{}});
+            params["_meta"]=json!({"io.modelcontextprotocol/protocolVersion":self.protocol,"io.modelcontextprotocol/clientInfo":{"name":"orbitpal","version":env!("CARGO_PKG_VERSION")},"io.modelcontextprotocol/clientCapabilities":{}});
         }
         self.next+=1;let id=self.next;
         let response=tokio::time::timeout(Duration::from_secs(50),self.exchange(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),Some(id))).await.map_err(|_|"MCP-Zeitlimit überschritten".to_owned())??;

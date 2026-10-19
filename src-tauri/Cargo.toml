@@ -1,12 +1,12 @@
 [package]
-name = "streamer-ai-cohost"
-version = "0.7.0"
+name = "orbitpal"
+version = "0.8.0"
 description = "An extensible AI streaming companion"
-authors = ["Streamer AI Cohost"]
+authors = ["OrbitPal contributors"]
 edition = "2021"
 
 [lib]
-name = "streamer_ai_cohost_lib"
+name = "orbitpal_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -41,6 +41,13 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 keyring = { version = "3", features = ["apple-native"] }
 core-graphics = "0.25"
 foreign-types = "0.5"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+block2 = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+# Already present transitively; use platform-defined no-follow/nonblocking flags.
+libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT
+     OrbitPal first-party migration fragment. No custom action or process runs.
+     Tauri 2.12.3's former MSI skips RemoveShortcuts during major upgrades, so
+     remove only its exact known files when its MSI ownership markers exist.
+     RegistrySearch/Component bitness follows Candle's -arch setting, as in
+     Tauri's original template. Keep the stable publisher key streamer-ai. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <Property Id="ORBITPAL_LEGACY_MSI_DIR" Secure="yes">
+      <RegistrySearch Id="OrbitPalLegacyMsiDirectory" Root="HKCU" Key="Software\streamer-ai\Streamer AI Cohost" Name="InstallDir" Type="raw" />
+    </Property>
+    <Property Id="ORBITPAL_LEGACY_MSI_DESKTOP" Secure="yes">
+      <RegistrySearch Id="OrbitPalLegacyMsiDesktopOwner" Root="HKCU" Key="Software\streamer-ai\Streamer AI Cohost" Name="Desktop Shortcut" Type="raw" />
+    </Property>
+    <Property Id="ORBITPAL_LEGACY_MSI_STARTMENU" Secure="yes">
+      <RegistrySearch Id="OrbitPalLegacyMsiStartMenuOwner" Root="HKCU" Key="Software\streamer-ai\Streamer AI Cohost" Name="Start Menu Shortcut" Type="raw" />
+    </Property>
+    <Property Id="ORBITPAL_LEGACY_MSI_UNINSTALL" Secure="yes">
+      <RegistrySearch Id="OrbitPalLegacyMsiUninstallOwner" Root="HKCU" Key="Software\streamer-ai\Streamer AI Cohost" Name="Uninstaller Shortcut" Type="raw" />
+    </Property>
+
+    <DirectoryRef Id="ProgramMenuFolder">
+      <Directory Id="OrbitPalLegacyMsiProgramMenu" Name="Streamer AI Cohost" />
+    </DirectoryRef>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="OrbitPalRemoveLegacyMsiDesktop" Guid="*">
+        <Condition><![CDATA[WIX_UPGRADE_DETECTED AND ORBITPAL_LEGACY_MSI_DIR AND ORBITPAL_LEGACY_MSI_DESKTOP = "#1"]]></Condition>
+        <RemoveFile Id="OrbitPalRemoveLegacyMsiDesktopLink" Directory="DesktopFolder" Name="Streamer AI Cohost.lnk" On="install" />
+        <RegistryValue Root="HKCU" Key="Software\streamer-ai\OrbitPal" Name="Legacy MSI desktop migration" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="OrbitPalRemoveLegacyMsiStartMenu" Guid="*">
+        <Condition><![CDATA[WIX_UPGRADE_DETECTED AND ORBITPAL_LEGACY_MSI_DIR AND ORBITPAL_LEGACY_MSI_STARTMENU = "#1"]]></Condition>
+        <RemoveFile Id="OrbitPalRemoveLegacyMsiStartMenuLink" Directory="OrbitPalLegacyMsiProgramMenu" Name="Streamer AI Cohost.lnk" On="install" />
+        <RemoveFolder Id="OrbitPalRemoveEmptyLegacyMsiProgramMenu" Directory="OrbitPalLegacyMsiProgramMenu" On="install" />
+        <RegistryValue Root="HKCU" Key="Software\streamer-ai\OrbitPal" Name="Legacy MSI start menu migration" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="OrbitPalRemoveLegacyMsiUninstall" Guid="*">
+        <Condition><![CDATA[WIX_UPGRADE_DETECTED AND ORBITPAL_LEGACY_MSI_DIR AND ORBITPAL_LEGACY_MSI_UNINSTALL = "#1"]]></Condition>
+        <RemoveFile Id="OrbitPalRemoveLegacyMsiUninstallLink" Property="ORBITPAL_LEGACY_MSI_DIR" Name="Uninstall Streamer AI Cohost.lnk" On="install" />
+        <RemoveFolder Id="OrbitPalRemoveEmptyLegacyMsiInstallDirectory" Property="ORBITPAL_LEGACY_MSI_DIR" On="install" />
+        <RegistryValue Root="HKCU" Key="Software\streamer-ai\OrbitPal" Name="Legacy MSI uninstall migration" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    <ComponentGroup Id="OrbitPalLegacyMsiShortcuts">
+      <ComponentRef Id="OrbitPalRemoveLegacyMsiDesktop" />
+      <ComponentRef Id="OrbitPalRemoveLegacyMsiStartMenu" />
+      <ComponentRef Id="OrbitPalRemoveLegacyMsiUninstall" />
+    </ComponentGroup>
+  </Fragment>
+</Wix>
