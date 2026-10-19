@@ -25,6 +25,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -47,6 +48,7 @@ jobs:
           node scripts/release-info.mjs "$RELEASE_TAG"
           tagged_commit="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
           test "$tagged_commit" = "$(git rev-parse HEAD)"
+          node scripts/release-provenance.mjs --context
 
   verify:
     needs: validate
@@ -61,6 +63,10 @@ jobs:
     name: Package ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -153,6 +159,19 @@ jobs:
         env:
           RELEASE_PLATFORM: ${{ matrix.platform }}
         run: node scripts/dependency-inventories.mjs
+      - name: Attest the actual platform build outputs
+        id: provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-artifacts/*
+          create-storage-record: false
+      - name: Retain the platform Sigstore bundle for inspection
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: provenance-${{ matrix.platform }}
+          path: ${{ steps.provenance.outputs.bundle-path }}
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ matrix.platform }}
@@ -183,6 +202,12 @@ jobs:
           pattern: release-*
           path: release-artifacts
           merge-multiple: true
+      - name: Verify every platform artifact against the tagged build provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: node scripts/release-provenance.mjs release-artifacts
       - name: Require all signed updater targets and create the update manifest
         env:
           RELEASE_TAG: ${{ needs.validate.outputs.tag }}

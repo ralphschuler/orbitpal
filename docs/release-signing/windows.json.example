@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "windows": {
+      "signCommand": {
+        "cmd": "pwsh",
+        "args": ["-NoProfile", "-NonInteractive", "-File", "scripts/MAINTAINER-REVIEWED-SIGNER.ps1", "%1"]
+      }
+    }
+  }
+}
