@@ -141,7 +141,6 @@
     "Speichert …": "Saving …",
     "Einstellungen speichern": "Save settings",
     "Hilfe anzeigen": "Show help",
-    "Eine Verbindung pro Plattform gilt für die ganze Crew. Der Bot beim Verbinden ist ihr Inhaber. Geschriebene Antworten verwenden ausschließlich diesen Kanal und dieses Konto; andere Bots brauchen dieselben Verbindungseinstellungen. Nach Änderungen neu verbinden.": "One connection per platform serves the whole crew. The bot selected when connecting owns it. Written replies use only that channel and account; other bots need identical connection settings. Reconnect after changes.",
     "Verbindungsinhaber: {name}": "Connection owner: {name}",
     "Bot-ID der Chatverbindung fehlt.": "The chat connection bot ID is missing.",
     "Die Chatnachricht gehört nicht mehr zur aktiven Verbindung. Bitte eine neue Nachricht auswählen.": "This chat message no longer belongs to the active connection. Select a new message.",
@@ -155,7 +154,8 @@
     "Chatantwort abgebrochen.": "Chat reply cancelled.",
     "Chatantwort nach Verbindungswechsel abgebrochen.": "Chat reply cancelled after a connection change.",
     "Chatantwort konnte nicht gesendet werden.": "Could not send the chat reply.",
-    "Chatantwort ohne ursprüngliche Verbindung wurde verworfen.": "Chat reply without an original connection was discarded."
+    "Chatantwort ohne ursprüngliche Verbindung wurde verworfen.": "Chat reply without an original connection was discarded.",
+    "Eine Verbindung pro Plattform gilt für die ganze Crew. Der Bot beim Verbinden ist ihr Inhaber. Andere Bots dürfen sprechen. Für Chatantworten müssen auch ihre Schlüsselbund-Referenzen exakt übereinstimmen; neue Bots mit eigenen Referenzen werden nicht über das Konto des Inhabers schreiben. Nach Änderungen neu verbinden.": "One connection per platform serves the whole crew. The bot selected when connecting owns it. Other bots may speak. Chat replies also require exactly matching credential references; new bots with their own references will not post through the owner’s account. Reconnect after changes."
   },
   "fr": {
     "Autopilot steuern": "Contrôler le pilote automatique",
@@ -299,7 +299,6 @@
     "Speichert …": "Enregistrement …",
     "Einstellungen speichern": "Enregistrer les réglages",
     "Hilfe anzeigen": "Afficher l’aide",
-    "Eine Verbindung pro Plattform gilt für die ganze Crew. Der Bot beim Verbinden ist ihr Inhaber. Geschriebene Antworten verwenden ausschließlich diesen Kanal und dieses Konto; andere Bots brauchen dieselben Verbindungseinstellungen. Nach Änderungen neu verbinden.": "Une connexion par plateforme sert toute l’équipe. Le bot sélectionné à la connexion en est le propriétaire. Les réponses écrites utilisent uniquement ce canal et ce compte ; les autres bots doivent avoir les mêmes paramètres de connexion. Reconnectez-vous après toute modification.",
     "Verbindungsinhaber: {name}": "Propriétaire de la connexion : {name}",
     "Bot-ID der Chatverbindung fehlt.": "L’identifiant du bot de la connexion chat est manquant.",
     "Die Chatnachricht gehört nicht mehr zur aktiven Verbindung. Bitte eine neue Nachricht auswählen.": "Ce message de chat ne correspond plus à la connexion active. Sélectionnez un nouveau message.",
@@ -313,7 +312,8 @@
     "Chatantwort abgebrochen.": "Réponse au chat annulée.",
     "Chatantwort nach Verbindungswechsel abgebrochen.": "Réponse au chat annulée après un changement de connexion.",
     "Chatantwort konnte nicht gesendet werden.": "Impossible d’envoyer la réponse au chat.",
-    "Chatantwort ohne ursprüngliche Verbindung wurde verworfen.": "La réponse au chat sans connexion d’origine a été ignorée."
+    "Chatantwort ohne ursprüngliche Verbindung wurde verworfen.": "La réponse au chat sans connexion d’origine a été ignorée.",
+    "Eine Verbindung pro Plattform gilt für die ganze Crew. Der Bot beim Verbinden ist ihr Inhaber. Andere Bots dürfen sprechen. Für Chatantworten müssen auch ihre Schlüsselbund-Referenzen exakt übereinstimmen; neue Bots mit eigenen Referenzen werden nicht über das Konto des Inhabers schreiben. Nach Änderungen neu verbinden.": "Une connexion par plateforme sert toute l’équipe. Le bot sélectionné à la connexion en est le propriétaire. Les autres bots peuvent parler. Les réponses écrites nécessitent aussi des références d’identifiants identiques ; les nouveaux bots avec leurs propres références ne publieront pas via le compte du propriétaire. Reconnectez-vous après toute modification."
   },
   "es": {
     "Autopilot steuern": "Controlar el piloto automático",
@@ -457,7 +457,6 @@
     "Speichert …": "Guardando …",
     "Einstellungen speichern": "Guardar ajustes",
     "Hilfe anzeigen": "Mostrar ayuda",
-    "Eine Verbindung pro Plattform gilt für die ganze Crew. Der Bot beim Verbinden ist ihr Inhaber. Geschriebene Antworten verwenden ausschließlich diesen Kanal und dieses Konto; andere Bots brauchen dieselben Verbindungseinstellungen. Nach Änderungen neu verbinden.": "Una conexión por plataforma sirve a todo el equipo. El bot seleccionado al conectar es su propietario. Las respuestas escritas usan solo ese canal y esa cuenta; los demás bots necesitan los mismos ajustes de conexión. Vuelve a conectar después de los cambios.",
     "Verbindungsinhaber: {name}": "Propietario de la conexión: {name}",
     "Bot-ID der Chatverbindung fehlt.": "Falta el ID del bot de la conexión de chat.",
     "Die Chatnachricht gehört nicht mehr zur aktiven Verbindung. Bitte eine neue Nachricht auswählen.": "Este mensaje de chat ya no pertenece a la conexión activa. Selecciona un mensaje nuevo.",
@@ -471,6 +470,7 @@
     "Chatantwort abgebrochen.": "Respuesta al chat cancelada.",
     "Chatantwort nach Verbindungswechsel abgebrochen.": "Respuesta al chat cancelada tras un cambio de conexión.",
     "Chatantwort konnte nicht gesendet werden.": "No se pudo enviar la respuesta al chat.",
-    "Chatantwort ohne ursprüngliche Verbindung wurde verworfen.": "Se descartó la respuesta al chat sin conexión original."
+    "Chatantwort ohne ursprüngliche Verbindung wurde verworfen.": "Se descartó la respuesta al chat sin conexión original.",
+    "Eine Verbindung pro Plattform gilt für die ganze Crew. Der Bot beim Verbinden ist ihr Inhaber. Andere Bots dürfen sprechen. Für Chatantworten müssen auch ihre Schlüsselbund-Referenzen exakt übereinstimmen; neue Bots mit eigenen Referenzen werden nicht über das Konto des Inhabers schreiben. Nach Änderungen neu verbinden.": "Una conexión por plataforma sirve a todo el equipo. El bot seleccionado al conectar es su propietario. Los demás bots pueden hablar. Las respuestas al chat también requieren referencias de credenciales idénticas; los bots nuevos con sus propias referencias no publicarán mediante la cuenta del propietario. Vuelve a conectar después de los cambios."
   }
 }

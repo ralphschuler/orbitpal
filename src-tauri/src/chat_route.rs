@@ -39,7 +39,7 @@ pub struct ChatRoute {
     responder_binding: Value,
     responder_enabled: bool,
 }
-impl ChatRoute { pub fn owner_id(&self) -> &str { &self.owner_id } pub fn platform(&self) -> &str { &self.platform } }
+impl ChatRoute { pub fn owner_id(&self) -> &str { &self.owner_id } pub fn platform(&self) -> &str { &self.platform } pub fn responder_id(&self) -> &str { &self.responder_id } }
 
 pub struct PreparedReply {
     pub platform: String,
@@ -48,6 +48,18 @@ pub struct PreparedReply {
     pub sender: String,
     pub token: String,
     pub message: String,
+}
+
+/// Acquire every asynchronous chat lock before reading current permissions.
+/// A profile edit while the post waits must never be checked against an earlier
+/// caller snapshot. Reads and validation below contain no asynchronous gap.
+pub async fn prepare_current(
+    context:&tokio::sync::Mutex<ConnectionContext>, route:&ChatRoute,
+    read_profiles:impl FnOnce()->Result<(Value,Value),String>, message:&str,
+)->Result<PreparedReply,String> {
+    let current=context.lock().await;
+    let (responder,owner)=read_profiles()?;
+    current.prepare_reply(route,&responder,&owner,message)
 }
 
 impl ConnectionContext {
@@ -163,4 +175,39 @@ mod tests {
             assert_eq!(context.public_owner(),json!({"ownerBotId":"owner","ownerName":"owner"}));
         }
     }
+    #[tokio::test]
+    async fn posts_waiting_for_a_chat_lock_read_fresh_store_permissions_channel_and_accounts() {
+        use std::sync::Mutex as StdMutex;
+        // The actual Store remains local and contains only fixture references;
+        // no OS credential values or platform requests are used by this test.
+        for platform in ["twitch","youtube"] {
+            for changed_key in ["sendReplies",if platform=="twitch" {"broadcasterId"}else{"liveChatId"},if platform=="twitch" {"secretId"}else{"sendSecretId"}] {
+                let root=std::env::temp_dir().join(format!("orbitpal-chat-route-{}",uuid::Uuid::new_v4()));
+                let store=Arc::new(crate::storage::Store::new(root.clone()).unwrap());
+                let mut owner=store.profile().unwrap();
+                owner["chat"][platform]=profile("fixture",platform,"channel-a","account-a")["chat"][platform].clone();
+                store.save_profile(owner.clone()).unwrap();
+                let context=Arc::new(tokio::sync::Mutex::new(connected(platform,&owner,"channel-a","account-a")));
+                let held=context.lock().await;
+                let route=held.route(platform,held.route_id(),&owner).unwrap();
+                // The previously captured values would approve the stale write.
+                assert!(held.prepare_reply(&route,&owner,&owner,"Hello").is_ok());
+                let reads=Arc::new(StdMutex::new(0));let read_count=reads.clone();let current=store.clone();let pending=context.clone();
+                let (started,waiting)=tokio::sync::oneshot::channel();
+                let task=tokio::spawn(async move {
+                    started.send(()).unwrap();
+                    prepare_current(&pending,&route,||{
+                        *read_count.lock().unwrap()+=1;
+                        Ok((current.bot_profile(route.responder_id())?,current.bot_profile(route.owner_id())?))
+                    },"Hello").await
+                });
+                waiting.await.unwrap();assert_eq!(*reads.lock().unwrap(),0);
+                let mut revoked=owner.clone();revoked["chat"][platform][changed_key]=if changed_key=="sendReplies" {json!(false)}else{json!("changed-after-admission")};
+                store.save_profile(revoked).unwrap();drop(held);
+                assert!(task.await.unwrap().is_err(),"{platform} {changed_key}");assert_eq!(*reads.lock().unwrap(),1);
+                drop(store);std::fs::remove_dir_all(root).unwrap();
+            }
+        }
+    }
+
 }

@@ -73,14 +73,14 @@ impl ChatHub {
     }
     /// Called only once, after the admitted speech job actually starts playing.
     /// All destination fields and the token come from its original connection.
-    pub async fn send(&self, route:&ChatRoute, responder:&Value, owner:&Value, message:&str, job_cancel:&AtomicBool)->Result<(),String> {
+    pub async fn send(&self, route:&ChatRoute, store:&crate::storage::Store, message:&str, job_cancel:&AtomicBool)->Result<(),String> {
         let (context,cancel)={
             let tasks=self.tasks.lock().await;
             let running=tasks.get(route.platform()).filter(|running|!running.task.is_finished()).ok_or("Chatantwort benötigt ihre ursprüngliche aktive Verbindung.")?;
             (running.context.clone(),running.cancel.clone())
         };
         if job_cancel.load(Ordering::SeqCst) {return Err("Chatantwort abgebrochen.".into());}
-        let reply=context.lock().await.prepare_reply(route,responder,owner,message)?;
+        let reply=crate::chat_route::prepare_current(&context,route,||Ok((store.bot_profile(route.responder_id())?,store.bot_profile(route.owner_id())?)),message).await?;
         let http=client()?;
         let request=reply_request(&http,&reply)?;
         // Disconnect/replacement invalidates a pending post rather than silently
