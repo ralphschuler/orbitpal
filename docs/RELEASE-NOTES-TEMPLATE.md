@@ -1,3 +1,15 @@
+## New in 0.8.0
+
+- **OrbitPal** is the new name of Streamer AI Cohost. The repository and new downloads use OrbitPal; app data, credentials, bot grants and the update signing identity stay unchanged. Existing clients keep using fixed former download URLs through GitHub redirects.
+- Choose the interface language independently of bot instructions, speech and conversation: English, German, French or Spanish.
+- Preserve the former MSI UpgradeCode and NSIS install identity during the rename. Existing macOS/AppImage updates can retain the old outer file name. See [migration details](https://github.com/ralphschuler/orbitpal/blob/main/docs/MIGRATING-TO-ORBITPAL.md).
+
+## Fixed in 0.7.1
+
+- Restore macOS microphone capture by signing the required Audio Input entitlement in hardened-runtime packages. Validate the actual signed app in both macOS release jobs.
+- Request the native microphone grant only when recording/listening is explicitly started. Show OS status and direct settings recovery; Stop, bot changes and updates cannot revive late permission results or automatically restart capture.
+- Existing ad-hoc macOS signing can still require renewed permission after updates; no system permissions or signing requirements are reset or weakened.
+
 ## New in 0.7.0
 
 - Enable **Bildschirm als Kontext** for a bot to attach a fresh native screenshot before every normal chat, Autopilot and tool-follow-up dialog-model call. No MCP server or Skill is required. Choose the primary or an explicit monitor under Models or Autopilot; both show the same setting.
@@ -20,7 +32,7 @@
 - Automated unit checks, source and license inventories, and contribution rules for people and coding agents.
 - Update notifications from GitHub Releases, with explicit confirmation before downloading and installing a newer version.
 
-See [CHANGELOG.md](https://github.com/ralphschuler/streamer-ai-cohost/blob/main/CHANGELOG.md) and the [German guide](https://github.com/ralphschuler/streamer-ai-cohost/blob/main/docs/USER_GUIDE.de.md) for details and limitations.
+See [CHANGELOG.md](https://github.com/ralphschuler/orbitpal/blob/main/CHANGELOG.md) and the [German guide](https://github.com/ralphschuler/orbitpal/blob/main/docs/USER_GUIDE.de.md) for details and limitations.
 
 ## Downloads
 

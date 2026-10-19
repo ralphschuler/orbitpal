@@ -149,7 +149,7 @@ const members = new Set(metadata.workspace_members);
 const rust = metadata.packages.filter(pkg => !members.has(pkg.id)).sort((a, b) => `${a.name}@${a.version}`.localeCompare(`${b.name}@${b.version}`));
 
 const sections = [
-  'Streamer AI Cohost — dependency license and copyright notices',
+  'OrbitPal — dependency license and copyright notices',
   '============================================================',
   '',
   'Generated from installed JavaScript packages and Cargo.lock-resolved Rust package metadata.',

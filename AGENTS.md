@@ -1,6 +1,6 @@
 # Instructions for coding agents
 
-These instructions apply to source contributions throughout this repository. Read CONTRIBUTING.md and the relevant component before editing. The app UI and user-facing help are German; repository collaboration may be English or German.
+These instructions apply to source contributions throughout this repository. Read CONTRIBUTING.md and the relevant component before editing. The app UI and user-facing help support German, English, French and Spanish through explicit localization catalogues. UI language is independent of bot instructions, conversation and voice; never translate user content or protocol IDs. Repository collaboration may be English or German.
 
 ## Architecture and behavior
 
@@ -25,4 +25,4 @@ These instructions apply to source contributions throughout this repository. Rea
 - Describe user-visible behavior, validation and limitations in the PR. Disclose substantial AI assistance. Never fabricate measurements, test results or external actions.
 - Do not self-approve, merge, push release tags, change repository visibility or publish packages without explicit maintainer authorization. An explicit task instruction can authorize these actions.
 
-Product name: **Streamer AI Cohost**. Package/repository name: **streamer-ai-cohost**.
+Product name: **OrbitPal**. Package/repository name: **orbitpal**.

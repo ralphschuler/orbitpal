@@ -85,7 +85,7 @@ mod platform{
         dimensions(native.pixels_wide(),native.pixels_high())?;
         // Preflight does not open a permission prompt. Never return a partial
         // wallpaper-only image when macOS has withheld screen-recording access.
-        if !unsafe{CGPreflightScreenCaptureAccess()}{return Err("macOS hat die Bildschirmaufnahme nicht freigegeben. Bitte Streamer AI Cohost unter Systemeinstellungen → Datenschutz & Sicherheit → Bildschirmaufnahme erlauben und die App gegebenenfalls neu starten.".into());}
+        if !unsafe{CGPreflightScreenCaptureAccess()}{return Err("macOS hat die Bildschirmaufnahme nicht freigegeben. Bitte OrbitPal unter Systemeinstellungen → Datenschutz & Sicherheit → Bildschirmaufnahme erlauben und die App gegebenenfalls neu starten.".into());}
         let image=native.image().ok_or("macOS hat keine Bildschirmaufnahme geliefert. Berechtigung, gesperrten Bildschirm und Bildschirmverbindung prüfen.")?;
         convert(&image)
     }

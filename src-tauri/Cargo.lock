@@ -4322,11 +4322,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
 
 [[package]]
-name = "streamer-ai-cohost"
-version = "0.7.0"
+name = "orbitpal"
+version = "0.8.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "block2",
  "chrono",
  "core-graphics",
  "foreign-types",
@@ -4334,6 +4335,9 @@ dependencies = [
  "glib",
  "image",
  "keyring",
+ "libc",
+ "objc2",
+ "objc2-foundation",
  "pdf-extract",
  "reqwest 0.12.28",
  "rusqlite",

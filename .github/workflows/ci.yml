@@ -76,3 +76,11 @@ jobs:
           cargo test --locked --release --manifest-path src-tauri/Cargo.toml --test glib_variant_regression
       - name: Rust unit tests (no external accounts)
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Build Windows installer migration fixtures (no signing secrets)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: pnpm tauri build --bundles nsis,msi --config '{"bundle":{"createUpdaterArtifacts":false}}'
+      - name: Upgrade published 0.7.0 Windows NSIS and MSI installs without starting the app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/verify-windows-upgrade.ps1

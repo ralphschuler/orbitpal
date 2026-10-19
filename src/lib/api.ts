@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import defaults from '../../public/default-profile.json';
+import { localizeMessage, translate } from './i18n';
 
 export const native = isTauri();
 export const cloneDefaults = () => structuredClone(defaults) as any;
@@ -8,7 +9,7 @@ export const defaultAgents = `# Anweisungen für deinen Cohost\n\nDu bist der KI
 export const defaultPersona = `# Nova\n\nDu heißt Nova. Du bist neugierig, schlagfertig und ein guter Gesprächspartner.\nDein Humor ist trocken und freundlich. Du darfst necken, aber nicht nachtreten.\nDu bist eine eigene Figur und gibst dich nicht als der Streamer aus.\nAntworte meistens mit ein bis drei Sätzen. Wiederhole keine Werbesprüche.\n`;
 
 export async function call<T = any>(command: string, args: Record<string, any> = {}): Promise<T> {
-  if (!native) throw new Error('Diese Funktion läuft in der Desktop-App. Öffne Streamer AI Cohost.');
+  if (!native) throw new Error(translate('Diese Funktion läuft in der Desktop-App. Öffne OrbitPal.'));
   return invoke<T>(command, args);
 }
 export async function onEvent(name: string, handler: (payload: any) => void) {
@@ -65,7 +66,7 @@ export function assetUrl(path: string | null | undefined, overlayUrl: string) {
 }
 export function prettyError(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
-  return text.replace(/https?:\/\/[^\s]+/g, (url) => {
+  return localizeMessage(text.replace(/https?:\/\/[^\s]+/g, (url) => {
     try { const u = new URL(url); u.search = ''; u.password = ''; u.username = ''; return u.toString(); } catch { return '[Endpunkt]'; }
-  });
+  }));
 }

@@ -33,7 +33,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const rust = rustInventory(JSON.parse(execFileSync('cargo', ['metadata', '--manifest-path', 'src-tauri/Cargo.toml', '--format-version', '1', '--locked'], options)));
   const output = resolve('release-artifacts');
   mkdirSync(output, { recursive: true });
-  const prefix = `Streamer-AI-Cohost-v${releaseVersion()}-${platform}`;
+  const prefix = `OrbitPal-v${releaseVersion()}-${platform}`;
   writeFileSync(resolve(output, `${prefix}-node-licenses.json`), `${JSON.stringify(node, null, 2)}\n`);
   writeFileSync(resolve(output, `${prefix}-rust-dependencies.json`), `${JSON.stringify(rust, null, 2)}\n`);
   console.log(`Dependency inventories: ${node.length} JavaScript entries, ${rust.length} Rust packages`);

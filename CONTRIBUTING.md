@@ -7,8 +7,8 @@ People and AI-assisted contributions follow the same review and quality requirem
 Use Node.js 22.12 or newer, Corepack/pnpm pinned by `package.json`, stable Rust, and the native dependencies in the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). Linux needs WebKitGTK 4.1, GTK, AppIndicator and DBus development packages. Windows needs Microsoft C++ Build Tools and WebView2; macOS needs Xcode Command Line Tools.
 
 ```sh
-git clone https://github.com/ralphschuler/streamer-ai-cohost.git
-cd streamer-ai-cohost
+git clone https://github.com/ralphschuler/orbitpal.git
+cd orbitpal
 corepack enable
 pnpm install --frozen-lockfile
 pnpm tauri dev

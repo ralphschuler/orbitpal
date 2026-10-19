@@ -108,7 +108,10 @@ impl Store {
         self.save_library_mcp(server)
     }
     pub fn install_control_extension(&self,skill_content:&str)->Result<Value,String>{
-        let server=self.install_mcp(&json!({"id":"cohost-control","name":"Streamer AI Cohost Control","transport":"builtin","builtin":"cohost-control"}))?;
+        let mut server=self.install_mcp(&json!({"id":"cohost-control","name":"OrbitPal Control","transport":"builtin","builtin":"cohost-control"}))?;
+        // Refresh only the former bundled label during an explicit install.
+        // Operator-defined names, IDs and all bot grants remain untouched.
+        if server["name"]=="Streamer AI Cohost Control" {server["name"]=json!("OrbitPal Control");server=self.save_library_mcp(server)?;}
         let library=crate::skill_library::SkillLibrary::new(&self.root)?;
         let previous=self.db.lock().map_err(error)?.query_row("SELECT value FROM settings WHERE key='cohost_control_install_v1'",[],|row|row.get::<_,String>(0)).ok().and_then(|encoded|serde_json::from_str::<Value>(&encoded).ok());
         // Installation markers contain IDs only. A later install click must
@@ -388,9 +391,10 @@ impl Store {
     pub fn key_for(&self,config:&Value) -> Result<Option<String>,String> {self.secret(config["apiKeyId"].as_str().or_else(||config["secretId"].as_str()).unwrap_or_default())}
     pub fn import_avatar(&self,source:&Path) -> Result<String,String> {
         let ext=source.extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
-        if !["vrm","glb"].contains(&ext.as_str()) {return Err("Bitte eine VRM- oder GLB-Datei auswählen".into());}
-        let name=format!("{}.{}",uuid::Uuid::new_v4(),ext);
-        crate::avatar_metadata::copy_validated(source,&self.root.join("avatars").join(&name))?;
+        if !["vrm","glb","gltf"].contains(&ext.as_str()) {return Err("Bitte eine VRM-, GLB- oder glTF-2.0-Datei auswählen".into());}
+        let name=format!("{}.{}",uuid::Uuid::new_v4(),if ext=="gltf"{"glb"}else{&ext});
+        let destination=self.root.join("avatars").join(&name);
+        if ext=="gltf"{crate::gltf_import::import(source,&destination)?;}else{crate::avatar_metadata::copy_validated(source,&destination)?;}
         Ok(name)
     }
     pub fn export(&self,destination:&Path) -> Result<(),String> {
@@ -788,6 +792,18 @@ mod extension_tests{
         let installed=store.install_control_extension(CONTROL_FIXTURE).unwrap();let server_id=installed["server"]["id"].as_str().unwrap();let skill_id=installed["skill"]["id"].as_str().unwrap();assert_eq!(installed["server"]["transport"],"builtin");
         store.save_skill(skill_id,"Operator's edited control instructions").unwrap();let repeated=store.install_control_extension(CONTROL_FIXTURE).unwrap();assert_eq!(repeated["server"]["id"],server_id);assert_eq!(repeated["skill"]["id"],skill_id);assert_eq!(crate::skill_library::SkillLibrary::new(&fixture.0).unwrap().read(skill_id).unwrap()["content"],"Operator's edited control instructions");assert_eq!(store.library_mcp().unwrap().len(),1);
         let after=store.profile().unwrap();assert_eq!(after["mcpServers"],before["mcpServers"]);assert_eq!(after["skillsEnabled"],before["skillsEnabled"]);
+    }
+    #[test]
+    fn control_reinstall_renames_only_legacy_default_label_without_granting_access(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
+        let before=store.profile().unwrap();
+        let legacy=store.save_library_mcp(json!({"id":"cohost-control","name":"Streamer AI Cohost Control","transport":"builtin","builtin":"cohost-control"})).unwrap();
+        let installed=store.install_control_extension(CONTROL_FIXTURE).unwrap();
+        assert_eq!(installed["server"]["id"],legacy["id"]);assert_eq!(installed["server"]["name"],"OrbitPal Control");
+        let mut custom=installed["server"].clone();custom["name"]=json!("My operator label");store.save_library_mcp(custom).unwrap();
+        assert_eq!(store.install_control_extension(CONTROL_FIXTURE).unwrap()["server"]["name"],"My operator label");
+        let after=store.profile().unwrap();assert_eq!(after["mcpServers"],before["mcpServers"]);assert_eq!(after["skillsEnabled"],before["skillsEnabled"]);
+        assert_eq!(store.library_mcp().unwrap().len(),1);
     }
     #[test]
     fn control_installation_keeps_existing_named_resources_and_exports_marker_only(){

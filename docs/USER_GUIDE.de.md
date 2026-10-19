@@ -1,14 +1,14 @@
-# Streamer AI Cohost
+# OrbitPal
 
 Eine eigenständige Desktop-App für einen konfigurierbaren KI-Stream-Charakter. Tauri + Rust bilden die native Anwendung, Svelte das Regiepult und Three.js den echten 3D-Charakter. Die Oberfläche ist deutsch.
 
-Diese Anleitung beschreibt **0.6.0**. Für veröffentlichte Pakete gelten zusätzlich die Hinweise des jeweiligen [Releases](https://github.com/ralphschuler/streamer-ai-cohost/releases/latest).
+Diese Anleitung beschreibt **OrbitPal 0.8.0** (zuvor Streamer AI Cohost). Für veröffentlichte Pakete gelten zusätzlich die Hinweise des jeweiligen [Releases](https://github.com/ralphschuler/orbitpal/releases/latest).
 
 Unter **Updates & Version** kannst du automatisch oder manuell nach neuen GitHub Releases suchen. Download und Installation beginnen erst mit **Bestätigen & installieren**. Speichere vorher Entwürfe und beende laufende Ausgaben und das Mikrofon. Details, unterstützte Paketformate und die einmalige manuelle Aktualisierung älterer Versionen stehen unter [Updates](UPDATING.md).
 
 ## Start
 
-Pakete und Prüfsummen stehen im [aktuellen Release](https://github.com/ralphschuler/streamer-ai-cohost/releases/latest). Die Build-Pipeline sieht Windows x64, macOS Apple Silicon/Intel und Linux x64 vor; verfügbare Pakete stehen beim jeweiligen Release. Windows-Pakete sind unsigniert, macOS-Apps ad-hoc signiert und ohne Developer-ID oder Notarisierung. Falls macOS den Start blockiert, kann die App nach dem ersten Öffnungsversuch in **Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen** freigegeben werden. Hinweise zu Plattformvoraussetzungen und Prüfsummen stehen unter [RELEASING.md](RELEASING.md).
+Pakete und Prüfsummen stehen im [aktuellen Release](https://github.com/ralphschuler/orbitpal/releases/latest). Die Build-Pipeline sieht Windows x64, macOS Apple Silicon/Intel und Linux x64 vor; verfügbare Pakete stehen beim jeweiligen Release. Windows-Pakete sind unsigniert, macOS-Apps ad-hoc signiert und ohne Developer-ID oder Notarisierung. Falls macOS den Start blockiert, kann die App nach dem ersten Öffnungsversuch in **Systemeinstellungen → Datenschutz & Sicherheit → Dennoch öffnen** freigegeben werden. Hinweise zu Plattformvoraussetzungen und Prüfsummen stehen unter [RELEASING.md](RELEASING.md).
 
 Die App benötigt zum Start weder ein kostenpflichtiges KI-Konto noch ein heruntergeladenes 3D-Modell. Nova ist als eigene prozedurale 3D-Figur enthalten. Für Dialoge muss ein lokales Modell, eine Cloud-API oder eine separat installierte und angemeldete Claude-Code-/Codex-CLI konfiguriert werden.
 

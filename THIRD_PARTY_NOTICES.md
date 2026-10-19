@@ -3,6 +3,7 @@
 The root MIT license covers original application code, not a relicensing of third-party material.
 
 - **3D assets:** source authors, license texts, hashes and required Fox CC BY 4.0 attribution are in [public/characters/ATTRIBUTION.md](public/characters/ATTRIBUTION.md) and [public/characters/osa/ATTRIBUTION.md](public/characters/osa/ATTRIBUTION.md). These files are bundled with the app. Retain notices when redistributing.
+- **Windows installer template:** `src-tauri/windows/installer.nsi` derives from Tauri CLI 2.12.3. Its original source/hash, chosen MIT terms and attribution are retained in [TAURI-NSIS-TEMPLATE.txt](public/licenses/TAURI-NSIS-TEMPLATE.txt), bundled with the app. The local migration changes are documented in [MIGRATING-TO-ORBITPAL.md](docs/MIGRATING-TO-ORBITPAL.md).
 - **Fonts:** Manrope and Space Grotesk are supplied by their Fontsource packages under the SIL Open Font License. Their notices are bundled under `public/licenses/`.
 - **JavaScript and Rust dependencies:** exact versions are recorded in `pnpm-lock.yaml` and `src-tauri/Cargo.lock`; each dependency retains its published license. [DEPENDENCIES.txt](public/licenses/DEPENDENCIES.txt) reproduces installed LICENSE, NOTICE, COPYING, COPYRIGHT and AUTHORS files, published author metadata and source copyright headers, including development and platform-specific packages. It is bundled with the app.
 

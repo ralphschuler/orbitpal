@@ -14,10 +14,17 @@ export const updaterArtifacts = {
   'windows-x86_64-msi': ['windows-x64', '.msi'],
 };
 
+// Keep initial download URLs acceptable to installed 0.6/0.7 clients after the
+// repository rename. GitHub redirects this exact former slug to the same repo.
+// Never recreate/transfer the legacy repository or accept an asset-URL override.
+export const canonicalRepository = 'ralphschuler/orbitpal';
+export const legacyAssetRepository = 'ralphschuler/streamer-ai-cohost';
+
 export function releaseRepository(repository) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository || '') || repository.split('/').some(part => ['.', '..'].includes(part))) {
     throw new Error('Expected a GitHub OWNER/REPOSITORY name');
   }
+  if (repository !== canonicalRepository) throw new Error('Releases must come from the official ralphschuler/orbitpal repository');
   return repository;
 }
 
@@ -75,13 +82,13 @@ export function createUpdaterManifest({ root = process.cwd(), directory = join(r
   const keyId = publicKeyId(config.plugins?.updater?.pubkey);
   const platforms = {};
   for (const [target, [platform, suffix]] of Object.entries(updaterArtifacts)) {
-    const asset = `Streamer-AI-Cohost-v${version}-${platform}${suffix}`;
+    const asset = `OrbitPal-v${version}-${platform}${suffix}`;
     const path = join(directory, asset);
     requireRegularAsset(path);
     requireRegularAsset(`${path}.sig`);
     platforms[target] = {
       signature: updaterSignature(readFileSync(`${path}.sig`, 'utf8'), keyId, version),
-      url: `https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`,
+      url: `https://github.com/${legacyAssetRepository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset)}`,
     };
   }
   return { version, notes, pub_date: date, platforms };

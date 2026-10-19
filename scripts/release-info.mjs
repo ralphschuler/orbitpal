@@ -9,7 +9,7 @@ export function releaseVersion(root = process.cwd()) {
   const packageSection = cargo.split(/^\[/m).find(section => section.startsWith('package]')) || '';
   const cargoVersion = packageSection.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
   const lock = readFileSync(resolve(root, 'src-tauri/Cargo.lock'), 'utf8');
-  const lockVersion = lock.match(/\[\[package\]\]\r?\nname = "streamer-ai-cohost"\r?\nversion = "([^"]+)"/)?.[1];
+  const lockVersion = lock.match(/\[\[package\]\]\r?\nname = "orbitpal"\r?\nversion = "([^"]+)"/)?.[1];
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(packageVersion || '')) throw new Error('package.json needs a valid release version');
   for (const [file, version] of [['Cargo.toml', cargoVersion], ['tauri.conf.json', tauriVersion], ['Cargo.lock', lockVersion]]) {
     if (version !== packageVersion) throw new Error(`${file} version ${version ?? '(missing)'} differs from package.json ${packageVersion}`);
