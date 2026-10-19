@@ -6,8 +6,12 @@ fn event(app:&tauri::AppHandle,id:&str,kind:&str,text:&str) {let _=app.emit("coh
 fn definition(name:&str,description:&str,parameters:Value)->Value {json!({"type":"function","function":{"name":name,"description":description,"parameters":parameters}})}
 fn public_source(source:&str)->bool{["operator","twitch","youtube","viewer","microphone"].contains(&source)}
 fn autopilot_tool(name:&str)->bool{["search_knowledge","perform_emote","load_skill","read_skill_resource"].contains(&name)}
+fn reply_id(state:&crate::AppState,requested:Option<&str>)->Result<String,String>{
+    let id=state.overlay.claim_reply_id(requested)?;
+    if state.store.contains_message(&id)?{return Err("Anfrage-ID wurde bereits verwendet".into());}Ok(id)
+}
 
-pub async fn send(app:tauri::AppHandle,text:String,source:String,user:String,selected:Vec<String>,bot_id:Option<String>)->Result<Value,String> {
+pub async fn send(app:tauri::AppHandle,text:String,source:String,user:String,selected:Vec<String>,bot_id:Option<String>,request_id:Option<String>)->Result<Value,String> {
     if text.trim().is_empty(){return Err("Nachricht ist leer".into());}
     if text.len()>20_000{return Err("Nachricht ist zu lang (maximal 20.000 Bytes)".into());}
     if !public_source(&source){return Err("Ungültige Nachrichtenquelle".into());}
@@ -15,9 +19,9 @@ pub async fn send(app:tauri::AppHandle,text:String,source:String,user:String,sel
     let state=app.state::<crate::AppState>();
     state.updater.ensure_idle()?;
     let _turn=state.generation.try_lock().map_err(|_|"Der Co-Host verarbeitet bereits eine Nachricht. Bitte warten oder abbrechen.".to_owned())?;
+    let id=reply_id(&state,request_id.as_deref())?;
     let cancel=Arc::new(AtomicBool::new(false));
     *state.cancel.lock().map_err(|e|e.to_string())?=Some(cancel.clone());
-    let id=uuid::Uuid::new_v4().to_string();
     let result=run(&app,&id,&text,&source,&user,viewer,&selected,cancel.clone(),bot_id.as_deref(),None).await;
     *state.cancel.lock().map_err(|e|e.to_string())?=None;
     match &result {
@@ -26,16 +30,16 @@ pub async fn send(app:tauri::AppHandle,text:String,source:String,user:String,sel
     }
     result
 }
-pub async fn send_autopilot(app:tauri::AppHandle,bot_id:String)->Result<Value,String>{
+pub async fn send_autopilot(app:tauri::AppHandle,bot_id:String,request_id:Option<String>)->Result<Value,String>{
     let state=app.state::<crate::AppState>();state.updater.ensure_idle()?;
     let _turn=state.generation.try_lock().map_err(|_|"Der Co-Host verarbeitet bereits eine Nachricht oder ein Update".to_owned())?;
     // A queued or playing answer must finish before autonomous speech can begin.
     if state.overlay.has_any_pending_speech(){return Err("Bitte die vorbereitete oder laufende Sprachausgabe vor dem nächsten Autopilot-Beitrag beenden".into());}
     let profile=state.store.bot_profile(&bot_id)?;
     if profile["model"]["model"].as_str().unwrap_or_default().trim().is_empty(){return Err("Bitte zuerst ein Sprachmodell für diesen Bot auswählen".into());}
+    let id=reply_id(&state,request_id.as_deref())?;
     let ticket=state.autopilot.admit(&bot_id,&crate::autopilot::config(&profile)?)?;
     let cancel=ticket.cancel.clone();*state.cancel.lock().map_err(|error|error.to_string())?=Some(cancel.clone());
-    let id=uuid::Uuid::new_v4().to_string();
     let result=run(&app,&id,"Gelegenheit für einen kurzen eigenen Beitrag. Prüfe, ob du jetzt etwas Sinnvolles beitragen möchtest.","autopilot","Autopilot",false,&[],cancel,Some(&bot_id),Some(&ticket)).await;
     *state.cancel.lock().map_err(|error|error.to_string())?=None;
     if let Err(error)=&result{event(&app,&id,"error",error);}
@@ -251,9 +255,10 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
         if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
         state.screen_context.check(&screen_ticket)?;
         crate::screen_context::current_grant(&profile,&store.profile()?)?;
-        let message=store.add_message("assistant",&text,source,profile["name"].as_str().unwrap_or("Nova"))?;
-        state.overlay.say_profile(app,&profile,message["id"].as_str().unwrap_or(id),&text,&speech_text,&emotion,source,user,user_text,&queued_emotes,cancel.clone())?;
-        Ok(json!({"id":message["id"],"text":text,"speechText":speech_text,"emotion":emotion,"emotes":queued_emotes,"source":source,"user":user,"botId":profile["id"]}))
+        // The in-memory job is deliberately absent from history until actual
+        // presentation. Failed synthesis, Stop and restart leave no unheard reply.
+        state.overlay.say_profile(app,&profile,id,&text,&speech_text,&emotion,source,user,user_text,&queued_emotes,cancel.clone())?;
+        Ok(json!({"id":id,"text":text,"speechText":speech_text,"voice":crate::overlay::public_voice(&profile["voice"]),"emotion":emotion,"emotes":queued_emotes,"source":source,"user":user,"botId":profile["id"]}))
     };
     if let Some(ticket)=autopilot{state.autopilot.commit(profile["id"].as_str().ok_or("Bot-ID fehlt")?,ticket,commit)}else{commit()}
 }

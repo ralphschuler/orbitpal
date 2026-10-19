@@ -1,33 +1,84 @@
 use axum::{extract::{Path,Query,State},http::{header,StatusCode},response::{sse::{Event,KeepAlive},IntoResponse,Response,Sse},routing::{get,post},Json,Router};
 use futures_util::{stream,StreamExt};
 use serde_json::{json,Value};
-use std::{collections::{HashMap,VecDeque},convert::Infallible,sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},time::Duration};
+use std::{collections::{HashMap,HashSet,VecDeque},convert::Infallible,sync::{Arc,Mutex,atomic::{AtomicBool,Ordering}},time::{Duration,Instant}};
 use tauri::{Emitter,Manager};
 use tokio::sync::{broadcast,Mutex as AsyncMutex};
+
+const PLAYBACK_TIMEOUT:Duration=Duration::from_secs(180);
+const AUDIO_CACHE_BYTES:usize=64*1024*1024;
+const MAX_ENCODED_AUDIO:usize=4*((25*1024*1024+2)/3);
+
+#[derive(Default)]
+struct AudioCache { entries:HashMap<String,(Value,usize)>, order:VecDeque<String>, bytes:usize }
+impl AudioCache {
+    fn remove(&mut self,id:&str){if let Some((_,bytes))=self.entries.remove(id){self.bytes-=bytes;}self.order.retain(|key|key!=id);}
+    fn get(&mut self,id:&str)->Option<Value>{
+        let value=self.entries.get(id)?.0.clone();
+        self.order.retain(|key|key!=id);self.order.push_back(id.into());Some(value)
+    }
+    fn insert(&mut self,id:&str,value:Value,protected:&HashSet<String>,budget:usize)->Result<(),String>{
+        let encoded=value["audioBase64"].as_str().ok_or("Sprachausgabe enthält keine Audiodaten")?;
+        if encoded.is_empty()||encoded.len()>MAX_ENCODED_AUDIO{return Err("Sprachausgabe überschreitet die Audiogrößengrenze".into());}
+        let bytes=encoded.len()+value["mimeType"].as_str().unwrap_or_default().len()+id.len();
+        if bytes>budget{return Err("Sprachausgabe überschreitet das Audio-Cachebudget".into());}
+        let replaced=self.entries.get(id).map(|(_,bytes)|*bytes).unwrap_or(0);
+        let mut needed=self.bytes-replaced+bytes;let mut evict=Vec::new();
+        for candidate in &self.order{
+            if needed<=budget{break;}
+            if candidate!=id&&!protected.contains(candidate){needed-=self.entries[candidate].1;evict.push(candidate.clone());}
+        }
+        if needed>budget{return Err("Audio-Cache ist durch laufende Wiedergaben belegt. Bitte eine Wiedergabe beenden.".into());}
+        for candidate in evict{self.remove(&candidate);}
+        self.remove(id);self.bytes+=bytes;self.order.push_back(id.into());self.entries.insert(id.into(),(value,bytes));Ok(())
+    }
+}
 
 #[derive(Clone)]
 struct SpeechEntry {
     id:String, bot_id:String, text:String, speech_text:String, voice:Value, emotion:String,
     source:String, user:String, emotes:Vec<Value>, output:String,
-    user_text:String, hindsight:Value,
+    user_text:String, hindsight:Value, assistant_name:String,
     started:bool, finished:bool, cancel:Arc<AtomicBool>,
 }
 impl SpeechEntry{
     fn synthesis_text(&self)->&str{if self.voice["provider"]=="elevenlabs"{&self.speech_text}else{&self.text}}
-    fn speech_event(&self)->Value{json!({"kind":"speech","botId":self.bot_id,"id":self.id,"text":self.text,"speechText":self.speech_text,"emotion":self.emotion,"source":self.source,"user":self.user,"emotes":self.emotes})}
+    fn speech_event(&self)->Value{json!({"kind":"speech","botId":self.bot_id,"id":self.id,"text":self.text,"speechText":self.speech_text,"voice":public_voice(&self.voice),"emotion":self.emotion,"source":self.source,"user":self.user,"emotes":self.emotes})}
     fn presentation_event(&self)->Value{json!({"kind":"started","id":self.id,"botId":self.bot_id,"text":self.text,"emotion":self.emotion,"emotes":self.emotes,"source":self.source,"user":self.user})}
+    fn start(&mut self,persist:impl FnOnce(&Self)->Result<(),String>)->Result<bool,String>{
+        if self.cancel.load(Ordering::Relaxed)||self.finished{return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
+        if self.started{return Ok(false);}
+        persist(self)?;self.started=true;Ok(true)
+    }
 }
 pub struct OverlayHub {
     pub sender:broadcast::Sender<Value>,
     pub token:String,
     pub port:std::sync::atomic::AtomicU16,
     speech:Mutex<VecDeque<SpeechEntry>>,
-    audio:AsyncMutex<HashMap<String,Value>>,
+    audio:Mutex<AudioCache>,
+    synthesis:AsyncMutex<()>,
+    recent_ids:Mutex<HashMap<String,Instant>>,
 }
 impl Default for OverlayHub {
-    fn default()->Self {let (sender,_)=broadcast::channel(256);Self {sender,token:uuid::Uuid::new_v4().to_string(),port:std::sync::atomic::AtomicU16::new(0),speech:Mutex::new(VecDeque::new()),audio:AsyncMutex::new(HashMap::new())}}
+    fn default()->Self {let (sender,_)=broadcast::channel(256);Self {sender,token:uuid::Uuid::new_v4().to_string(),port:std::sync::atomic::AtomicU16::new(0),speech:Mutex::new(VecDeque::new()),audio:Mutex::new(AudioCache::default()),synthesis:AsyncMutex::new(()),recent_ids:Mutex::new(HashMap::new())}}
 }
 impl OverlayHub {
+    pub fn claim_reply_id(&self,requested:Option<&str>)->Result<String,String>{self.claim_reply_id_at(requested,Instant::now())}
+    fn claim_reply_id_at(&self,requested:Option<&str>,now:Instant)->Result<String,String>{
+        let id=match requested{
+            None=>uuid::Uuid::new_v4().to_string(),
+            Some(value)=>{let uuid=uuid::Uuid::parse_str(value).map_err(|_|"Anfrage-ID muss eine kanonische UUID sein")?;if uuid.to_string()!=value{return Err("Anfrage-ID muss eine kanonische UUID sein".into());}value.to_owned()},
+        };
+        let entries=self.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
+        let mut recent=self.recent_ids.lock().map_err(|_|"Anfrage-IDs nicht verfügbar")?;
+        recent.retain(|_,expiry|*expiry>now);
+        if recent.contains_key(&id)||entries.iter().any(|entry|entry.id==id){return Err("Anfrage-ID wurde bereits verwendet".into());}
+        if recent.len()>=4096{return Err("Zu viele aktuelle Anfrage-IDs. Bitte kurz warten.".into());}
+        // Outlive external playback timers, including for cancelled jobs. A
+        // retry uses a fresh ID rather than letting an old timer hit a new job.
+        recent.insert(id.clone(),now+PLAYBACK_TIMEOUT+Duration::from_secs(60));Ok(id)
+    }
     pub fn url(&self)->String {format!("http://127.0.0.1:{}/overlay?session={}",self.port.load(std::sync::atomic::Ordering::Relaxed),self.token)}
     pub fn url_for_bot(&self,bot_id:&str)->String {format!("{}&bot={bot_id}",self.url())}
     pub fn publish(&self,app:&tauri::AppHandle,mut event:Value) {
@@ -50,10 +101,20 @@ impl OverlayHub {
     }
     pub fn invalidate_speech(&self,bot_id:Option<&str>) {
         if let Ok(mut entries)=self.speech.lock(){
-            for entry in entries.iter().filter(|entry|bot_id.is_none_or(|id|entry.bot_id==id)){entry.cancel.store(true,Ordering::Relaxed);}
+            let mut audio=self.audio.lock().unwrap_or_else(|error|error.into_inner());
+            for entry in entries.iter().filter(|entry|bot_id.is_none_or(|id|entry.bot_id==id)){entry.cancel.store(true,Ordering::Relaxed);audio.remove(&entry.id);}
             entries.retain(|entry|bot_id.is_some_and(|id|entry.bot_id!=id));
         }
-        if let Ok(mut audio)=self.audio.try_lock(){audio.clear();}
+    }
+    fn remove_job(&self,id:&str,bot_id:&str,cancel:bool)->Result<Option<SpeechEntry>,String>{
+        self.remove_job_if(id,bot_id,cancel,None)
+    }
+    fn remove_job_if(&self,id:&str,bot_id:&str,cancel:bool,expected:Option<&Arc<AtomicBool>>)->Result<Option<SpeechEntry>,String>{
+        let mut entries=self.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
+        let Some(index)=entries.iter().position(|entry|entry.id==id&&entry.bot_id==bot_id&&expected.is_none_or(|token|Arc::ptr_eq(token,&entry.cancel)))else{return Ok(None);};
+        let mut entry=entries.remove(index).ok_or("Sprachausgabe nicht verfügbar")?;
+        entry.finished=true;if cancel||!entry.started{entry.cancel.store(true,Ordering::Relaxed);}
+        self.audio.lock().map_err(|_|"Audio-Cache nicht verfügbar")?.remove(id);Ok(Some(entry))
     }
     pub fn has_pending_speech(&self,bot_id:&str)->bool{
         // Fail closed if the in-memory queue is unavailable. The generation
@@ -70,9 +131,16 @@ impl OverlayHub {
         let bot_id=profile["id"].as_str().ok_or("Bot-ID fehlt")?;
         let mut speech=self.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
         if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
-        let entry=SpeechEntry{id:id.into(),bot_id:bot_id.into(),text:text.into(),speech_text:speech_text.into(),voice:profile["voice"].clone(),emotion:emotion.into(),source:source.into(),user:user.into(),user_text:user_text.into(),hindsight:profile["hindsight"].clone(),emotes:emotes.to_vec(),output:profile["output"]["mode"].as_str().unwrap_or("studio").into(),started:false,finished:false,cancel};
-        let event=entry.speech_event();speech.push_back(entry);
-        while speech.len()>64{if let Some(expired)=speech.pop_front(){expired.cancel.store(true,Ordering::Relaxed);}}
+        if speech.len()>=64{return Err("Zu viele ausstehende Sprachausgaben. Bitte Wiedergaben beenden oder stoppen.".into());}
+        let entry=SpeechEntry{id:id.into(),bot_id:bot_id.into(),text:text.into(),speech_text:speech_text.into(),voice:profile["voice"].clone(),emotion:emotion.into(),source:source.into(),user:user.into(),user_text:user_text.into(),hindsight:profile["hindsight"].clone(),assistant_name:profile["name"].as_str().unwrap_or("Cohost").into(),emotes:emotes.to_vec(),output:profile["output"]["mode"].as_str().unwrap_or("studio").into(),started:false,finished:false,cancel};
+        let event=entry.speech_event();let timer_cancel=entry.cancel.clone();speech.push_back(entry);
+        drop(speech);
+        // A disconnected Studio/OBS client cannot keep the host busy forever.
+        // Only identifiers and the cancellation token survive in the timer.
+        if matches!(profile["output"]["mode"].as_str(),Some("overlay"|"obs")){
+            let handle=app.clone();let job_id=id.to_owned();let target=bot_id.to_owned();
+            tauri::async_runtime::spawn(async move{tokio::time::sleep(PLAYBACK_TIMEOUT).await;let _=cancel_playback_if(&handle,&job_id,&target,Some(&timer_cancel),Some("Keine Abschlussmeldung der Sprachausgabe. Automatische Antworten pausiert."));});
+        }
         // Route by the answered bot, independently of the selected editor.
         match profile["output"]["mode"].as_str().unwrap_or("studio"){
             "overlay"=>{let _=app.emit("cohost://overlay",event);},
@@ -82,8 +150,12 @@ impl OverlayHub {
         Ok(())
     }
 }
+pub fn public_voice(voice:&Value)->Value{
+    let provider=voice["provider"].as_str().unwrap_or("system");
+    json!({"provider":provider,"voiceId":if matches!(provider,"system"|"browser"){json!(voice["voiceId"].as_str().unwrap_or_default())}else{Value::Null},"language":voice["language"].as_str().unwrap_or("de-DE"),"rate":voice["rate"].as_f64().unwrap_or(1.0).clamp(0.5,2.0),"volume":voice["volume"].as_f64().unwrap_or(0.85).clamp(0.0,1.0),"pitch":voice["pitch"].as_f64().unwrap_or(1.0).clamp(0.5,2.0),"enabled":voice["enabled"].as_bool().unwrap_or(true)})
+}
 pub fn public_profile(profile:&Value)->Value {
-    json!({"id":profile["id"],"name":profile["name"],"tagline":profile["tagline"],"avatar":profile["avatar"],"output":profile["output"],"emotes":profile["emotes"],"voice":{"provider":profile["voice"]["provider"],"voiceId":if profile["voice"]["provider"]=="system" {profile["voice"]["voiceId"].clone()}else{Value::Null},"language":profile["voice"]["language"],"rate":profile["voice"]["rate"],"volume":profile["voice"]["volume"],"enabled":profile["voice"]["enabled"]}})
+    json!({"id":profile["id"],"name":profile["name"],"tagline":profile["tagline"],"avatar":profile["avatar"],"output":profile["output"],"emotes":profile["emotes"],"voice":public_voice(&profile["voice"])})
 }
 #[derive(serde::Deserialize)]
 struct Access {session:Option<String>,bot:Option<String>}
@@ -141,21 +213,21 @@ pub fn report_emote_playback(app:&tauri::AppHandle,bot_id:&str,output:&str,id:&s
 }
 pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,error:Option<&str>)->Result<Value,String>{
     let state=app.state::<crate::AppState>();
+    if !speaking{
+        let entry=state.overlay.remove_job(id,bot_id,error.is_some())?.ok_or("Sprachausgabe ist nicht mehr gültig")?;
+        let mut event=json!({"id":entry.id,"botId":entry.bot_id,"speaking":false,"output":entry.output});
+        if let Some(error)=error.filter(|error|!error.trim().is_empty()){event["error"]=json!(error.chars().take(500).collect::<String>());}
+        let _=app.emit("cohost://playback",event);return Ok(json!({"accepted":true,"started":false}));
+    }
     let entry={
         let mut entries=state.overlay.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
         let entry=entries.iter_mut().find(|entry|entry.id==id&&entry.bot_id==bot_id).ok_or("Sprachausgabe ist nicht mehr gültig")?;
-        if entry.cancel.load(Ordering::Relaxed){return Err("Sprachausgabe wurde abgebrochen".into());}
-        if speaking {
-            if entry.finished{return Err("Sprachausgabe wurde bereits beendet".into());}
-            if entry.started{return Ok(json!({"accepted":true,"started":false}));}
-            entry.started=true;
-            // Acknowledgement and invalidation share the same lock. A late
-            // start received after Stop can never publish an answer or gesture.
-            let _=app.emit("cohost://presentation",entry.presentation_event());
-        }else{
-            if entry.finished{return Ok(json!({"accepted":true,"started":false}));}
-            entry.finished=true;
-        }
+        if !entry.start(|entry|{
+            state.store.scoped(&entry.bot_id)?.add_message_with_id(&entry.id,"assistant",&entry.text,&entry.source,&entry.assistant_name).map(|_|())
+        })?{return Ok(json!({"accepted":true,"started":false}));}
+        // History persistence, acknowledgement and invalidation share this
+        // lock. Stop cannot publish or persist a late start, and retries commit once.
+        let _=app.emit("cohost://presentation",entry.presentation_event());
         let mut event=json!({"id":entry.id,"botId":entry.bot_id,"speaking":speaking,"output":entry.output});
         if let Some(error)=error.filter(|error|!error.trim().is_empty()){event["error"]=json!(error.chars().take(500).collect::<String>());}
         let _=app.emit("cohost://playback",event);
@@ -194,6 +266,17 @@ pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,e
         });
     }
     Ok(json!({"accepted":true,"started":speaking}))
+}
+pub fn cancel_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,reason:Option<&str>)->Result<Value,String>{
+    cancel_playback_if(app,id,bot_id,None,reason)
+}
+fn cancel_playback_if(app:&tauri::AppHandle,id:&str,bot_id:&str,expected:Option<&Arc<AtomicBool>>,reason:Option<&str>)->Result<Value,String>{
+    let state=app.state::<crate::AppState>();
+    let Some(entry)=state.overlay.remove_job_if(id,bot_id,true,expected)?else{return Ok(json!({"cancelled":false}));};
+    state.overlay.publish(app,json!({"kind":"cancel-speech","id":id,"botId":bot_id}));
+    let mut event=json!({"id":id,"botId":bot_id,"speaking":false,"output":entry.output,"cancelled":true});
+    if let Some(reason)=reason{event["error"]=json!(reason);}
+    let _=app.emit("cohost://playback",event);Ok(json!({"cancelled":true}))
 }
 pub fn prepare_emote_profile(profile:&Value,id:&str,viewer:bool)->Result<Value,String>{
     let emote=profile["emotes"].as_array().and_then(|a|a.iter().find(|e|e["id"].as_str()==Some(id))).ok_or("Emote wurde im Charakterprofil nicht gefunden")?;
@@ -240,18 +323,24 @@ pub async fn speech_audio(app:&tauri::AppHandle,id:&str,bot_id:&str)->Result<Val
     let state=app.state::<crate::AppState>();
     let entry=state.overlay.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?.iter().find(|entry|entry.id==id&&entry.bot_id==bot_id).cloned().ok_or("Sprachausgabe ist nicht mehr gültig")?;
     if entry.cancel.load(Ordering::Relaxed)||entry.finished{return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
-    // Serialize/cache synthesis across clients; retain the originating bot's voice.
-    let mut cache=state.overlay.audio.lock().await;
+    // Deduplicate synthesis without holding the cache lock across network I/O.
+    // Stop/completion can immediately release this bot's buffers.
+    let _synthesis=tokio::select!{
+        lock=state.overlay.synthesis.lock()=>lock,
+        _=async{while !entry.cancel.load(Ordering::Relaxed){tokio::time::sleep(Duration::from_millis(75)).await;}}=>return Err("Sprachausgabe wurde abgebrochen".into()),
+    };
     let still_pending=||state.overlay.speech.lock().map(|entries|entries.iter().any(|current|current.id==id&&current.bot_id==bot_id&&!current.finished&&!current.cancel.load(Ordering::Relaxed))).unwrap_or(false);
     if entry.cancel.load(Ordering::Relaxed)||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
-    if let Some(audio)=cache.get(id){return Ok(audio.clone());}
+    if let Some(audio)=state.overlay.audio.lock().map_err(|_|"Audio-Cache nicht verfügbar")?.get(id){return Ok(audio);}
     let key=state.store.key_for(&entry.voice)?;
     let audio=tokio::select!{
         audio=crate::providers::synthesize(&entry.voice,entry.synthesis_text(),key)=>audio?,
         _=async{while !entry.cancel.load(Ordering::Relaxed){tokio::time::sleep(Duration::from_millis(75)).await;}}=>return Err("Sprachausgabe wurde abgebrochen".into()),
     };
-    if entry.cancel.load(Ordering::Relaxed)||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
-    if cache.len()>=64{cache.clear();}cache.insert(id.into(),audio.clone());Ok(audio)
+    let entries=state.overlay.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
+    if entry.cancel.load(Ordering::Relaxed)||!entries.iter().any(|current|current.id==id&&current.bot_id==bot_id&&!current.finished&&!current.cancel.load(Ordering::Relaxed)){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
+    let protected=entries.iter().filter(|entry|entry.started&&!entry.finished).map(|entry|entry.id.clone()).collect();
+    state.overlay.audio.lock().map_err(|_|"Audio-Cache nicht verfügbar")?.insert(id,audio.clone(),&protected,AUDIO_CACHE_BYTES)?;Ok(audio)
 }
 #[derive(Debug,PartialEq)]
 enum AssetRoute { ImportedAvatar, BundledFrontend }
@@ -396,7 +485,7 @@ mod tests{
         assert_eq!(authorize_asset(classify_asset("../secret.vrm"),||panic!("Malformed paths must fail before authorization")),Err(StatusCode::NOT_FOUND));
     }
     fn speech(provider:&str)->SpeechEntry{
-        SpeechEntry{id:"speech-fixture".into(),bot_id:"nova".into(),text:"Hallo zusammen!".into(),speech_text:"[crying] Hallo [shouts] zusammen!".into(),voice:json!({"provider":provider}),emotion:"neutral".into(),source:"twitch".into(),user:"viewer".into(),emotes:Vec::new(),output:"studio".into(),user_text:"Grüße den Chat".into(),hindsight:json!({"private_config_marker":"not an event field"}),started:false,finished:false,cancel:Arc::new(AtomicBool::new(false))}
+        SpeechEntry{id:"speech-fixture".into(),bot_id:"nova".into(),text:"Hallo zusammen!".into(),speech_text:"[crying] Hallo [shouts] zusammen!".into(),voice:json!({"provider":provider}),emotion:"neutral".into(),source:"twitch".into(),user:"viewer".into(),emotes:Vec::new(),output:"studio".into(),user_text:"Grüße den Chat".into(),hindsight:json!({"private_config_marker":"not an event field"}),assistant_name:"Nova".into(),started:false,finished:false,cancel:Arc::new(AtomicBool::new(false))}
     }
     #[test]
     fn elevenlabs_keeps_audio_tags_in_synthesis_only(){
@@ -415,6 +504,109 @@ mod tests{
         assert!(event.get("hindsight").is_none());
         let presentation=entry.presentation_event();
         assert!(presentation.get("speechText").is_none());assert!(!presentation.to_string().contains("[crying]"));assert!(!presentation.to_string().contains("private_config_marker"));
+    }
+    #[test]
+    fn queued_voice_survives_both_provider_change_directions_without_exposing_credentials(){
+        for (first,next) in [("system","elevenlabs"),("elevenlabs","system")]{
+            let mut profile=json!({"voice":{"provider":first,"voiceId":"chosen-voice","language":"fr-FR","rate":1.2,"volume":0.4,"pitch":1.1,"enabled":true,"apiKeyId":"private-binding","baseUrl":"https://private.invalid","model":"private-model"}});
+            let mut entry=speech(first);entry.voice=profile["voice"].clone();
+            profile["voice"]["provider"]=json!(next);profile["voice"]["language"]=json!("es-ES");
+            let voice=entry.speech_event()["voice"].clone();
+            assert_eq!(voice["provider"],first);assert_eq!(voice["language"],"fr-FR");assert_eq!(voice["rate"],1.2);assert_eq!(voice["volume"],0.4);assert_eq!(voice["pitch"],1.1);assert_eq!(voice["enabled"],true);
+            assert_eq!(voice["voiceId"],if first=="system"{json!("chosen-voice")}else{Value::Null});
+            assert!(!voice.to_string().contains("private-"));assert!(!voice.to_string().contains("private.invalid"));
+        }
+        let defaults=public_voice(&json!({"provider":"system"}));
+        assert_eq!(defaults["pitch"],1.0);assert_eq!(defaults["rate"],1.0);assert_eq!(defaults["enabled"],true);
+    }
+    #[test]
+    fn pending_cancelled_and_failed_speech_never_enters_history_even_after_restart(){
+        let root=std::env::temp_dir().join(format!("orbitpal-pending-history-{}",uuid::Uuid::new_v4()));
+        {
+            let store=crate::storage::Store::new(root.clone()).unwrap();
+            store.add_message("user","Eine Frage","operator","Streamer").unwrap();
+            let hub=OverlayHub::default();let entry=speech("system");
+            hub.speech.lock().unwrap().push_back(entry);
+            assert_eq!(store.history().unwrap().len(),1);
+            let mut cancelled=hub.remove_job("speech-fixture","nova",true).unwrap().unwrap();
+            assert!(cancelled.start(|_|panic!("Stop must never persist an unheard answer")).is_err());
+            let mut failed=speech("elevenlabs");failed.id="failed-tts".into();
+            hub.speech.lock().unwrap().push_back(failed);
+            hub.remove_job("failed-tts","nova",false).unwrap();
+            assert!(!hub.has_any_pending_speech());
+        }
+        let store=crate::storage::Store::new(root.clone()).unwrap();let history=store.history().unwrap();assert_eq!(history.len(),1);assert_eq!(history[0]["role"],"user");drop(store);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn presentation_commits_once_to_its_bot_and_preserves_newer_successful_history(){
+        let root=std::env::temp_dir().join(format!("orbitpal-presented-history-{}",uuid::Uuid::new_v4()));
+        let store=crate::storage::Store::new(root.clone()).unwrap();
+        let origin=store.scoped("nova").unwrap();let other=store.create_bot("Other",false).unwrap();
+        let mut entry=speech("system");
+        let persist=|entry:&SpeechEntry|origin.add_message_with_id(&entry.id,"assistant",&entry.text,&entry.source,&entry.assistant_name).map(|_|());
+        assert!(entry.start(persist).unwrap());
+        assert!(!entry.start(|_|panic!("Duplicate acknowledgement must not commit again")).unwrap());
+        let first=origin.history().unwrap();assert_eq!(first.len(),1);assert_eq!(first[0]["id"],"speech-fixture");
+        assert_eq!(origin.add_message_with_id(&entry.id,"assistant",&entry.text,&entry.source,&entry.assistant_name).unwrap(),first[0]);
+        assert!(origin.add_message_with_id(&entry.id,"assistant","different","twitch","Nova").is_err());
+        let mut next=speech("system");next.id="next-success".into();assert!(next.start(persist).unwrap());
+        assert!(store.scoped(other["id"].as_str().unwrap()).unwrap().history().unwrap().is_empty());
+        drop(origin);drop(store);
+        let reloaded=crate::storage::Store::new(root.clone()).unwrap().scoped("nova").unwrap();
+        assert_eq!(reloaded.history().unwrap().len(),2);drop(reloaded);std::fs::remove_dir_all(root).unwrap();
+    }
+    fn cached_audio(bytes:usize)->Value{json!({"audioBase64":"A".repeat(bytes),"mimeType":"audio/mpeg"})}
+    #[test]
+    fn audio_cache_uses_a_byte_budget_and_lru_while_pinning_playing_jobs(){
+        let mut cache=AudioCache::default();let none=HashSet::new();let budget=100;
+        for id in ["a","b"]{cache.insert(id,cached_audio(30),&none,budget).unwrap();}
+        assert!(cache.get("a").is_some());cache.insert("c",cached_audio(30),&none,budget).unwrap();
+        assert!(cache.get("b").is_none());assert!(cache.get("a").is_some());assert!(cache.bytes<=budget);
+        let protected=HashSet::from(["a".into()]);cache.insert("d",cached_audio(45),&protected,budget).unwrap();
+        assert!(cache.get("a").is_some());assert!(cache.get("c").is_none());
+        let before=cache.bytes;assert!(cache.insert("too-large",cached_audio(80),&protected,budget).is_err());assert_eq!(cache.bytes,before);assert!(cache.get("a").is_some());
+        for i in 0..200{cache.insert(&format!("bot-{i}"),cached_audio(8),&protected,budget).unwrap();assert!(cache.bytes<=budget);}
+        assert!(cache.get("a").is_some());
+        assert!(cache.insert("oversized",cached_audio(MAX_ENCODED_AUDIO+1),&none,AUDIO_CACHE_BYTES).is_err());
+    }
+    #[test]
+    fn completion_and_exact_job_expiry_release_buffers_without_cancelling_other_bots_or_newer_jobs(){
+        let hub=OverlayHub::default();let mut next=speech("system");next.id="newer".into();next.started=true;
+        let mut other=speech("system");other.bot_id="other".into();other.id="other-job".into();
+        hub.speech.lock().unwrap().extend([speech("system"),next,other]);
+        for id in ["speech-fixture","newer","other-job"]{hub.audio.lock().unwrap().insert(id,cached_audio(16),&HashSet::new(),AUDIO_CACHE_BYTES).unwrap();}
+        let expired=hub.remove_job("speech-fixture","nova",true).unwrap().unwrap();assert!(expired.cancel.load(Ordering::Relaxed));
+        assert!(hub.remove_job("speech-fixture","nova",true).unwrap().is_none());
+        assert!(hub.remove_job("newer","other",true).unwrap().is_none());
+        assert!(hub.has_pending_speech("nova"));assert!(hub.has_pending_speech("other"));
+        assert_eq!(hub.audio.lock().unwrap().entries.len(),2);
+        let completed=hub.remove_job("newer","nova",false).unwrap().unwrap();assert!(!completed.cancel.load(Ordering::Relaxed));assert!(!hub.has_pending_speech("nova"));
+        hub.invalidate_speech(Some("nova"));assert!(hub.has_pending_speech("other"));assert_eq!(hub.audio.lock().unwrap().entries.len(),1);
+        hub.invalidate_speech(None);assert!(!hub.has_any_pending_speech());assert_eq!(hub.audio.lock().unwrap().bytes,0);
+    }
+    #[test]
+    fn fresh_request_ids_are_canonical_bounded_and_cannot_reuse_a_live_or_recent_job(){
+        let hub=OverlayHub::default();let now=Instant::now();let id="00112233-4455-4677-8899-aabbccddeeff".to_owned();
+        assert_eq!(hub.claim_reply_id_at(Some(&id),now).unwrap(),id);
+        assert!(hub.claim_reply_id_at(Some(&id),now+Duration::from_secs(180)).is_err());
+        for invalid in ["not-a-uuid","",&id.to_uppercase()]{assert!(hub.claim_reply_id_at(Some(invalid),now).is_err());}
+        let mut active=speech("system");active.id=id.clone();hub.speech.lock().unwrap().push_back(active);
+        assert!(hub.claim_reply_id_at(Some(&id),now+Duration::from_secs(300)).is_err());
+        hub.remove_job(&id,"nova",true).unwrap();
+        assert_eq!(hub.claim_reply_id_at(Some(&id),now+Duration::from_secs(300)).unwrap(),id);
+        assert!(uuid::Uuid::parse_str(&hub.claim_reply_id_at(None,now).unwrap()).is_ok());
+        let bounded=OverlayHub::default();
+        for _ in 0..4096{bounded.claim_reply_id_at(None,now).unwrap();}
+        assert!(bounded.claim_reply_id_at(None,now).unwrap_err().contains("Zu viele"));
+        assert!(bounded.claim_reply_id_at(None,now+Duration::from_secs(300)).is_ok());
+    }
+    #[test]
+    fn delayed_native_watchdog_cannot_expire_a_replacement_with_a_reused_id(){
+        let hub=OverlayHub::default();let old=speech("system");let old_token=old.cancel.clone();
+        hub.speech.lock().unwrap().push_back(old);hub.remove_job("speech-fixture","nova",true).unwrap();
+        let replacement=speech("system");let replacement_token=replacement.cancel.clone();hub.speech.lock().unwrap().push_back(replacement);
+        assert!(hub.remove_job_if("speech-fixture","nova",true,Some(&old_token)).unwrap().is_none());
+        assert!(!replacement_token.load(Ordering::Relaxed));assert!(hub.has_pending_speech("nova"));
     }
     #[test]
     fn emote_sound_payload_uses_only_known_ids_and_keeps_viewer_grants(){
