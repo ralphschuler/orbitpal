@@ -2,7 +2,7 @@
 
 Eine eigenständige Desktop-App für einen konfigurierbaren KI-Stream-Charakter. Tauri + Rust bilden die native Anwendung, Svelte das Regiepult und Three.js den echten 3D-Charakter. Die Oberfläche unterstützt Deutsch, Englisch, Französisch und Spanisch. Diese Anleitung verwendet die deutschen Bezeichnungen.
 
-Diese Anleitung beschreibt **OrbitPal 0.8.0** (zuvor Streamer AI Cohost). Für veröffentlichte Pakete gelten zusätzlich die Hinweise des jeweiligen [Releases](https://github.com/ralphschuler/orbitpal/releases/latest).
+Diese Anleitung beschreibt **OrbitPal 0.9.0** (zuvor Streamer AI Cohost). Für veröffentlichte Pakete gelten zusätzlich die Hinweise des jeweiligen [Releases](https://github.com/ralphschuler/orbitpal/releases/latest).
 
 Unter **Updates & Version** kannst du automatisch oder manuell nach neuen GitHub Releases suchen. Download und Installation beginnen erst mit **Bestätigen & installieren**. Speichere vorher Entwürfe und beende laufende Ausgaben und das Mikrofon. Details, unterstützte Paketformate und die einmalige manuelle Aktualisierung älterer Versionen stehen unter [Updates](UPDATING.md).
 
@@ -24,7 +24,7 @@ Die App benötigt zum Start weder ein kostenpflichtiges KI-Konto noch ein herunt
 
 ## Selbstständiger Autopilot
 
-Unter **Autopilot** kann jeder Bot unabhängig herumlaufen, kleine Gesten zeigen und nach einer ruhigen Phase selbst einen kurzen Beitrag beginnen. Bewegung funktioniert ohne Modellanfrage; die Sprachversuche haben ein rollendes Stundenbudget. Optional wird vor einem Beitrag ein fest gewähltes MCP-Beobachtungswerkzeug aufgerufen und dessen Bild dem bildfähigen Dialogmodell übergeben. Start gilt nur für die aktuelle Sitzung; **Stop** beendet alle Autopiloten. Einrichtung, Kosten und Grenzen stehen unter [AUTOPILOT.md](AUTOPILOT.md).
+Unter **Autopilot** kann jeder Bot unabhängig herumlaufen, kleine Gesten zeigen und nach einer ruhigen Phase selbst einen kurzen Beitrag beginnen. Bewegung funktioniert ohne Modellanfrage; die Sprachversuche haben ein rollendes Stundenbudget. Im nativen Desktop-Overlay erweitert **Herumlaufen** die Ausgabe auf den ausgewählten Monitor. Sprache und Emotes pausieren die Bewegung; **Stop** stellt die feste Fenstergröße und Position wieder her. Studio und OBS behalten ihre vorhandene Bühne. Der Größenregler wirkt sofort auf alle Ausgaben; **Änderungen speichern** übernimmt die Vorschau dauerhaft. Start gilt nur für die aktuelle Sitzung. Optionaler nativer Bildschirmkontext ist eine getrennte Freigabe. Einrichtung, Kosten und Grenzen stehen unter [AUTOPILOT.md](AUTOPILOT.md).
 
 ## Bedienung und Tastatur
 

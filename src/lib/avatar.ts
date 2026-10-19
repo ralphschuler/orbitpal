@@ -1,4 +1,8 @@
 import * as THREE from 'three';
+import { DesktopMotionController } from './desktop-motion';
+import { desktopFraming, measureDesktopModel } from './desktop-framing';
+import type { DesktopLayout } from './output-presentation';
+export type DesktopAnchor={x:number;y:number;width:number;height:number;visible:boolean;viewport:{width:number;height:number}};
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
@@ -14,6 +18,8 @@ export interface AvatarOptions {
   emotion: string;
   transparent: boolean;
   autopilot?: AutopilotVisualConfig;
+  desktop?:DesktopLayout;
+  onDesktopAnchor?:(anchor:DesktopAnchor|undefined)=>void;
 }
 
 export interface AvatarModelInfo {
@@ -64,6 +70,8 @@ export class AvatarStage {
   private renderer: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(32, 1, 0.05, 100);
+  private desktopCamera=new THREE.OrthographicCamera(-1,1,1,-1,.05,100);
+  private get activeCamera(){return this.desktopActive?this.desktopCamera:this.camera;}
   private controls: OrbitControls;
   private clock = new THREE.Clock();
   private robot: Robot;
@@ -102,6 +110,11 @@ export class AvatarStage {
   private contentWidth = 2.05;
   private contentDepth = 1.35;
   private travelFraction = 0;
+  private desktopMotion=new DesktopMotionController();
+  private desktopFigure={width:1,height:1};
+  private desktopModelBounds={center:new THREE.Vector3(0,1.45,0),size:new THREE.Vector3(2.05,2.9,1.35)};
+  private lastDesktopAnchor=0;
+  private get desktopActive(){return Boolean(this.options.transparent&&this.options.desktop?.active);}
   private ambientSession = '';
   private ambientGesture = '';
   private ambientActions: string[] = ['wave', 'nod', 'celebrate'];
@@ -160,6 +173,7 @@ export class AvatarStage {
     this.scene.add(fill);
 
     this.robot = createRobot();
+    this.desktopModelBounds=measureDesktopModel(this.robot.root);
     this.travel.add(this.robot.root, this.imported);
     this.scene.add(this.travel, this.ground, this.lookAt);
     this.makeGround();
@@ -183,7 +197,8 @@ export class AvatarStage {
     this.options = options;
     const avatar = options.profile?.avatar ?? {};
     this.ground.visible = !options.transparent;
-    const scale = THREE.MathUtils.clamp(Number(avatar.scale) || 1, 0.3, 2.5);
+    let scale = THREE.MathUtils.clamp(Number(avatar.scale) || 1, 0.3, 2.5);
+    if(this.desktopActive){const frame=this.desktopFrame(scale);scale=frame.scale;this.desktopCamera.left=-frame.worldWidth/2;this.desktopCamera.right=frame.worldWidth/2;this.desktopCamera.top=frame.worldHeight/2;this.desktopCamera.bottom=-frame.worldHeight/2;this.desktopCamera.position.set(0,0,20);this.desktopCamera.lookAt(0,0,0);this.desktopCamera.updateProjectionMatrix();this.desktopCamera.updateMatrixWorld();}
     this.robot.root.scale.setScalar(scale);
     this.imported.scale.setScalar(scale);
     const accent = new THREE.Color();
@@ -358,6 +373,7 @@ export class AvatarStage {
           this.walkingAction = this.mixer.clipAction(this.walkingClip);
         }
       }
+      this.desktopModelBounds=measureDesktopModel(this.imported);
       this.ambientActions = ambientGestureActions(this.clips, this.getModelInfo().proceduralGestures);
       this.robot.root.visible = false;
       this.cameraMode = '';
@@ -417,6 +433,8 @@ export class AvatarStage {
     return Boolean(this.armRig && this.walkingLegs);
   }
 
+  private desktopFrame(scale:number){return desktopFraming({width:this.host.clientWidth,height:this.host.clientHeight,pixelRatio:window.devicePixelRatio||1,referencePhysicalHeight:this.options.desktop?.referencePhysicalHeight??this.host.clientHeight,scale,contentWidth:this.desktopModelBounds.size.x,contentHeight:this.desktopModelBounds.size.y,contentDepth:this.desktopModelBounds.size.z,fov:this.camera.fov,normalDistance:this.options.profile?.avatar?.camera==='full'?Math.hypot(.55,.7,7.6):Math.hypot(.35,.48,5.4)});}
+
   private updateAutopilot(delta: number, reduced: boolean) {
     const config = this.options.autopilot;
     const frame = sampleAmbientMotion(config, Date.now());
@@ -427,7 +445,7 @@ export class AvatarStage {
       this.ambientSession = session; this.ambientGesture = ''; this.travelFraction = 0;
     }
     const blocked = this.options.speaking || this.emoteSource === 'manual' || Boolean(this.asset && this.robot.root.visible);
-    if (!frame.active || reduced) {
+    if ((!frame.active || reduced)&&!this.desktopActive) {
       if (this.emoteSource === 'ambient') this.finishEmote();
       this.setWalking(false, true); this.walkStrength = 0; this.travelFraction = 0;
       this.travel.position.set(0, 0, 0); this.travel.rotation.set(0, 0, 0);
@@ -445,13 +463,31 @@ export class AvatarStage {
         this.emote.clip.time = this.emote.clip.getClip().duration * frame.gesture.elapsed / frame.gesture.duration;
       }
     }
+    let moving=false;
+    if(this.desktopActive){
+      const width=Math.max(1,this.host.clientWidth),height=Math.max(1,this.host.clientHeight);
+      const scale=this.robot.root.scale.x;
+      const units=height/(this.desktopCamera.top-this.desktopCamera.bottom);
+      this.desktopFigure={width:Math.hypot(this.desktopModelBounds.size.x,this.desktopModelBounds.size.z)*scale*units,height:this.desktopModelBounds.size.y*scale*units};
+      const movable=Boolean(config?.active&&config.wander&&this.canWalk());
+      if(!movable)this.desktopMotion.reset();
+      const position=(reduced||!movable)?{x:width/2,y:height/2,walking:false,facing:1}:this.desktopMotion.sample({seed:config!.seed,startedAt:config!.startedAt,viewport:{width,height},figure:this.desktopFigure,margin:24,now:Date.now(),delta,paused:blocked||Boolean(this.emote)});
+      moving=movable&&position.walking&&!blocked&&!this.emote;
+      this.setWalking(moving,blocked);this.walkStrength=moving?THREE.MathUtils.damp(this.walkStrength,1,14,delta):0;this.walkingPhase=frame.ageSeconds;
+      const right=new THREE.Vector3(1,0,0),up=new THREE.Vector3(0,1,0);
+      this.travel.position.set(0,0,0).addScaledVector(right,(position.x-width/2)/units).addScaledVector(up,(height/2-position.y)/units);
+
+      const heading=moving?Math.atan2(right.x*position.facing,right.z*position.facing)-this.modelForwardYaw:0;
+      const angle=Math.atan2(Math.sin(heading-this.travel.rotation.y),Math.cos(heading-this.travel.rotation.y));this.travel.rotation.y+=angle*(1-Math.exp(-delta*9));
+      this.travel.position.sub(this.desktopModelBounds.center.clone().multiplyScalar(scale).applyQuaternion(this.travel.quaternion));
+    }else{
     const scale = this.robot.root.scale.x;
     const radius = (Math.hypot(this.contentWidth, this.contentDepth) / 2 + this.contentHeight * 0.08) * scale;
     const lane = motionLaneHalfWidth(this.camera.position.distanceTo(this.controls.target), this.camera.fov, this.camera.aspect, radius);
     const capable = this.canWalk() && lane > 0.03;
     const previous = this.travelFraction;
     this.travelFraction = followAmbientPosition(previous, capable && config?.wander ? frame.x : previous, delta, blocked);
-    const moving = capable && Math.abs(this.travelFraction - previous) > 0.00001;
+    moving = capable && Math.abs(this.travelFraction - previous) > 0.00001;
     this.setWalking(moving && !blocked, blocked);
     this.walkStrength = blocked ? 0 : THREE.MathUtils.damp(this.walkStrength, moving ? 1 : 0, 14, delta);
     this.walkingPhase = frame.ageSeconds;
@@ -462,6 +498,7 @@ export class AvatarStage {
     const angle = Math.atan2(Math.sin(heading - this.travel.rotation.y), Math.cos(heading - this.travel.rotation.y));
     this.travel.rotation.y += angle * (1 - Math.exp(-delta * 9));
     if (this.contactShadow) { this.contactShadow.position.x = this.travel.position.x; this.contactShadow.position.z = this.travel.position.z; }
+    }
     if (this.walkingAction && this.walkingClip && this.walkingAction.enabled && this.walkingAction.isScheduled()) this.walkingAction.time = (frame.ageSeconds * 0.8) % this.walkingClip.duration;
     if (!blocked && !moving && frame.gesture && frame.gesture.key !== this.ambientGesture && this.ambientActions.length) {
       this.ambientGesture = frame.gesture.key;
@@ -833,12 +870,33 @@ export class AvatarStage {
     }
   }
 
+  /** Root-space authored jumps/tilts must not move the framed figure past a
+   * desktop edge. Keep intentional hide/entry movement, and do not alter the
+   * stored camera or the controller's paused waypoint. Skeleton deformation
+   * remains governed by the authored asset's bounds. */
+  private clampDesktopEmote() {
+    if (!this.desktopActive || !this.emote || this.emote.action === 'hide') return;
+    const root = this.asset ? this.imported : this.robot.root;
+    root.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromCenterAndSize(this.desktopModelBounds.center, this.desktopModelBounds.size).applyMatrix4(root.matrixWorld);
+    const units = this.host.clientHeight / (this.desktopCamera.top - this.desktopCamera.bottom);
+    const margin = 24 / units;
+    const minX = this.desktopCamera.left + margin, maxX = this.desktopCamera.right - margin;
+    const minY = this.desktopCamera.bottom + margin, maxY = this.desktopCamera.top - margin;
+    const shift = (low: number, high: number, min: number, max: number) => high-low > max-min ? (min+max-low-high)/2 : low < min ? min-low : high > max ? max-high : 0;
+    this.travel.position.x += shift(bounds.min.x, bounds.max.x, minX, maxX);
+    this.travel.position.y += shift(bounds.min.y, bounds.max.y, minY, maxY);
+    root.updateWorldMatrix(true, true);
+  }
+
   private resize() {
     const width = Math.max(this.host.clientWidth, 1);
     const height = Math.max(this.host.clientHeight, 1);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
     this.renderer.setSize(width, height, false);
+    this.update(this.options);
   }
 
   private makeGround() {
@@ -945,16 +1003,23 @@ export class AvatarStage {
       this.setVrmExpression(['sad', 'sorrow'], /sad|traurig/i.test(emotion) ? 0.6 : 0, true);
       this.setVrmExpression(['angry'], /angry|wütend/i.test(emotion) ? 0.4 : 0, true);
       this.setVrmExpression(['surprised', 'surprise'], /surpris|überrasch/i.test(emotion) ? 0.55 : 0, true);
-      this.lookAt.position.copy(this.camera.position);
+      this.lookAt.position.copy(this.activeCamera.position);
       finishVrmAnimationFrame(this.vrm, dt, this.authoredProperties, this.activeAnimationActions, this.mouthLevel > 0.005 ? [...this.mouthExpressions.values()] : []);
     }
     this.compensateWalkingRootMotion();
+    this.clampDesktopEmote();
     this.controls.update();
-    this.renderer.render(this.scene, this.camera);
+    if(now-this.lastDesktopAnchor>100){
+      this.lastDesktopAnchor=now;
+      if(this.desktopActive){const root=this.asset?this.imported:this.robot.root;const center=root.localToWorld(this.desktopModelBounds.center.clone()).project(this.activeCamera);const width=this.host.clientWidth,height=this.host.clientHeight;const x=(center.x+1)*width/2,y=(1-center.y)*height/2;this.options.onDesktopAnchor?.({x,y,...this.desktopFigure,visible:center.z>=-1&&center.z<=1&&x+this.desktopFigure.width/2>0&&x-this.desktopFigure.width/2<width&&y+this.desktopFigure.height/2>0&&y-this.desktopFigure.height/2<height,viewport:{width,height}});}else this.options.onDesktopAnchor?.(undefined);
+    }
+    this.renderer.render(this.scene, this.activeCamera);
   };
 
   private clearImported() {
+    this.desktopMotion.reset();
     this.finishEmote();
+    this.desktopModelBounds=measureDesktopModel(this.robot.root);
     this.mixer?.stopAllAction();
     if (this.mixer) this.mixer.uncacheRoot(this.mixer.getRoot());
     this.mixer = undefined;
@@ -1034,7 +1099,7 @@ function disposeObject(root: THREE.Object3D) {
   skeletons.forEach((skeleton) => skeleton.dispose());
 }
 
-function createRobot(): Robot {
+export function createRobot(): Robot {
   const root = new THREE.Group();
   const torso = new THREE.Group();
   root.add(torso);

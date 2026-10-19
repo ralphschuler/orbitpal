@@ -8,6 +8,8 @@ mod chat_route;
 mod mcp;
 mod agent;
 mod overlay;
+mod overlay_presentation;
+mod window_signals;
 mod memory;
 mod knowledge;
 mod runtime_command;
@@ -38,6 +40,7 @@ pub struct AppState {
     cancel:Mutex<Option<Arc<AtomicBool>>>,
     generation:tokio::sync::Mutex<()>,
     overlay:overlay::OverlayHub,
+    presentation:overlay_presentation::PresentationHub,
     control_mcp:control_mcp::ControlMcp,
     updater:updater::UpdateState,
     autopilot:autopilot::AutopilotHub,
@@ -47,8 +50,8 @@ pub struct AppState {
 #[tauri::command]
 fn get_app_state(state:State<'_,AppState>,app:tauri::AppHandle,bot_id:Option<String>)->Result<Value,String> {
     let id=bot_id.unwrap_or_else(||state.store.profile().ok().and_then(|p|p["id"].as_str().map(str::to_owned)).unwrap_or("nova".into()));
-    let store=state.store.scoped(&id)?;
-    Ok(json!({"profile":store.profile()?,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy(),"autopilot":state.autopilot.all()?}))
+    let store=state.store.scoped(&id)?;let profile=store.profile()?;let presentation=state.presentation.snapshot(&profile);
+    Ok(json!({"profile":profile,"presentation":presentation,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy(),"autopilot":state.autopilot.all()?}))
 }
 #[tauri::command]
 fn get_extension_library(state:State<'_,AppState>)->Result<Value,String>{state.store.extension_library()}
@@ -106,7 +109,8 @@ async fn save_profile(state:State<'_,AppState>,app:tauri::AppHandle,profile:Valu
     let write=||state.screen_context.change_profile(old["id"].as_str().ok_or("Bot-ID fehlt")?,||store.profile(),&profile,||store.save_profile(profile.clone()));
     let (profile,runtime)=if old!=profile{state.autopilot.change_profile(old["id"].as_str().ok_or("Bot-ID fehlt")?,write)?}else{(write()?,None)};
     if old!=profile&&state.overlay.has_autopilot_speech(old["id"].as_str().ok_or("Bot-ID fehlt")?){state.overlay.publish(&app,json!({"kind":"stop","botId":old["id"]}));}
-    if let Some(runtime)=runtime{autopilot::publish(&app,runtime);}
+    state.presentation.committed(&profile);
+    if let Some(runtime)=runtime{autopilot::publish(&app,runtime);}else{overlay_presentation::sync_or_report(&app,profile["id"].as_str().ok_or("Bot-ID fehlt")?);}
     // Bindings are per bot; revoking one bot must not disconnect another bot's
     // shared transport. Runtime calls recheck the answered bot's current grants.
     if old["output"]["mode"]!=profile["output"]["mode"]{state.overlay.publish(&app,json!({"kind":"stop","botId":profile["id"]}));}
@@ -271,12 +275,12 @@ pub fn run(){
             app.manage(ui_locale::UiLocaleState::default());
             let root=app.path().app_data_dir()?;
             let store=storage::Store::new(root).map_err(std::io::Error::other)?;
-            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default(),screen_context:screen_context::ScreenState::default()});
+            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),presentation:overlay_presentation::PresentationHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default(),screen_context:screen_context::ScreenState::default()});
             tauri::async_runtime::block_on(overlay::start(app.handle().clone())).map_err(std::io::Error::other)?;
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings])
+        .invoke_handler(tauri::generate_handler![overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings])
         .run(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden");
 }
 

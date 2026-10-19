@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.0 — 2026-10-19
+
+- Expand native character windows to a selected monitor while Autopilot wandering is active. Use deterministic two-dimensional paths, pause for speech and emotes, and restore each bot's fixed physical window bounds and cursor preference when stopped. Keep the monitor-sized window transparent and click-through; the output-monitor choice grants no screen capture permission.
+- Preview character size immediately in Studio, native overlays and connected OBS sources without saving unrelated profile drafts or permissions. Include revisioned presentation state in initial snapshots and live events. Keep the normal Studio/OBS perspective cameras and frame native desktop characters with a separate orthographic camera, measured model bounds, a turning envelope and figure-following captions.
+- Handle delayed/coalesced window requests, partial setter failures, negative monitor origins, DPI rounding and stale callbacks. Preserve saved bounds through initialization and, when restoration cannot be confirmed, safely replace the old click-through handle without replaying speech. Real multi-monitor/compositor acceptance remains outstanding; unusual authored skeletal motion can exceed neutral asset bounds.
+- Make profile package imports transactional: validate and stage the entire package before applying it, preserving existing data when an import fails.
+- Bound MCP/CLI output and retain complete UTF-8 server-sent events instead of splitting multibyte text across chunks.
+- Commit assistant history and presentation only when audio playback actually starts. Retain queued voice snapshots, expire abandoned speech jobs, cancel late results and bound cached audio.
+- Bind written Twitch/YouTube replies to their original connection and account so delayed responses cannot be posted through a replacement connection.
+
 ## 0.8.0 — 2026-10-19
 
 - Add English, German, French and Spanish interfaces with a saved app-wide selection, reactive labels/help, localized native tray menus and number/date formatting. Keep conversation content, bot instructions, voice/STT choices and extension permissions independent of the interface language.
