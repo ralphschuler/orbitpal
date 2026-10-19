@@ -9,7 +9,8 @@ export type EmotePayload = {
 
 export function emoteDurationMilliseconds(emote: EmotePayload): number {
   const duration = Number(emote.duration);
-  return (Number.isFinite(duration) ? Math.max(0.2, Math.min(15, duration)) : 2.5) * 1000;
+  const motion = emote.action.startsWith('vrma:');
+  return (Number.isFinite(duration) ? Math.max(motion ? 0.001 : 0.2, Math.min(motion ? 120 : 15, duration)) : 2.5) * 1000;
 }
 
 export function emoteSequenceMilliseconds(emotes: readonly EmotePayload[] = []): number {

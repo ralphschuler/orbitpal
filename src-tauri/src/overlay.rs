@@ -155,7 +155,7 @@ pub fn public_voice(voice:&Value)->Value{
     json!({"provider":provider,"voiceId":if matches!(provider,"system"|"browser"){json!(voice["voiceId"].as_str().unwrap_or_default())}else{Value::Null},"language":voice["language"].as_str().unwrap_or("de-DE"),"rate":voice["rate"].as_f64().unwrap_or(1.0).clamp(0.5,2.0),"volume":voice["volume"].as_f64().unwrap_or(0.85).clamp(0.0,1.0),"pitch":voice["pitch"].as_f64().unwrap_or(1.0).clamp(0.5,2.0),"enabled":voice["enabled"].as_bool().unwrap_or(true)})
 }
 pub fn public_profile(profile:&Value)->Value {
-    json!({"id":profile["id"],"name":profile["name"],"tagline":profile["tagline"],"avatar":profile["avatar"],"output":profile["output"],"emotes":profile["emotes"],"voice":public_voice(&profile["voice"])})
+    json!({"id":profile["id"],"name":profile["name"],"tagline":profile["tagline"],"avatar":profile["avatar"],"output":profile["output"],"emotes":profile["emotes"],"motions":profile["motions"],"voice":public_voice(&profile["voice"])})
 }
 #[derive(serde::Deserialize)]
 struct Access {session:Option<String>,bot:Option<String>}
@@ -174,8 +174,8 @@ pub async fn start(app:tauri::AppHandle)->Result<(),String> {
     let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e|e.to_string())?;
     app.state::<crate::AppState>().overlay.port.store(listener.local_addr().map_err(|e|e.to_string())?.port(),std::sync::atomic::Ordering::Relaxed);
     let control=post(crate::control_mcp::http).get(crate::control_mcp::no_stream).delete(crate::control_mcp::no_stream).layer(axum::extract::DefaultBodyLimit::max(crate::control_mcp::MAX_REQUEST_BYTES));
-    let routes=Router::new().route("/mcp",control).route("/events",get(events)).route("/speech/{id}",get(speech)).route("/emote-sound/{id}",get(emote_sound)).route("/emote-playback",post(emote_playback)).route("/playback",post(playback)).route("/assets/{name}",get(asset)).route("/",get(index)).route("/overlay",get(index)).route("/{*path}",get(frontend_asset)).with_state(app);
-    tauri::async_runtime::spawn(async move {let _=axum::serve(listener,routes).await;});Ok(())
+    let routes=Router::new().route("/mcp",control).route("/events",get(events)).route("/speech/{id}",get(speech)).route("/emote-sound/{id}",get(emote_sound)).route("/motions/{id}",get(motion)).route("/emote-playback",post(emote_playback)).route("/playback",post(playback)).route("/assets/{name}",get(asset)).route("/",get(index)).route("/overlay",get(index)).route("/{*path}",get(frontend_asset)).with_state(app);
+    tauri::async_runtime::spawn(async move {let _=axum::serve(listener,crate::overlay_http::with_security(routes)).await;});Ok(())
 }
 async fn playback(State(app):State<tauri::AppHandle>,Query(q):Query<Access>,Json(body):Json<Value>)->Response {
     if !allowed(&app,&q){return StatusCode::UNAUTHORIZED.into_response();}
@@ -193,9 +193,12 @@ async fn emote_playback(State(app):State<tauri::AppHandle>,Query(q):Query<Access
     let Ok(bot_id)=requested_bot(&app,&q)else{return StatusCode::NOT_FOUND.into_response();};
     if body["botId"].as_str()!=Some(bot_id.as_str())||body["output"]!="obs"{return StatusCode::BAD_REQUEST.into_response();}
     let (Some(id),Some(playing))=(body["id"].as_str(),body["playing"].as_bool())else{return StatusCode::BAD_REQUEST.into_response();};
-    match report_emote_playback(&app,&bot_id,"obs",id,playing){Ok(result)=>Json(result).into_response(),Err(_)=>(StatusCode::CONFLICT,"Emote-Audiostatus ist für diesen Bot oder Ausgabemodus nicht gültig.").into_response()}
+    let activity=match body.get("activity"){None=>None,Some(Value::String(value))=>Some(value.as_str()),_=>return StatusCode::BAD_REQUEST.into_response()};
+    match report_emote_playback(&app,&bot_id,"obs",id,playing,activity){Ok(result)=>Json(result).into_response(),Err(_)=>(StatusCode::CONFLICT,"Emote-Audiostatus ist für diesen Bot oder Ausgabemodus nicht gültig.").into_response()}
 }
-fn emote_playback_event(profile:&Value,output:&str,id:&str,playing:bool)->Result<Value,String>{
+fn emote_playback_event(profile:&Value,output:&str,id:&str,playing:bool,activity:Option<&str>)->Result<Value,String>{
+    let activity=activity.unwrap_or("foreground");
+    if !matches!(activity,"foreground"|"ambient"){return Err("Ungültige Emote-Audioaktivität".into());}
     let bot_id=profile["id"].as_str().filter(|id|crate::storage::valid_id(id)).ok_or("Bot-ID fehlt oder ist ungültig")?;
     if !matches!(output,"overlay"|"obs"){return Err("Emote-Audioausgabe muss overlay oder obs sein".into());}
     let parsed=uuid::Uuid::parse_str(id).map_err(|_|"Emote-Audiostatus benötigt eine UUID")?;
@@ -203,11 +206,11 @@ fn emote_playback_event(profile:&Value,output:&str,id:&str,playing:bool)->Result
     // Ends are accepted after reconfiguration, so an old output can release
     // its wakeword block even when the operator has already selected a new one.
     if playing&&profile["output"]["mode"].as_str()!=Some(output){return Err("Diese Emote-Audioausgabe ist für den Bot nicht mehr ausgewählt".into());}
-    Ok(json!({"botId":bot_id,"output":output,"id":id,"playing":playing}))
+    Ok(json!({"botId":bot_id,"output":output,"id":id,"playing":playing,"activity":activity}))
 }
-pub fn report_emote_playback(app:&tauri::AppHandle,bot_id:&str,output:&str,id:&str,playing:bool)->Result<Value,String>{
+pub fn report_emote_playback(app:&tauri::AppHandle,bot_id:&str,output:&str,id:&str,playing:bool,activity:Option<&str>)->Result<Value,String>{
     let profile=app.state::<crate::AppState>().store.bot_profile(bot_id)?;
-    let event=emote_playback_event(&profile,output,id,playing)?;
+    let event=emote_playback_event(&profile,output,id,playing,activity)?;
     app.emit("cohost://emote-playback",event).map_err(|_|"Emote-Audiostatus konnte nicht übermittelt werden".to_owned())?;
     Ok(json!({"accepted":true}))
 }
@@ -222,6 +225,11 @@ pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,e
     let entry={
         let mut entries=state.overlay.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
         let entry=entries.iter_mut().find(|entry|entry.id==id&&entry.bot_id==bot_id).ok_or("Sprachausgabe ist nicht mehr gültig")?;
+        // Asset/motion admission can read files. Recheck cancellation in start
+        // after that work, before committing history and publishing output.
+        if !entry.started{
+            if let Ok(profile)=state.store.bot_profile(bot_id){entry.emotes=crate::emote_capabilities::pending(&state.store.root,&profile,&entry.emotes);}else{entry.emotes.clear();}
+        }
         if !entry.start(|entry|{
             state.store.scoped(&entry.bot_id)?.add_message_with_id(&entry.id,"assistant",&entry.text,&entry.source,&entry.assistant_name).map(|_|())
         })?{return Ok(json!({"accepted":true,"started":false}));}
@@ -278,16 +286,19 @@ fn cancel_playback_if(app:&tauri::AppHandle,id:&str,bot_id:&str,expected:Option<
     if let Some(reason)=reason{event["error"]=json!(reason);}
     let _=app.emit("cohost://playback",event);Ok(json!({"cancelled":true}))
 }
-pub fn prepare_emote_profile(profile:&Value,id:&str,viewer:bool)->Result<Value,String>{
-    let emote=profile["emotes"].as_array().and_then(|a|a.iter().find(|e|e["id"].as_str()==Some(id))).ok_or("Emote wurde im Charakterprofil nicht gefunden")?;
+pub fn prepare_emote_profile(root:&std::path::Path,profile:&Value,id:&str,viewer:bool)->Result<Value,String>{
+    let emotes:Vec<_>=profile["emotes"].as_array().into_iter().flatten().filter(|emote|emote["id"].as_str()==Some(id)).collect();
+    let [emote]=emotes.as_slice() else{return Err("Emote wurde im Charakterprofil nicht gefunden oder ist nicht eindeutig".into());};
     if viewer&&emote["allowChat"].as_bool()!=Some(true){return Err("Dieses Emote ist für Zuschauer nicht freigegeben".into());}
-    let action=emote["action"].as_str().filter(|s|!s.trim().is_empty()&&s.chars().count()<=128).ok_or("Emote-Aktion fehlt oder ist zu lang (maximal 128 Zeichen)")?;
+    let (resolved,avatar_binding)=crate::emote_capabilities::admit(root,profile,emote)?;
+    let action=&resolved.action;
     let sound=if emote["sound"].is_null(){""}else{emote["sound"].as_str().ok_or("Emote-Sound muss eine Sound-ID sein")?};
     if !crate::emote_audio::valid_sound_id(sound){return Err("Emote-Sound-ID ist ungültig".into());}
-    Ok(json!({"botId":profile["id"],"id":id,"action":action,"nonce":uuid::Uuid::new_v4().to_string(),"duration":emote["duration"].as_f64().unwrap_or(2.5).clamp(0.2,15.0),"intensity":emote["intensity"].as_f64().unwrap_or(1.0).clamp(0.0,2.0),"sound":sound,"soundVolume":emote["soundVolume"].as_f64().unwrap_or(0.7).clamp(0.0,1.0)}))
+    let duration=if action.starts_with("vrma:"){resolved.duration.ok_or("Die VRMA-Bewegung ist nicht verfügbar")?}else{emote["duration"].as_f64().unwrap_or(2.5).clamp(0.2,15.0)};
+    Ok(json!({"botId":profile["id"],"id":id,"action":action,"avatarBinding":avatar_binding,"emoteBinding":crate::emote_capabilities::emote_binding(emote),"nonce":uuid::Uuid::new_v4().to_string(),"duration":duration,"intensity":emote["intensity"].as_f64().unwrap_or(1.0).clamp(0.0,2.0),"sound":sound,"soundVolume":emote["soundVolume"].as_f64().unwrap_or(0.7).clamp(0.0,1.0)}))
 }
 pub fn trigger_emote_profile(app:&tauri::AppHandle,profile:&Value,id:&str,viewer:bool)->Result<Value,String>{
-    let payload=prepare_emote_profile(profile,id,viewer)?;
+    let payload=prepare_emote_profile(&app.state::<crate::AppState>().store.root,profile,id,viewer)?;
     let _=app.emit("cohost://emote",payload.clone());let mut event=payload.clone();event["kind"]=json!("emote");app.state::<crate::AppState>().overlay.publish(app,event);Ok(payload)
 }
 async fn events(State(app):State<tauri::AppHandle>,Query(q):Query<Access>)->Response {
@@ -310,6 +321,14 @@ async fn speech(State(app):State<tauri::AppHandle>,Path(id):Path<String>,Query(q
     match speech_audio(&app,&id,&bot_id).await{
         Ok(audio)=>Json(audio).into_response(),
         Err(error)=>(StatusCode::BAD_GATEWAY,error).into_response(),
+    }
+}
+async fn motion(State(app):State<tauri::AppHandle>,Path(id):Path<String>,Query(q):Query<Access>)->Response{
+    if !allowed(&app,&q){return StatusCode::UNAUTHORIZED.into_response();}
+    let Some(bot_id)=q.bot.clone() else{return StatusCode::BAD_REQUEST.into_response();};
+    match tokio::task::spawn_blocking(move||{let state=app.state::<crate::AppState>();state.store.bot_profile(&bot_id).and_then(|profile|crate::motions::read(&state.store.root,&profile,&id))}).await{
+        Ok(Ok(bytes))=>([(header::CONTENT_TYPE,"model/gltf-binary"),(header::ACCESS_CONTROL_ALLOW_ORIGIN,"*"),(header::CACHE_CONTROL,"no-store")],bytes).into_response(),
+        _=>StatusCode::UNPROCESSABLE_ENTITY.into_response(),
     }
 }
 async fn emote_sound(State(app):State<tauri::AppHandle>,Path(id):Path<String>,Query(q):Query<Access>)->Response{
@@ -663,23 +682,38 @@ mod tests{
     #[test]
     fn emote_sound_payload_uses_only_known_ids_and_keeps_viewer_grants(){
         let mut profile=json!({"id":"nova","emotes":[{"id":"wave","action":"wave","allowChat":false,"sound":"builtin:wave","soundVolume":0.35}]});
-        assert!(prepare_emote_profile(&profile,"wave",true).is_err());
-        let event=prepare_emote_profile(&profile,"wave",false).unwrap();assert_eq!(event["sound"],"builtin:wave");assert_eq!(event["soundVolume"],0.35);assert_eq!(event["botId"],"nova");
-        profile["emotes"][0]["sound"]=json!("https://untrusted.invalid/sound.mp3");assert!(prepare_emote_profile(&profile,"wave",false).is_err());
-        profile["emotes"][0]["sound"]=json!("custom:../../../private.wav");assert!(prepare_emote_profile(&profile,"wave",false).is_err());
+        assert!(prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",true).is_err());
+        let event=prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",false).unwrap();assert_eq!(event["sound"],"builtin:wave");assert_eq!(event["soundVolume"],0.35);assert_eq!(event["botId"],"nova");
+        profile["emotes"][0]["sound"]=json!("https://untrusted.invalid/sound.mp3");assert!(prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",false).is_err());
+        profile["emotes"][0]["sound"]=json!("custom:../../../private.wav");assert!(prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",false).is_err());
     }
     #[test]
     fn external_emote_playback_rejects_invalid_ids_and_output_modes(){
         let profile=json!({"id":"nova","output":{"mode":"obs"}});let id=uuid::Uuid::new_v4().to_string();
-        for output in ["studio","","other"]{assert!(emote_playback_event(&profile,output,&id,true).is_err());assert!(emote_playback_event(&profile,output,&id,false).is_err());}
-        for invalid in ["","../other","not-a-uuid"]{assert!(emote_playback_event(&profile,"obs",invalid,true).is_err());assert!(emote_playback_event(&profile,"obs",invalid,false).is_err());}
-        let event=emote_playback_event(&profile,"obs",&id,true).unwrap();assert_eq!(event,json!({"botId":"nova","output":"obs","id":id,"playing":true}));
+        for output in ["studio","","other"]{assert!(emote_playback_event(&profile,output,&id,true,None).is_err());assert!(emote_playback_event(&profile,output,&id,false,None).is_err());}
+        for invalid in ["","../other","not-a-uuid"]{assert!(emote_playback_event(&profile,"obs",invalid,true,None).is_err());assert!(emote_playback_event(&profile,"obs",invalid,false,None).is_err());}
+        let event=emote_playback_event(&profile,"obs",&id,true,None).unwrap();assert_eq!(event,json!({"botId":"nova","output":"obs","id":id,"playing":true,"activity":"foreground"}));
     }
     #[test]
     fn external_emote_playback_start_requires_current_mode_but_end_survives_reconfiguration(){
         let profile=json!({"id":"nova","output":{"mode":"studio"}});let id=uuid::Uuid::new_v4().to_string();
-        for output in ["overlay","obs"]{assert!(emote_playback_event(&profile,output,&id,true).is_err());assert_eq!(emote_playback_event(&profile,output,&id,false).unwrap()["playing"],false);}
-        assert!(emote_playback_event(&json!({"id":"../other","output":{"mode":"obs"}}),"obs",&id,false).is_err());
+        for output in ["overlay","obs"]{assert!(emote_playback_event(&profile,output,&id,true,None).is_err());assert_eq!(emote_playback_event(&profile,output,&id,false,None).unwrap()["playing"],false);}
+        assert!(emote_playback_event(&json!({"id":"../other","output":{"mode":"obs"}}),"obs",&id,false,None).is_err());
+    }
+    #[test]
+    fn external_model_audio_classification_preserves_output_and_identity_validation(){
+        let profile=json!({"id":"nova","output":{"mode":"obs"}});let id=uuid::Uuid::new_v4().to_string();
+        for activity in ["foreground","ambient"]{
+            let event=emote_playback_event(&profile,"obs",&id,true,Some(activity)).unwrap();
+            assert_eq!(event,json!({"botId":"nova","output":"obs","id":id,"playing":true,"activity":activity}));
+            assert!(emote_playback_event(&profile,"overlay",&id,true,Some(activity)).is_err());
+            assert!(emote_playback_event(&profile,"obs","not-a-uuid",false,Some(activity)).is_err());
+            assert!(emote_playback_event(&profile,"overlay",&id,false,Some(activity)).is_ok());
+        }
+        for activity in ["", "idle", "AMBIENT", "speech"]{
+            assert!(emote_playback_event(&profile,"obs",&id,true,Some(activity)).is_err());
+            assert!(emote_playback_event(&profile,"obs",&id,false,Some(activity)).is_err());
+        }
     }
     #[test]
     fn output_changes_can_detect_pending_audio_without_blocking_other_bots(){

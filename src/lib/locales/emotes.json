@@ -1,0 +1,29 @@
+{
+  "en": {
+    "Diese Emote-Aktion ist für die aktuelle Figur nicht verfügbar.": "This emote action is unavailable for the current character.",
+    "Diese Emote-Aktion ist nicht eindeutig. Bitte einen eindeutigen Clipnamen auswählen.": "This emote action is ambiguous. Choose a unique clip name.",
+    "Für diese Figur nicht verfügbar": "Unavailable for this character",
+    "Emote wurde im Charakterprofil nicht gefunden oder ist nicht eindeutig": "Emote was not found in the character profile or is ambiguous",
+    "Unbekannte importierte Figur": "Unknown imported character",
+    "Wähle eine tatsächlich vorhandene Aktion dieser Figur. Veraltete Einträge bleiben sichtbar, bis du sie ersetzt oder entfernst.": "Choose an action that this character actually supports. Stale entries remain visible until you replace or remove them.",
+    "Emote-Liste nicht verfügbar": "Emote list unavailable"
+  },
+  "fr": {
+    "Diese Emote-Aktion ist für die aktuelle Figur nicht verfügbar.": "Cette action est indisponible pour le personnage actuel.",
+    "Diese Emote-Aktion ist nicht eindeutig. Bitte einen eindeutigen Clipnamen auswählen.": "Cette action est ambiguë. Choisissez un nom de clip unique.",
+    "Für diese Figur nicht verfügbar": "Indisponible pour ce personnage",
+    "Emote wurde im Charakterprofil nicht gefunden oder ist nicht eindeutig": "L’emote est introuvable dans le profil du personnage ou est ambiguë",
+    "Unbekannte importierte Figur": "Personnage importé inconnu",
+    "Wähle eine tatsächlich vorhandene Aktion dieser Figur. Veraltete Einträge bleiben sichtbar, bis du sie ersetzt oder entfernst.": "Choisissez une action prise en charge par ce personnage. Les entrées obsolètes restent visibles jusqu’à leur remplacement ou suppression.",
+    "Emote-Liste nicht verfügbar": "Liste des emotes indisponible"
+  },
+  "es": {
+    "Diese Emote-Aktion ist für die aktuelle Figur nicht verfügbar.": "Esta acción no está disponible para el personaje actual.",
+    "Diese Emote-Aktion ist nicht eindeutig. Bitte einen eindeutigen Clipnamen auswählen.": "Esta acción es ambigua. Selecciona un nombre de clip único.",
+    "Für diese Figur nicht verfügbar": "No disponible para este personaje",
+    "Emote wurde im Charakterprofil nicht gefunden oder ist nicht eindeutig": "El emote no se encontró en el perfil del personaje o es ambiguo",
+    "Unbekannte importierte Figur": "Personaje importado desconocido",
+    "Wähle eine tatsächlich vorhandene Aktion dieser Figur. Veraltete Einträge bleiben sichtbar, bis du sie ersetzt oder entfernst.": "Selecciona una acción que este personaje admita. Las entradas obsoletas siguen visibles hasta que las reemplaces o elimines.",
+    "Emote-Liste nicht verfügbar": "Lista de emotes no disponible"
+  }
+}

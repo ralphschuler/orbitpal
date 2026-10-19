@@ -2,6 +2,8 @@
   import { t } from '../lib/i18n';
   import { onMount, tick, untrack } from 'svelte';
   import { AvatarStage, type AvatarModelInfo, type DesktopAnchor } from '../lib/avatar';
+  import type { EmotePayload } from '../lib/presentation';
+  import type { SoundActivity } from '../lib/sound-playback';
   import type { AutopilotVisualConfig } from '../lib/autopilot-motion';
   import { presentationAbortError, type PresentationRelease } from '../lib/avatar-presentation';
   import type { DesktopLayout } from '../lib/output-presentation';
@@ -13,13 +15,17 @@
     emotion?: string;
     transparent?: boolean;
     assetUrl?: string;
+    outputUrl?: string;
     onModelLoaded?: (info: AvatarModelInfo) => void;
     autopilot?: AutopilotVisualConfig;
     desktop?:DesktopLayout;
     onDesktopAnchor?:(anchor:DesktopAnchor|undefined)=>void;
+    audioEnabled?: boolean;
+    audioStop?: number;
+    onAudioPlaying?: (playing: boolean, activity: SoundActivity) => void;
   }
 
-  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, onModelLoaded, autopilot, desktop, onDesktopAnchor }: Props = $props();
+  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, outputUrl = '', onModelLoaded, autopilot, desktop, onDesktopAnchor, audioEnabled = false, audioStop = 0, onAudioPlaying }: Props = $props();
   let host: HTMLDivElement;
   let stage = $state<AvatarStage>();
   let failure = $state('');
@@ -37,10 +43,12 @@
     if (!renderer || unavailable) throw new Error('Die Figur ist nicht für die Ausgabe verfügbar.');
     return renderer.preparePresentation(signal);
   }
+  export function canPresent(event:EmotePayload):boolean { return stage?.canPresentEmote(event,profile)??false; }
+  export function present(event:EmotePayload):boolean { return stage?.presentEmote(event,profile)??false; }
 
   onMount(() => {
     try {
-      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor }, (message) => { emoteFailure = message; }, assetUrl);
+      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying }, (message) => { emoteFailure = message; }, assetUrl);
       stage = renderer;
       return () => { disposed = true; ++assetRequest; renderer.dispose(); };
     } catch (error) {
@@ -51,18 +59,21 @@
   });
 
   $effect(() => {
-    stage?.update({ profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor });
+    stage?.update({ profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying });
   });
 
   $effect(() => {
     const renderer = stage;
     const url = assetUrl;
+    const motionKey = JSON.stringify(profile?.motions || []);
+    const botId = profile?.id || '';
+    const endpoint = outputUrl;
     if (!renderer) return;
     const request = ++assetRequest;
     failure = '';
     loading = Boolean(url);
     untrack(() => onModelLoaded?.({ status: 'loading', animations: [], proceduralGestures: [] }));
-    renderer.loadAsset(url).then(() => {
+    renderer.loadAsset(url,JSON.parse(motionKey),endpoint,botId).then(() => {
       if (request === assetRequest) onModelLoaded?.(renderer.getModelInfo());
     }).catch((error) => {
       if (request === assetRequest) {
@@ -74,6 +85,8 @@
     });
   });
 </script>
+
+<svelte:window onpointerdown={() => { if (audioEnabled) void stage?.unlockModelAudio(); }} onkeydown={() => { if (audioEnabled) void stage?.unlockModelAudio(); }}/>
 
 <div class="avatar-stage" class:transparent role="img" aria-label={$t('{name}, animierter 3D-Charakter', { name: profile?.name || 'Nova' })}>
   <div class="canvas-host" bind:this={host}></div>

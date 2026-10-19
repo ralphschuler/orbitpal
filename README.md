@@ -15,7 +15,8 @@ The current source version is **0.9.0**. Consult the release notes for the versi
 ## What it does
 
 - Multiple independent bots with their own persona, voice, model, skills and permissions; show them together and queue their spoken turns.
-- 17 included characters, plus VRM/GLB/glTF imports, expressions and custom emotes with optional sounds and volume. Audio start synchronizes subtitles, gestures and optional stream-chat replies; compatible rigs animate while speaking. Subtitles expire 15 seconds after speech ends, with ElevenLabs voice tags kept only in the speech text.
+- 17 included characters, plus VRM/GLB/glTF imports with [offline Draco/Meshopt/KTX2 decoders](docs/COMPRESSED-AVATARS.md), [per-bot VRMA motions for VRM 0/1](docs/VRMA-MOTIONS.md), expressions and custom emotes with optional sounds and volume. Audio start synchronizes subtitles, gestures and optional stream-chat replies; compatible rigs animate while speaking. Subtitles expire 15 seconds after speech ends, with ElevenLabs voice tags kept only in the speech text.
+- Embedded animation sounds support a bounded, pinned MSFT draft subset: PCM16 WAV with Play/Stop events, explicit output activation, voice-volume control and cancellation. [Supported profile and limits](docs/AUDIO-EXTENSIONS.md).
 - Twitch EventSub and YouTube live chat, manual selection or automatic reply modes, a bounded queue and a global stop.
 - Local models through Ollama, LM Studio or compatible APIs; cloud models through OpenAI-compatible/Anthropic APIs; separately installed **Codex** and **Claude Code** CLIs with model and reasoning controls.
 - System voices, ElevenLabs and compatible TTS; local Whisper, OpenAI Whisper, ElevenLabs Scribe and compatible STT. Configurable microphone activation phrases.
@@ -26,11 +27,11 @@ The current source version is **0.9.0**. Consult the release notes for the versi
 - Secrets in the OS credential store, portable profiles and per-bot conversation storage.
 - Optional automatic update checks through GitHub Releases. Download, signature verification, installation and restart require your explicit confirmation in **Updates & Version**.
 
-Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, silent gestures and occasional spontaneous speech, with quiet periods and a rolling hourly limit. Native character windows can roam across a selected monitor in two dimensions, returning to their fixed position when stopped; character size previews update Studio, desktop and OBS immediately. Built-in [screen context](docs/SCREEN-CONTEXT.md) can attach a fresh native screenshot before every dialog-model call, including normal chats and Autopilot, without MCP or Skills. Autonomous turns receive no general MCP control or Skill-script execution.
+Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, silent gestures and occasional spontaneous speech, with quiet periods and a rolling hourly limit. Native character windows can roam across a selected monitor and briefly leave the visible stage. Prepared speech or explicit gestures wait for a fully visible, stationary return and a confirmed render frame; Stop cancels pending presentation and restores the fixed window position. Character size previews update Studio, desktop and OBS immediately. Built-in [screen context](docs/SCREEN-CONTEXT.md) can attach a fresh native screenshot before every dialog-model call, including normal chats and Autopilot, without MCP or Skills. Autonomous turns receive no general MCP control or Skill-script execution.
 
 ## Download and start
 
-Get published packages from the [latest release](https://github.com/ralphschuler/orbitpal/releases/latest). The release pipeline targets Windows x64, macOS Apple Silicon/Intel, and Linux x64; each release identifies its available files and checksums. Windows packages are **unsigned**; macOS packages use **ad-hoc signing without notarization**. Platform trust prompts may appear. See [release details](docs/RELEASING.md).
+Get published packages from the [latest release](https://github.com/ralphschuler/orbitpal/releases/latest). The release pipeline targets Windows x64, macOS Apple Silicon/Intel, and Linux x64; each release identifies its available files and checksums. Windows packages have no Authenticode signature. Published macOS packages through **v0.9.0** use ad-hoc signing; the prepared next-release pipeline requires a pinned persistent self-signed identity and remains **not Apple-notarized**. Platform trust prompts may appear. See [release details](docs/RELEASING.md).
 
 1. Open the app and choose a dialog provider under **Models**. Local runtimes must be running; cloud/CLI providers need your own login or key.
 2. Choose a character and voice under **Character & voice**.
@@ -53,6 +54,7 @@ Node.js 22.12+, the pnpm version pinned in `package.json`, stable Rust and the [
 corepack enable
 pnpm install --frozen-lockfile
 pnpm check
+pnpm check:legacy
 pnpm test:run
 pnpm build
 cargo test --manifest-path src-tauri/Cargo.toml --locked
@@ -60,6 +62,8 @@ pnpm tauri dev
 ```
 
 `pnpm tauri build` creates native packages on the current platform with the release signing key configured as described in the [release process](docs/RELEASING.md). For an unsigned local development package, use `pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'`; these packages are not project releases. A browser-only preview has no native integrations. CI runs type checks, unit tests and builds; tagged releases build platform installers after validation. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+The [TypeScript checking guide](docs/TYPESCRIPT-CHECKING.md) explains the TypeScript 7 native checker and the TypeScript 6 compatibility path used by editors and CI.
 
 ## Data and current limits
 
@@ -80,3 +84,5 @@ The control MCP endpoint requires its own short-lived Bearer token, distinct fro
 Contributions from people and AI-assisted workflows are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), [AGENTS.md](AGENTS.md), [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) and the [security policy](SECURITY.md).
 
 Application code is [MIT licensed](LICENSE). Bundled character assets and fonts keep their original licenses. In particular, Fox includes **CC BY 4.0** material requiring attribution. Keep [asset attribution](public/characters/ATTRIBUTION.md) and embedded notices when redistributing. This project is independent and is not endorsed by its integration providers or asset creators.
+
+Emotes only offer actions present on the current character and recheck availability before animation and sound. See [Emote availability](docs/EMOTE-AVAILABILITY.md).

@@ -1,5 +1,5 @@
 import { writable } from 'svelte/store';
-import { call, native } from './api';
+import { systemPermission } from './system-permission';
 
 export type MicrophoneStatus = 'notDetermined' | 'restricted' | 'denied' | 'authorized' | 'webview' | 'unknown';
 export interface MicrophonePermission { platform: string; status: MicrophoneStatus; }
@@ -18,34 +18,23 @@ export function microphonePermissionMessage(status: MicrophoneStatus): string {
 export async function ensureMicrophonePermission(stillCurrent: () => boolean = () => true): Promise<boolean> {
   if (!stillCurrent()) return false;
   microphoneFailure.set('');
-  if (!native) return stillCurrent();
-  let permission: MicrophonePermission;
-  try { permission = await call<MicrophonePermission>('request_microphone_permission'); }
-  catch (error) {
-    if (!stillCurrent()) return false;
-    const message = `Mikrofonfreigabe konnte nicht geprüft werden: ${error instanceof Error ? error.message : String(error)}`;
-    microphoneFailure.set(message);
-    throw new MicrophonePermissionError(message);
-  }
-  if (!stillCurrent()) return false;
-  if (permission.status === 'authorized' || permission.status === 'webview') return true;
-  const message = microphonePermissionMessage(permission.status);
-  microphoneFailure.set(message);
-  throw new MicrophonePermissionError(message);
+  return systemPermission.ensure('microphone', stillCurrent);
 }
 
 export function reportMicrophoneFailure(error: unknown): string | undefined {
   const name = error instanceof Error ? error.name : '';
   if (['NotAllowedError', 'SecurityError'].includes(name)) {
-    const message = 'Der Mikrofonzugriff wurde vom System oder von der WebView abgelehnt. Prüfe die Mikrofonfreigabe für OrbitPal in den Systemeinstellungen. Beende und öffne die App nach einer geänderten Freigabe erneut und starte die Aufnahme selbst. Nach einem Update kann die Freigabe erneut nötig sein.';
+    const message = 'Der Mikrofonzugriff wurde vom System oder von der WebView abgelehnt. Prüfe die Mikrofonfreigabe für OrbitPal in den Systemeinstellungen. Beende und öffne die App nach einer geänderten Freigabe erneut und starte die Aufnahme selbst.';
     microphoneFailure.set(message);
+    systemPermission.recover('microphone', error);
     return message;
   }
 }
 
-export async function openMicrophone(constraints: MediaStreamConstraints): Promise<MediaStream> {
+export async function openMicrophone(constraints: MediaStreamConstraints, stillCurrent: () => boolean = () => true): Promise<MediaStream> {
   try { return await navigator.mediaDevices.getUserMedia(constraints); }
   catch (error) {
+    if (!stillCurrent()) throw error;
     const message = reportMicrophoneFailure(error);
     if (message) throw Object.assign(new Error(message), { name: (error as Error).name });
     throw error;

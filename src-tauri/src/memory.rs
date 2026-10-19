@@ -113,7 +113,9 @@ pub async fn retain_started(store:&Store,snapshot:&Value,turn:Conversation<'_>)-
     let user_text=turn.user_text.chars().take(32_000).collect::<String>();
     let assistant_text=turn.assistant_text.chars().take(32_000).collect::<String>();
     let content=format!("Nutzer: {user_text}\nCo-Host: {assistant_text}");
-    let response=request(store,snapshot,turn.bot_id,false,json!({"items":[{"content":content,"document_id":operation_id,"context":"streamer-ai-cohost conversation","timestamp":chrono::Utc::now().to_rfc3339(),"tags":["streamer-ai-cohost",format!("source:{}",turn.source)],"metadata":{"bot_id":turn.bot_id,"source":turn.source,"user":turn.user.chars().take(160).collect::<String>()}}],"async":true,"operation_id":operation_id})).await?;
+    // Context is a human-readable label. Keep the existing tag namespace for
+    // operators' filters and previously retained memories across the rename.
+    let response=request(store,snapshot,turn.bot_id,false,json!({"items":[{"content":content,"document_id":operation_id,"context":"OrbitPal conversation","timestamp":chrono::Utc::now().to_rfc3339(),"tags":["streamer-ai-cohost",format!("source:{}",turn.source)],"metadata":{"bot_id":turn.bot_id,"source":turn.source,"user":turn.user.chars().take(160).collect::<String>()}}],"async":true,"operation_id":operation_id})).await?;
     if response["success"].as_bool()!=Some(true)||response["async"].as_bool()!=Some(true){return Err("Hindsight hat die asynchrone Verarbeitung nicht bestätigt".into());}
     let accepted=response["operation_id"].as_str().ok_or("Hindsight hat keine Operations-ID bestätigt")?;
     if accepted!=operation_id{return Err("Hindsight hat eine abweichende Operations-ID zurückgegeben; keine automatische Wiederholung".into());}
@@ -205,6 +207,8 @@ mod tests{
         let(headers,body)=server.await.unwrap();
         assert!(headers.starts_with("POST /v1/default/banks/nova/memories HTTP/1.1"));
         assert_eq!(body["operation_id"],id);assert_eq!(body["items"][0]["document_id"],id);assert_eq!(body["async"],true);
+        assert_eq!(body["items"][0]["context"],"OrbitPal conversation");
+        assert_eq!(body["items"][0]["tags"],json!(["streamer-ai-cohost","source:twitch"]));
         assert!(body["items"][0]["content"].as_str().unwrap().contains("favorite game is chess"));
         assert!(!body.to_string().contains("must never be uploaded"));assert_eq!(result.as_deref(),Some(id.as_str()));
     }

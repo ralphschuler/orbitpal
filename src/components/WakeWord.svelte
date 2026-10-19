@@ -9,6 +9,8 @@
     config: any;
     botId: string;
     sttProvider: string;
+    sttConfig?: unknown;
+    permissionContext?: () => string;
     blocked?: boolean;
     stopSignal?: number;
     onTrigger: (text: string) => Promise<void> | void;
@@ -17,7 +19,7 @@
     onActiveChange?: (active: boolean) => void;
   }
 
-  let { config = $bindable(), botId, sttProvider, blocked = false, stopSignal = 0, onTrigger, onError, onConfigChange, onActiveChange }: Props = $props();
+  let { config = $bindable(), botId, sttProvider, sttConfig, permissionContext = () => '', blocked = false, stopSignal = 0, onTrigger, onError, onConfigChange, onActiveChange }: Props = $props();
   let status = $state<WakeWordState>('stopped');
   let expanded = $state(false);
   let phraseDraft = $state('');
@@ -63,7 +65,7 @@
   function updateConfig(next: any) {
     // Internal edits are already explicitly stopped/saved by their handler;
     // do not mistake the Start button's own commit for an external bot change.
-    configSignature = JSON.stringify([botId, sttProvider, next?.enabled === true, next?.phrases]);
+    configSignature = JSON.stringify([botId, sttProvider, sttConfig, next?.enabled === true, next?.phrases]);
     config = next;
   }
 
@@ -118,7 +120,8 @@
         onError: (message) => { if (!destroyed && listener === next) showError(message); },
       });
       listener = next;
-      await next.start(onConfigChange);
+      const context = permissionContext();
+      await next.start(onConfigChange, () => !destroyed && currentEpoch === epoch && botId === currentBot && context === permissionContext());
     } catch (error) {
       if (!destroyed && listener === next) { stopListening(); showError(prettyError(error)); }
       else if (!next && !destroyed) showError(prettyError(error));
@@ -126,7 +129,7 @@
   }
 
   $effect(() => {
-    const signature = JSON.stringify([botId, sttProvider, config?.enabled === true, config?.phrases]);
+    const signature = JSON.stringify([botId, sttProvider, sttConfig, config?.enabled === true, config?.phrases]);
     untrack(() => {
       if (signature === configSignature) return;
       const changedBot = configSignature && JSON.parse(configSignature)[0] !== botId;

@@ -1,0 +1,38 @@
+{
+  "en": {
+    "Modell-Audio verwendet Funktionen oder eine Version außerhalb des unterstützten MSFT-Draft-Profils.": "Model audio uses features or a version outside the supported MSFT draft profile.",
+    "Modell-Audio enthält ungültige Clip-, Puffer-, Emitter- oder Animationsreferenzen.": "Model audio contains invalid clip, buffer, emitter or animation references.",
+    "Modell-Audio muss als WAV-Daten-URI oder eingebetteter bufferView vorliegen; externe Ressourcen sind nicht erlaubt.": "Model audio must use a WAV data URI or an embedded bufferView; external resources are not allowed.",
+    "Modell-Audio überschreitet das Profilbudget: 8 Clips, 4 Emitter, 128 Ereignisse, 5 MiB pro Clip und 16 MiB insgesamt.": "Model audio exceeds the profile budget: 8 clips, 4 emitters, 128 events, 5 MiB per clip and 16 MiB total.",
+    "Modell-Audio benötigt PCM16-WAV, mono oder stereo, 8–48 kHz und höchstens 15 Sekunden.": "Model audio requires PCM16 WAV, mono or stereo, 8–48 kHz and at most 15 seconds.",
+    "Modell-Audio konnte nicht rechtzeitig als begrenztes PCM16-WAV vorbereitet werden.": "Model audio could not be prepared in time as bounded PCM16 WAV.",
+    "Modell-Sounds: Klicke in diese Ausgabe, um Audio für künftige Animationen zu aktivieren.": "Model sounds: click this output to enable audio for future animations.",
+    "Modell-Audio · {count} Animationsereignisse": "Model audio · {count} animation events",
+    "Modell-Sounds begleiten Emotes und aktive Laufanimationen in der gewählten Ausgabe. Voransichten und automatisches Idle bleiben stumm. Klicke zuerst in die Ausgabe; die Stimmlautstärke regelt auch Modell-Sounds.": "Model sounds accompany emotes and active walk animations in the selected output. Previews and automatic idle stay silent. Click the output first; voice volume also controls model sounds.",
+    "Ungültige Emote-Audioaktivität": "Invalid emote audio activity"
+  },
+  "fr": {
+    "Modell-Audio verwendet Funktionen oder eine Version außerhalb des unterstützten MSFT-Draft-Profils.": "Les sons du modèle utilisent des fonctions ou une version hors du profil MSFT pris en charge.",
+    "Modell-Audio enthält ungültige Clip-, Puffer-, Emitter- oder Animationsreferenzen.": "Les sons du modèle contiennent des références de clip, tampon, émetteur ou animation non valides.",
+    "Modell-Audio muss als WAV-Daten-URI oder eingebetteter bufferView vorliegen; externe Ressourcen sind nicht erlaubt.": "Les sons du modèle doivent utiliser une URI de données WAV ou un bufferView intégré ; les ressources externes sont interdites.",
+    "Modell-Audio überschreitet das Profilbudget: 8 Clips, 4 Emitter, 128 Ereignisse, 5 MiB pro Clip und 16 MiB insgesamt.": "Les sons du modèle dépassent les limites : 8 clips, 4 émetteurs, 128 événements, 5 Mio par clip et 16 Mio au total.",
+    "Modell-Audio benötigt PCM16-WAV, mono oder stereo, 8–48 kHz und höchstens 15 Sekunden.": "Les sons du modèle nécessitent du WAV PCM16, mono ou stéréo, 8–48 kHz et 15 secondes maximum.",
+    "Modell-Audio konnte nicht rechtzeitig als begrenztes PCM16-WAV vorbereitet werden.": "Les sons du modèle n’ont pas pu être préparés à temps en WAV PCM16 limité.",
+    "Modell-Sounds: Klicke in diese Ausgabe, um Audio für künftige Animationen zu aktivieren.": "Sons du modèle : cliquez dans cette sortie pour activer les sons des prochaines animations.",
+    "Modell-Audio · {count} Animationsereignisse": "Sons du modèle · {count} événements d’animation",
+    "Modell-Sounds begleiten Emotes und aktive Laufanimationen in der gewählten Ausgabe. Voransichten und automatisches Idle bleiben stumm. Klicke zuerst in die Ausgabe; die Stimmlautstärke regelt auch Modell-Sounds.": "Les sons accompagnent les emotes et les animations de marche actives dans la sortie choisie. Les aperçus et le repos automatique restent muets. Cliquez d’abord dans la sortie ; le volume de voix règle aussi ces sons.",
+    "Ungültige Emote-Audioaktivität": "Activité audio d’emote non valide"
+  },
+  "es": {
+    "Modell-Audio verwendet Funktionen oder eine Version außerhalb des unterstützten MSFT-Draft-Profils.": "El audio del modelo usa funciones o una versión fuera del perfil MSFT compatible.",
+    "Modell-Audio enthält ungültige Clip-, Puffer-, Emitter- oder Animationsreferenzen.": "El audio del modelo contiene referencias de clip, búfer, emisor o animación no válidas.",
+    "Modell-Audio muss als WAV-Daten-URI oder eingebetteter bufferView vorliegen; externe Ressourcen sind nicht erlaubt.": "El audio del modelo debe usar una URI de datos WAV o un bufferView integrado; no se permiten recursos externos.",
+    "Modell-Audio überschreitet das Profilbudget: 8 Clips, 4 Emitter, 128 Ereignisse, 5 MiB pro Clip und 16 MiB insgesamt.": "El audio del modelo supera los límites: 8 clips, 4 emisores, 128 eventos, 5 MiB por clip y 16 MiB en total.",
+    "Modell-Audio benötigt PCM16-WAV, mono oder stereo, 8–48 kHz und höchstens 15 Sekunden.": "El audio del modelo requiere WAV PCM16, mono o estéreo, 8–48 kHz y un máximo de 15 segundos.",
+    "Modell-Audio konnte nicht rechtzeitig als begrenztes PCM16-WAV vorbereitet werden.": "El audio del modelo no se pudo preparar a tiempo como WAV PCM16 limitado.",
+    "Modell-Sounds: Klicke in diese Ausgabe, um Audio für künftige Animationen zu aktivieren.": "Sonidos del modelo: haz clic en esta salida para activar el audio de futuras animaciones.",
+    "Modell-Audio · {count} Animationsereignisse": "Audio del modelo · {count} eventos de animación",
+    "Modell-Sounds begleiten Emotes und aktive Laufanimationen in der gewählten Ausgabe. Voransichten und automatisches Idle bleiben stumm. Klicke zuerst in die Ausgabe; die Stimmlautstärke regelt auch Modell-Sounds.": "Los sonidos acompañan a emotes y animaciones de marcha activas en la salida elegida. Las vistas previas y la pose de reposo automática siguen en silencio. Haz clic primero en la salida; el volumen de voz también controla estos sonidos.",
+    "Ungültige Emote-Audioaktivität": "Actividad de audio de emote no válida"
+  }
+}

@@ -111,7 +111,7 @@ describe('AvatarStage presentation integration without WebGL', () => {
     expect(center().distanceTo(held)).toBeLessThan(1e-9);
     release(); expect(gate.requested).toBe(false);
   });
-  it.each(['profile', 'session', 'asset'])('invalidates a pending lease before a new %s can become visible', async change => {
+  it.each(['profile', 'session', 'asset', 'motion assignment'])('invalidates a pending lease before a new %s can become visible', async change => {
     const { stage, options, gate } = desktopStage();
     const pending = stage.preparePresentation(new AbortController().signal);
     const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
@@ -119,6 +119,7 @@ describe('AvatarStage presentation integration without WebGL', () => {
     if (change === 'profile') updated.profile.id = 'other';
     if (change === 'session') updated.autopilot.seed = 'new-session';
     if (change === 'asset') (updated.profile.avatar as Record<string, unknown>).assetPath = 'new.glb';
+    if (change === 'motion assignment') (updated.profile as Record<string, unknown>).motions = [{ id: 'new.vrma', clips: [] }];
     stage.update(updated); await rejected; gate.rendered(true); expect(gate.requested).toBe(false);
   });
   it('does not disturb a current ambient gesture for an already aborted request', async () => {

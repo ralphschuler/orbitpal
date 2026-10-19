@@ -1,0 +1,13 @@
+# INACTIVE integration fragment, not a deployable workflow.
+# First create/inspect the protected environment and migrate secret scopes.
+# Then merge the environment field into the existing matrix build job,
+# move the repository-secret check out of validate, and retain all existing steps.
+jobs:
+  build:
+    environment: release-signing
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    # Configure OS identity secrets only on the relevant build step.
+    # Do not add environment/signing secrets to verify or publish.

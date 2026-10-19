@@ -10,6 +10,7 @@ mod agent;
 mod overlay;
 mod overlay_presentation;
 mod window_signals;
+mod overlay_http;
 mod memory;
 mod knowledge;
 mod runtime_command;
@@ -17,15 +18,22 @@ mod speech_text;
 mod extensions;
 mod skill_library;
 mod emote_audio;
+mod emote_capabilities;
 mod vision;
 mod control_mcp;
 mod updater;
 mod avatar_metadata;
+mod motions;
+mod avatar_audio;
 mod gltf_import;
 mod autopilot;
 mod screen_capture;
 mod screen_context;
+mod screen_portal;
 mod microphone_permission;
+mod screen_permission;
+#[cfg(any(target_os = "macos", test))]
+mod permission_request;
 mod ui_locale;
 
 use serde_json::{json,Value};
@@ -51,6 +59,11 @@ fn get_app_state(state:State<'_,AppState>,app:tauri::AppHandle,bot_id:Option<Str
     let id=bot_id.unwrap_or_else(||state.store.profile().ok().and_then(|p|p["id"].as_str().map(str::to_owned)).unwrap_or("nova".into()));
     let store=state.store.scoped(&id)?;let profile=store.profile()?;let presentation=state.presentation.snapshot(&profile);
     Ok(json!({"profile":profile,"presentation":presentation,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy(),"autopilot":state.autopilot.all()?}))
+}
+#[tauri::command]
+fn get_emote_capabilities(state:State<'_,AppState>,bot_id:String)->Result<Value,String>{
+    let profile=state.store.bot_profile(&bot_id)?;
+    Ok(emote_capabilities::configured(&emote_capabilities::inspect(&state.store.root,&profile)?,&profile))
 }
 #[tauri::command]
 fn get_extension_library(state:State<'_,AppState>)->Result<Value,String>{state.store.extension_library()}
@@ -88,13 +101,17 @@ fn list_bots(state:State<'_,AppState>,app:tauri::AppHandle)->Result<Vec<Value>,S
 #[tauri::command]
 async fn create_bot(state:State<'_,AppState>,app:tauri::AppHandle,name:String,copy_current:bool)->Result<Value,String>{
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Anlegen eines Bots beenden".to_owned())?;
+    let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.create_bot(&name,copy_current)?;
+    state.screen_context.cancel_inflight(&previous)?;
     state.overlay.publish(&app,json!({"kind":"profile","profile":overlay::public_profile(&profile)}));Ok(profile)
 }
 #[tauri::command]
 async fn select_bot(state:State<'_,AppState>,app:tauri::AppHandle,id:String)->Result<Value,String>{
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Botwechsel beenden".to_owned())?;
+    let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.select_bot(&id)?;
+    if previous!=id{state.screen_context.cancel_inflight(&previous)?;}
     state.overlay.publish(&app,json!({"kind":"profile","profile":overlay::public_profile(&profile)}));Ok(profile)
 }
 #[tauri::command]
@@ -148,6 +165,15 @@ fn get_emote_sound(state:State<'_,AppState>,sound_id:String,bot_id:String)->Resu
     emote_audio::read(&state.store.root,&profile,&sound_id)
 }
 #[tauri::command]
+async fn import_motion(window:tauri::Window,state:State<'_,AppState>,source_path:String,bot_id:String)->Result<motions::Motion,String>{
+    if window.label()!="main"{return Err("VRMA-Import ist nur im Steuerungsfenster verfügbar.".into());}
+    state.updater.ensure_idle()?;
+    let profile=state.store.bot_profile(&bot_id)?;
+    if profile["motions"].as_array().is_some_and(|motions|motions.len()>=motions::MAX_MOTIONS){return Err("Maximal 32 Bewegungsdateien pro Bot.".into());}
+    let root=state.store.root.clone();
+    tauri::async_runtime::spawn_blocking(move||motions::import(&root,&bot_id,std::path::Path::new(&source_path))).await.map_err(|_|"VRMA-Import wurde unterbrochen.".to_owned())?
+}
+#[tauri::command]
 async fn import_knowledge(state:State<'_,AppState>,source_path:String)->Result<Value,String>{
     let id=state.store.profile()?["id"].as_str().ok_or("Bot-ID fehlt")?.to_owned();
     let store=state.store.scoped(&id)?;
@@ -169,6 +195,7 @@ async fn list_cli_models(config:Value)->Result<Value,String>{cli_provider::model
 async fn send_message(app:tauri::AppHandle,text:String,source:Option<String>,user:Option<String>,skill_ids:Option<Vec<String>>,bot_id:Option<String>,request_id:Option<String>,reply_route_id:Option<String>)->Result<Value,String>{agent::send(app,text,source.unwrap_or("operator".into()),user.unwrap_or("Streamer".into()),skill_ids.unwrap_or_default(),bot_id,request_id,reply_route_id).await}
 #[tauri::command]
 fn stop_generation(state:State<'_,AppState>,app:tauri::AppHandle)->Result<(),String>{
+    state.screen_context.portal.close_all();
     if let Some(c)=state.cancel.lock().map_err(|e|e.to_string())?.as_ref(){c.store(true,Ordering::Relaxed);}
     state.overlay.publish(&app,json!({"kind":"stop"}));Ok(())
 }
@@ -225,7 +252,7 @@ fn cancel_speech_job(app:tauri::AppHandle,window:tauri::WebviewWindow,id:String,
     overlay::cancel_playback(&app,&id,&bot_id,Some("Keine Abschlussmeldung der Sprachausgabe. Automatische Antworten pausiert."))
 }
 #[tauri::command]
-fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:String,playing:bool)->Result<Value,String>{overlay::report_emote_playback(&app,&bot_id,&output,&id,playing)}
+fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:String,playing:bool,activity:Option<String>)->Result<Value,String>{overlay::report_emote_playback(&app,&bot_id,&output,&id,playing,activity.as_deref())}
 #[tauri::command]
 async fn get_speech_audio(app:tauri::AppHandle,id:String,bot_id:String)->Result<Value,String>{overlay::speech_audio(&app,&id,&bot_id).await}
 #[tauri::command]
@@ -263,7 +290,9 @@ fn export_profile(state:State<'_,AppState>,destination:String)->Result<(),String
 #[tauri::command]
 async fn import_profile(state:State<'_,AppState>,app:tauri::AppHandle,source_path:String)->Result<Value,String>{
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Import beenden".to_owned())?;
+    let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.import(std::path::Path::new(&source_path))?;
+    state.screen_context.cancel_inflight(&previous)?;
     state.overlay.publish(&app,json!({"kind":"profile","profile":overlay::public_profile(&profile)}));Ok(profile)
 }
 
@@ -279,8 +308,10 @@ pub fn run(){
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update])
-        .run(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden");
+        .invoke_handler(tauri::generate_handler![overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source])
+        .build(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden").run(|app,event|{
+            if matches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit){app.state::<AppState>().screen_context.portal.close_all();}
+        });
 }
 
 fn setup_tray(app:&mut tauri::App)->Result<(),Box<dyn std::error::Error>>{
@@ -292,7 +323,7 @@ fn setup_tray(app:&mut tauri::App)->Result<(),Box<dyn std::error::Error>>{
     let tray=tray.on_menu_event(|app,event|match event.id.as_ref(){
         "studio"=>{if let Some(w)=app.get_webview_window("main"){let _=w.unminimize();let _=w.show();let _=w.set_focus();}},
         "character"=>{if let Err(e)=overlay::open(app){let _=app.emit("cohost://agent",json!({"kind":"error","text":e}));}},
-        "stop"=>{let state=app.state::<AppState>();if let Ok(current)=state.cancel.lock(){if let Some(cancel)=current.as_ref(){cancel.store(true,Ordering::Relaxed);}}state.overlay.publish(app,json!({"kind":"stop"}));},
+        "stop"=>{let state=app.state::<AppState>();state.screen_context.portal.close_all();if let Ok(current)=state.cancel.lock(){if let Some(cancel)=current.as_ref(){cancel.store(true,Ordering::Relaxed);}}state.overlay.publish(app,json!({"kind":"stop"}));},
         "quit"=>app.exit(0),
         _=>(),
     }).build(app);

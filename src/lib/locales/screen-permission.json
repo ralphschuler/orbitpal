@@ -1,0 +1,44 @@
+{
+  "en": {
+    "macOS-Bildschirmfreigabe": "macOS screen recording permission",
+    "Klicke auf „Freigabe anfragen“, damit macOS OrbitPal die Bildschirmaufnahme erlauben kann. Falls bereits abgelehnt, aktiviere OrbitPal unter Datenschutz & Sicherheit → Bildschirmaufnahme beziehungsweise Bildschirm- & Systemaudioaufnahme. Fehlt die App, kannst du sie dort über + hinzufügen. Beende und starte OrbitPal nach einer Änderung bei Bedarf neu.": "Click “Request permission” so macOS can allow screen recording for OrbitPal. If previously denied, enable OrbitPal in Privacy & Security → Screen Recording or Screen & System Audio Recording. Use + there to add the app if missing. Quit and reopen OrbitPal after a change if needed.",
+    "Statusprüfung und Freigabe nehmen keinen Screenshot auf. Die Freigabe gilt für die App; Bildschirmkontext und Bildübertragung bleiben zusätzlich pro Bot steuerbar. Nach einem Update kann macOS eine erneute Freigabe verlangen.": "Checking or requesting permission does not capture a screenshot. Permission applies to the app; screen context and image transmission remain separately controlled for each bot. macOS may require permission again after an update.",
+    "Freigabe anfragen": "Request permission",
+    "Bildschirmfreigabe öffnen": "Open screen recording settings",
+    "Die Desktop-App hat keinen gültigen Bildschirmfreigabestatus geliefert.": "The desktop app returned an invalid screen permission status.",
+    "Bildschirmfreigaben werden ausschließlich im Studio verwaltet.": "Screen permissions can only be managed in the Studio.",
+    "Die macOS-Bildschirmfreigabe konnte nicht angefragt werden.": "The macOS screen recording permission could not be requested.",
+    "Die macOS-Bildschirmfreigabe wurde unterbrochen.": "The macOS screen recording permission request was interrupted.",
+    "Die Bildschirmfreigabe konnte nicht geöffnet werden. Öffne Datenschutz & Sicherheit in den Systemeinstellungen.": "Screen recording settings could not be opened. Open Privacy & Security in System Settings.",
+    "Die Bildschirmfreigabe wird auf diesem System von der Desktop-Umgebung verwaltet.": "Screen recording permission is managed by this system’s desktop environment.",
+    "Bildschirmfreigabe": "Screen recording permission"
+  },
+  "fr": {
+    "macOS-Bildschirmfreigabe": "Autorisation de capture d’écran macOS",
+    "Klicke auf „Freigabe anfragen“, damit macOS OrbitPal die Bildschirmaufnahme erlauben kann. Falls bereits abgelehnt, aktiviere OrbitPal unter Datenschutz & Sicherheit → Bildschirmaufnahme beziehungsweise Bildschirm- & Systemaudioaufnahme. Fehlt die App, kannst du sie dort über + hinzufügen. Beende und starte OrbitPal nach einer Änderung bei Bedarf neu.": "Cliquez sur « Demander l’autorisation » pour autoriser la capture d’écran par OrbitPal. En cas de refus antérieur, activez OrbitPal dans Confidentialité et sécurité → Enregistrement de l’écran, ou de l’écran et de l’audio système. Si l’app manque, ajoutez-la avec +. Quittez et relancez OrbitPal après une modification si nécessaire.",
+    "Statusprüfung und Freigabe nehmen keinen Screenshot auf. Die Freigabe gilt für die App; Bildschirmkontext und Bildübertragung bleiben zusätzlich pro Bot steuerbar. Nach einem Update kann macOS eine erneute Freigabe verlangen.": "La vérification et la demande d’autorisation ne prennent aucune capture. L’autorisation concerne l’app ; le contexte d’écran et l’envoi d’images restent réglables par bot. macOS peut demander une nouvelle autorisation après une mise à jour.",
+    "Freigabe anfragen": "Demander l’autorisation",
+    "Bildschirmfreigabe öffnen": "Ouvrir les réglages de capture",
+    "Die Desktop-App hat keinen gültigen Bildschirmfreigabestatus geliefert.": "L’application a renvoyé un état d’autorisation de capture invalide.",
+    "Bildschirmfreigaben werden ausschließlich im Studio verwaltet.": "Les autorisations de capture se gèrent uniquement dans le Studio.",
+    "Die macOS-Bildschirmfreigabe konnte nicht angefragt werden.": "L’autorisation de capture macOS n’a pas pu être demandée.",
+    "Die macOS-Bildschirmfreigabe wurde unterbrochen.": "La demande d’autorisation de capture macOS a été interrompue.",
+    "Die Bildschirmfreigabe konnte nicht geöffnet werden. Öffne Datenschutz & Sicherheit in den Systemeinstellungen.": "Les réglages de capture n’ont pas pu être ouverts. Ouvrez Confidentialité et sécurité dans les Réglages Système.",
+    "Die Bildschirmfreigabe wird auf diesem System von der Desktop-Umgebung verwaltet.": "L’autorisation de capture est gérée par l’environnement de bureau de ce système.",
+    "Bildschirmfreigabe": "Autorisation de capture d’écran"
+  },
+  "es": {
+    "macOS-Bildschirmfreigabe": "Permiso de captura de pantalla de macOS",
+    "Klicke auf „Freigabe anfragen“, damit macOS OrbitPal die Bildschirmaufnahme erlauben kann. Falls bereits abgelehnt, aktiviere OrbitPal unter Datenschutz & Sicherheit → Bildschirmaufnahme beziehungsweise Bildschirm- & Systemaudioaufnahme. Fehlt die App, kannst du sie dort über + hinzufügen. Beende und starte OrbitPal nach einer Änderung bei Bedarf neu.": "Pulsa « Solicitar permiso » para permitir la captura de pantalla en macOS. Si ya se denegó, activa OrbitPal en Privacidad y seguridad → Grabación de pantalla o Grabación de pantalla y audio del sistema. Si falta la app, añádela con +. Cierra y vuelve a abrir OrbitPal después si es necesario.",
+    "Statusprüfung und Freigabe nehmen keinen Screenshot auf. Die Freigabe gilt für die App; Bildschirmkontext und Bildübertragung bleiben zusätzlich pro Bot steuerbar. Nach einem Update kann macOS eine erneute Freigabe verlangen.": "Comprobar o solicitar permiso no captura la pantalla. El permiso corresponde a la app; el contexto de pantalla y el envío de imágenes siguen controlándose por bot. macOS puede solicitar permiso de nuevo tras actualizar.",
+    "Freigabe anfragen": "Solicitar permiso",
+    "Bildschirmfreigabe öffnen": "Abrir ajustes de captura",
+    "Die Desktop-App hat keinen gültigen Bildschirmfreigabestatus geliefert.": "La aplicación devolvió un estado de permiso de captura no válido.",
+    "Bildschirmfreigaben werden ausschließlich im Studio verwaltet.": "Los permisos de captura solo se gestionan en el Studio.",
+    "Die macOS-Bildschirmfreigabe konnte nicht angefragt werden.": "No se pudo solicitar el permiso de captura de macOS.",
+    "Die macOS-Bildschirmfreigabe wurde unterbrochen.": "Se interrumpió la solicitud de permiso de captura de macOS.",
+    "Die Bildschirmfreigabe konnte nicht geöffnet werden. Öffne Datenschutz & Sicherheit in den Systemeinstellungen.": "No se pudieron abrir los ajustes de captura. Abre Privacidad y seguridad en Ajustes del Sistema.",
+    "Die Bildschirmfreigabe wird auf diesem System von der Desktop-Umgebung verwaltet.": "El entorno de escritorio de este sistema gestiona el permiso de captura.",
+    "Bildschirmfreigabe": "Permiso de captura de pantalla"
+  }
+}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { AutopilotScheduler, type AutopilotCandidate } from './autopilot';
+import { speechBlocker, speechBlockerMessages, speechStatus } from './autopilot-status';
 
 function fixture(random = () => 0) {
   let now = 0;
@@ -12,6 +13,62 @@ function bot(botId = 'nova', changes: Partial<AutopilotCandidate> = {}): Autopil
 }
 
 describe('autopilot quiet-time scheduling', () => {
+  it('discards old permission results after pause/restart without dispatching or disturbing the new same-bot claim', async () => {
+    const { scheduler, at } = fixture(); scheduler.sync([bot()]);
+    at(15_000); const oldClaim = scheduler.nextClaim()!;
+    const dispatched: string[] = [];
+    let permission!: (granted: boolean) => void;
+    const oldAttempt = scheduler.runClaim(oldClaim, async () => {
+      const granted = await new Promise<boolean>(resolve => permission = resolve);
+      if (!granted || !scheduler.isCurrentClaim(oldClaim)) return;
+      dispatched.push('obsolete');
+    });
+    scheduler.stop('nova'); scheduler.sync([bot('nova', {seed:'restarted'})]);
+    expect(scheduler.isCurrentClaim(oldClaim)).toBe(false);
+    at(30_000); const newClaim = scheduler.nextClaim()!;
+    let finishNew!: () => void;
+    const newAttempt = scheduler.runClaim(newClaim, () => new Promise<void>(resolve => finishNew = resolve));
+    expect(scheduler.isCurrentClaim({...newClaim})).toBe(false);
+    expect(scheduler.isCurrentClaim(newClaim)).toBe(true);
+    permission(true); await oldAttempt;
+    expect(dispatched).toEqual([]);
+    expect(scheduler.snapshot('nova')).toMatchObject({inFlight:true,attempts:2});
+    at(45_000); expect(scheduler.nextClaim()).toBeUndefined();
+    finishNew(); await newAttempt;
+    expect(scheduler.isCurrentClaim(newClaim)).toBe(false);
+    at(59_999); expect(scheduler.nextClaim()).toBeUndefined();
+    at(60_000); expect(scheduler.nextClaim()?.botId).toBe('nova');
+  });
+
+  it('projects exact pending claims into read-only owner and waiting-bot snapshots', async () => {
+    const { scheduler, at } = fixture(); scheduler.sync([bot('nova'), bot('james')]);
+    at(15_000); const claim = scheduler.nextClaim()!;
+    const other = claim.botId === 'nova' ? 'james' : 'nova';
+    let complete!: () => void;
+    const pending = scheduler.runClaim(claim, () => new Promise<void>(resolve => complete = resolve));
+    expect(Object.isFrozen(claim)).toBe(true);
+    expect(scheduler.snapshot(claim.botId)).toMatchObject({inFlight:true,waitingForBot:undefined,attempts:1});
+    const waiting = scheduler.snapshot(other)!;
+    expect(waiting).toMatchObject({inFlight:false,waitingForBot:claim.botId,attempts:0});
+    waiting.waitingForBot = 'changed';
+    expect(scheduler.snapshot(other)?.waitingForBot).toBe(claim.botId);
+    at(20_000); expect(scheduler.nextClaim()).toBeUndefined();
+    complete(); await pending;
+    expect(scheduler.snapshot(claim.botId)?.inFlight).toBe(false);
+    expect(scheduler.snapshot(other)?.waitingForBot).toBeUndefined();
+  });
+
+  it('uses the same permission blocker for displayed status and the full quiet period', () => {
+    const { scheduler, at } = fixture(); scheduler.sync([bot()]); at(15_000);
+    const blocked = speechBlocker({permission:true});
+    expect(scheduler.nextClaim(!!blocked)).toBeUndefined();
+    expect(scheduler.snapshot('nova')).toMatchObject({inFlight:false,attempts:0,dueAt:30_000});
+    expect(speechStatus({active:true,speak:true,outputAvailable:true,modelConfigured:true,blocked,schedule:scheduler.snapshot('nova')}))
+      .toEqual({message:speechBlockerMessages.permission,waiting:true});
+    at(29_999); expect(scheduler.nextClaim()).toBeUndefined();
+    at(30_000); expect(scheduler.nextClaim()?.botId).toBe('nova');
+  });
+
   it('reads countdowns without claiming turns, spending budgets or drawing another deadline', () => {
     let samples=0;
     const { scheduler, at }=fixture(()=>{samples++;return 0.5;});
@@ -54,6 +111,53 @@ describe('autopilot quiet-time scheduling', () => {
     expect(scheduler.snapshot('c')).toMatchObject({eligible:false,waitingForBot:'a',attempts:0});
     scheduler.finish('a');expect(scheduler.snapshot('b')?.waitingForBot).toBeUndefined();
     scheduler.stop();expect(scheduler.snapshot('a')).toBeUndefined();
+  });
+
+  it('releases a cancelled async permission preflight and schedules another quiet-period turn', async () => {
+    const { scheduler, at } = fixture(); scheduler.sync([bot()]);
+    at(15_000); const claim = scheduler.nextClaim()!;
+    let complete!: (granted: boolean) => void; let sent = false;
+    const action = scheduler.runClaim(claim, async () => {
+      const granted = await new Promise<boolean>(resolve => complete = resolve);
+      if (!granted) return; // Changed configuration/manual preemption cancels before send.
+      sent = true;
+    });
+    at(16_000); complete(false); await action;
+    expect(sent).toBe(false);
+    at(30_999); expect(scheduler.nextClaim()).toBeUndefined();
+    at(31_000); expect(scheduler.nextClaim()?.botId).toBe('nova');
+  });
+
+  it('releases a failed asynchronous preflight without refunding its hourly attempt', async () => {
+    const { scheduler, at } = fixture();
+    scheduler.sync([bot('nova', { config: { speak: true, minSeconds: 15, maxSeconds: 15, maxTurnsPerHour: 1 } })]);
+    at(15_000); const claim = scheduler.nextClaim()!;
+    await expect(scheduler.runClaim(claim, async () => { throw new Error('Status disconnected'); })).rejects.toThrow('Status disconnected');
+    at(30_000); expect(scheduler.nextClaim()).toBeUndefined();
+    at(3_615_000); expect(scheduler.nextClaim()?.botId).toBe('nova');
+  });
+
+  it('cannot let stale preflight completion release a new same-bot claim after Stop and restart', async () => {
+    const { scheduler, at } = fixture(); scheduler.sync([bot()]);
+    at(15_000); const oldClaim = scheduler.nextClaim()!;
+    let finishOld!: () => void;
+    const oldAction = scheduler.runClaim(oldClaim, () => new Promise<void>(resolve => finishOld = resolve));
+    scheduler.stop(); scheduler.sync([bot('nova', { seed: 'restarted' })]);
+    at(30_000); const newClaim = scheduler.nextClaim()!;
+    expect(newClaim.botId).toBe(oldClaim.botId); expect(newClaim.revision).not.toBe(oldClaim.revision);
+    let finishNew!: () => void;
+    const newAction = scheduler.runClaim(newClaim, () => new Promise<void>(resolve => finishNew = resolve));
+    finishOld(); await oldAction;
+    at(45_000); expect(scheduler.nextClaim()).toBeUndefined(); // New turn still owns the lease.
+    finishNew(); await newAction;
+    at(60_000); expect(scheduler.nextClaim()?.botId).toBe('nova');
+  });
+
+  it('never runs an already invalidated claim callback', async () => {
+    const { scheduler, at } = fixture(); scheduler.sync([bot()]);
+    at(15_000); const claim = scheduler.nextClaim()!; scheduler.stop();
+    let called = false; await scheduler.runClaim(claim, async () => { called = true; });
+    expect(called).toBe(false);
   });
 
   it('waits on initial start and does not reset the deadline during unchanged polling', () => {

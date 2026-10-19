@@ -10,13 +10,16 @@
   import { SpeechPlayer } from './lib/audio';
   import { EmoteSequence, emoteDurationMilliseconds, emoteSequenceMilliseconds, type EmotePayload } from './lib/presentation';
   import { PresentationLeases, type PresentationTicket } from './lib/presentation-leases';
+  import { presentAdmittedEmote } from './lib/emote-capabilities';
   import { EmoteAudioPlayer } from './lib/emote-audio';
+  import { foregroundSoundPlaying, SoundPlaybackReports, type SoundActivity } from './lib/sound-playback';
   import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
 
   type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
   type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void>; controller: AbortController; presentation?: PresentationTicket; visualEndAt: number };
-  let avatar: { preparePresentation: (signal: AbortSignal) => Promise<() => void> } | undefined;
+  let avatar = $state<{preparePresentation:(signal:AbortSignal)=>Promise<()=>void>;canPresent:(event:EmotePayload)=>boolean;present:(event:EmotePayload)=>boolean}>();
+  const admittedEmotes=(events:EmotePayload[]=[])=>events.filter(event=>avatar?.canPresent(event));
   let profile = $state<any>(cloneDefaults());
   let presentation=$state<PresentationSnapshot>();
   const presentationVersions=new PresentationVersions();
@@ -44,8 +47,13 @@
   let soundActivationNeeded = $state(false);
   let player: SpeechPlayer;
   let emoteAudio: EmoteAudioPlayer;
+  let modelAudioStop = $state(0);
+  let modelSoundPlaying = false;
+  let modelSoundActivity: SoundActivity = 'foreground';
+  let effectSoundPlaying = false;
+  function modelAudioPlaying(value:boolean,activity:SoundActivity){modelSoundPlaying=value;modelSoundActivity=activity;reportCombinedSound();}
   let emoteRevision = 0;
-  let soundPlaybackId = '';
+  const soundPlaybackReports = new SoundPlaybackReports();
   let soundPlaying = false;
   const presentationLeases = new PresentationLeases(() => soundPlaying);
   let manualController: AbortController | undefined;
@@ -67,11 +75,11 @@
   }
 
   function applyEmote(event: EmotePayload) {
-    profile.avatar.emote = {
+    return presentAdmittedEmote(avatar,event,()=>{profile.avatar.emote = {...event,
       action: event.action, nonce: event.nonce ?? `${Date.now()}-${Math.random()}`,
       duration: (event.duration ?? 2.5) * 1000, intensity: event.intensity ?? 1,
     };
-    if(profile.output.mode===(native?'overlay':'obs'))emoteAudio?.play(event);
+    if(profile.output.mode===(native?'overlay':'obs'))emoteAudio?.play(event);});
   }
 
   async function resolveSound(soundId: string) {
@@ -92,18 +100,20 @@
     manualController?.abort();
     const controller = new AbortController(); manualController = controller;
     presentationLeases.clear(current?.presentation);
+    modelAudioStop++;
     ++emoteRevision; const revision = emoteRevision;
     emoteSequence.stop(); emoteAudio?.stop();
     let presentation: PresentationTicket | undefined;
     try {
       await ready;
       if (disposed || revision !== emoteRevision || controller.signal.aborted) return;
+      if(!avatar?.canPresent(event))return;
       if(profile.output.mode===(native?'overlay':'obs'))await emoteAudio?.prepare([event], resolveSound);
       if (disposed || revision !== emoteRevision || controller.signal.aborted) return;
       presentation = presentationLeases.request(prepareFigure, controller.signal);
       await presentation.ready;
       if (disposed || revision !== emoteRevision || controller.signal.aborted) { presentationLeases.cancel(presentation); return; }
-      applyEmote(event);
+      if(!applyEmote(event)){presentationLeases.cancel(presentation);return;}
       presentationLeases.finish(presentation, emoteDurationMilliseconds(event));
     } catch (error) {
       if (presentation) presentationLeases.cancel(presentation);
@@ -113,23 +123,29 @@
     }
   }
 
-  function reportSoundPlaying(playing: boolean) {
+  function reportSoundPlaying(playing: boolean) {effectSoundPlaying=playing;reportCombinedSound();}
+  function reportCombinedSound() {
+    const playing=effectSoundPlaying||modelSoundPlaying;
     soundPlaying = playing;
     if (!playing) presentationLeases.soundEnded();
-    if (playing) soundPlaybackId ||= crypto.randomUUID();
-    const id = soundPlaybackId; const targetBot = botId;
-    if (!id || !targetBot) return;
-    if (!playing) soundPlaybackId = '';
-    const payload = {botId: targetBot, output: native ? 'overlay' : 'obs', id, playing};
-    soundReporting = soundReporting.then(async () => {
-      try {
-        if(native) { await call('report_emote_playback',payload); return; }
-        const url = new URL('/emote-playback',overlayUrl); url.search=new URL(overlayUrl).search;url.searchParams.set('bot',targetBot);
-        const controller = new AbortController(); const timer=window.setTimeout(()=>controller.abort(),3000);
-        try { await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal,keepalive:true}); }
-        finally { window.clearTimeout(timer); }
-      } catch { /* A bounded host lease expires when an output disconnects. */ }
-    });
+    const targetBot = botId;
+    if (!targetBot) return;
+    const reports = soundPlaybackReports.update(
+      foregroundSoundPlaying(effectSoundPlaying, modelSoundPlaying, modelSoundActivity),
+      modelSoundPlaying && modelSoundActivity === 'ambient',
+    );
+    for (const report of reports) {
+      const payload = {botId: targetBot, output: native ? 'overlay' : 'obs', ...report};
+      soundReporting = soundReporting.then(async () => {
+        try {
+          if(native) { await call('report_emote_playback',payload); return; }
+          const url = new URL('/emote-playback',overlayUrl); url.search=new URL(overlayUrl).search;url.searchParams.set('bot',targetBot);
+          const controller = new AbortController(); const timer=window.setTimeout(()=>controller.abort(),3000);
+          try { await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:controller.signal,keepalive:true}); }
+          finally { window.clearTimeout(timer); }
+        } catch { /* A bounded host lease expires when an output disconnects. */ }
+      });
+    }
   }
 
   async function sendPlayback(id: string, state: boolean, targetBot: string, error?: string) {
@@ -187,6 +203,7 @@
     manualController?.abort(); manualController = undefined;
     current?.controller.abort();
     presentationLeases.clear();
+    modelAudioStop++;
     ++emoteRevision;
     const job = current;
     current = undefined;
@@ -222,7 +239,7 @@
       emotion = event.emotion || 'neutral';
       subtitles.start(event.id, event.text);
       if(plannedEmoteRevision===emoteRevision){
-        const emotes = Array.isArray(event.emotes) ? event.emotes : [];
+        const emotes = admittedEmotes(Array.isArray(event.emotes) ? event.emotes : []);
         job.visualEndAt = Date.now() + emoteSequenceMilliseconds(emotes);
         emoteSequence.start(emotes);
       }
@@ -233,7 +250,7 @@
       if (disposed || current !== job || job.finished) return;
       if (!event.voice) throw new Error('Stimme des Wiedergabeauftrags fehlt.');
       const voice = { ...event.voice };
-      if(plannedEmoteRevision===emoteRevision&&profile.output.mode===(native?'overlay':'obs'))await emoteAudio.prepare(Array.isArray(event.emotes) ? event.emotes : [], resolveSound);
+      if(plannedEmoteRevision===emoteRevision&&profile.output.mode===(native?'overlay':'obs'))await emoteAudio.prepare(admittedEmotes(Array.isArray(event.emotes) ? event.emotes : []), resolveSound);
       if (disposed || current !== job || job.finished) return;
       if (voice.enabled === false) { await beforeStart(); onStart(); return; }
       const speechText = voice.provider === 'elevenlabs' ? event.speechText || event.text : event.text;
@@ -316,7 +333,7 @@
     document.documentElement.classList.add('overlay-document');
     player = new SpeechPlayer((value) => { level = value; }, (state) => { speaking = state; });
     emoteAudio = new EmoteAudioPlayer((message) => { soundNotice = message; soundActivationNeeded = /gesperrt|aktivieren|klick/i.test(message); },reportSoundPlaying);
-    const soundHeartbeat=window.setInterval(()=>{if(soundPlaying&&!disposed)reportSoundPlaying(true);},4000);
+    const soundHeartbeat=window.setInterval(()=>{if(soundPlaying&&!disposed)reportCombinedSound();},4000);
     const cleanup: (() => void)[] = [];
     if (native) {
       const initialRevision = profileRevision;
@@ -352,7 +369,7 @@
 </script>
 
 <div class="overlay-scene">
-  <Avatar bind:this={avatar} profile={renderProfile} {speaking} {level} {emotion} {autopilot} {desktop} onDesktopAnchor={value=>anchor=value} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  <Avatar bind:this={avatar} audioEnabled={profile.output.mode===(native?'overlay':'obs')} audioStop={modelAudioStop} onAudioPlaying={modelAudioPlaying} profile={renderProfile} {speaking} {level} {emotion} {autopilot} {desktop} onDesktopAnchor={value=>anchor=value} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
   {#if native && !desktop?.active && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>

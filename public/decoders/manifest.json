@@ -1,0 +1,98 @@
+{
+  "threeVersion": "0.186.1",
+  "source": "https://www.npmjs.com/package/three/v/0.186.1",
+  "files": [
+    {
+      "path": "public/decoders/three-0.186.1/draco/gltf/draco_wasm_wrapper.js",
+      "source": "examples/jsm/libs/draco/gltf/draco_wasm_wrapper.js",
+      "sha256": "4ccd428d9f364cc5fe0c8742e4046146532175b24fe756bd92d5aeb8fb1ac302",
+      "license": "Apache-2.0",
+      "sourceSha256": "8bb2952d2ba7d67e1414f8df819410cb0434a666be53f671fff75f68843d76f6",
+      "modification": "Bound aggregate aligned attribute/Uint32 index output across model primitives to 256 MiB after wasm_malloc and before JS copies; scripts/prepare-avatar-draco.mjs"
+    },
+    {
+      "path": "public/decoders/three-0.186.1/draco/gltf/draco_decoder.wasm",
+      "source": "examples/jsm/libs/draco/gltf/draco_decoder.wasm",
+      "sha256": "657833533c9b0a04db2b4a65210b756bb23593c5bcfbb2e99d4668170c31de03",
+      "license": "Apache-2.0",
+      "sourceSha256": "a680d927bed9cb864ddbd63521868891af2bfbe755092761b4837487618df8ac",
+      "modification": "WASM memory maximum changed from 2 GiB to 256 MiB; nonexecuting orbitpal.notice custom section added; scripts/prepare-avatar-wasm.mjs"
+    },
+    {
+      "path": "public/decoders/three-0.186.1/basis/basis_transcoder.js",
+      "source": "examples/jsm/libs/basis/basis_transcoder.js",
+      "sha256": "4b85785eb621e98054526dc53cf68359169f8e69620ff49f12d03a0729d74922",
+      "license": "Apache-2.0",
+      "sourceSha256": "8478b5b6d6b74e7d3082b89f6417321d8d1dc0307f2b30d4484bb11b441696a1",
+      "modification": "Static Embind invokers; scripts/prepare-avatar-decoders.mjs (no runtime eval)"
+    },
+    {
+      "path": "public/decoders/three-0.186.1/basis/basis_transcoder.wasm",
+      "source": "examples/jsm/libs/basis/basis_transcoder.wasm",
+      "sha256": "4e9f764fc7414755e5c6e309480cc13d77174bf7f416fafc5b63c1431d40f919",
+      "license": "Apache-2.0",
+      "sourceSha256": "6cf17dc889352c42e9acf8897107978d127005fe3386c36a0e3845e27967630a",
+      "modification": "WASM memory maximum changed from 2 GiB to 256 MiB; nonexecuting orbitpal.notice custom section added; scripts/prepare-avatar-wasm.mjs"
+    },
+    {
+      "source": "examples/jsm/libs/meshopt_decoder.module.js",
+      "sha256": "d428e73a000057c6c94bfcedc3412d0c2dc14ca8800e88553aab05113ad2bf19",
+      "license": "MIT",
+      "bundledAs": "Vite JavaScript module; includes its WASM payload"
+    },
+    {
+      "source": "examples/jsm/libs/draco/draco_decoder.js",
+      "sha256": "30e4d486fa020737af10e3c56197693e5b904bdc05b8bfa5d7b06751dec6da04",
+      "license": "Apache-2.0",
+      "bundledAs": "Three default URL asset emitted by Vite; overridden by avatar factory"
+    },
+    {
+      "source": "examples/jsm/libs/draco/draco_decoder.wasm",
+      "sha256": "c55a594e8ffd18426d36b27fea9618af3df5e173640a3e56d46f09d76f0574f2",
+      "license": "Apache-2.0",
+      "bundledAs": "Three default URL asset emitted by Vite; overridden by avatar factory"
+    },
+    {
+      "source": "examples/jsm/libs/draco/draco_wasm_wrapper.js",
+      "sha256": "e8049906ef3f8f75d3456c22a3f31bfdfe5b5b5bd09ccdec613b9e9a49d554d8",
+      "license": "Apache-2.0",
+      "bundledAs": "Three default URL asset emitted by Vite; overridden by avatar factory"
+    }
+  ],
+  "notices": [
+    {
+      "path": "public/decoders/three-0.186.1/LICENSE-THREE-MIT.txt",
+      "sha256": "8b378ebe60e2fe500158cb0ac71cb5e8b7d92953c2abcc63a0eb90499653b5bc"
+    },
+    {
+      "path": "public/decoders/three-0.186.1/basis/LICENSE",
+      "sha256": "065fcf48d6af21c0b75e23be5ed5753aee75c892e1c2cf178fa6736305614a5c"
+    },
+    {
+      "path": "public/decoders/three-0.186.1/basis/LICENSE-EMSCRIPTEN.txt",
+      "sha256": "2fd38dc06e484cdd7a3f1e2f6577f5d53062052a2fd85131b56b89fbd673731c",
+      "sourceSha256": "620a78084fc7ca97c0b5dea9abf891f3ffcadfdbf305276f099c9c4e12fc1d86",
+      "normalization": "Trailing whitespace and terminal blank lines removed; complete license terms unchanged."
+    },
+    {
+      "path": "public/decoders/three-0.186.1/basis/LICENSE-ZSTD.txt",
+      "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
+    },
+    {
+      "path": "public/decoders/three-0.186.1/basis/README.md",
+      "sha256": "a578df416c1e0852e9c36a1cf91b4d28d91a251294f87ce610a3bc7ca4df15e0"
+    },
+    {
+      "path": "public/decoders/three-0.186.1/draco/LICENSE",
+      "sha256": "d3709b0fb4b8a94bbb1d02b8a2e484f258b0d9c5c5a01f940391f3fe662cd1a4"
+    },
+    {
+      "path": "public/decoders/three-0.186.1/draco/README.md",
+      "sha256": "839850a67c93f6b26d3cc038a45bd8289e3cfdf15531e69339e8eb1282b4eb76"
+    },
+    {
+      "path": "public/decoders/three-0.186.1/LICENSE-MESHOPT-MIT.txt",
+      "sha256": "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26"
+    }
+  ]
+}

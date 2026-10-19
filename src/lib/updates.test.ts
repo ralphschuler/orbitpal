@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { UpdateController, emptyUpdateState, type UpdateState } from './updates';
 
 const candidate = { id: 'candidate-1', version: '0.7.0', currentVersion: '0.6.0', notes: 'Neue Version', date: null, releaseUrl: 'https://github.com/ralphschuler/streamer-ai-cohost/releases/tag/v0.7.0' };
@@ -70,4 +70,35 @@ describe('confirmed app updates', () => {
     resolve({ update: candidate, installSupported: true }); await pending;
     expect(f.state().available).toBeNull(); expect(f.lock).not.toHaveBeenCalled();
   });
+  afterEach(()=>vi.useRealTimers());
+  it('cancels a slow download, waits for native cleanup and ignores late callbacks',async()=>{
+    vi.useFakeTimers();const f=fixture();await f.controller.check();let finish!:(value:unknown)=>void;
+    f.call.mockImplementationOnce(()=>new Promise(resolve=>finish=resolve));const downloading=f.controller.confirm(candidate.id,'');
+    f.controller.progress({candidateId:candidate.id,phase:'downloading',downloaded:25,total:100});
+    f.call.mockResolvedValueOnce({cancelled:true});expect(await f.controller.cancel()).toBe(true);expect(f.state().phase).toBe('cancelling');
+    expect(f.lock.mock.calls).toEqual([[true]]);await vi.advanceTimersByTimeAsync(600_000);
+    f.controller.progress({candidateId:candidate.id,phase:'downloading',downloaded:100,total:100});expect(f.state().downloaded).toBe(25);
+    finish({cancelled:true});expect(await downloading).toBe(false);expect(f.state().phase).toBe('cancelled');expect(f.state().available).toBeNull();expect(f.lock.mock.calls).toEqual([[true],[false]]);
+    f.controller.progress({candidateId:candidate.id,phase:'installing',downloaded:100});expect(f.state().phase).toBe('cancelled');
+    expect(await f.controller.confirm(candidate.id,'')).toBe(false);
+    const newer={...candidate,id:'candidate-2'};f.call.mockResolvedValueOnce({update:newer,installSupported:true});await f.controller.check();
+    f.call.mockResolvedValueOnce(undefined);expect(await f.controller.confirm(newer.id,'')).toBe(true);
+    f.controller.progress({candidateId:candidate.id,phase:'downloading',downloaded:999});expect(f.state().phase).toBe('restarting');
+  });
+  it('cannot cancel after native installation wins and never regresses its phase',async()=>{
+    const f=fixture();await f.controller.check();let finish!:()=>void;
+    f.call.mockImplementationOnce(()=>new Promise(resolve=>finish=()=>resolve(undefined)));const installing=f.controller.confirm(candidate.id,'');
+    let cancelResult!:(value:unknown)=>void;f.call.mockImplementationOnce(()=>new Promise(resolve=>cancelResult=resolve));const cancelling=f.controller.cancel();
+    f.controller.progress({candidateId:candidate.id,phase:'installing',downloaded:100});cancelResult({cancelled:false});expect(await cancelling).toBe(false);
+    f.controller.progress({candidateId:candidate.id,phase:'downloading',downloaded:500});expect(f.state().phase).toBe('installing');expect(await f.controller.cancel()).toBe(false);
+    expect(f.lock.mock.calls).toEqual([[true]]);finish();await installing;
+  });
+  it('ignores a late cancel response after cleanup and a fresh check',async()=>{
+    const f=fixture();await f.controller.check();let finish!:(value:unknown)=>void;
+    f.call.mockImplementationOnce(()=>new Promise(resolve=>finish=resolve));const installing=f.controller.confirm(candidate.id,'');
+    let cancelled!:(value:unknown)=>void;f.call.mockImplementationOnce(()=>new Promise(resolve=>cancelled=resolve));const cancelling=f.controller.cancel();
+    finish({cancelled:true});await installing;const newer={...candidate,id:'candidate-2'};f.call.mockResolvedValueOnce({update:newer,installSupported:true});await f.controller.check();
+    cancelled({cancelled:false});await cancelling;expect(f.state().phase).toBe('idle');expect(f.state().available?.id).toBe(newer.id);
+  });
+
 });

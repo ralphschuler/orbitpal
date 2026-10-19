@@ -4,12 +4,19 @@ import { AvatarPresentationGate, presentationAbortError, type PresentationReleas
 import { desktopFraming, measureDesktopModel } from './desktop-framing';
 import type { DesktopLayout } from './output-presentation';
 export type DesktopAnchor={x:number;y:number;width:number;height:number;visible:boolean;viewport:{width:number;height:number}};
+import { availableActions, clipHasTarget, avatarBinding, currentEmotePayload, resolveAvailableAction, unavailableEmote, type AvailableAction } from './emote-capabilities';
+import type { EmotePayload } from './presentation';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { createAvatarLoader } from './avatar-loader';
+import { disposeAvatarObject as disposeObject } from './avatar-resources';
+import { ModelAudioController } from './avatar-audio';
+import { renderedModelSoundActivity, type SoundActivity } from './sound-playback';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { VRMExpressionMorphTargetBind, VRMLoaderPlugin, VRMUtils, type VRM, type VRMExpression } from '@pixiv/three-vrm';
+import { VRMExpressionMorphTargetBind, VRMLookAtBoneApplier, VRMLookAtExpressionApplier, VRMUtils, type VRM, type VRMExpression } from '@pixiv/three-vrm';
 import { configureBundledAccessories, discoverGenericHumanoid, humanoidArmRest, humanoidFrame, humanoidRotation, humanoidWaveRaise, poseGenericArm, rawHumanoidRig, rotateGenericBone, type GenericHumanoidRig } from './avatar-rig';
 import { AuthoredAnimationProperties, finishVrmAnimationFrame, selectEmoteAnimation, selectIdleAnimation } from './avatar-animation';
+import { ensureMotionLookAtProxy, isMotionAction, loadMotionClips, transferMotionPose, type MotionAsset } from './avatar-motion';
+import type { VRMLookAtQuaternionProxy } from '@pixiv/three-vrm-animation';
 import { ambientGestureActions, discoverWalkingLegs, followAmbientPosition, motionLaneHalfWidth, sampleAmbientMotion, sampleWalkingGait, selectWalkingAnimation, type AutopilotVisualConfig, type WalkingLegs } from './autopilot-motion';
 
 export interface AvatarOptions {
@@ -21,6 +28,9 @@ export interface AvatarOptions {
   autopilot?: AutopilotVisualConfig;
   desktop?:DesktopLayout;
   onDesktopAnchor?:(anchor:DesktopAnchor|undefined)=>void;
+  audioEnabled?: boolean;
+  audioStop?: number;
+  onAudioPlaying?: (playing: boolean, activity: SoundActivity) => void;
 }
 
 export interface AvatarModelInfo {
@@ -28,6 +38,8 @@ export interface AvatarModelInfo {
   format?: 'builtin' | 'glb' | 'vrm0' | 'vrm1';
   animations: { name: string; duration: number }[];
   proceduralGestures: string[];
+  actions?: AvailableAction[];
+  avatarBinding?: unknown;
   error?: string;
 }
 
@@ -69,6 +81,7 @@ function morphVowel(name: string): Vowel | undefined {
 /** A self-contained renderer shared by the dashboard, native overlay and OBS. */
 export class AvatarStage {
   private renderer: THREE.WebGLRenderer;
+  private assetLoader: ReturnType<typeof createAvatarLoader>;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(32, 1, 0.05, 100);
   private desktopCamera=new THREE.OrthographicCamera(-1,1,1,-1,.05,100);
@@ -137,17 +150,27 @@ export class AvatarStage {
   private lastRenderTime = 0;
   private disposed = false;
   private asset = '';
+  private assetKey = '';
+  private emoteReady = false;
+  private loadedEmoteBinding = '';
+  private motionAbort?: AbortController;
+  private motionLookAt?: VRMLookAtQuaternionProxy;
   private cameraMode = '';
   private time = 0;
   private mouthLevel = 0;
   private speechPhase = 0;
   private vowelWeights: Record<Vowel, number> = { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 };
   private blinkAt = 2.4;
+  private modelAudio: ModelAudioController;
+  private modelAudioStop = 0;
+  private walkingAudioIndex = -1;
 
   constructor(private host: HTMLElement, options: AvatarOptions, private onEmoteError?: (message: string) => void, initialAssetUrl?: string) {
     this.options = options;
     this.assetState = initialAssetUrl ? 'loading' : 'ready';
+    this.modelAudio = new ModelAudioController(message => this.onEmoteError?.(message), (playing, activity) => this.options.onAudioPlaying?.(playing, activity));
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    this.assetLoader = createAvatarLoader(this.renderer);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -200,10 +223,12 @@ export class AvatarStage {
   }
 
   update(options: AvatarOptions) {
-    const context = JSON.stringify([options.profile?.id, options.profile?.avatar?.assetPath, options.autopilot?.active === true, options.autopilot?.seed, options.autopilot?.startedAt, options.desktop?.active === true]);
+    const context = JSON.stringify([options.profile?.id, options.profile?.avatar?.assetPath, options.profile?.motions ?? [], options.autopilot?.active === true, options.autopilot?.seed, options.autopilot?.startedAt, options.desktop?.active === true]);
     if (this.presentationContext && context !== this.presentationContext) this.presentation?.invalidate();
     this.presentationContext = context;
     this.options = options;
+    this.modelAudio?.setEnabled(options.audioEnabled === true);
+    if ((options.audioStop ?? 0) !== this.modelAudioStop) { this.modelAudioStop = options.audioStop ?? 0; this.modelAudio?.stop(); }
     const avatar = options.profile?.avatar ?? {};
     this.ground.visible = !options.transparent;
     let scale = THREE.MathUtils.clamp(Number(avatar.scale) || 1, 0.3, 2.5);
@@ -227,46 +252,51 @@ export class AvatarStage {
     }
     this.controls.enabled = !options.transparent;
     const emote = avatar.emote;
+    if (!emote && this.emoteSource === 'manual') this.finishEmote();
     if (!emote && this.emoteNonce !== undefined) {
       this.emoteNonce = undefined;
       this.finishEmote();
     }
     if (emote && emote.nonce !== undefined && emote.nonce !== this.emoteNonce) {
       this.emoteNonce = emote.nonce;
+      if(emote.id&&!this.canPresentEmote(emote,options.profile)){this.onEmoteError?.(unavailableEmote);return;}
       this.triggerEmote(String(emote.action || ''), Number(emote.duration), Number(emote.intensity));
     }
   }
 
-  async loadAsset(url?: string): Promise<void> {
+  async loadAsset(url?: string, motions: readonly MotionAsset[] = [], outputUrl = '', botId = ''): Promise<void> {
     const next = url || '';
-    if (next === this.asset) return;
+    const emoteBinding = JSON.stringify(avatarBinding(this.options.profile));
+    const key = JSON.stringify([next,botId,motions,outputUrl,emoteBinding]);
+    if (key === this.assetKey) return;
+    this.assetKey = key;
+    this.emoteReady = false;
     this.asset = next;
     this.presentation.reset();
     this.assetState = next ? 'loading' : 'ready';
     this.desktopPresentationReady = false;
     const request = ++this.request;
     this.clearImported();
+    const abort = this.motionAbort = new AbortController();
     this.robot.root.visible = true;
     this.cameraMode = '';
     this.update(this.options);
-    if (!next) return;
+    if (!next) { this.emoteReady = !this.options.profile?.avatar?.assetPath || this.options.profile.avatar.assetPath === 'nova'; this.loadedEmoteBinding = emoteBinding; return; }
     try {
       // GLTFLoader can swallow a failed image request and finish with an
       // untextured material. Treat missing resources as an import error.
-      let resourceFailed = false;
-      const manager = new THREE.LoadingManager();
-      manager.onError = () => { resourceFailed = true; };
-      const loader = new GLTFLoader(manager);
-      loader.register((parser) => new VRMLoaderPlugin(parser));
-      const gltf = await loader.loadAsync(next);
+      const gltf = await this.assetLoader.loadAsync(next);
       if (this.disposed || request !== this.request) {
         disposeObject(gltf.scene);
         return;
       }
-      if (resourceFailed) {
+      if (gltf.userData.orbitpalResourceFailed) {
         disposeObject(gltf.scene);
         throw new Error('Texturen oder Modelldaten konnten nicht vollständig geladen werden.');
       }
+      try { await this.modelAudio.load(gltf.parser.json, index => gltf.parser.getDependency('bufferView', index)); }
+      catch (error) { disposeObject(gltf.scene); throw error; }
+      if (this.disposed || request !== this.request) { disposeObject(gltf.scene); return; }
       const vrm = gltf.userData.vrm as VRM | undefined;
       if (vrm) {
         VRMUtils.removeUnnecessaryVertices(gltf.scene);
@@ -370,7 +400,13 @@ export class AvatarStage {
         }
       }
       this.clips = gltf.animations;
-      if (gltf.animations.length) {
+      if (vrm && motions.length) {
+        this.motionLookAt = ensureMotionLookAtProxy(vrm);
+        try { this.clips = [...gltf.animations,...await loadMotionClips(vrm,motions,outputUrl,botId,abort.signal)]; }
+        catch (error) { if (abort.signal.aborted) return; this.onEmoteError?.(error instanceof Error ? error.message : String(error)); }
+        if (this.disposed || request !== this.request) return;
+      }
+      if (this.clips.length) {
         this.mixer = new THREE.AnimationMixer(gltf.scene);
         this.authoredProperties = new AuthoredAnimationProperties(gltf.scene);
         // Prefer the neutral action over e.g. 2H_Melee_Idle or Sit_Chair_Idle
@@ -379,6 +415,7 @@ export class AvatarStage {
         if (clip) this.idleAction = this.mixer.clipAction(clip).play();
         const walking = selectWalkingAnimation(gltf.animations);
         if (walking) {
+          this.walkingAudioIndex = gltf.animations.indexOf(walking);
           // A separate action prevents an explicit Walking preview from
           // sharing mutable loop/time state with the ambient layer.
           this.walkingClip = walking.clone();
@@ -386,13 +423,16 @@ export class AvatarStage {
         }
       }
       this.desktopModelBounds=measureDesktopModel(this.imported);
-      this.ambientActions = ambientGestureActions(this.clips, this.getModelInfo().proceduralGestures);
+      this.emoteReady = true;
+      this.loadedEmoteBinding = emoteBinding;
+      this.ambientActions = ambientGestureActions(this.clips.filter(clip=>this.getModelInfo().actions?.some(action=>action.action===clip.name)), this.getModelInfo().proceduralGestures);
       this.robot.root.visible = false;
       this.assetState = 'ready';
       this.cameraMode = '';
       this.update(this.options);
     } catch (error) {
       if (request !== this.request || this.disposed) return;
+      this.emoteReady = false;
       this.robot.root.visible = true;
       this.assetState = 'error';
       this.presentation.fail(error);
@@ -408,14 +448,61 @@ export class AvatarStage {
   }
 
   get clipNames(): string[] { return this.clips.map((clip) => clip.name); }
+  async unlockModelAudio(): Promise<void> {
+    try { await this.modelAudio.unlock(); }
+    catch { this.onEmoteError?.('Modell-Audio konnte nicht rechtzeitig als begrenztes PCM16-WAV vorbereitet werden.'); }
+  }
 
+  private proceduralGestures(): string[] {
+    if (!this.asset) return ['wave','celebrate','nod','dance','hide'];
+    // Generic GLB names do not prove the native rig hierarchy/geometry. Authored
+    // clips remain available; procedural gestures require real VRM bones.
+    if (!this.vrm) return ['hide'];
+    const has=(names:string[])=>names.every(name=>this.humanoidPose.has(name));
+    const arms=has(['leftUpperArm','leftLowerArm','rightUpperArm','rightLowerArm']);
+    return ['hide',...(arms?['wave','celebrate']:[]),...(has(['head'])?['nod']:[]),...(arms&&has(['spine'])?['dance']:[])];
+  }
+  private hasLookAtTarget():boolean {
+    const vrm=this.vrm;
+    if(!vrm?.lookAt||!vrm.humanoid.getNormalizedBoneNode('head'))return false;
+    if(vrm.lookAt.applier instanceof VRMLookAtBoneApplier)return Boolean(vrm.humanoid.getRawBoneNode('leftEye')||vrm.humanoid.getRawBoneNode('rightEye'));
+    if(vrm.lookAt.applier instanceof VRMLookAtExpressionApplier)return ['lookUp','lookDown','lookLeft','lookRight'].some(name=>Boolean(vrm.expressionManager?.getExpression(name)?.binds.length));
+    return false;
+  }
+  private effectiveClip(clip:THREE.AnimationClip):boolean {
+    return clipHasTarget(this.imported,clip,node=>node!==this.motionLookAt||this.hasLookAtTarget());
+  }
   getModelInfo(): AvatarModelInfo {
+    const actions=availableActions(this.clips,this.proceduralGestures()).filter(action=>action.kind==='gesture'||this.clips.some(clip=>clip.name===action.action&&this.effectiveClip(clip)));
     return {
-      status: 'ready',
+      status: this.emoteReady ? 'ready' : 'loading', avatarBinding: this.loadedEmoteBinding ? JSON.parse(this.loadedEmoteBinding) : undefined,
       format: !this.asset ? 'builtin' : this.vrm ? this.vrm.meta.metaVersion === '0' ? 'vrm0' : 'vrm1' : 'glb',
-      animations: this.clips.map((clip) => ({ name: clip.name, duration: Number.isFinite(clip.duration) ? clip.duration : 0 })),
-      proceduralGestures: !this.asset || this.vrm || this.armRig ? ['wave', 'celebrate', 'nod', 'dance', 'hide'] : ['hide'],
+      animations: actions.filter(action=>action.kind==='clip').map(action=>({name:action.action,duration:action.duration!})),
+      proceduralGestures: actions.filter(action=>action.kind==='gesture').map(action=>action.action), actions,
     };
+  }
+  canPresentEmote(event:EmotePayload,profile:any=this.options.profile):boolean {
+    if(this.disposed||!this.emoteReady||JSON.stringify(avatarBinding(profile))!==this.loadedEmoteBinding||!currentEmotePayload(profile,event))return false;
+    const action=resolveAvailableAction(this.getModelInfo().actions??[],event.action);
+    if(!action)return false;
+    const configured=(profile.emotes??[]).find((emote:any)=>emote.id===event.id);
+    if(!configured||resolveAvailableAction(this.getModelInfo().actions??[],configured.action)?.action!==event.action)return false;
+    if(action.kind==='gesture')return true;
+    let clip:THREE.AnimationClip|undefined;try{clip=selectEmoteAnimation(this.clips,action.action);}catch{return false;}
+    if(!clip||!this.mixer)return false;
+    // Expressions require actual binds; an empty placeholder cannot speak for
+    // a valid facial motion. Other tracks must address in-range scene properties.
+    if(clip.tracks.every(track=>track.name.endsWith('.weight'))&&this.vrm){
+      const expressions=Object.values(this.vrm.expressionManager?.expressionMap??{});
+      return clip.tracks.some(track=>expressions.some(expression=>track.name===`${expression.name}.weight`&&expression.binds.length>0))&&this.effectiveClip(clip);
+    }
+    return this.effectiveClip(clip);
+  }
+  presentEmote(event:EmotePayload,profile:any=this.options.profile):boolean {
+    if(!this.canPresentEmote(event,profile))return false;
+    const nonce=event.nonce??crypto.randomUUID();
+    if(!this.triggerEmote(event.action,(event.duration??2.5)*1000,event.intensity??1))return false;
+    this.emoteNonce=nonce;return true;
   }
 
   private get activeAnimationActions(): (THREE.AnimationAction | undefined)[] { return [this.idleAction, this.walkingAction, this.emote?.clip]; }
@@ -585,10 +672,12 @@ export class AvatarStage {
   }
 
   private triggerEmote(action: string, duration: number, intensity: number, source: 'manual' | 'ambient' = 'manual') {
+    const resolved=resolveAvailableAction(this.getModelInfo().actions??[],action);
+    if (!this.emoteReady || !resolved) { this.onEmoteError?.(unavailableEmote); return false; }
+    action=resolved.action;
     this.setWalking(false);
     this.finishEmote();
     this.onEmoteError?.('');
-    if (!action) return;
     const active: ActiveEmote = {
       action,
       start: this.time,
@@ -604,6 +693,7 @@ export class AvatarStage {
         return;
       }
       const playing = this.mixer.clipAction(clip);
+      if (isMotionAction(action)) active.duration = clip.duration;
       if (this.idleAction !== playing) this.idleAction?.fadeOut(0.15);
       playing.reset();
       playing.setLoop(THREE.LoopOnce, 1);
@@ -616,9 +706,12 @@ export class AvatarStage {
     }
     this.emote = active;
     this.emoteSource = source;
+    return true;
   }
 
   private finishEmote() {
+    const motion = Boolean(this.emote && isMotionAction(this.emote.action));
+    this.modelAudio?.stop();
     if (this.emote?.clip) {
       const sharedIdle = this.emote.clip === this.idleAction;
       this.emote.clip.stop();
@@ -632,6 +725,7 @@ export class AvatarStage {
     }
     this.emote = undefined;
     this.emoteSource = undefined;
+    if (motion) this.vrm?.humanoid.resetNormalizedPose();
     this.robot.root.position.set(0, 0, 0);
     this.robot.root.rotation.set(0, 0, 0);
     this.imported.position.set(0, 0, 0);
@@ -1013,6 +1107,7 @@ export class AvatarStage {
       this.authoredProperties?.restoreTransforms(this.activeAnimationActions);
       this.mixer.update(dt);
       this.authoredProperties?.captureTransforms(this.activeAnimationActions);
+      if (this.vrm && this.emote?.clip && isMotionAction(this.emote.action)) transferMotionPose(this.vrm,this.emote.clip.getClip());
     }
     this.animateSpeechJaw();
     this.animateWalkingGait(true);
@@ -1030,7 +1125,10 @@ export class AvatarStage {
       this.setVrmExpression(['angry'], /angry|wütend/i.test(emotion) ? 0.4 : 0, true);
       this.setVrmExpression(['surprised', 'surprise'], /surpris|überrasch/i.test(emotion) ? 0.55 : 0, true);
       this.lookAt.position.copy(this.activeCamera.position);
-      finishVrmAnimationFrame(this.vrm, dt, this.authoredProperties, this.activeAnimationActions, this.mouthLevel > 0.005 ? [...this.mouthExpressions.values()] : []);
+      const autoLookAt = this.vrm.lookAt?.autoUpdate;
+      if (this.vrm.lookAt && this.motionLookAt && this.authored(this.motionLookAt,'quaternion')) this.vrm.lookAt.autoUpdate = false;
+      try { finishVrmAnimationFrame(this.vrm, dt, this.authoredProperties, this.activeAnimationActions, this.mouthLevel > 0.005 ? [...this.mouthExpressions.values()] : []); }
+      finally { if (this.vrm.lookAt && autoLookAt !== undefined) this.vrm.lookAt.autoUpdate = autoLookAt; }
     }
     this.compensateWalkingRootMotion();
     this.clampDesktopEmote();
@@ -1041,16 +1139,36 @@ export class AvatarStage {
     }
     try {
       this.renderer.render(this.scene, this.activeCamera);
+      const loaded = this.emoteReady && JSON.stringify(avatarBinding(this.options.profile)) === this.loadedEmoteBinding;
       if (this.presentation.requested) {
         const hostVisible = this.host.isConnected && this.host.clientWidth > 0 && this.host.clientHeight > 0 && getComputedStyle(this.host).visibility !== 'hidden';
-        const ready = hostVisible && !this.renderer.getContext().isContextLost() && this.assetState === 'ready' && !this.emote && !this.walking && this.walkStrength < 0.001 && (!this.desktopActive || this.desktopPresentationReady);
+        const ready = hostVisible && !this.renderer.getContext().isContextLost() && this.assetState === 'ready' && loaded && !this.emote && !this.walking && this.walkStrength < 0.001 && (!this.desktopActive || this.desktopPresentationReady);
         this.presentation.rendered(ready);
       }
-    } catch (error) { this.presentation.fail(error); }
+      // Audio events follow an actually rendered emote/walk frame. Automatic
+      // load/idle, muted previews and other output surfaces never authorize sound.
+      const emote = this.emote?.clip;
+      const action = emote ?? (this.walking ? this.walkingAction : undefined);
+      const audible = loaded && action?.enabled && action.isScheduled() && action.getEffectiveWeight() > 0.00001;
+      this.modelAudio.present(audible && action ? {
+        activity: renderedModelSoundActivity(!!emote, this.emoteSource),
+        token: emote ? `emote:${this.emoteSource === 'ambient' ? this.ambientSession + ':' + this.ambientGesture : this.emoteNonce}` : `walk:${this.ambientSession}`,
+        animation: emote ? this.clips.indexOf(action.getClip()) : this.walkingAudioIndex,
+        time: action.time, loop: !emote,
+        rate: emote && this.emote ? action.getClip().duration / this.emote.duration : 0.8,
+      } : undefined, Number(this.options.profile?.voice?.volume ?? 1));
+    } catch (error) { this.modelAudio?.stop(); this.presentation.fail(error); }
   };
 
   private clearImported() {
     this.desktopMotion.reset();
+    this.emoteReady = false;
+    this.loadedEmoteBinding = '';
+    this.motionAbort?.abort();
+    this.motionAbort = undefined;
+    this.motionLookAt = undefined;
+    this.modelAudio?.clear();
+    this.walkingAudioIndex = -1;
     this.finishEmote();
     this.desktopModelBounds=measureDesktopModel(this.robot.root);
     this.mixer?.stopAllAction();
@@ -1101,37 +1219,20 @@ export class AvatarStage {
   dispose() {
     this.disposed = true;
     this.presentation.dispose();
+    this.modelAudio.destroy();
     ++this.request;
     cancelAnimationFrame(this.frame);
     this.observer.disconnect();
     this.controls.dispose();
     this.clearImported();
     disposeObject(this.scene);
+    this.assetLoader.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
   }
 }
 
-function disposeObject(root: THREE.Object3D) {
-  const geometries = new Set<THREE.BufferGeometry>();
-  const materials = new Set<THREE.Material>();
-  const textures = new Set<THREE.Texture>();
-  const skeletons = new Set<THREE.Skeleton>();
-  root.traverse((object) => {
-    const mesh = object as THREE.Mesh;
-    if (mesh.geometry) geometries.add(mesh.geometry);
-    if (object instanceof THREE.SkinnedMesh) skeletons.add(object.skeleton);
-    if (mesh.material) for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
-      materials.add(material);
-      for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
-    }
-  });
-  textures.forEach((texture) => texture.dispose());
-  materials.forEach((material) => material.dispose());
-  geometries.forEach((geometry) => geometry.dispose());
-  skeletons.forEach((skeleton) => skeleton.dispose());
-}
 
 export function createRobot(): Robot {
   const root = new THREE.Group();

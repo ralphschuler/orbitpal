@@ -1,15 +1,18 @@
+import type { SoundActivity } from './sound-playback';
+
 export interface ExternalEmotePlaybackEvent {
   botId: string;
   output: string;
   id: string;
   playing: boolean;
+  activity?: SoundActivity;
 }
 
 const LEASE_MS = 16_000;
 const MAX_ENTRIES = 64;
 const MAX_IDENTIFIER_LENGTH = 256;
 
-interface Lease { timer: ReturnType<typeof setTimeout> }
+interface Lease { timer: ReturnType<typeof setTimeout>; activity: SoundActivity }
 
 function identifier(value: unknown): value is string {
   return typeof value === 'string' && value.length <= MAX_IDENTIFIER_LENGTH && value.trim().length > 0;
@@ -20,7 +23,8 @@ function validEvent(event: unknown): event is ExternalEmotePlaybackEvent {
   const value = event as Record<string, unknown>;
   return identifier(value.botId) && identifier(value.id)
     && (value.output === 'obs' || value.output === 'overlay')
-    && typeof value.playing === 'boolean';
+    && typeof value.playing === 'boolean'
+    && (value.activity === undefined || value.activity === 'foreground' || value.activity === 'ambient');
 }
 
 /** Tracks host-validated external SFX reports to pause microphone activation.
@@ -30,15 +34,19 @@ function validEvent(event: unknown): event is ExternalEmotePlaybackEvent {
 export class ExternalEmotePlayback {
   private leases = new Map<string, Lease>();
   private playing = false;
+  private blocking = false;
   private destroyed = false;
 
-  constructor(private onChange: (playing: boolean) => void) {}
+  constructor(private onChange: (playing: boolean) => void, private onBlockingChange?: (blocking: boolean) => void) {}
 
   accept(event: ExternalEmotePlaybackEvent): void {
     if (this.destroyed || !validEvent(event)) return;
     // Tuple encoding avoids collisions between identifiers containing separators.
     const key = JSON.stringify([event.botId, event.output, event.id]);
     const previous = this.leases.get(key);
+    const activity = event.activity ?? 'foreground';
+    // A late/mismatched report cannot reclassify or end another activity's lease.
+    if (previous && previous.activity !== activity) return;
     if (!event.playing) {
       if (!previous) return;
       clearTimeout(previous.timer);
@@ -49,7 +57,7 @@ export class ExternalEmotePlayback {
     // Keep existing playback protected when an output exceeds the entry bound.
     if (!previous && this.leases.size >= MAX_ENTRIES) return;
     if (previous) clearTimeout(previous.timer);
-    const lease: Lease = { timer: setTimeout(() => {
+    const lease: Lease = { activity, timer: setTimeout(() => {
       // Identity also rejects a timer already queued before renewal or clear().
       if (this.destroyed || this.leases.get(key) !== lease) return;
       this.leases.delete(key);
@@ -73,8 +81,8 @@ export class ExternalEmotePlayback {
 
   private update(): void {
     const playing = this.leases.size > 0;
-    if (playing === this.playing) return;
-    this.playing = playing;
-    this.onChange(playing);
+    if (playing !== this.playing) { this.playing = playing; this.onChange(playing); }
+    const blocking = [...this.leases.values()].some(lease => lease.activity !== 'ambient');
+    if (blocking !== this.blocking) { this.blocking = blocking; this.onBlockingChange?.(blocking); }
   }
 }

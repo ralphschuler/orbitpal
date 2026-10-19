@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "mode": "self-signed",
+  "identifier": "studio.streamer-ai.cohost",
+  "certificateSha256": "e3143a9ab9fb9810d8cf4d3bdbc476ae1b5f200a68cb4d24e8d2e38bb14c997d",
+  "certificateFile": "release/macos-signing-certificate.pem"
+}

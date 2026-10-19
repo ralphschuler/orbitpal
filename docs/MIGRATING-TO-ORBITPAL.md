@@ -2,6 +2,8 @@
 
 Version 0.8.0 introduces the name **OrbitPal**, the repository `ralphschuler/orbitpal`, the executable `orbitpal` and `OrbitPal-vVERSION-PLATFORM` downloads. Existing released files and version tags keep their original names. The MIT license is unchanged; earlier copyright notices are retained.
 
+See the [rename audit inventory](BRANDING-AUDIT.md) for current product names and deliberately retained compatibility identifiers.
+
 ## Existing bots and credentials
 
 The display name changes without creating another app data store. The bundle identifier remains `studio.streamer-ai.cohost`; the existing SQLite location, keychain service `streamer-ai-cohost`, profile package identifier, `cohost://` events and UI-language storage key stay unchanged. Installed MCP/Skill IDs, grants and Hindsight tags are unchanged. New copied external MCP configurations use the display key `orbitpal`; previously configured local clients still connect to the same authenticated endpoint after their session token is refreshed normally.

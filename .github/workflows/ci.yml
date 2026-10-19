@@ -53,14 +53,19 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev libpipewire-0.3-dev libclang-dev patchelf
       - run: pnpm install --frozen-lockfile
       - name: Check manifest versions
         run: node scripts/release-info.mjs
       - name: Check packaging logic
         run: node --test scripts/release-tests.mjs
-      - name: Type and Svelte checks
-        run: pnpm check
+      - name: Verify persistent macOS signing with disposable fixture keys
+        if: runner.os == 'macOS'
+        run: node scripts/test-macos-signing-ci.mjs
+      - name: Type and Svelte checks (native TypeScript 7 and editor-compatible TypeScript 6)
+        run: |
+          pnpm check
+          pnpm check:legacy
       - name: Frontend unit tests (local fixtures and mocks)
         run: pnpm test:run
       - name: Fetch locked Rust dependencies
@@ -75,7 +80,13 @@ jobs:
           (cd vendor/glib && sha256sum --check COHOST-SHA256SUMS.txt)
           cargo test --locked --release --manifest-path src-tauri/Cargo.toml --test glib_variant_regression
       - name: Rust unit tests (no external accounts)
+        env:
+          ORBITPAL_NATIVE_FIXTURE_DIR: ${{ runner.temp }}/orbitpal-avatar-fixtures
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Offline compressed-avatar WebGL fixtures (installed Chrome)
+        env:
+          ORBITPAL_NATIVE_FIXTURE_DIR: ${{ runner.temp }}/orbitpal-avatar-fixtures
+        run: pnpm test:avatar-decoders
       - name: Build Windows installer migration fixtures (no signing secrets)
         if: runner.os == 'Windows'
         shell: bash

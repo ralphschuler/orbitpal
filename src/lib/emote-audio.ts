@@ -1,6 +1,6 @@
 /** Optional, local emote effects. A failed effect never rejects TTS playback. */
 export type EmoteSoundAudio = { base64: string; mimeType: string };
-export type SoundEmote = { sound?: string; soundVolume?: number; [key: string]: unknown };
+export type SoundEmote = { sound?: string; soundVolume?: number; soundOffset?: number; soundRate?: number; bufferSound?: string; [key: string]: unknown };
 export type EmoteSoundResolver = (soundId: string) => Promise<EmoteSoundAudio>;
 
 const MAX_CLIP_SECONDS = 15;
@@ -14,12 +14,14 @@ export class EmoteAudioPlayer {
   private context?: AudioContext;
   private master?: GainNode;
   private buffers = new Map<string, AudioBuffer>();
-  private sources = new Map<AudioScheduledSourceNode, AudioNode[]>();
+  private sources = new Map<AudioScheduledSourceNode, { nodes: AudioNode[]; id?: string }>();
   private generation = 0;
   private disposed = false;
   private playing = false;
 
-  constructor(private onError?: (message: string) => void, private onPlaying?: (playing: boolean) => void) {}
+  constructor(private onError?: (message: string) => void, private onPlaying?: (playing: boolean) => void, private embedded = false) {}
+  private validId(id: string) { return CUSTOM_ID.test(id) || this.embedded && /^model:[0-7]$/.test(id); }
+  isPrepared(id: string) { return this.buffers.has(id); }
 
   private warn(message: string) {
     if (!this.disposed) { try { this.onError?.(message); } catch { /* callbacks cannot interrupt voice playback */ } }
@@ -70,14 +72,21 @@ export class EmoteAudioPlayer {
     for (const id of ids.slice(0, MAX_SOUNDS)) {
       if (this.disposed || generation !== this.generation) return;
       if (BUILTINS.has(id)) continue;
-      if (!CUSTOM_ID.test(id)) { this.warn('Ein Emote verweist auf eine unbekannte Sound-ID.'); continue; }
+      if (!this.validId(id)) { this.warn('Ein Emote verweist auf eine unbekannte Sound-ID.'); continue; }
       try {
         const audio = await resolver(id);
         if (this.disposed || generation !== this.generation) return;
         if (typeof audio?.base64 !== 'string' || audio.base64.length > Math.ceil(MAX_FILE_BYTES / 3) * 4 + 4 || !audio.mimeType?.startsWith('audio/')) throw new Error('Audioformat');
         const binary = atob(audio.base64); if (!binary.length || binary.length > MAX_FILE_BYTES) throw new Error('Audiogröße');
         const bytes = new Uint8Array(binary.length); for (let at = 0; at < binary.length; at++) bytes[at] = binary.charCodeAt(at);
-        const decoded = await context.decodeAudioData(bytes.buffer);
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        let decoded: AudioBuffer;
+        try {
+          const decoding = context.decodeAudioData(bytes.buffer);
+          decoded = this.embedded ? await Promise.race([decoding, new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error('Modelldekodierung')), 5000);
+          })]) : await decoding;
+        } finally { if (timeout !== undefined) clearTimeout(timeout); }
         if (this.disposed || generation !== this.generation) return;
         const frames = Math.min(decoded.length, Math.floor(decoded.sampleRate * MAX_CLIP_SECONDS));
         const size = frames * decoded.numberOfChannels * 4;
@@ -97,8 +106,8 @@ export class EmoteAudioPlayer {
     if (ids.length > MAX_SOUNDS && !this.disposed && generation === this.generation) this.warn('Pro Antwort werden höchstens acht unterschiedliche Emote-Sounds vorbereitet.');
   }
 
-  private started(source: AudioScheduledSourceNode, cleanup: AudioNode[], start: () => void) {
-    this.sources.set(source, cleanup);
+  private started(source: AudioScheduledSourceNode, cleanup: AudioNode[], start: () => void, id?: string) {
+    this.sources.set(source, { nodes: cleanup, id });
     source.onended = () => {
       if (!this.sources.delete(source)) return;
       source.disconnect(); for (const node of cleanup) node.disconnect();
@@ -127,7 +136,7 @@ export class EmoteAudioPlayer {
   play(emote: SoundEmote): void {
     const id = emote.sound;
     if (this.disposed || typeof id !== 'string' || !id) return;
-    if (!BUILTINS.has(id) && !CUSTOM_ID.test(id)) { this.warn('Unbekannter Emote-Sound wird übersprungen.'); return; }
+    if (!BUILTINS.has(id) && !this.validId(id)) { this.warn('Unbekannter Emote-Sound wird übersprungen.'); return; }
     const volume = typeof emote.soundVolume === 'number' && Number.isFinite(emote.soundVolume) ? Math.min(1, Math.max(0, emote.soundVolume)) : 0.7;
     if (!volume) return;
     const context = this.audioContext(); if (!context) return;
@@ -146,22 +155,43 @@ export class EmoteAudioPlayer {
         source.connect(filter); filter.connect(gain); gain.connect(this.master!);
         this.started(source, [filter, gain], () => source.start(now, 0, seconds));
       } else {
-        const buffer = this.buffers.get(id);
+        const buffer = this.buffers.get(this.embedded && typeof emote.bufferSound === 'string' ? emote.bufferSound : id);
         if (!buffer) { this.warn('Emote-Sound wurde nicht rechtzeitig vorbereitet und wird übersprungen.'); return; }
         const source = context.createBufferSource(); source.buffer = buffer;
+        const offset = typeof emote.soundOffset === 'number' && Number.isFinite(emote.soundOffset) ? Math.max(0, emote.soundOffset) : 0;
+        if (offset >= buffer.duration) return;
+        const rate = typeof emote.soundRate === 'number' && Number.isFinite(emote.soundRate) ? Math.min(4, Math.max(0.25, emote.soundRate)) : 1;
+        if (source.playbackRate) source.playbackRate.value = rate;
         const gain = context.createGain(); gain.gain.setValueAtTime(volume, now); source.connect(gain); gain.connect(this.master!);
-        this.started(source, [gain], () => source.start(now, 0, Math.min(MAX_CLIP_SECONDS, buffer.duration)));
+        this.started(source, [gain], () => source.start(now, offset, Math.min(MAX_CLIP_SECONDS, buffer.duration) - offset), id);
       }
     } catch { this.warn('Der Emote-Sound ist in dieser Audioausgabe nicht verfügbar und wird übersprungen.'); }
   }
 
-  stop(): void {
-    this.generation++; this.buffers.clear();
-    for (const [source, cleanup] of this.sources) {
+  stopSound(id: string): void {
+    for (const [source, entry] of this.sources) {
+      if (entry.id !== id) continue;
+      const cleanup = entry.nodes;
       source.onended = null; try { source.stop(); } catch { /* already finished */ }
       try { source.disconnect(); for (const node of cleanup) node.disconnect(); } catch { /* context closed */ }
+      this.sources.delete(source);
+    }
+    if (!this.sources.size) this.setPlaying(false);
+  }
+  setVolume(volume: number): void {
+    if (this.master) this.master.gain.value = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 0;
+  }
+  /** Invalidate pending decode/start work while retaining this model's cache. */
+  halt(): void {
+    this.generation++;
+    for (const [source, entry] of this.sources) {
+      source.onended = null; try { source.stop(); } catch { /* already finished */ }
+      try { source.disconnect(); for (const node of entry.nodes) node.disconnect(); } catch { /* context closed */ }
     }
     this.sources.clear(); this.setPlaying(false);
+  }
+  stop(): void {
+    this.halt(); this.buffers.clear();
   }
   destroy(): void {
     this.stop(); this.disposed = true;

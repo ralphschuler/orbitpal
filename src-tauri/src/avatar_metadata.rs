@@ -6,27 +6,30 @@ use serde_json::Value;
 use std::{collections::BTreeSet, fs::{self, File, OpenOptions}, io::{Cursor, Read, Seek, SeekFrom}, path::Path};
 
 pub const MAX_FILE_BYTES: u64 = 256 * 1024 * 1024;
+#[path = "avatar_compression.rs"]
+mod compression;
+pub(crate) use compression::validate_ktx2;
+pub(crate) use compression::virtual_buffer as is_virtual_buffer;
 const MAX_JSON_BYTES: u64 = 8 * 1024 * 1024;
 const JSON: u32 = 0x4e4f534a;
 const BIN: u32 = 0x004e4942;
 const LEGACY_JSON_PADDING: &str = "Eine ältere Dateiabweichung wird automatisch berücksichtigt.";
 
 // Derived from the installed three GLTFLoader and registered three-vrm loader,
-// not from every extension listed in the glTF specification. Decoder-dependent
-// Draco, BasisU/KTX2 and Meshopt are deliberately absent: none is configured.
+// not from every extension in the specification. Draco/Meshopt/Basis decoders
+// are bundled locally and shared by Studio, native overlay and OBS.
 const SUPPORTED_EXTENSIONS: &[&str] = &[
     "KHR_lights_punctual", "KHR_materials_anisotropy", "KHR_materials_clearcoat",
     "KHR_materials_dispersion", "KHR_materials_emissive_strength", "KHR_materials_ior",
     "KHR_materials_iridescence", "KHR_materials_sheen", "KHR_materials_specular",
     "KHR_materials_transmission", "KHR_materials_unlit", "KHR_materials_volume",
+    "KHR_draco_mesh_compression", "KHR_texture_basisu", "EXT_meshopt_compression", "KHR_meshopt_compression",
     "KHR_mesh_quantization", "KHR_texture_transform", "EXT_materials_bump",
     "EXT_mesh_gpu_instancing", "EXT_texture_avif", "EXT_texture_webp",
     "VRM", "VRMC_vrm", "VRMC_materials_mtoon", "VRMC_materials_hdr_emissiveMultiplier",
     "VRMC_node_constraint", "VRMC_springBone", "VRMC_springBone_extended_collider",
 ];
-const DECODER_EXTENSIONS: &[&str] = &[
-    "KHR_draco_mesh_compression", "KHR_texture_basisu", "EXT_meshopt_compression", "KHR_meshopt_compression",
-];
+
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,6 +46,8 @@ pub struct AvatarInfo {
     pub vowels: Vec<String>,
     pub bones: Vec<String>,
     pub audio_extensions: Vec<String>,
+    #[serde(default)]
+    pub model_audio: Option<crate::avatar_audio::AudioSummary>,
     pub required_extensions: Vec<String>,
     pub used_extensions: Vec<String>,
     pub warnings: Vec<String>,
@@ -66,6 +71,18 @@ pub fn inspect_file(path: &Path) -> Result<AvatarInfo, String> {
 pub fn inspect_bytes(bytes: &[u8]) -> Result<AvatarInfo, String> { inspect(&mut Cursor::new(bytes), bytes.len() as u64) }
 
 fn inspect(reader: &mut (impl Read + Seek), length: u64) -> Result<AvatarInfo, String> {
+    let (document, binary_length, legacy_padding, binary_start) = container(reader, length)?;
+    let mut info = from_document(&document, binary_length)?;
+    compression::images(&document, reader, binary_start)?;
+    if legacy_padding { info.warnings.push(LEGACY_JSON_PADDING.into()); }
+    Ok(info)
+}
+
+pub(crate) fn container_bytes(bytes: &[u8]) -> Result<(Value, Option<u64>), String> {
+    container(&mut Cursor::new(bytes), bytes.len() as u64).map(|(document, binary, _, _)| (document, binary))
+}
+
+fn container(reader: &mut (impl Read + Seek), length: u64) -> Result<(Value, Option<u64>, bool, Option<u64>), String> {
     if !(20..=MAX_FILE_BYTES).contains(&length) { return Err(invalid("Avatar muss eine GLB-/VRM-Datei zwischen 20 Bytes und 256 MiB sein.")); }
     let header = read::<12>(reader)?;
     if &header[..4] != b"glTF" { return Err(invalid("Erwartet wird eine binäre GLB- oder VRM-Datei; JSON-glTF und andere Formate werden nicht importiert.")); }
@@ -86,6 +103,7 @@ fn inspect(reader: &mut (impl Read + Seek), length: u64) -> Result<AvatarInfo, S
     reader.read_exact(&mut json).map_err(|_| invalid("Der JSON-Datenblock ist abgeschnitten."))?;
     let document: Value = serde_json::from_slice(&json).map_err(|_| invalid("Der Metadatenblock enthält kein gültiges glTF-JSON."))?;
     let mut binary_length = None;
+    let mut binary_start = None;
     while offset < length {
         if length - offset < 8 { return Err(invalid("Der letzte GLB-Datenblock hat keinen vollständigen Header.")); }
         let chunk = read::<8>(reader)?;
@@ -96,13 +114,12 @@ fn inspect(reader: &mut (impl Read + Seek), length: u64) -> Result<AvatarInfo, S
         match kind {
             JSON => return Err(invalid("Die GLB-Datei enthält mehrere JSON-Datenblöcke.")),
             BIN if binary_length.replace(size).is_some() => return Err(invalid("Die GLB-Datei enthält mehrere binäre Datenblöcke.")),
+            BIN => { binary_start = Some(offset-size); },
             _ => (), // The glTF 2 container permits unknown future chunk types.
         }
         reader.seek(SeekFrom::Start(offset)).map_err(|_| invalid("Ein Datenblock konnte nicht geprüft werden."))?;
     }
-    let mut info = from_document(&document, binary_length)?;
-    if legacy_padding { info.warnings.push(LEGACY_JSON_PADDING.into()); }
-    Ok(info)
+    Ok((document, binary_length, legacy_padding, binary_start))
 }
 
 fn extension_names(document: &Value, key: &str) -> Result<Vec<String>, String> {
@@ -133,7 +150,7 @@ fn all_extensions(value: &Value, extensions: &mut BTreeSet<String>) {
 
 fn from_document(document: &Value, binary_length: Option<u64>) -> Result<AvatarInfo, String> {
     if document["asset"]["version"].as_str() != Some("2.0") || document["asset"]["minVersion"].as_str().is_some_and(|version| version != "2.0") { return Err(invalid("Unterstützt wird glTF 2.0; die angegebene Mindestversion wird nicht unterstützt.")); }
-    if document["extensions"].get("VRMC_vrm_animation").is_some() { return Err("Diese Datei ist eine VRMA-Animationsdatei, kein importierbares VRM-/GLB-Charaktermodell. Ein separater VRMA-Import ist derzeit nicht enthalten.".into()); }
+    if document["extensions"].get("VRMC_vrm_animation").is_some() { return Err("Diese Datei ist eine VRMA-Animationsdatei. Bitte den separaten Bewegungsimport unter der Figur verwenden.".into()); }
     validate_vrm_versions(document)?;
     let used = extension_names(document, "extensionsUsed")?;
     let required = extension_names(document, "extensionsRequired")?;
@@ -150,21 +167,22 @@ fn from_document(document: &Value, binary_length: Option<u64>) -> Result<AvatarI
     }
     if !external.is_empty() { return Err(format!("Die 3D-Datei enthält {} externe Ressourcen. Bitte Texturen, Puffer und weitere Ressourcen in einer einzelnen GLB-/VRM-Datei einbetten; es werden keine externen Dateien oder URLs nachgeladen.", external.len())); }
     let audio_extensions: Vec<String> = extensions.iter().filter(|name| { let name = name.to_ascii_lowercase(); name.contains("audio") || name.contains("sound") || name.contains("emitter") }).cloned().collect();
+    let model_audio = crate::avatar_audio::inspect(document, binary_length);
+    let audio_supported = model_audio.as_ref().is_ok_and(|summary| summary.is_some());
+    let supported = |name: &str| SUPPORTED_EXTENSIONS.contains(&name) || name == crate::avatar_audio::EXTENSION && audio_supported;
     for name in &required {
-        if !SUPPORTED_EXTENSIONS.contains(&name.as_str()) {
+        if !supported(name) {
             if audio_extensions.contains(name) { return Err(format!("Die erforderliche Audio-Erweiterung {name} wird vom Avatar-Renderer nicht unterstützt. Modell-Sounds können nicht automatisch abgespielt werden; bitte ohne diese erforderliche Erweiterung exportieren oder Emote-Sounds separat zuweisen.")); }
-            if DECODER_EXTENSIONS.contains(&name.as_str()) { return Err(format!("Die erforderliche Komprimierung {name} benötigt einen nicht eingerichteten Decoder. Bitte als unkomprimierte, eingebettete GLB-/VRM-Datei exportieren.")); }
             return Err(format!("Die erforderliche glTF-Erweiterung {name} wird von den installierten Avatar-Loadern nicht unterstützt."));
         }
     }
-    // GLTFLoader constructs its Draco handler whenever this is in extensionsUsed,
-    // even for optional declarations, and fails without a configured decoder.
-    if extensions.contains("KHR_draco_mesh_compression") { return Err("Draco-komprimierte Modelle benötigen einen nicht eingerichteten Decoder. Bitte unkomprimiert als GLB-/VRM-Datei exportieren.".into()); }
     let mut warnings = Vec::new();
-    for name in extensions.iter().filter(|name| !SUPPORTED_EXTENSIONS.contains(&name.as_str())) {
+    for name in extensions.iter().filter(|name| !supported(name)) {
         warnings.push(if audio_extensions.contains(name) { format!("Die optionale Audio-Erweiterung {name} wurde erkannt. Eingebettete Modell-Sounds werden damit nicht abgespielt; Emote-Sounds müssen separat zugewiesen werden.") } else { format!("Die optionale Erweiterung {name} wird nicht vollständig unterstützt. Vorhandene glTF-Basisdaten werden verwendet, soweit die Datei einen Fallback enthält.") });
     }
+    if let Err(detail) = &model_audio { warnings.push(detail.clone()); }
     validate_resources(document, binary_length)?;
+    compression::metadata(document)?;
     let vrm0 = document["extensions"].get("VRM");
     let vrm1 = document["extensions"].get("VRMC_vrm");
     if vrm0.is_some() && vrm1.is_some() { return Err(invalid("VRM 0 und VRM 1 dürfen nicht gleichzeitig als Modellformat angegeben sein.")); }
@@ -206,10 +224,10 @@ fn from_document(document: &Value, binary_length: Option<u64>) -> Result<AvatarI
         for skin in document["skins"].as_array().into_iter().flatten() { for joint in skin["joints"].as_array().into_iter().flatten().filter_map(Value::as_u64) { bones.insert(label(document["nodes"][joint as usize]["name"].as_str(), format!("node_{joint}"))); } }
         for mesh in document["meshes"].as_array().into_iter().flatten() { for name in mesh["extras"]["targetNames"].as_array().into_iter().flatten().filter_map(Value::as_str) { expressions.insert(label(Some(name), String::new())); if let Some(name) = vowel(name) { vowels.insert(name.into()); } } }
     }
-    if !audio_extensions.is_empty() && warnings.is_empty() { warnings.push("Modell-Audio wurde erkannt; die Avatar-Loader spielen eingebettete Sounds nicht ab.".into()); }
+    if !audio_extensions.is_empty() && warnings.is_empty() && !audio_supported { warnings.push("Modell-Audio wurde erkannt; die Avatar-Loader spielen eingebettete Sounds nicht ab.".into()); }
     Ok(AvatarInfo { format: format.into(), version: version.into(), container_version: Some(2), animations,
         expressions: expressions.into_iter().take(1024).collect(), vowels: vowels.into_iter().collect(), bones: bones.into_iter().take(4096).collect(),
-        audio_extensions, required_extensions: required, used_extensions: used, warnings, external_resources: Vec::new() })
+        audio_extensions, model_audio: model_audio.unwrap_or(None), required_extensions: required, used_extensions: used, warnings, external_resources: Vec::new() })
 }
 
 // Materials, node constraints and extended spring-bone colliders are nested in
@@ -235,7 +253,7 @@ fn validate_vrm_versions(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_resources(document: &Value, binary_length: Option<u64>) -> Result<(), String> {
+pub(crate) fn validate_resources(document: &Value, binary_length: Option<u64>) -> Result<(), String> {
     use base64::Engine;
     let buffers = document["buffers"].as_array().map(Vec::as_slice).unwrap_or_default();
     for (index, buffer) in buffers.iter().enumerate() {
@@ -245,6 +263,8 @@ fn validate_resources(document: &Value, binary_length: Option<u64>) -> Result<()
             if !["data:application/octet-stream;base64", "data:application/gltf-buffer;base64"].contains(&kind) { return Err(invalid("Die Daten-URI eines Puffers hat keinen unterstützten glTF-Medientyp.")); }
             let bytes = base64::engine::general_purpose::STANDARD.decode(payload).map_err(|_| invalid("Die eingebetteten Pufferdaten sind kein gültiges Base64."))?;
             if bytes.len() as u64 != size { return Err(invalid("Die eingebetteten Pufferdaten stimmen nicht mit byteLength überein.")); }
+        } else if compression::virtual_buffer(document,index) {
+            if size > MAX_FILE_BYTES { return Err("Meshopt-Fallback-Puffer überschreitet 256 MiB.".into()); }
         } else if index != 0 || binary_length.is_none_or(|length| size > length || length - size > 3) { return Err(invalid("Ein eingebetteter Puffer fehlt, ist abgeschnitten oder hat eine falsche Länge.")); }
     }
     for view in document["bufferViews"].as_array().into_iter().flatten() {
@@ -275,6 +295,18 @@ pub fn imported_asset_name(name: &str) -> bool {
     let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default();
     let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or_default();
     path.components().count() == 1 && ["vrm", "glb"].contains(&extension) && uuid::Uuid::parse_str(stem).ok().is_some_and(|id| id.to_string() == stem)
+}
+/// Read only the bounded JSON metadata; seek over BIN instead of loading it.
+pub(crate) fn imported_document(root: &Path, name: &str) -> Result<Value, String> {
+    if !imported_asset_name(name) { return Err("Unbekannte importierte Figur".into()); }
+    let directory = root.join("avatars");
+    if fs::symlink_metadata(&directory).map_err(|_| "Der Figurenordner ist nicht verfügbar.")?.file_type().is_symlink() { return Err("Der Figurenordner darf keine symbolische Verknüpfung sein.".into()); }
+    let path = directory.join(name);
+    let meta = fs::symlink_metadata(&path).map_err(|_| "Die 3D-Datei konnte nicht geöffnet werden.")?;
+    if !meta.is_file() || meta.file_type().is_symlink() { return Err("Bitte eine reguläre 3D-Datei verwenden.".into()); }
+    let mut file = File::open(path).map_err(|_| "Die 3D-Datei konnte nicht gelesen werden.")?;
+    let size = file.metadata().map_err(|_| "Die Dateigröße konnte nicht gelesen werden.")?.len();
+    container(&mut file,size).map(|(document,_,_,_)|document)
 }
 pub fn for_asset(root: &Path, asset: Option<&str>) -> Result<AvatarInfo, String> {
     if asset.is_none() || asset == Some("nova") || asset.is_some_and(|name| name.starts_with("builtin:")) {
@@ -395,8 +427,8 @@ mod tests {
         let info = inspect_bytes(&glb(document, None)).unwrap(); assert!(info.warnings.is_empty()); assert!(info.audio_extensions.is_empty()); assert_eq!(info.format, "glb2");
     }
     #[test]
-    fn unknown_required_and_unconfigured_decoders_fail_and_optional_features_are_visible() {
-        for extension in ["KHR_animation_pointer", "KHR_materials_variants", "VENDOR_future", "KHR_draco_mesh_compression", "KHR_texture_basisu", "EXT_meshopt_compression", "KHR_meshopt_compression"] {
+    fn unknown_required_extensions_fail_and_optional_features_are_visible() {
+        for extension in ["KHR_animation_pointer", "KHR_materials_variants", "VENDOR_future"] {
             let mut document = base(); document["extensionsUsed"] = json!([extension]); document["extensionsRequired"] = json!([extension]);
             assert!(inspect_bytes(&glb(document, None)).unwrap_err().contains(extension));
         }
@@ -412,6 +444,14 @@ mod tests {
             let info = inspect_bytes(&glb(document.clone(), None)).unwrap(); assert_eq!(info.audio_extensions, [name]); assert!(info.warnings[0].contains("nicht abgespielt"));
             document["extensionsRequired"] = json!([name]); assert!(inspect_bytes(&glb(document, None)).unwrap_err().contains("Audio-Erweiterung"));
         }
+    }
+
+    #[test]
+    fn pinned_model_audio_fixture_is_recognized_with_required_support() {
+        let info = inspect_bytes(include_bytes!("../../src/lib/fixtures/audio-draft-v1.glb")).unwrap();
+        assert_eq!(info.model_audio.unwrap().profile, crate::avatar_audio::PROFILE);
+        assert!(info.warnings.is_empty());
+        assert_eq!(info.audio_extensions, [crate::avatar_audio::EXTENSION]);
     }
     #[test]
     fn animation_only_vrma_and_future_nested_vrm_versions_are_rejected_explicitly() {
@@ -483,4 +523,57 @@ mod tests {
         }
         assert_eq!(clips, 340);
     }
+    fn compressed_document(name: &str) -> (Value,Vec<u8>) {
+        let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/compressed-avatar");
+        let bytes=fs::read(root.join(name)).unwrap();let length=u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        (serde_json::from_slice(&bytes[20..20+length]).unwrap(),bytes.get(28+length..).unwrap_or_default().to_vec())
+    }
+    #[test]
+    fn actual_offline_compressed_fixtures_keep_required_extensions_and_metadata() {
+        for name in ["draco.glb","meshopt-ext.glb","meshopt-khr.glb","meshopt-ext-optional.glb","meshopt-khr-optional.glb","meshopt-ext-virtual.glb","meshopt-khr-virtual.glb","basisu.glb","basisu-optional.glb","basisu-data-uri.glb"] {
+            let (doc,binary)=compressed_document(name);let info=inspect_bytes(&glb(doc,Some(&binary))).unwrap_or_else(|error|panic!("{name}: {error}"));
+            assert!(info.warnings.is_empty(),"{name}: {:?}",info.warnings);assert!(info.used_extensions.len()>=2);assert!(info.external_resources.is_empty());
+        }
+    }
+    #[test]
+    fn compressed_resource_offsets_expansion_budgets_and_virtual_buffers_are_bounded() {
+        let (mut doc,binary)=compressed_document("meshopt-ext.glb");
+        doc["bufferViews"][0]["extensions"]["EXT_meshopt_compression"]["byteOffset"]=json!(u64::MAX);
+        assert!(inspect_bytes(&glb(doc,Some(&binary))).is_err());
+        let (mut doc,binary)=compressed_document("meshopt-ext-virtual.glb");
+        doc["bufferViews"][0]["extensions"]["EXT_meshopt_compression"]["count"]=json!(u64::MAX);
+        assert!(inspect_bytes(&glb(doc,Some(&binary))).is_err());
+        let (mut doc,binary)=compressed_document("meshopt-ext-virtual.glb");
+        doc["bufferViews"][0]["extensions"]=json!({});assert!(inspect_bytes(&glb(doc,Some(&binary))).is_err());
+        let (mut doc,binary)=compressed_document("draco.glb");
+        doc["accessors"][0]["count"]=json!(u64::MAX);assert!(inspect_bytes(&glb(doc,Some(&binary))).is_err());
+        let (mut doc,binary)=compressed_document("draco.glb");
+        let index=doc["meshes"][0]["primitives"][0]["indices"].as_u64().unwrap() as usize;
+        doc["accessors"][index]["count"]=json!(u64::MAX);assert!(inspect_bytes(&glb(doc,Some(&binary))).is_err());
+    }
+    #[test]
+    fn actual_ktx2_headers_dimensions_mips_mime_and_urls_are_checked_before_decode() {
+        let (doc,binary)=compressed_document("basisu.glb");let start=doc["bufferViews"][2]["byteOffset"].as_u64().unwrap() as usize;
+        for (offset,value) in [(20,16388u32),(28,1),(36,6),(40,100),(44,99)] {
+            let mut bad=binary.clone();bad[start+offset..start+offset+4].copy_from_slice(&value.to_le_bytes());
+            assert!(inspect_bytes(&glb(doc.clone(),Some(&bad))).is_err(),"header {offset}");
+        }
+        let mut bad=binary.clone();bad[start+88..start+96].copy_from_slice(&u64::MAX.to_le_bytes());assert!(inspect_bytes(&glb(doc.clone(),Some(&bad))).is_err());
+        let mut bad_doc=doc.clone();bad_doc["images"][0]["mimeType"]=json!("image/png");assert!(inspect_bytes(&glb(bad_doc,Some(&binary))).is_err());
+        let mut bad_doc=doc;bad_doc["images"][0]=json!({"uri":"https://example.invalid/private.ktx2"});assert!(inspect_bytes(&glb(bad_doc,Some(&binary))).unwrap_err().contains("externe Ressourcen"));
+    }
+
+    #[test]
+    fn ktx2_decoded_header_budget_is_global_across_distinct_texture_images() {
+        let (mut doc,mut binary)=compressed_document("basisu.glb");let start=doc["bufferViews"][2]["byteOffset"].as_u64().unwrap() as usize;
+        // Header-only adversarial fixture, deliberately not a valid Zstd stream.
+        // Each 4096² image claims a 64-MiB RGBA output from tiny input bytes.
+        binary[start+20..start+24].copy_from_slice(&4096u32.to_le_bytes());binary[start+24..start+28].copy_from_slice(&4096u32.to_le_bytes());
+        binary[start+44..start+48].copy_from_slice(&2u32.to_le_bytes());binary[start+96..start+104].copy_from_slice(&(16u64*1024*1024).to_le_bytes());
+        assert!(validate_ktx2(&binary[start..start+176]).is_ok());
+        doc["images"]=json!(vec![doc["images"][0].clone();5]);
+        doc["textures"]=json!((0..5).map(|source|json!({"extensions":{"KHR_texture_basisu":{"source":source}}})).collect::<Vec<_>>());
+        assert!(inspect_bytes(&glb(doc,Some(&binary))).is_err());
+    }
+
 }
