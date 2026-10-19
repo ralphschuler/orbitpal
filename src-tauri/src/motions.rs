@@ -230,8 +230,8 @@ mod tests {
     fn profile_roundtrip_copies_and_revalidates_motions_without_exporting_unassigned_files() {
         let fixture=Fixture::new();let store=crate::storage::Store::new(fixture.0.clone()).unwrap();let source=fixture.0.join("hello.vrma");fs::write(&source,FIXTURE).unwrap();
         let motion=import(&fixture.0,"nova",&source).unwrap();let action=action(&motion.id,0);
-        let mut profile=store.profile().unwrap();profile["motions"]=json!([motion]);profile["emotes"]=json!([{"id":"hello","name":"Hello","action":action,"duration":119,"allowChat":false}]);store.save_profile(profile).unwrap();
-        assert_eq!(crate::overlay::prepare_emote_profile(&store.profile().unwrap(),"hello",false).unwrap()["duration"],1.25);
+        let mut profile=store.profile().unwrap();profile["avatar"]["assetPath"]=json!("builtin:osa-mushy");profile["motions"]=json!([motion]);profile["emotes"]=json!([{"id":"hello","name":"Hello","action":action,"duration":119,"allowChat":false}]);store.save_profile(profile).unwrap();
+        assert_eq!(crate::overlay::prepare_emote_profile(&fixture.0,&store.profile().unwrap(),"hello",false).unwrap()["duration"],1.25);
         let orphan=format!("{}.vrma",uuid::Uuid::new_v4());fs::write(fixture.0.join("profiles/nova/motions").join(orphan),FIXTURE).unwrap();
         let exported=fixture.0.join("export.json");store.export(&exported).unwrap();let bundle:Value=serde_json::from_slice(&fs::read(&exported).unwrap()).unwrap();
         assert_eq!(bundle["files"].as_array().unwrap().iter().filter(|file|file["path"].as_str().is_some_and(|path|path.starts_with("motions/"))).count(),1);

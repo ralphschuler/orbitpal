@@ -18,7 +18,7 @@ const files = {
 };
 export const bundledAvatarFiles = files;
 
-function glbJson(path) {
+export function glbJson(path) {
   const descriptor = openSync(path, 'r');
   try {
     const header = Buffer.alloc(20);

@@ -10,13 +10,15 @@
   import { SpeechPlayer } from './lib/audio';
   import { EmoteSequence, emoteDurationMilliseconds, emoteSequenceMilliseconds, type EmotePayload } from './lib/presentation';
   import { PresentationLeases, type PresentationTicket } from './lib/presentation-leases';
+  import { presentAdmittedEmote } from './lib/emote-capabilities';
   import { EmoteAudioPlayer } from './lib/emote-audio';
   import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
 
   type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
   type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void>; controller: AbortController; presentation?: PresentationTicket; visualEndAt: number };
-  let avatar: { preparePresentation: (signal: AbortSignal) => Promise<() => void> } | undefined;
+  let avatar = $state<{preparePresentation:(signal:AbortSignal)=>Promise<()=>void>;canPresent:(event:EmotePayload)=>boolean;present:(event:EmotePayload)=>boolean}>();
+  const admittedEmotes=(events:EmotePayload[]=[])=>events.filter(event=>avatar?.canPresent(event));
   let profile = $state<any>(cloneDefaults());
   let presentation=$state<PresentationSnapshot>();
   const presentationVersions=new PresentationVersions();
@@ -67,11 +69,11 @@
   }
 
   function applyEmote(event: EmotePayload) {
-    profile.avatar.emote = {
+    return presentAdmittedEmote(avatar,event,()=>{profile.avatar.emote = {...event,
       action: event.action, nonce: event.nonce ?? `${Date.now()}-${Math.random()}`,
       duration: (event.duration ?? 2.5) * 1000, intensity: event.intensity ?? 1,
     };
-    if(profile.output.mode===(native?'overlay':'obs'))emoteAudio?.play(event);
+    if(profile.output.mode===(native?'overlay':'obs'))emoteAudio?.play(event);});
   }
 
   async function resolveSound(soundId: string) {
@@ -98,12 +100,13 @@
     try {
       await ready;
       if (disposed || revision !== emoteRevision || controller.signal.aborted) return;
+      if(!avatar?.canPresent(event))return;
       if(profile.output.mode===(native?'overlay':'obs'))await emoteAudio?.prepare([event], resolveSound);
       if (disposed || revision !== emoteRevision || controller.signal.aborted) return;
       presentation = presentationLeases.request(prepareFigure, controller.signal);
       await presentation.ready;
       if (disposed || revision !== emoteRevision || controller.signal.aborted) { presentationLeases.cancel(presentation); return; }
-      applyEmote(event);
+      if(!applyEmote(event)){presentationLeases.cancel(presentation);return;}
       presentationLeases.finish(presentation, emoteDurationMilliseconds(event));
     } catch (error) {
       if (presentation) presentationLeases.cancel(presentation);
@@ -222,7 +225,7 @@
       emotion = event.emotion || 'neutral';
       subtitles.start(event.id, event.text);
       if(plannedEmoteRevision===emoteRevision){
-        const emotes = Array.isArray(event.emotes) ? event.emotes : [];
+        const emotes = admittedEmotes(Array.isArray(event.emotes) ? event.emotes : []);
         job.visualEndAt = Date.now() + emoteSequenceMilliseconds(emotes);
         emoteSequence.start(emotes);
       }
@@ -233,7 +236,7 @@
       if (disposed || current !== job || job.finished) return;
       if (!event.voice) throw new Error('Stimme des Wiedergabeauftrags fehlt.');
       const voice = { ...event.voice };
-      if(plannedEmoteRevision===emoteRevision&&profile.output.mode===(native?'overlay':'obs'))await emoteAudio.prepare(Array.isArray(event.emotes) ? event.emotes : [], resolveSound);
+      if(plannedEmoteRevision===emoteRevision&&profile.output.mode===(native?'overlay':'obs'))await emoteAudio.prepare(admittedEmotes(Array.isArray(event.emotes) ? event.emotes : []), resolveSound);
       if (disposed || current !== job || job.finished) return;
       if (voice.enabled === false) { await beforeStart(); onStart(); return; }
       const speechText = voice.provider === 'elevenlabs' ? event.speechText || event.text : event.text;
