@@ -12,6 +12,17 @@ export interface AutopilotCandidate {
   eligible?: boolean;
 }
 
+export interface AutopilotSchedule {
+  eligible: boolean;
+  inFlight: boolean;
+  waitingForBot?: string;
+  dueAt: number;
+  remainingSeconds: number;
+  budgetLimited: boolean;
+  attempts: number;
+  limit: number;
+}
+
 interface Session {
   seed: string;
   config: AutopilotConfig;
@@ -66,12 +77,34 @@ export class AutopilotScheduler {
     this.random = options.random ?? Math.random;
   }
 
-  private time(): number {
+  private readTime(): number {
     const value = this.now();
     // A wall-clock correction cannot expire budgets or move the quiet period
     // backwards. An invalid injected reading retains the previous clock value.
-    if (Number.isFinite(value)) this.lastTime = Math.max(this.lastTime ?? value, value);
-    return this.lastTime ?? 0;
+    return Number.isFinite(value) ? Math.max(this.lastTime ?? value, value) : this.lastTime ?? 0;
+  }
+
+  private time(): number {
+    this.lastTime = this.readTime();
+    return this.lastTime;
+  }
+
+  /** Display only: does not claim a turn, draw randomness, move deadlines,
+   * prune/create budgets or change the scheduler's monotonic clock. */
+  snapshot(botId: string): AutopilotSchedule | undefined {
+    const session = this.sessions.get(botId);
+    if (!session) return undefined;
+    const now = this.readTime();
+    const attempts = (this.budgets.get(botId)?.attempts ?? []).filter(attempt => attempt > now - HOUR);
+    const budgetAt = attempts.length >= session.config.maxTurnsPerHour
+      ? attempts[attempts.length - session.config.maxTurnsPerHour] + HOUR : 0;
+    const dueAt = Math.max(session.dueAt, budgetAt);
+    return {
+      eligible: session.eligible, inFlight: this.inFlight === botId,
+      waitingForBot: this.inFlight && this.inFlight !== botId ? this.inFlight : undefined,
+      dueAt, remainingSeconds: Math.max(0, Math.ceil((dueAt - now) / 1000)),
+      budgetLimited: budgetAt > now, attempts: attempts.length, limit: session.config.maxTurnsPerHour,
+    };
   }
 
   private due(config: AutopilotConfig, now: number): number {

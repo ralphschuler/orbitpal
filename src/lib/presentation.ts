@@ -7,6 +7,15 @@ export type EmotePayload = {
   [key: string]: unknown;
 };
 
+export function emoteDurationMilliseconds(emote: EmotePayload): number {
+  const duration = Number(emote.duration);
+  return (Number.isFinite(duration) ? Math.max(0.2, Math.min(15, duration)) : 2.5) * 1000;
+}
+
+export function emoteSequenceMilliseconds(emotes: readonly EmotePayload[] = []): number {
+  return emotes.reduce((total, emote) => total + (emote && typeof emote.action === 'string' && emote.action.trim() ? emoteDurationMilliseconds(emote) : 0), 0);
+}
+
 /** Start together with speech; a replacement or stop invalidates every timer. */
 export class EmoteSequence {
   private generation = 0;
@@ -20,14 +29,12 @@ export class EmoteSequence {
     let delay = 0;
     for (const emote of emotes) {
       if (!emote || typeof emote.action !== 'string' || !emote.action.trim()) continue;
-      const duration = Number(emote.duration);
-      const seconds = Number.isFinite(duration) ? Math.max(0.2, Math.min(15, duration)) : 2.5;
       const apply = () => {
         if (generation === this.generation) this.applyEmote(emote);
       };
       if (delay === 0) apply();
       else this.timers.push(setTimeout(apply, delay));
-      delay += seconds * 1000;
+      delay += emoteDurationMilliseconds(emote);
     }
   }
 

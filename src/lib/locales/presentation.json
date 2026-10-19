@@ -1,0 +1,20 @@
+{
+  "en": {
+    "Die Figur ist nicht für die Ausgabe verfügbar.": "The character is unavailable for presentation.",
+    "Die Figur ist nicht rechtzeitig sichtbar und bereit geworden.": "The character did not become visible and ready in time.",
+    "Die Figurenpräsentation wurde abgebrochen.": "The character presentation was cancelled.",
+    "Ausgabehinweis schließen": "Dismiss presentation notice"
+  },
+  "fr": {
+    "Die Figur ist nicht für die Ausgabe verfügbar.": "Le personnage n’est pas disponible pour la présentation.",
+    "Die Figur ist nicht rechtzeitig sichtbar und bereit geworden.": "Le personnage n’est pas devenu visible et prêt à temps.",
+    "Die Figurenpräsentation wurde abgebrochen.": "La présentation du personnage a été annulée.",
+    "Ausgabehinweis schließen": "Fermer l’avis de présentation"
+  },
+  "es": {
+    "Die Figur ist nicht für die Ausgabe verfügbar.": "El personaje no está disponible para la presentación.",
+    "Die Figur ist nicht rechtzeitig sichtbar und bereit geworden.": "El personaje no se hizo visible ni estuvo listo a tiempo.",
+    "Die Figurenpräsentation wurde abgebrochen.": "Se ha cancelado la presentación del personaje.",
+    "Ausgabehinweis schließen": "Cerrar aviso de presentación"
+  }
+}

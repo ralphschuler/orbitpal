@@ -4,6 +4,11 @@ import { captionPlacement, DESKTOP_MAX_DELTA, DESKTOP_MAX_SPEED, desktopSafeBoun
 const input=(extra:Partial<DesktopMotionInput>={}):DesktopMotionInput=>({seed:'nova-session',startedAt:1000,now:1000,delta:.016,viewport:{width:1440,height:900},figure:{width:140,height:260},margin:24,paused:false,...extra});
 const distance=(a:{x:number;y:number},b:{x:number;y:number})=>Math.hypot(a.x-b.x,a.y-b.y);
 function run(controller:DesktopMotionController,options:DesktopMotionInput,frames:number){let frame=controller.sample(options);for(let index=0;index<frames;index++){options.now+=16;frame=controller.sample(options);}return frame;}
+function until(controller:DesktopMotionController,options:DesktopMotionInput,predicate:(frame:ReturnType<DesktopMotionController['sample']>)=>boolean,limit=30_000){
+  let frame=controller.sample(options);
+  for(let index=0;index<limit&&!predicate(frame);index++){options.now+=16;frame=controller.sample(options);}
+  expect(predicate(frame)).toBe(true);return frame;
+}
 describe('Local logical-pixel desktop wandering',()=>{
   it('reserves the measured figure footprint and margin in both axes',()=>{
     expect(desktopSafeBounds({width:1920,height:1080},{width:200,height:300},20)).toEqual({left:120,right:1800,top:170,bottom:910,centerX:960,centerY:540,valid:true});
@@ -15,7 +20,7 @@ describe('Local logical-pixel desktop wandering',()=>{
     for(let index=0;index<1200;index++){options.now+=16;const frame=first.sample(options);expect(second.sample(options)).toEqual(frame);if(distance(frame,other.sample({...options,seed:'other-session'}))>1)different=true;}
     expect(different).toBe(true);
   });
-  it('enters from both horizontal sides, becomes visible, then stays within safe 2D bounds',()=>{
+  it('enters from both horizontal sides and first rests fully within safe 2D bounds',()=>{
     const sides=new Set<number>();
     for(let seed=0;seed<30;seed++){
       const controller=new DesktopMotionController(),options=input({seed:`entry-${seed}`});let frame=controller.sample(options);sides.add(frame.facing);
@@ -28,15 +33,18 @@ describe('Local logical-pixel desktop wandering',()=>{
   });
   it('visits the full available monitor area rather than a narrow horizontal lane',()=>{
     const controller=new DesktopMotionController(),options=input(),bounds=desktopSafeBounds(options.viewport,options.figure,options.margin);
-    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity,walking=0,idle=0;
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity,walking=0,idle=0,excursions=0,returns=0;
     for(let index=0;index<60_000;index++){
       options.now+=16;const frame=controller.sample(options);if(frame.phase==='entry')continue;
+      expect(frame.y>=bounds.top-1e-7&&frame.y<=bounds.bottom+1e-7).toBe(true);
+      if(frame.phase==='exit'||frame.phase==='offscreen'){excursions++;continue;}
+      if(frame.phase==='return'){returns++;continue;}
       minX=Math.min(minX,frame.x);maxX=Math.max(maxX,frame.x);minY=Math.min(minY,frame.y);maxY=Math.max(maxY,frame.y);
       expect(frame.x>=bounds.left-1e-7&&frame.x<=bounds.right+1e-7&&frame.y>=bounds.top-1e-7&&frame.y<=bounds.bottom+1e-7).toBe(true);
       if(frame.walking)walking++;else idle++;
     }
     expect(minX).toBeLessThan(bounds.left+(bounds.right-bounds.left)*.08);expect(maxX).toBeGreaterThan(bounds.left+(bounds.right-bounds.left)*.92);
-    expect(minY).toBeLessThan(bounds.top+(bounds.bottom-bounds.top)*.08);expect(maxY).toBeGreaterThan(bounds.top+(bounds.bottom-bounds.top)*.92);expect(walking).toBeGreaterThan(0);expect(idle).toBeGreaterThan(0);
+    expect(minY).toBeLessThan(bounds.top+(bounds.bottom-bounds.top)*.08);expect(maxY).toBeGreaterThan(bounds.top+(bounds.bottom-bounds.top)*.92);expect(walking).toBeGreaterThan(0);expect(idle).toBeGreaterThan(0);expect(excursions).toBeGreaterThan(0);expect(returns).toBeGreaterThan(0);
   });
   it('caps frame delta, speed and long-gap movement, including entry',()=>{
     const controller=new DesktopMotionController(),options=input();let previous=controller.sample(options);
@@ -53,25 +61,32 @@ describe('Local logical-pixel desktop wandering',()=>{
     const control=new DesktopMotionController(),controlOptions=input();run(control,controlOptions,1200);const controlBefore=control.sample({...controlOptions,paused:true});controlOptions.now+=16;
     const resumed=control.sample(controlOptions);expect(distance(resumed,controlBefore)).toBeCloseTo(distance(frame,before),6);
   });
-  it('brings an initialized off-screen entry into view when speech begins on the next frame',()=>{
+  it('walks an off-screen entry back before presentation, even while paused, without teleporting',()=>{
     for(const seed of ['entry-0','entry-1','entry-2','entry-3']){
       const controller=new DesktopMotionController(),options=input({seed});const outside=controller.sample(options);expect(outside.visible).toBe(false);
-      options.now+=16;const paused=controller.sample({...options,paused:true});const bounds=desktopSafeBounds(options.viewport,options.figure,options.margin);
-      expect(paused).toMatchObject({phase:'paused',visible:true,walking:false});expect(paused.x).toBeGreaterThanOrEqual(bounds.left);expect(paused.x).toBeLessThanOrEqual(bounds.right);
-      options.now+=60_000;expect(controller.sample({...options,paused:true})).toEqual(paused);
-      options.now+=16;expect(distance(controller.sample(options),paused)).toBe(0);
+      options.now+=16;const paused=controller.sample({...options,paused:true});
+      expect(paused).toMatchObject({phase:'paused',visible:false,walking:false,presentationReady:false});expect(distance(paused,outside)).toBe(0);
+      options.paused=true;options.presentationRequested=true;options.now+=16;
+      const returning=controller.sample(options);expect(returning.phase).toBe('return');expect(returning.presentationReady).toBe(false);expect(distance(returning,paused)).toBeLessThan(1);
+      const ready=until(controller,options,frame=>frame.presentationReady,1000);const bounds=desktopSafeBounds(options.viewport,options.figure,options.margin);
+      expect(ready).toMatchObject({phase:'paused',visible:true,walking:false,presentationReady:true});expect(ready.x).toBeGreaterThanOrEqual(bounds.left);expect(ready.x).toBeLessThanOrEqual(bounds.right);
+      options.now+=60_000;expect(controller.sample(options)).toEqual(ready);
+      options.paused=false;options.presentationRequested=false;options.now+=16;expect(distance(controller.sample(options),ready)).toBe(0);
     }
   });
-  it('clamps safely on viewport/figure changes even during a pause and centers impossible geometry',()=>{
+  it('returns smoothly into new bounds on viewport/figure changes during a presentation hold',()=>{
     const controller=new DesktopMotionController(),options=input();run(controller,options,1500);
+    options.presentationRequested=true;const previous=until(controller,options,frame=>frame.presentationReady);
     options.now+=16;options.viewport={width:500,height:450};options.figure={width:220,height:300};const bounds=desktopSafeBounds(options.viewport,options.figure,options.margin);
-    const frame=controller.sample({...options,paused:true});expect(frame.x).toBeGreaterThanOrEqual(bounds.left);expect(frame.x).toBeLessThanOrEqual(bounds.right);expect(frame.y).toBeGreaterThanOrEqual(bounds.top);expect(frame.y).toBeLessThanOrEqual(bounds.bottom);
+    options.paused=true;const first=controller.sample(options);expect(distance(first,previous)).toBeLessThanOrEqual(DESKTOP_MAX_SPEED*.016);
+    const frame=until(controller,options,frame=>frame.presentationReady,2000);expect(frame.x).toBeGreaterThanOrEqual(bounds.left);expect(frame.x).toBeLessThanOrEqual(bounds.right);expect(frame.y).toBeGreaterThanOrEqual(bounds.top);expect(frame.y).toBeLessThanOrEqual(bounds.bottom);
     const centered=controller.sample({...options,viewport:{width:240,height:200}});expect(centered).toMatchObject({x:120,y:100,walking:false,phase:'centered'});
+    expect(centered.presentationReady).toBe(false);
   });
-  it('starts an already-speaking character visibly and keeps invalid inputs finite and quiet',()=>{
-    const controller=new DesktopMotionController(),options=input({paused:true});expect(controller.sample(options)).toMatchObject({phase:'paused',visible:true,walking:false});
+  it('requires a visible return for a newly opened paused character and keeps invalid inputs quiet',()=>{
+    const controller=new DesktopMotionController(),options=input({paused:true});expect(controller.sample(options)).toMatchObject({phase:'paused',visible:false,walking:false,presentationReady:false});
     for(const viewport of [{width:NaN,height:500},{width:0,height:-1},{width:Infinity,height:Infinity},{width:1e308,height:1e308}]){
-      const frame=controller.sample(input({viewport}));expect(Number.isFinite(frame.x)&&Number.isFinite(frame.y)).toBe(true);expect(frame.phase).toBe('centered');expect(frame.walking).toBe(false);
+      const frame=controller.sample(input({viewport}));expect(Number.isFinite(frame.x)&&Number.isFinite(frame.y)).toBe(true);expect(frame.phase).toBe('centered');expect(frame.walking).toBe(false);expect(frame.presentationReady).toBe(false);
     }
     for(const extra of [{seed:''},{now:NaN},{now:100,startedAt:1000},{figure:{width:NaN,height:200}}])expect(controller.sample(input(extra))).toMatchObject({phase:'centered',walking:false});
   });
@@ -85,6 +100,54 @@ describe('Local logical-pixel desktop wandering',()=>{
     const controller=new DesktopMotionController(),options=input();run(controller,options,500);controller.reset();
     expect(controller.sample(input())).toEqual(new DesktopMotionController().sample(input()));
     expect(controller.sample(input({seed:'new-bot',startedAt:5000,now:5000}))).toEqual(new DesktopMotionController().sample(input({seed:'new-bot',startedAt:5000,now:5000})));
+  });
+  it('leaves the viewport, waits outside, and returns automatically after a bounded hold',()=>{
+    const controller=new DesktopMotionController(),options=input();const outside=until(controller,options,frame=>frame.phase==='offscreen');
+    expect(outside.visible).toBe(false);expect(outside.presentationReady).toBe(false);
+    const started=options.now;
+    const returning=until(controller,options,frame=>frame.phase==='return',600);
+    expect(options.now-started).toBeGreaterThanOrEqual(2900);expect(options.now-started).toBeLessThanOrEqual(8100);
+    expect(distance(outside,returning)).toBeLessThan(1);
+    const ready=until(controller,options,frame=>frame.presentationReady,1000);expect(ready.visible).toBe(true);
+  });
+  it('can leave through either side while bounding every entry, roaming, and exit step',()=>{
+    const sides=new Set<number>();
+    for(let seed=0;seed<8;seed++){
+      const controller=new DesktopMotionController(),options=input({seed:`excursion-${seed}`});let previous=controller.sample(options),largestStep=0,found=false;
+      const bounds=desktopSafeBounds(options.viewport,options.figure,options.margin);let minimumY=Infinity,maximumY=-Infinity;
+      for(let index=0;index<30_000;index++){
+        options.now+=16;const frame=controller.sample(options);largestStep=Math.max(largestStep,distance(previous,frame));minimumY=Math.min(minimumY,frame.y);maximumY=Math.max(maximumY,frame.y);previous=frame;
+        if(frame.phase==='offscreen'){sides.add(frame.x<0?-1:1);found=true;break;}
+      }
+      expect(found).toBe(true);expect(largestStep).toBeLessThanOrEqual(DESKTOP_MAX_SPEED*.016+1e-7);expect(minimumY).toBeGreaterThanOrEqual(bounds.top);expect(maximumY).toBeLessThanOrEqual(bounds.bottom);
+    }
+    expect([...sides].sort()).toEqual([-1,1]);
+  });
+  it('preempts an off-screen hold for a presentation and remains visible until release',()=>{
+    const controller=new DesktopMotionController(),options=input();let previous=until(controller,options,frame=>frame.phase==='offscreen');
+    options.presentationRequested=true;options.paused=true;let ready=false;
+    for(let index=0;index<1000;index++){
+      options.now+=16;const frame=controller.sample(options);
+      expect(distance(frame,previous)).toBeLessThanOrEqual(DESKTOP_MAX_SPEED*.016+1e-7);
+      if(frame.presentationReady){ready=true;expect(frame.visible).toBe(true);expect(frame.walking).toBe(false);}
+      else expect(ready).toBe(false);
+      previous=frame;
+    }
+    expect(ready).toBe(true);
+    options.presentationRequested=false;options.paused=false;
+    expect(until(controller,options,frame=>frame.walking,1000).walking).toBe(true);
+  });
+  it('preempts a partially clipped exit and cannot report readiness for a single visible pixel',()=>{
+    const controller=new DesktopMotionController(),options=input();
+    const partial=until(controller,options,frame=>frame.phase==='exit'&&frame.visible&&(frame.x<options.figure.width/2||frame.x>options.viewport.width-options.figure.width/2));
+    expect(partial.presentationReady).toBe(false);options.presentationRequested=true;options.now+=16;
+    const returning=controller.sample(options);expect(returning.phase).toBe('return');expect(returning.presentationReady).toBe(false);expect(distance(partial,returning)).toBeLessThanOrEqual(DESKTOP_MAX_SPEED*.016+1e-7);
+    expect(until(controller,options,frame=>frame.presentationReady,1000).walking).toBe(false);
+  });
+  it('stops a fully visible walk for a presentation without moving to the centre',()=>{
+    const controller=new DesktopMotionController(),options=input();
+    const walking=until(controller,options,frame=>frame.phase==='walk'&&frame.walking);options.presentationRequested=true;options.now+=16;
+    const ready=controller.sample(options);expect(ready).toMatchObject({x:walking.x,y:walking.y,walking:false,presentationReady:true});
   });
 });
 describe('Caption placement near the actual character',()=>{

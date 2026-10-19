@@ -10,7 +10,8 @@
   import ModelFeatures from './components/ModelFeatures.svelte';
   import AutopilotPanel from './components/AutopilotPanel.svelte';
   import ScreenContextPanel from './components/ScreenContextPanel.svelte';
-  import { AutopilotScheduler } from './lib/autopilot';
+  import { AutopilotScheduler, type AutopilotSchedule } from './lib/autopilot';
+  import { speechBlocker, speechStatus } from './lib/autopilot-status';
   import { AutopilotRuntimeVersions, mayUpdateAutopilot, type AutopilotRuntime } from './lib/autopilot-runtime';
   import type { AvatarModelInfo } from './lib/avatar';
   import WakeWord from './components/WakeWord.svelte';
@@ -51,6 +52,11 @@
   let autopilotPreview = $state<AutopilotRuntime>();
   let answeringAutopilot = false;
   const autopilotScheduler = new AutopilotScheduler();
+  let speechSchedules = $state<Record<string, AutopilotSchedule | undefined>>({});
+  let silentAutopilots = $state<Record<string, string>>({});
+  function refreshSpeechSchedules(){
+    speechSchedules=Object.fromEntries(Object.keys(autopilots).map(id=>[id,autopilotScheduler.snapshot(id)]));
+  }
   function acceptAutopilot(runtime:AutopilotRuntime,allowStart=false){
     ++autopilotEventRevision;
     if(!autopilotVersions.accept(runtime)||!mayUpdateAutopilot(autopilots[runtime.botId],runtime,allowStart))return;
@@ -237,6 +243,19 @@
   const dirty = $derived(JSON.stringify(profileSnapshot()) !== savedProfile);
   const documentDirty = $derived(JSON.stringify(documents)!==JSON.stringify(savedDocuments));
   const hasUnsavedChanges = $derived(dirty||documentDirty);
+  const autopilotBlocker = $derived(speechBlocker({
+    update:updateInstalling, starting:autopilotPending, reply:busy||speaking||speechPreparing,
+    sound:emoteSoundPlaying||externalEmotePlaying, recording:microphone||microphoneStarting,
+    transcription:transcribing, saving, botChange:switchingBot||creatingBot,
+    extensions:extensionEditing, botDialog, updatesDialog:updatesOpen, unsaved:hasUnsavedChanges,
+    draft:!!message.trim(), secretDraft:Object.values(secretInputs).some(value=>!!value.trim()),
+  }));
+  const autopilotSpeechStatus = $derived(speechStatus({
+    active:!!selectedAutopilot?.active, speak:profile.autopilot.speak===true,
+    outputAvailable:profile.output.mode==='studio'||bots.some(bot=>bot.id===profile.id&&botEnabled(bot)),
+    modelConfigured:typeof profile.model.model==='string'&&!!profile.model.model.trim(),
+    blocked:autopilotBlocker, schedule:speechSchedules[profile.id],
+  }));
   const updateBusyReason = $derived(
     busy || speaking || speechPreparing || emoteSoundPlaying || externalEmotePlaying ? $t("Beende zuerst laufende Antworten, Sprachausgaben und Emote-Sounds.") :
     microphone || microphoneStarting || transcribing || wakeActive ? $t("Beende zuerst die Mikrofonaufnahme und das Zuhören mit Aktivierungsphrase (Stop).") :
@@ -465,7 +484,14 @@
       if(epoch!==turnEpoch)return;
       if(selected&&!autonomous)history=[...history,{id:crypto.randomUUID(),role:'user',text,source,user,createdAt:new Date().toISOString()}];
       const reply=autonomous?await call('send_autopilot',{botId,requestId}):await call('send_message',{text,source,user,skillIds:[],botId,requestId,replyRouteId});
-      if(reply.skipped||epoch!==turnEpoch)return;
+      if(epoch!==turnEpoch)return;
+      if(autonomous){
+        const next={...silentAutopilots};
+        if(reply.skipped){next[botId]=autopilots[botId]?.seed||'';log(translate('{name}: Letzter Sprechversuch ohne Beitrag.',{name:botConfig.name}));}
+        else delete next[botId];
+        silentAutopilots=next;
+      }
+      if(reply.skipped)return;
       if(!matchesPlayback(reply,{id:answeringSpeechId,botId:answeringBotId}))throw new Error('Antwort gehört nicht zur aktuellen Anfrage.');
       const voice=reply.voice;
       if(!voice)throw new Error('Stimme des Wiedergabeauftrags fehlt.');
@@ -473,7 +499,9 @@
       if(epoch!==turnEpoch)return;
       partial='';
       speechPreparing=!!voice.enabled&&!presentedReplies.has(reply.id);
-      if(botConfig.output.mode==='studio'||!voice.enabled){
+      // External renderers own text-only presentation too: their figure must
+      // return before reporting a start, even when the voice is disabled.
+      if(botConfig.output.mode==='studio'){
         // Publish the reply from the player's real start callback. Synthesis and
         // decoding can take seconds; tokens, text and emotes stay private until then.
         let reporting=Promise.resolve();
@@ -653,8 +681,9 @@
         return {botId:runtime.botId,seed:runtime.seed,config:config?.autopilot||cloneDefaults().autopilot,eligible:!!config&&!!output&&!!config.model?.model};
       });
       autopilotScheduler.sync(autonomousBots);
-      const autoBlocked=updateInstalling||autopilotPending||busy||speaking||speechPreparing||emoteSoundPlaying||externalEmotePlaying||microphone||microphoneStarting||transcribing||saving||switchingBot||creatingBot||extensionEditing||botDialog||updatesOpen||hasUnsavedChanges||!!message.trim()||Object.values(secretInputs).some(value=>!!value.trim());
+      const autoBlocked=!!autopilotBlocker;
       if(autoBlocked)autopilotScheduler.next(true);
+      refreshSpeechSchedules();
       queue=queue.filter(q=>Date.now()-new Date(q.createdAt).getTime()<Math.max(profile.chat.expirySeconds,...bots.map(bot=>bot.profile?.chat?.expirySeconds||0))*1000);
       if(updateInstalling||busy||speaking||speechPreparing||emoteSoundPlaying||externalEmotePlaying||microphone||microphoneStarting||transcribing)return;
       const participants=bots.filter(bot=>botEnabled(bot)||bot.id===profile.id);
@@ -666,7 +695,7 @@
       }
       if(autoBlocked)return;
       const spontaneous=autopilotScheduler.next();
-      if(spontaneous)void runMessage('', 'autopilot', 'Autopilot', spontaneous);
+      if(spontaneous){refreshSpeechSchedules();void runMessage('', 'autopilot', 'Autopilot', spontaneous);}
     },1000);
     return()=>{disposed=true;autopilotScheduler.stop();turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
   });
@@ -708,7 +737,7 @@
 
       {:else if page==='autopilot'}
         <section class="settings-panel"><OutputPreviewControls {profile} displays={outputDisplays} refreshDisplays={refreshOutputDisplays} monitor={true} disabled={saving||switchingBot||creatingBot||updateInstalling} preview={previewOutput}/></section>
-        <AutopilotPanel bind:config={profile.autopilot} botName={profile.name} active={!!selectedAutopilot?.active} disabled={busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing||updateInstalling} pending={autopilotPending} previewing={autopilotPreview?.botId===profile.id} onStart={()=>toggleAutopilot(true)} onStop={()=>toggleAutopilot(false)} onPreview={previewAutopilot}/>
+        <AutopilotPanel bind:config={profile.autopilot} botName={profile.name} active={!!selectedAutopilot?.active} speechStatus={autopilotSpeechStatus} lastAttemptSilent={!!selectedAutopilot?.active&&silentAutopilots[profile.id]===selectedAutopilot.seed} disabled={busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing||updateInstalling} pending={autopilotPending} previewing={autopilotPreview?.botId===profile.id} onStart={()=>toggleAutopilot(true)} onStop={()=>toggleAutopilot(false)} onPreview={previewAutopilot}/>
         {#key profile.id}<ScreenContextPanel bind:config={profile.screenContext} visionEnabled={profile.model.visionEnabled} disabled={updateInstalling}/>{/key}
         {#if motionRuntime}<section class="autopilot-stage"><Avatar {profile} {speaking} {level} {emotion} autopilot={motionRuntime} assetUrl={assetUrl(profile.avatar.assetPath,overlayUrl)}/><span>{autopilotPreview ? $t('Stumme Bewegungsvorschau · 30 Sekunden') : $t('Autopilot · {name}',{name:profile.name})}</span></section>{/if}
       {:else if page==='character'}

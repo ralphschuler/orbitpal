@@ -12,6 +12,50 @@ function bot(botId = 'nova', changes: Partial<AutopilotCandidate> = {}): Autopil
 }
 
 describe('autopilot quiet-time scheduling', () => {
+  it('reads countdowns without claiming turns, spending budgets or drawing another deadline', () => {
+    let samples=0;
+    const { scheduler, at }=fixture(()=>{samples++;return 0.5;});
+    scheduler.sync([bot('nova',{config:{speak:true,minSeconds:20,maxSeconds:30,maxTurnsPerHour:1}})]);
+    for(let second=0;second<=25;second++){
+      at(second*1000);
+      expect(scheduler.snapshot('nova')).toMatchObject({dueAt:25_000,remainingSeconds:25-second,attempts:0,inFlight:false,budgetLimited:false});
+    }
+    expect(samples).toBe(1);expect(scheduler.next()).toBe('nova');
+    expect(scheduler.snapshot('nova')).toMatchObject({inFlight:true,attempts:1,budgetLimited:true});
+  });
+
+  it('does not let a display read mutate the scheduling clock or internal state', () => {
+    const { scheduler, at }=fixture();scheduler.sync([bot()]);
+    at(5000);const view=scheduler.snapshot('nova')!;view.eligible=false;view.dueAt=0;
+    at(1000);scheduler.activity(); // Snapshot did not advance the scheduler's clock to 5000.
+    expect(scheduler.snapshot('nova')).toMatchObject({eligible:true,dueAt:16_000,remainingSeconds:15});
+    expect(scheduler.snapshot('missing')).toBeUndefined();
+    at(16_000);expect(scheduler.next()).toBe('nova');
+  });
+
+  it('shows the real rolling-budget release time, including reduced limits', () => {
+    const { scheduler, at }=fixture();
+    const candidate=bot('nova',{config:{speak:true,minSeconds:15,maxSeconds:15,maxTurnsPerHour:2}});
+    scheduler.sync([candidate]);at(15_000);scheduler.next();scheduler.finish('nova');
+    at(30_000);scheduler.next();scheduler.finish('nova');
+    scheduler.sync([{...candidate,config:{...candidate.config,maxTurnsPerHour:1}}]);
+    expect(scheduler.snapshot('nova')).toMatchObject({budgetLimited:true,dueAt:3_630_000,attempts:2,limit:1,remainingSeconds:3600});
+    at(3_615_000);expect(scheduler.snapshot('nova')).toMatchObject({budgetLimited:true,attempts:1,remainingSeconds:15});
+    expect(scheduler.next()).toBeUndefined();
+    at(3_630_000);expect(scheduler.snapshot('nova')).toMatchObject({budgetLimited:false,attempts:0,remainingSeconds:0});
+    expect(scheduler.next()).toBe('nova');
+  });
+
+  it('distinguishes its own pending attempt from another bot and reports eligibility', () => {
+    const { scheduler, at }=fixture();scheduler.sync([bot('a'),bot('b'),bot('c',{eligible:false})]);
+    at(15_000);expect(scheduler.next()).toBe('a');
+    expect(scheduler.snapshot('a')).toMatchObject({inFlight:true,waitingForBot:undefined,attempts:1});
+    expect(scheduler.snapshot('b')).toMatchObject({inFlight:false,waitingForBot:'a',attempts:0});
+    expect(scheduler.snapshot('c')).toMatchObject({eligible:false,waitingForBot:'a',attempts:0});
+    scheduler.finish('a');expect(scheduler.snapshot('b')?.waitingForBot).toBeUndefined();
+    scheduler.stop();expect(scheduler.snapshot('a')).toBeUndefined();
+  });
+
   it('waits on initial start and does not reset the deadline during unchanged polling', () => {
     const { scheduler, at } = fixture();
     scheduler.sync([bot()]); expect(scheduler.next()).toBeUndefined();

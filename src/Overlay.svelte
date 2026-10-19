@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t } from './lib/i18n';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import Avatar from './components/Avatar.svelte';
   import { PresentationVersions, type PresentationSnapshot } from './lib/output-presentation';
@@ -8,13 +8,15 @@
   import type { DesktopAnchor } from './lib/avatar';
   import { AutopilotRuntimeVersions, type AutopilotRuntime } from './lib/autopilot-runtime';
   import { SpeechPlayer } from './lib/audio';
-  import { EmoteSequence, type EmotePayload } from './lib/presentation';
+  import { EmoteSequence, emoteDurationMilliseconds, emoteSequenceMilliseconds, type EmotePayload } from './lib/presentation';
+  import { PresentationLeases, type PresentationTicket } from './lib/presentation-leases';
   import { EmoteAudioPlayer } from './lib/emote-audio';
   import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
 
   type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
-  type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void> };
+  type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void>; controller: AbortController; presentation?: PresentationTicket; visualEndAt: number };
+  let avatar: { preparePresentation: (signal: AbortSignal) => Promise<() => void> } | undefined;
   let profile = $state<any>(cloneDefaults());
   let presentation=$state<PresentationSnapshot>();
   const presentationVersions=new PresentationVersions();
@@ -45,6 +47,8 @@
   let emoteRevision = 0;
   let soundPlaybackId = '';
   let soundPlaying = false;
+  const presentationLeases = new PresentationLeases(() => soundPlaying);
+  let manualController: AbortController | undefined;
   let soundReporting = Promise.resolve();
   let current: PlaybackJob | undefined;
   let disposed = false;
@@ -54,6 +58,13 @@
   const receivedIds = new Set<string>();
   const emoteSequence = new EmoteSequence(applyEmote);
   const subtitles = new SubtitleLifetime((value) => { text = value; });
+
+  async function prepareFigure(signal: AbortSignal): Promise<() => void> {
+    await tick();
+    if (disposed || signal.aborted) throw new DOMException('Die Figurenpräsentation wurde abgebrochen.', 'AbortError');
+    if (!avatar) throw new Error('Die Figur ist nicht für die Ausgabe verfügbar.');
+    return avatar.preparePresentation(signal);
+  }
 
   function applyEmote(event: EmotePayload) {
     profile.avatar.emote = {
@@ -78,17 +89,33 @@
   }
 
   async function manualEmote(event: EmotePayload) {
+    manualController?.abort();
+    const controller = new AbortController(); manualController = controller;
+    presentationLeases.clear(current?.presentation);
     ++emoteRevision; const revision = emoteRevision;
     emoteSequence.stop(); emoteAudio?.stop();
-    await ready;
-    if (disposed || revision !== emoteRevision) return;
-    if(profile.output.mode===(native?'overlay':'obs'))await emoteAudio?.prepare([event], resolveSound);
-    if (disposed || revision !== emoteRevision) return;
-    applyEmote(event);
+    let presentation: PresentationTicket | undefined;
+    try {
+      await ready;
+      if (disposed || revision !== emoteRevision || controller.signal.aborted) return;
+      if(profile.output.mode===(native?'overlay':'obs'))await emoteAudio?.prepare([event], resolveSound);
+      if (disposed || revision !== emoteRevision || controller.signal.aborted) return;
+      presentation = presentationLeases.request(prepareFigure, controller.signal);
+      await presentation.ready;
+      if (disposed || revision !== emoteRevision || controller.signal.aborted) { presentationLeases.cancel(presentation); return; }
+      applyEmote(event);
+      presentationLeases.finish(presentation, emoteDurationMilliseconds(event));
+    } catch (error) {
+      if (presentation) presentationLeases.cancel(presentation);
+      if (disposed || revision !== emoteRevision || controller.signal.aborted || error instanceof Error && error.name === 'AbortError') return;
+      failureDetail = error instanceof Error ? error.message : String(error);
+      activationNeeded = false; failure = 'Ausgabehinweis schließen';
+    }
   }
 
   function reportSoundPlaying(playing: boolean) {
     soundPlaying = playing;
+    if (!playing) presentationLeases.soundEnded();
     if (playing) soundPlaybackId ||= crypto.randomUUID();
     const id = soundPlaybackId; const targetBot = botId;
     if (!id || !targetBot) return;
@@ -139,6 +166,10 @@
   function finish(job: PlaybackJob, error?: string) {
     if (job.finished) return;
     job.finished = true;
+    if (job.presentation) {
+      if (error || !job.started) presentationLeases.cancel(job.presentation);
+      else presentationLeases.finish(job.presentation, Math.max(0, job.visualEndAt - Date.now()));
+    }
     playback(job, false, error);
     if (current === job) {
       if (error) subtitles.cancel(job.event.id);
@@ -153,6 +184,9 @@
   }
 
   function cancelCurrent() {
+    manualController?.abort(); manualController = undefined;
+    current?.controller.abort();
+    presentationLeases.clear();
     ++emoteRevision;
     const job = current;
     current = undefined;
@@ -169,19 +203,29 @@
   async function speak(event: SpeechEvent) {
     if (disposed) return;
     cancelCurrent();
-    const job: PlaybackJob = { event, started: false, finished: false, reporting: Promise.resolve() };
+    const job: PlaybackJob = { event, started: false, finished: false, reporting: Promise.resolve(), controller: new AbortController(), visualEndAt: 0 };
     current = job;
     const plannedEmoteRevision = emoteRevision;
     failure = '';
     failureDetail = '';
     activationNeeded = false;
     let playbackError: string | undefined;
+    const beforeStart = async () => {
+      if (disposed || current !== job || job.finished || job.controller.signal.aborted) throw new DOMException('Die Figurenpräsentation wurde abgebrochen.', 'AbortError');
+      job.presentation ??= presentationLeases.request(prepareFigure, job.controller.signal);
+      await job.presentation.ready;
+      if (disposed || current !== job || job.finished || job.controller.signal.aborted) throw new DOMException('Die Figurenpräsentation wurde abgebrochen.', 'AbortError');
+    };
     const onStart = () => {
       if (disposed || current !== job || job.finished || job.started) return;
       job.started = true;
       emotion = event.emotion || 'neutral';
       subtitles.start(event.id, event.text);
-      if(plannedEmoteRevision===emoteRevision)emoteSequence.start(Array.isArray(event.emotes) ? event.emotes : []);
+      if(plannedEmoteRevision===emoteRevision){
+        const emotes = Array.isArray(event.emotes) ? event.emotes : [];
+        job.visualEndAt = Date.now() + emoteSequenceMilliseconds(emotes);
+        emoteSequence.start(emotes);
+      }
       playback(job, true);
     };
     try {
@@ -191,7 +235,7 @@
       const voice = { ...event.voice };
       if(plannedEmoteRevision===emoteRevision&&profile.output.mode===(native?'overlay':'obs'))await emoteAudio.prepare(Array.isArray(event.emotes) ? event.emotes : [], resolveSound);
       if (disposed || current !== job || job.finished) return;
-      if (voice.enabled === false) { onStart(); return; }
+      if (voice.enabled === false) { await beforeStart(); onStart(); return; }
       const speechText = voice.provider === 'elevenlabs' ? event.speechText || event.text : event.text;
       await player.speak(speechText, voice, async () => {
         if (native) return call('get_speech_audio', { id: event.id, botId: event.botId || botId });
@@ -201,15 +245,16 @@
         const result = await fetch(url);
         if (!result.ok) throw new Error('Sprachausgabe nicht verfügbar. Einstellungen in der App prüfen.');
         return result.json();
-      }, onStart);
+      }, onStart, beforeStart);
       if (disposed || current !== job || job.finished) return;
       failure = '';
     } catch (error) {
       if (disposed || current !== job || job.finished) return;
+      if (error instanceof Error && error.name === 'AbortError') return;
       failureDetail = error instanceof Error ? error.message : String(error);
       playbackError = failureDetail;
       activationNeeded = /not.allowed|autoplay|gesture|interact|suspend|permission|audio.?context/i.test(failureDetail);
-      failure = activationNeeded ? 'Audio für die nächste Antwort aktivieren' : 'Audiohinweis schließen';
+      failure = activationNeeded ? 'Audio für die nächste Antwort aktivieren' : 'Ausgabehinweis schließen';
     } finally {
       // Failure before onStart still releases this exact pending host job. A
       // completed ID is never replayed while the host may already speak another bot.
@@ -224,6 +269,7 @@
     if (!globalStop && (!targetBot || (botId && targetBot !== botId))) return;
     if(event.kind==='presentation'){acceptPresentation(event);return;}
     if (event.kind === 'profile') {
+      cancelCurrent();
       botId ||= event.profile.id;
       acceptPresentation(event.presentation);
       ++profileRevision; ++emoteRevision; emoteSequence.stop();emoteAudio?.stop(); profile = event.profile;
@@ -306,7 +352,7 @@
 </script>
 
 <div class="overlay-scene">
-  <Avatar profile={renderProfile} {speaking} {level} {emotion} {autopilot} {desktop} onDesktopAnchor={value=>anchor=value} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  <Avatar bind:this={avatar} profile={renderProfile} {speaking} {level} {emotion} {autopilot} {desktop} onDesktopAnchor={value=>anchor=value} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
   {#if native && !desktop?.active && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>

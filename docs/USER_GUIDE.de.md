@@ -26,6 +26,8 @@ Die App benötigt zum Start weder ein kostenpflichtiges KI-Konto noch ein herunt
 
 Unter **Autopilot** kann jeder Bot unabhängig herumlaufen, kleine Gesten zeigen und nach einer ruhigen Phase selbst einen kurzen Beitrag beginnen. Bewegung funktioniert ohne Modellanfrage; die Sprachversuche haben ein rollendes Stundenbudget. Im nativen Desktop-Overlay erweitert **Herumlaufen** die Ausgabe auf den ausgewählten Monitor. Sprache und Emotes pausieren die Bewegung; **Stop** stellt die feste Fenstergröße und Position wieder her. Studio und OBS behalten ihre vorhandene Bühne. Der Größenregler wirkt sofort auf alle Ausgaben; **Änderungen speichern** übernimmt die Vorschau dauerhaft. Start gilt nur für die aktuelle Sitzung. Optionaler nativer Bildschirmkontext ist eine getrennte Freigabe. Einrichtung, Kosten und Grenzen stehen unter [AUTOPILOT.md](AUTOPILOT.md).
 
+Der **Sprechstatus** zeigt den nächsten Sprechversuch als Countdown oder einen konkreten Wartegrund, etwa ungespeicherte Änderungen, einen Nachrichtenentwurf oder eine laufende Aufnahme. Bewegung und Gesten laufen währenddessen weiter. Die Ruhepause beginnt nach solchen Aktivitäten erneut; ein Modellversuch kann auch ohne gesprochenen Beitrag enden. Hinweise zum versteckten Studio auf macOS und den Grenzen anderer Plattformen stehen ebenfalls in der Autopilot-Anleitung.
+
 ## Bedienung und Tastatur
 
 Die kleinen Informationsschaltflächen erklären Einstellungen beim Überfahren und bei Tastaturfokus. Mit **Tab** und **Umschalt+Tab** sind sie ebenso wie die übrigen Bedienelemente erreichbar.
