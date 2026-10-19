@@ -35,7 +35,9 @@ export function verifyPinnedSignature(app, identity) {
   assert.equal(process.platform, 'darwin');
   const directory = mkdtempSync(join(tmpdir(), 'orbitpal-public-signature-'));
   try {
-    const details = spawnSync('/usr/bin/codesign', ['-dv', '-r-', '--verbose=4', '--extract-certificates', join(directory, 'certificate'), app], { encoding: 'utf8', timeout: 30_000 });
+    // Optional long-option values must use '='; a separate prefix is
+    // interpreted as another code object and makes a valid app fail checks.
+    const details = spawnSync('/usr/bin/codesign', ['-dv', '-r-', '--verbose=4', `--extract-certificates=${join(directory, 'certificate')}`, app], { encoding: 'utf8', timeout: 30_000 });
     assert.equal(details.status, 0, 'The app must have an extractable signing certificate and requirement');
     const description = `${details.stdout || ''}\n${details.stderr || ''}`;
     assert.doesNotMatch(description, /Signature=adhoc/, 'A persistent release may never silently fall back to ad-hoc signing');
