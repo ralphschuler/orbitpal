@@ -36,7 +36,7 @@ Unter **Bildschirm als Kontext** lässt sich die eingebaute Bildschirmaufnahme d
 
 Unmittelbar vor jedem Modellaufruf nimmt die App einen frischen Screenshot des Hauptbildschirms oder des ausdrücklich ausgewählten Monitors auf. Auch Werkzeug-Folgerunden bekommen ein neues Bild; frühere Bildschirmbilder werden nicht angesammelt. Bilder gehen an den gewählten Anbieter und verlassen bei Cloud-/Remote-Modellen den Rechner. Es wird kein fortlaufendes Bildschirmvideo an das Modell übertragen und kein Screenshot im Gesprächsverlauf oder in Hindsight gespeichert.
 
-Bei fehlender Freigabe, verschwundenem Monitor oder Aufnahmefehler wird die Anfrage mit einer konkreten Fehlermeldung abgebrochen. Allgemeine MCP-Steuerung und Skill-Skripte bleiben im Autopiloten gesperrt. Sichtbare Texte können keine neuen Rechte vergeben. Details zu Einrichtung, Datenschutz, Limits und der derzeit fehlenden Wayland-Unterstützung stehen unter [Bildschirm als Kontext](SCREEN-CONTEXT.md).
+Bei fehlender Freigabe, verschwundenem Monitor oder Aufnahmefehler wird die Anfrage mit einer konkreten Fehlermeldung abgebrochen. Allgemeine MCP-Steuerung und Skill-Skripte bleiben im Autopiloten gesperrt. Sichtbare Texte können keine neuen Rechte vergeben. Details zu Einrichtung, Datenschutz, Limits und der ausdrücklichen Wayland-Quellenauswahl und ausstehenden Desktop-Abnahme stehen unter [Bildschirm als Kontext](SCREEN-CONTEXT.md).
 
 ## Vorbild und Grenzen
 

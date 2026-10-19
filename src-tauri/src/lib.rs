@@ -23,6 +23,7 @@ mod gltf_import;
 mod autopilot;
 mod screen_capture;
 mod screen_context;
+mod screen_portal;
 mod microphone_permission;
 mod ui_locale;
 
@@ -85,13 +86,17 @@ fn list_bots(state:State<'_,AppState>,app:tauri::AppHandle)->Result<Vec<Value>,S
 #[tauri::command]
 async fn create_bot(state:State<'_,AppState>,app:tauri::AppHandle,name:String,copy_current:bool)->Result<Value,String>{
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Anlegen eines Bots beenden".to_owned())?;
+    let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.create_bot(&name,copy_current)?;
+    state.screen_context.portal.close_bot(&previous,"Wayland-Freigabe durch Botwechsel geschlossen");
     state.overlay.publish(&app,json!({"kind":"profile","profile":overlay::public_profile(&profile)}));Ok(profile)
 }
 #[tauri::command]
 async fn select_bot(state:State<'_,AppState>,app:tauri::AppHandle,id:String)->Result<Value,String>{
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Botwechsel beenden".to_owned())?;
+    let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.select_bot(&id)?;
+    if previous!=id{state.screen_context.portal.close_bot(&previous,"Wayland-Freigabe durch Botwechsel geschlossen");}
     state.overlay.publish(&app,json!({"kind":"profile","profile":overlay::public_profile(&profile)}));Ok(profile)
 }
 #[tauri::command]
@@ -165,6 +170,7 @@ async fn list_cli_models(config:Value)->Result<Value,String>{cli_provider::model
 async fn send_message(app:tauri::AppHandle,text:String,source:Option<String>,user:Option<String>,skill_ids:Option<Vec<String>>,bot_id:Option<String>,request_id:Option<String>,reply_route_id:Option<String>)->Result<Value,String>{agent::send(app,text,source.unwrap_or("operator".into()),user.unwrap_or("Streamer".into()),skill_ids.unwrap_or_default(),bot_id,request_id,reply_route_id).await}
 #[tauri::command]
 fn stop_generation(state:State<'_,AppState>,app:tauri::AppHandle)->Result<(),String>{
+    state.screen_context.portal.close_all();
     if let Some(c)=state.cancel.lock().map_err(|e|e.to_string())?.as_ref(){c.store(true,Ordering::Relaxed);}
     state.overlay.publish(&app,json!({"kind":"stop"}));Ok(())
 }
@@ -259,7 +265,9 @@ fn export_profile(state:State<'_,AppState>,destination:String)->Result<(),String
 #[tauri::command]
 async fn import_profile(state:State<'_,AppState>,app:tauri::AppHandle,source_path:String)->Result<Value,String>{
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Import beenden".to_owned())?;
+    let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.import(std::path::Path::new(&source_path))?;
+    state.screen_context.portal.close_bot(&previous,"Wayland-Freigabe durch Botwechsel geschlossen");
     state.overlay.publish(&app,json!({"kind":"profile","profile":overlay::public_profile(&profile)}));Ok(profile)
 }
 
@@ -275,8 +283,10 @@ pub fn run(){
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update])
-        .run(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden");
+        .invoke_handler(tauri::generate_handler![ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source])
+        .build(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden").run(|app,event|{
+            if matches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit){app.state::<AppState>().screen_context.portal.close_all();}
+        });
 }
 
 fn setup_tray(app:&mut tauri::App)->Result<(),Box<dyn std::error::Error>>{
@@ -288,7 +298,7 @@ fn setup_tray(app:&mut tauri::App)->Result<(),Box<dyn std::error::Error>>{
     let tray=tray.on_menu_event(|app,event|match event.id.as_ref(){
         "studio"=>{if let Some(w)=app.get_webview_window("main"){let _=w.unminimize();let _=w.show();let _=w.set_focus();}},
         "character"=>{if let Err(e)=overlay::open(app){let _=app.emit("cohost://agent",json!({"kind":"error","text":e}));}},
-        "stop"=>{let state=app.state::<AppState>();if let Ok(current)=state.cancel.lock(){if let Some(cancel)=current.as_ref(){cancel.store(true,Ordering::Relaxed);}}state.overlay.publish(app,json!({"kind":"stop"}));},
+        "stop"=>{let state=app.state::<AppState>();state.screen_context.portal.close_all();if let Ok(current)=state.cancel.lock(){if let Some(cancel)=current.as_ref(){cancel.store(true,Ordering::Relaxed);}}state.overlay.publish(app,json!({"kind":"stop"}));},
         "quit"=>app.exit(0),
         _=>(),
     }).build(app);
