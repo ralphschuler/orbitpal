@@ -9,15 +9,15 @@ use tokio::{net::TcpStream, sync::Mutex, task::JoinHandle};
 use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
-#[derive(Default)]
-struct ConnectionContext { connected: bool, user_id: Option<String>, live_chat_id: Option<String> }
+pub use crate::chat_route::ChatRoute;
+use crate::chat_route::ConnectionContext;
 struct Running { cancel: Arc<AtomicBool>, task: JoinHandle<()>, app: tauri::AppHandle, context: Arc<Mutex<ConnectionContext>> }
 #[derive(Default)]
 pub struct ChatHub { tasks: Mutex<HashMap<String, Running>> }
 
 fn text<'a>(v: &'a Value, key: &str) -> &'a str { v[key].as_str().unwrap_or("").trim() }
-fn connection(app: &tauri::AppHandle, platform: &str, status: &str, message: &str) {
-    let _ = app.emit("cohost://connection", json!({"platform":platform,"status":status,"message":message}));
+fn connection(app: &tauri::AppHandle, platform: &str, status: &str, message: &str, owner: &Value) {
+    let _ = app.emit("cohost://connection", json!({"platform":platform,"status":status,"message":message,"ownerBotId":owner["ownerBotId"],"ownerName":owner["ownerName"]}));
 }
 fn client() -> Result<Client, String> {
     Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(35)).build().map_err(|_| "HTTP-Client konnte nicht erstellt werden.".into())
@@ -33,7 +33,7 @@ async fn sleep(cancel: &AtomicBool, duration: Duration) -> bool {
 }
 
 impl ChatHub {
-    pub async fn connect(&self, platform: &str, profile: &Value, secret: Option<String>, app: tauri::AppHandle) -> Result<(), String> {
+    pub async fn connect(&self, platform: &str, profile: &Value, secret: Option<String>, write_secret: Option<String>, app: tauri::AppHandle) -> Result<(), String> {
         if !matches!(platform, "twitch" | "youtube") { return Err("Unbekannte Chatplattform.".into()); }
         let config = profile["chat"][platform].clone();
         let secret = secret.filter(|s| !s.trim().is_empty()).ok_or_else(|| if platform == "twitch" { "Bitte einen Twitch-Benutzertoken mit user:read:chat speichern.".to_string() } else { "Bitte einen YouTube-Data-API-Key speichern.".to_string() })?;
@@ -48,58 +48,53 @@ impl ChatHub {
         let cancel = Arc::new(AtomicBool::new(false));
         let task_cancel = cancel.clone();
         let task_app = app.clone();
-        let context = Arc::new(Mutex::new(ConnectionContext::default()));
+        let writer = if platform == "twitch" { Some(secret.clone()) } else { write_secret };
+        let context = Arc::new(Mutex::new(ConnectionContext::new(platform, profile, writer, cancel.clone())?));
         let task_context = context.clone();
         let name = platform.to_string();
-        connection(&app, platform, "connecting", "Verbindung wird hergestellt …");
+        connection(&app, platform, "connecting", "Verbindung wird hergestellt …", &context.lock().await.public_owner());
         let task = tokio::spawn(async move {
             let result = if name == "twitch" { twitch(config, secret, task_app.clone(), task_cancel.clone(), task_context.clone()).await } else { youtube(config, secret, task_app.clone(), task_cancel.clone(), task_context.clone()).await };
-            task_context.lock().await.connected = false;
+            task_context.lock().await.disconnected();
             if !cancelled(&task_cancel) {
-                match result { Ok(()) => connection(&task_app, &name, "disconnected", "Verbindung beendet."), Err(error) => connection(&task_app, &name, "error", &error) }
+                match result { Ok(()) => connection(&task_app, &name, "disconnected", "Verbindung beendet.", &task_context.lock().await.public_owner()), Err(error) => connection(&task_app, &name, "error", &error, &task_context.lock().await.public_owner()) }
             }
         });
         tasks.insert(platform.to_string(), Running { cancel, task, app, context });
         Ok(())
     }
-    /// Called only for an opted-in answer to a real incoming platform message.
-    pub async fn send(&self, platform: &str, profile: &Value, secret: Option<String>, _app: tauri::AppHandle, message: &str) -> Result<(), String> {
-        if !matches!(platform, "twitch" | "youtube") { return Err("Unbekannte Chatplattform.".into()); }
-        let config = &profile["chat"][platform];
-        if config["sendReplies"].as_bool() != Some(true) { return Err("Geschriebene Chatantworten sind deaktiviert.".into()); }
-        let token = secret.filter(|key| !key.trim().is_empty()).ok_or_else(|| "Für Chatantworten fehlt der OAuth-Zugriffstoken.".to_string())?;
-        let token = token.trim().strip_prefix("oauth:").unwrap_or(token.trim());
-        let context = self.tasks.lock().await.get(platform).filter(|task| !task.task.is_finished() && !cancelled(&task.cancel)).map(|task| task.context.clone()).ok_or_else(|| "Chatantwort benötigt eine aktive Plattformverbindung.".to_string())?;
-        let (connected, mut own_id, live_chat_id) = { let current = context.lock().await; (current.connected, current.user_id.clone(), current.live_chat_id.clone()) };
-        if !connected { return Err("Chatantwort benötigt eine verbundene Plattform.".into()); }
-        let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
-        if message.is_empty() { return Err("Chatantwort ist leer.".into()); }
-        let limit = if platform == "twitch" { 500 } else { 200 };
-        let message = if message.chars().count() > limit { message.chars().take(limit - 1).collect::<String>() + "…" } else { message };
-        let http = client()?;
-        if platform == "twitch" {
-            let sender = own_id.ok_or_else(|| "Twitch-Bot-ID wurde noch nicht aufgelöst.".to_string())?;
-            let response = http.post("https://api.twitch.tv/helix/chat/messages").bearer_auth(token).header("Client-Id", text(config,"clientId"))
-                .json(&json!({"broadcaster_id":text(config,"broadcasterId"),"sender_id":sender,"message":message})).send().await.map_err(|_| "Twitch-Chatantwort konnte nicht gesendet werden.".to_string())?;
-            let data = json_response(response,"Twitch-Chatantwort (user:write:chat erforderlich)").await?;
-            if !data["data"].as_array().and_then(|items| items.first()).is_some_and(|item| item["is_sent"].as_bool() == Some(true)) {
-                return Err("Twitch hat die Chatantwort nicht zugestellt; Kanalregeln oder Rate-Limit prüfen.".into());
-            }
-        } else {
-            let chat_id = live_chat_id.ok_or_else(|| "YouTube Live-Chat-ID wurde noch nicht aufgelöst.".to_string())?;
-            if own_id.is_none() {
-                // Resolve the writer before posting so its echo is never fed back to the agent.
-                let response = http.get("https://www.googleapis.com/youtube/v3/channels").bearer_auth(token).query(&[("part","id"),("mine","true")]).send().await.map_err(|_| "YouTube-Bot-Kanal konnte nicht aufgelöst werden.".to_string())?;
-                let data = json_response(response,"YouTube-Schreibanmeldung").await?;
-                own_id = data["items"].as_array().and_then(|items| items.first()).and_then(|item| item["id"].as_str()).map(str::to_string);
-                if own_id.is_none() { return Err("YouTube-Schreibtoken hat keinen zugeordneten Kanal.".into()); }
-                context.lock().await.user_id = own_id;
-            }
-            let response = http.post("https://www.googleapis.com/youtube/v3/liveChat/messages").bearer_auth(token).query(&[("part","snippet")])
-                .json(&json!({"snippet":{"liveChatId":chat_id,"type":"textMessageEvent","textMessageDetails":{"messageText":message}}})).send().await.map_err(|_| "YouTube-Chatantwort konnte nicht gesendet werden.".to_string())?;
-            let data = json_response(response,"YouTube-Chatantwort (OAuth erforderlich)").await?;
-            if data["id"].as_str().unwrap_or("").is_empty() { return Err("YouTube hat keine gesendete Chatnachricht bestätigt.".into()); }
-        }
+    /// Resolve only an opaque identifier emitted by the active connection. User
+    /// text/model output cannot select a destination or manufacture provenance.
+    pub async fn resolve_route(&self, platform:&str, id:Option<&str>, responder:&Value)->Result<ChatRoute,String> {
+        let tasks=self.tasks.lock().await;
+        let running=tasks.get(platform).filter(|running|!running.task.is_finished()).ok_or("Die Chatverbindung ist nicht mehr aktiv. Bitte eine neue Nachricht auswählen.")?;
+        let route=running.context.lock().await.route(platform,id,responder);
+        route
+    }
+    /// Called only once, after the admitted speech job actually starts playing.
+    /// All destination fields and the token come from its original connection.
+    pub async fn send(&self, route:&ChatRoute, store:&crate::storage::Store, message:&str, job_cancel:&AtomicBool)->Result<(),String> {
+        let (context,cancel)={
+            let tasks=self.tasks.lock().await;
+            let running=tasks.get(route.platform()).filter(|running|!running.task.is_finished()).ok_or("Chatantwort benötigt ihre ursprüngliche aktive Verbindung.")?;
+            (running.context.clone(),running.cancel.clone())
+        };
+        if job_cancel.load(Ordering::SeqCst) {return Err("Chatantwort abgebrochen.".into());}
+        let reply=crate::chat_route::prepare_current(&context,route,||Ok((store.bot_profile(route.responder_id())?,store.bot_profile(route.owner_id())?)),message).await?;
+        let http=client()?;
+        let request=reply_request(&http,&reply)?;
+        // Disconnect/replacement invalidates a pending post rather than silently
+        // redirecting it to the next connection. An already transmitted request
+        // cannot be withdrawn from the platform.
+        let result=tokio::select! {
+            biased;
+            _=async { while !cancel.load(Ordering::SeqCst) && !job_cancel.load(Ordering::SeqCst) { tokio::time::sleep(Duration::from_millis(20)).await; } }=>return Err("Chatantwort nach Verbindungswechsel abgebrochen.".into()),
+            result=request.send()=>result.map_err(|_|"Chatantwort konnte nicht gesendet werden.".to_string())?,
+        };
+        let data=json_response(result,if reply.platform=="twitch" {"Twitch-Chatantwort (user:write:chat erforderlich)"} else {"YouTube-Chatantwort (OAuth erforderlich)"}).await?;
+        if reply.platform=="twitch" {
+            if !data["data"].as_array().and_then(|items|items.first()).is_some_and(|item|item["is_sent"].as_bool()==Some(true)) {return Err("Twitch hat die Chatantwort nicht zugestellt; Kanalregeln oder Rate-Limit prüfen.".into());}
+        } else if data["id"].as_str().unwrap_or("").is_empty() {return Err("YouTube hat keine gesendete Chatnachricht bestätigt.".into());}
         Ok(())
     }
     pub async fn disconnect(&self, platform: &str) -> Result<(), String> {
@@ -107,7 +102,8 @@ impl ChatHub {
         if let Some(running) = self.tasks.lock().await.remove(platform) {
             running.cancel.store(true, Ordering::Relaxed);
             running.task.abort();
-            connection(&running.app, platform, "disconnected", "Getrennt.");
+            running.context.lock().await.disconnected();
+            connection(&running.app, platform, "disconnected", "Getrennt.", &running.context.lock().await.public_owner());
         }
         Ok(())
     }
@@ -116,6 +112,17 @@ impl Drop for ChatHub {
     fn drop(&mut self) {
         if let Ok(tasks) = self.tasks.try_lock() { for running in tasks.values() { running.cancel.store(true, Ordering::Relaxed); running.task.abort(); } }
     }
+}
+
+fn reply_request(http:&Client, reply:&crate::chat_route::PreparedReply)->Result<reqwest::RequestBuilder,String> {
+    let request=if reply.platform=="twitch" {
+        http.post("https://api.twitch.tv/helix/chat/messages").bearer_auth(&reply.token).header("Client-Id",&reply.client_id)
+            .json(&json!({"broadcaster_id":reply.channel,"sender_id":reply.sender,"message":reply.message}))
+    } else if reply.platform=="youtube" {
+        http.post("https://www.googleapis.com/youtube/v3/liveChat/messages").bearer_auth(&reply.token).query(&[("part","snippet")])
+            .json(&json!({"snippet":{"liveChatId":reply.channel,"type":"textMessageEvent","textMessageDetails":{"messageText":reply.message}}}))
+    } else { return Err("Unbekannte Chatplattform.".into()); };
+    Ok(request)
 }
 
 struct Seen { ids: HashSet<String>, order: VecDeque<String> }
@@ -163,11 +170,11 @@ async fn twitch(config: Value, secret: String, app: tauri::AppHandle, cancel: Ar
             Ok(()) => return Ok(()),
             Err(error) if error.starts_with("DAUERHAFT:") => return Err(error.trim_start_matches("DAUERHAFT:").to_string()),
             Err(_) => {
-                context.lock().await.connected = false;
+                context.lock().await.disconnected();
                 failures += 1;
                 if failures >= 8 { return Err("Twitch-Verbindung wiederholt fehlgeschlagen. Netzwerk und Token prüfen und neu verbinden.".into()); }
                 let seconds = (2u64.pow(failures.min(5))).min(30);
-                connection(&app, "twitch", "connecting", &format!("Verbindung unterbrochen; neuer Versuch in {seconds} s."));
+                connection(&app, "twitch", "connecting", &format!("Verbindung unterbrochen; neuer Versuch in {seconds} s."), &context.lock().await.public_owner());
                 if !sleep(&cancel, Duration::from_secs(seconds)).await { return Ok(()); }
             }
         }
@@ -195,7 +202,7 @@ async fn welcome(socket: &mut Socket) -> Result<Value, String> {
     }
 }
 
-async fn migrate(old: &mut Socket, url: &str, app: &tauri::AppHandle, seen: &mut Seen, own_id: &str) -> Result<(Socket, Value), String> {
+async fn migrate(old: &mut Socket, url: &str, app: &tauri::AppHandle, seen: &mut Seen, own_id: &str, context: &Mutex<ConnectionContext>) -> Result<(Socket, Value), String> {
     // Continue dispatching the previous connection during the replacement handshake.
     let connect = socket(url);
     tokio::pin!(connect);
@@ -203,7 +210,7 @@ async fn migrate(old: &mut Socket, url: &str, app: &tauri::AppHandle, seen: &mut
         tokio::select! {
             result = &mut connect => break result?,
             frame = old.next() => {
-                if let Some(Ok(frame)) = frame { migration_frame(old, frame, app, seen, own_id).await?; }
+                if let Some(Ok(frame)) = frame { migration_frame(old, frame, app, seen, own_id, context).await?; }
                 else { break connect.await?; }
             }
         }
@@ -213,7 +220,7 @@ async fn migrate(old: &mut Socket, url: &str, app: &tauri::AppHandle, seen: &mut
         tokio::select! {
             _ = tokio::time::sleep_until(deadline) => return Err("Twitch-Reconnect-Welcome Zeitlimit.".into()),
             frame = old.next() => {
-                if let Some(Ok(frame)) = frame { migration_frame(old, frame, app, seen, own_id).await?; }
+                if let Some(Ok(frame)) = frame { migration_frame(old, frame, app, seen, own_id, context).await?; }
                 else { break welcome(&mut replacement).await?; }
             }
             frame = replacement.next() => {
@@ -234,12 +241,12 @@ async fn migrate(old: &mut Socket, url: &str, app: &tauri::AppHandle, seen: &mut
     Ok((replacement, session))
 }
 
-async fn migration_frame(socket: &mut Socket, frame: Message, app: &tauri::AppHandle, seen: &mut Seen, own_id: &str) -> Result<(), String> {
+async fn migration_frame(socket: &mut Socket, frame: Message, app: &tauri::AppHandle, seen: &mut Seen, own_id: &str, context: &Mutex<ConnectionContext>) -> Result<(), String> {
     match frame {
         Message::Text(data) => {
             if data.len() > 256 * 1024 { return Err("Twitch-Ereignis zu groß.".into()); }
             let event: Value = serde_json::from_str(&data).map_err(|_| "Ungültiges Twitch-Ereignis.".to_string())?;
-            if event["metadata"]["message_type"] == "notification" { emit_twitch(app, &event, seen, own_id); }
+            if event["metadata"]["message_type"] == "notification" { emit_twitch(app, &event, seen, own_id, context).await; }
             if event["metadata"]["message_type"] == "revocation" { return Err("DAUERHAFT:Twitch hat das Chatabonnement widerrufen.".into()); }
         }
         Message::Ping(bytes) => { socket.send(Message::Pong(bytes)).await.map_err(|_| "Twitch-Pong fehlgeschlagen.".to_string())?; }
@@ -267,8 +274,8 @@ async fn twitch_session(http: &Client, config: &Value, token: &str, own_id: &str
             notifications = false;
         }
     }
-    context.lock().await.connected = true;
-    connection(app, "twitch", "connected", if notifications { "Twitch EventSub Live-Chat und Chat-Ereignisse verbunden." } else { "Twitch Live-Chat verbunden; zusätzliche Chat-Ereignisse sind nicht verfügbar." });
+    context.lock().await.mark_connected(text(config,"broadcasterId"));
+    connection(app, "twitch", "connected", if notifications { "Twitch EventSub Live-Chat und Chat-Ereignisse verbunden." } else { "Twitch Live-Chat verbunden; zusätzliche Chat-Ereignisse sind nicht verfügbar." }, &context.lock().await.public_owner());
     let mut deadline = tokio::time::Instant::now() + Duration::from_secs(session["keepalive_timeout_seconds"].as_u64().unwrap_or(30) + 5);
     while !cancelled(cancel) {
         let incoming = tokio::select! {
@@ -283,12 +290,12 @@ async fn twitch_session(http: &Client, config: &Value, token: &str, own_id: &str
                 if data.len() > 256 * 1024 { return Err("Twitch-Ereignis zu groß.".into()); }
                 let event: Value = serde_json::from_str(&data).map_err(|_| "Ungültiges Twitch-Ereignis.".to_string())?;
                 match event["metadata"]["message_type"].as_str().unwrap_or("") {
-                    "notification" => { emit_twitch(app, &event, seen, own_id); }
+                    "notification" => { emit_twitch(app, &event, seen, own_id, context).await; }
                     "revocation" => return Err("DAUERHAFT:Twitch hat das Chatabonnement widerrufen. Anmeldung und Berechtigungen prüfen.".into()),
                     "session_reconnect" => {
                         let url = event["payload"]["session"]["reconnect_url"].as_str().ok_or_else(|| "Twitch-Reconnect-URL fehlt.".to_string())?;
                         // Keep the old socket open until the replacement welcomes us. The subscription migrates automatically.
-                        let (replacement, replacement_session) = migrate(&mut ws, url, app, seen, own_id).await?;
+                        let (replacement, replacement_session) = migrate(&mut ws, url, app, seen, own_id, context).await?;
                         ws = replacement;
                         session = replacement_session;
                     }
@@ -304,8 +311,9 @@ async fn twitch_session(http: &Client, config: &Value, token: &str, own_id: &str
     Ok(())
 }
 
-fn emit_twitch(app: &tauri::AppHandle, event: &Value, seen: &mut Seen, own_id: &str) {
+async fn emit_twitch(app: &tauri::AppHandle, event: &Value, seen: &mut Seen, own_id: &str, context: &Mutex<ConnectionContext>) {
     let details = &event["payload"]["event"];
+    let Some(reply_route_id)=context.lock().await.incoming_route(details["broadcaster_user_id"].as_str().unwrap_or("")) else {return;};
     if details["chatter_user_id"].as_str() == Some(own_id) { return; }
     let id = details["message_id"].as_str().unwrap_or_else(|| event["metadata"]["message_id"].as_str().unwrap_or(""));
     if !seen.insert(id) { return; }
@@ -317,7 +325,7 @@ fn emit_twitch(app: &tauri::AppHandle, event: &Value, seen: &mut Seen, own_id: &
     } else { details["message"]["text"].as_str().unwrap_or("").to_string() };
     if message.is_empty() { return; }
     let user = details["chatter_user_name"].as_str().filter(|s| !s.is_empty()).unwrap_or("Twitch");
-    let _ = app.emit("cohost://chat", json!({"id":id,"platform":"twitch","user":user,"userId":details["chatter_user_id"].as_str().unwrap_or(""),"text":message,"createdAt":event["metadata"]["message_timestamp"],"eventType":if kind == "channel.chat.notification" { details["notice_type"].as_str().unwrap_or("notification") } else { "message" }}));
+    let _ = app.emit("cohost://chat", json!({"id":id,"platform":"twitch","replyRouteId":reply_route_id,"user":user,"userId":details["chatter_user_id"].as_str().unwrap_or(""),"text":message,"createdAt":event["metadata"]["message_timestamp"],"eventType":if kind == "channel.chat.notification" { details["notice_type"].as_str().unwrap_or("notification") } else { "message" }}));
 }
 
 fn youtube_video(input: &str) -> Result<String, String> {
@@ -345,6 +353,15 @@ async fn youtube(config: Value, key: String, app: tauri::AppHandle, cancel: Arc<
         live_chat_id = data["items"].as_array().and_then(|items| items.first()).and_then(|item| item["liveStreamingDetails"]["activeLiveChatId"].as_str()).unwrap_or("").to_string();
         if live_chat_id.is_empty() { return Err("Dieses YouTube-Video hat keinen aktiven öffentlichen Live-Chat.".into()); }
     }
+    // Freeze/validate the write identity during this explicit connection start.
+    // A later profile or selected-bot token is never substituted for it.
+    let writer=context.lock().await.write_token().map(str::to_owned);
+    if let Some(token)=writer {
+        let response=http.get("https://www.googleapis.com/youtube/v3/channels").bearer_auth(token.trim()).query(&[("part","id"),("mine","true")]).send().await.map_err(|_|"YouTube-Bot-Kanal konnte nicht aufgelöst werden.".to_string())?;
+        let data=json_response(response,"YouTube-Schreibanmeldung").await?;
+        let own_id=data["items"].as_array().and_then(|items|items.first()).and_then(|item|item["id"].as_str()).filter(|id|!id.is_empty()).ok_or("YouTube-Schreibtoken hat keinen zugeordneten Kanal.")?;
+        context.lock().await.user_id=Some(own_id.into());
+    }
     let mut seen = Seen::new();
     let mut page = String::new();
     let mut failures = 0u32;
@@ -358,18 +375,18 @@ async fn youtube(config: Value, key: String, app: tauri::AppHandle, cancel: Arc<
             _ => {
                 failures += 1;
                 connected = false;
-                context.lock().await.connected = false;
+                context.lock().await.disconnected();
                 if failures >= 8 { return Err("YouTube-Verbindung wiederholt fehlgeschlagen. API-Key und Kontingent prüfen.".into()); }
                 let delay = (2u64.pow(failures.min(5))).max(5).min(60);
-                connection(&app,"youtube","connecting",&format!("YouTube unterbrochen; neuer Versuch in {delay} s."));
+                connection(&app,"youtube","connecting",&format!("YouTube unterbrochen; neuer Versuch in {delay} s."), &context.lock().await.public_owner());
                 if !sleep(&cancel,Duration::from_secs(delay)).await { return Ok(()); }
                 continue;
             }
         };
         let data = json_response(response, "YouTube Live-Chat").await?;
         if !connected {
-            { let mut current = context.lock().await; current.connected = true; current.live_chat_id = Some(live_chat_id.clone()); }
-            connection(&app,"youtube","connected","YouTube Live-Chat verbunden (API-Polling)."); connected = true;
+            context.lock().await.mark_connected(&live_chat_id);
+            connection(&app,"youtube","connected","YouTube Live-Chat verbunden (API-Polling).", &context.lock().await.public_owner()); connected = true;
         }
         failures = 0;
         page = data["nextPageToken"].as_str().unwrap_or("").to_string();
@@ -383,7 +400,8 @@ async fn youtube(config: Value, key: String, app: tauri::AppHandle, cancel: Arc<
                 let kind = if raw_kind == "textMessageEvent" { "message" } else { raw_kind };
                 let message = snippet["displayMessage"].as_str().or_else(|| snippet["textMessageDetails"]["messageText"].as_str()).unwrap_or("");
                 if message.is_empty() { continue; }
-                let _ = app.emit("cohost://chat",json!({"id":id,"platform":"youtube","user":item["authorDetails"]["displayName"].as_str().unwrap_or("YouTube"),"userId":item["authorDetails"]["channelId"].as_str().unwrap_or(""),"text":message,"createdAt":snippet["publishedAt"],"eventType":kind}));
+                let Some(reply_route_id)=context.lock().await.incoming_route(snippet["liveChatId"].as_str().unwrap_or(&live_chat_id)) else {continue;};
+                let _ = app.emit("cohost://chat",json!({"id":id,"platform":"youtube","replyRouteId":reply_route_id,"user":item["authorDetails"]["displayName"].as_str().unwrap_or("YouTube"),"userId":item["authorDetails"]["channelId"].as_str().unwrap_or(""),"text":message,"createdAt":snippet["publishedAt"],"eventType":kind}));
             }
         }
         if data.get("offlineAt").is_some_and(|v| !v.is_null()) { return Err("Der YouTube-Livestream wurde beendet.".into()); }
@@ -392,4 +410,46 @@ async fn youtube(config: Value, key: String, app: tauri::AppHandle, cancel: Arc<
         if !sleep(&cancel,Duration::from_millis(interval)).await { return Ok(()); }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod route_request_tests {
+    use super::*;
+    use crate::chat_route::ConnectionContext;
+    #[test]
+    fn outgoing_requests_for_both_platforms_use_the_origin_not_the_selected_bot() {
+        for platform in ["twitch","youtube"] {
+            let config=if platform=="twitch" {json!({"clientId":"client-a","broadcasterId":"channel-a","userId":"account-a","secretId":"owner-auth","sendReplies":true})}
+                else {json!({"liveChatId":"channel-a","apiKeyId":"owner-read","sendSecretId":"owner-auth","sendReplies":true})};
+            let owner=json!({"id":"owner","name":"Owner","chat":{platform:config}});
+            let mut second=owner.clone();second["id"]=json!("second-bot");
+            let mut context=ConnectionContext::new(platform,&owner,Some("original-account-token".into()),Arc::new(AtomicBool::new(false))).unwrap();
+            context.user_id=Some("account-a".into());context.mark_connected("channel-a");
+            // Manual and automatic answers share the same admitted route path.
+            for responder in [&owner,&second] {
+                let route=context.route(platform,context.route_id(),responder).unwrap();
+                let reply=context.prepare_reply(&route,responder,&owner,"Hello").unwrap();
+                let request=reply_request(&Client::new(),&reply).unwrap().build().unwrap();
+                assert_eq!(request.headers()["Authorization"],"Bearer original-account-token");
+                let body:Value=serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                if platform=="twitch" {
+                    assert_eq!(request.url().as_str(),"https://api.twitch.tv/helix/chat/messages");assert_eq!(request.headers()["Client-Id"],"client-a");
+                    assert_eq!(body,json!({"broadcaster_id":"channel-a","sender_id":"account-a","message":"Hello"}));
+                } else {
+                    assert_eq!(request.url().as_str(),"https://www.googleapis.com/youtube/v3/liveChat/messages?part=snippet");
+                    assert_eq!(body["snippet"]["liveChatId"],"channel-a");
+                }
+                let mut changed=responder.clone();changed["chat"][platform][if platform=="twitch" {"broadcasterId"} else {"liveChatId"}]=json!("channel-b");
+                assert!(context.prepare_reply(&route,&changed,&owner,"Must never reach channel-b").is_err());
+            }
+        }
+    }
+    #[test]
+    fn incoming_events_cannot_claim_another_channel_or_a_revoked_session() {
+        let owner=json!({"id":"owner","chat":{"twitch":{"sendReplies":true}}});
+        let mut context=ConnectionContext::new("twitch",&owner,None,Arc::new(AtomicBool::new(false))).unwrap();
+        assert!(context.incoming_route("channel-a").is_none());context.mark_connected("channel-a");
+        assert!(context.incoming_route("channel-a").is_some());assert!(context.incoming_route("channel-b").is_none());
+        context.disconnected();assert!(context.incoming_route("channel-a").is_none());
+    }
 }

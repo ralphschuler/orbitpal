@@ -4,6 +4,7 @@ mod transcription;
 mod cli_provider;
 mod bounded_io;
 mod chat;
+mod chat_route;
 mod mcp;
 mod agent;
 mod overlay;
@@ -161,7 +162,7 @@ async fn check_cli_provider(config:Value)->Result<Value,String>{cli_provider::st
 #[tauri::command]
 async fn list_cli_models(config:Value)->Result<Value,String>{cli_provider::models(&config).await}
 #[tauri::command]
-async fn send_message(app:tauri::AppHandle,text:String,source:Option<String>,user:Option<String>,skill_ids:Option<Vec<String>>,bot_id:Option<String>,request_id:Option<String>)->Result<Value,String>{agent::send(app,text,source.unwrap_or("operator".into()),user.unwrap_or("Streamer".into()),skill_ids.unwrap_or_default(),bot_id,request_id).await}
+async fn send_message(app:tauri::AppHandle,text:String,source:Option<String>,user:Option<String>,skill_ids:Option<Vec<String>>,bot_id:Option<String>,request_id:Option<String>,reply_route_id:Option<String>)->Result<Value,String>{agent::send(app,text,source.unwrap_or("operator".into()),user.unwrap_or("Streamer".into()),skill_ids.unwrap_or_default(),bot_id,request_id,reply_route_id).await}
 #[tauri::command]
 fn stop_generation(state:State<'_,AppState>,app:tauri::AppHandle)->Result<(),String>{
     if let Some(c)=state.cancel.lock().map_err(|e|e.to_string())?.as_ref(){c.store(true,Ordering::Relaxed);}
@@ -207,7 +208,8 @@ async fn connect_platform(state:State<'_,AppState>,app:tauri::AppHandle,platform
     let profile=state.store.profile()?;
     let config=&profile["chat"][&platform];
     let key=state.store.key_for(config)?;
-    state.chat.connect(&platform,&profile,key,app).await
+    let write_key=if platform=="youtube" && config["sendReplies"]==true {state.store.secret(config["sendSecretId"].as_str().unwrap_or("youtube-write"))?} else {None};
+    state.chat.connect(&platform,&profile,key,write_key,app).await
 }
 #[tauri::command]
 async fn disconnect_platform(state:State<'_,AppState>,platform:String)->Result<(),String>{state.chat.disconnect(&platform).await}

@@ -38,7 +38,7 @@ impl AudioCache {
 struct SpeechEntry {
     id:String, bot_id:String, text:String, speech_text:String, voice:Value, emotion:String,
     source:String, user:String, emotes:Vec<Value>, output:String,
-    user_text:String, hindsight:Value, assistant_name:String,
+    user_text:String, hindsight:Value, assistant_name:String, chat_route:Option<crate::chat::ChatRoute>,
     started:bool, finished:bool, cancel:Arc<AtomicBool>,
 }
 impl SpeechEntry{
@@ -127,12 +127,12 @@ impl OverlayHub {
     pub fn has_autopilot_speech(&self,bot_id:&str)->bool{
         self.speech.lock().map(|entries|entries.iter().any(|entry|entry.bot_id==bot_id&&entry.source=="autopilot"&&!entry.finished)).unwrap_or(true)
     }
-    pub fn say_profile(&self,app:&tauri::AppHandle,profile:&Value,id:&str,text:&str,speech_text:&str,emotion:&str,source:&str,user:&str,user_text:&str,emotes:&[Value],cancel:Arc<AtomicBool>)->Result<(),String> {
+    pub fn say_profile(&self,app:&tauri::AppHandle,profile:&Value,id:&str,text:&str,speech_text:&str,emotion:&str,source:&str,user:&str,user_text:&str,emotes:&[Value],cancel:Arc<AtomicBool>,chat_route:Option<crate::chat::ChatRoute>)->Result<(),String> {
         let bot_id=profile["id"].as_str().ok_or("Bot-ID fehlt")?;
         let mut speech=self.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
         if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
         if speech.len()>=64{return Err("Zu viele ausstehende Sprachausgaben. Bitte Wiedergaben beenden oder stoppen.".into());}
-        let entry=SpeechEntry{id:id.into(),bot_id:bot_id.into(),text:text.into(),speech_text:speech_text.into(),voice:profile["voice"].clone(),emotion:emotion.into(),source:source.into(),user:user.into(),user_text:user_text.into(),hindsight:profile["hindsight"].clone(),assistant_name:profile["name"].as_str().unwrap_or("Cohost").into(),emotes:emotes.to_vec(),output:profile["output"]["mode"].as_str().unwrap_or("studio").into(),started:false,finished:false,cancel};
+        let entry=SpeechEntry{id:id.into(),bot_id:bot_id.into(),text:text.into(),speech_text:speech_text.into(),voice:profile["voice"].clone(),emotion:emotion.into(),source:source.into(),user:user.into(),user_text:user_text.into(),hindsight:profile["hindsight"].clone(),assistant_name:profile["name"].as_str().unwrap_or("Cohost").into(),emotes:emotes.to_vec(),output:profile["output"]["mode"].as_str().unwrap_or("studio").into(),started:false,finished:false,cancel,chat_route};
         let event=entry.speech_event();let timer_cancel=entry.cancel.clone();speech.push_back(entry);
         drop(speech);
         // A disconnected Studio/OBS client cannot keep the host busy forever.
@@ -258,9 +258,9 @@ pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,e
                 let store=state.store.scoped(&entry.bot_id)?;
                 let current=store.profile()?;
                 if current["chat"][&entry.source]["sendReplies"].as_bool()!=Some(true)||entry.cancel.load(Ordering::Relaxed){return Ok(());}
-                let key=if entry.source=="youtube"{store.secret(current["chat"]["youtube"]["sendSecretId"].as_str().unwrap_or("youtube-write"))?}else{store.key_for(&current["chat"]["twitch"])?};
+                let route=entry.chat_route.as_ref().ok_or("Chatantwort ohne ursprüngliche Verbindung wurde verworfen.")?;
                 if entry.cancel.load(Ordering::Relaxed){return Ok(());}
-                state.chat.send(&entry.source,&current,key,handle.clone(),&entry.text).await
+                state.chat.send(route,&state.store,&entry.text,&entry.cancel).await
             }.await;
             if let Err(error)=result{let _=handle.emit("cohost://agent",json!({"kind":"tool","turnId":entry.id,"botId":entry.bot_id,"text":format!("Die gesprochene Antwort bleibt erhalten; die Chat-Nachricht konnte nicht gesendet werden: {error}")}));}
         });
@@ -485,7 +485,7 @@ mod tests{
         assert_eq!(authorize_asset(classify_asset("../secret.vrm"),||panic!("Malformed paths must fail before authorization")),Err(StatusCode::NOT_FOUND));
     }
     fn speech(provider:&str)->SpeechEntry{
-        SpeechEntry{id:"speech-fixture".into(),bot_id:"nova".into(),text:"Hallo zusammen!".into(),speech_text:"[crying] Hallo [shouts] zusammen!".into(),voice:json!({"provider":provider}),emotion:"neutral".into(),source:"twitch".into(),user:"viewer".into(),emotes:Vec::new(),output:"studio".into(),user_text:"Grüße den Chat".into(),hindsight:json!({"private_config_marker":"not an event field"}),assistant_name:"Nova".into(),started:false,finished:false,cancel:Arc::new(AtomicBool::new(false))}
+        SpeechEntry{id:"speech-fixture".into(),bot_id:"nova".into(),text:"Hallo zusammen!".into(),speech_text:"[crying] Hallo [shouts] zusammen!".into(),voice:json!({"provider":provider}),emotion:"neutral".into(),source:"twitch".into(),user:"viewer".into(),emotes:Vec::new(),output:"studio".into(),user_text:"Grüße den Chat".into(),hindsight:json!({"private_config_marker":"not an event field"}),assistant_name:"Nova".into(),chat_route:None,started:false,finished:false,cancel:Arc::new(AtomicBool::new(false))}
     }
     #[test]
     fn elevenlabs_keeps_audio_tags_in_synthesis_only(){
