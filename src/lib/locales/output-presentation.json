@@ -1,0 +1,50 @@
+{
+  "en": {
+    "Die Figurgröße wird sofort im Studio, Desktop-Overlay und OBS angezeigt. Andere Entwürfe werden dabei nicht gespeichert. Dauerhaft übernehmen mit Änderungen speichern.": "Character size changes immediately in Studio, desktop overlay and OBS. Other drafts are not saved. Use Save changes to keep this setting.",
+    "Figurgröße live ändern": "Change character size live",
+    "Ausgabemonitor für den Autopiloten": "Output monitor for Autopilot",
+    "Nur die Darstellung wird auf diesen Monitor erweitert. Diese Auswahl erlaubt keine Bildschirmaufnahme. Ohne Autopilot bleibt die feste Fensterposition erhalten.": "Only the output expands onto this monitor. This choice does not grant screen capture. The fixed window position stays intact without Autopilot.",
+    "Monitor des Figurenfensters": "Character window’s monitor",
+    "Monitor nicht verfügbar": "Monitor unavailable",
+    "Beim Wandern reicht das transparente Fenster Mausklicks durch. Stop im Studio, im Tray oder über MCP stellt die feste Fenstergröße und Position wieder her.": "While wandering, the transparent window passes mouse clicks through. Stop in Studio, the tray or MCP restores the fixed window size and position.",
+    "Die Desktop-Darstellung konnte nicht angepasst werden.": "Desktop output could not be adjusted.",
+    "Die Figurgröße muss zwischen 0,3 und 2,5 liegen.": "Character size must be between 0.3 and 2.5.",
+    "Darstellungsvorschauen werden ausschließlich im Studio gesteuert.": "Output previews are controlled only from Studio.",
+    "Kein Ausgabemonitor verfügbar.": "No output monitor is available.",
+    "Der gewählte Ausgabemonitor ist nicht mehr verfügbar.": "The selected output monitor is no longer available.",
+    "Das Betriebssystem hat die Fensterposition oder Größe nicht bestätigt. Die Klickdurchleitung bleibt zum Schutz des Desktops aktiv.": "The operating system did not confirm the window position or size. Click-through remains active to protect desktop access.",
+    "Die Modellgrenzen konnten nicht bestimmt werden.": "The model bounds could not be determined."
+  },
+  "fr": {
+    "Die Figurgröße wird sofort im Studio, Desktop-Overlay und OBS angezeigt. Andere Entwürfe werden dabei nicht gespeichert. Dauerhaft übernehmen mit Änderungen speichern.": "La taille change immédiatement dans le Studio, la fenêtre de bureau et OBS. Les autres brouillons ne sont pas enregistrés. Utilise Enregistrer les modifications pour conserver ce réglage.",
+    "Figurgröße live ändern": "Modifier la taille en direct",
+    "Ausgabemonitor für den Autopiloten": "Écran de sortie pour le pilote automatique",
+    "Nur die Darstellung wird auf diesen Monitor erweitert. Diese Auswahl erlaubt keine Bildschirmaufnahme. Ohne Autopilot bleibt die feste Fensterposition erhalten.": "Seul l’affichage s’étend sur cet écran. Ce choix n’autorise aucune capture d’écran. Sans pilote automatique, la position fixe de la fenêtre est conservée.",
+    "Monitor des Figurenfensters": "Écran de la fenêtre du personnage",
+    "Monitor nicht verfügbar": "Écran indisponible",
+    "Beim Wandern reicht das transparente Fenster Mausklicks durch. Stop im Studio, im Tray oder über MCP stellt die feste Fenstergröße und Position wieder her.": "Pendant les déplacements, les clics traversent la fenêtre transparente. Arrêter dans le Studio, la barre système ou via MCP rétablit la taille et la position fixes.",
+    "Die Desktop-Darstellung konnte nicht angepasst werden.": "L’affichage du bureau n’a pas pu être ajusté.",
+    "Die Figurgröße muss zwischen 0,3 und 2,5 liegen.": "La taille doit être comprise entre 0,3 et 2,5.",
+    "Darstellungsvorschauen werden ausschließlich im Studio gesteuert.": "Les aperçus d’affichage se règlent uniquement dans le Studio.",
+    "Kein Ausgabemonitor verfügbar.": "Aucun écran de sortie n’est disponible.",
+    "Der gewählte Ausgabemonitor ist nicht mehr verfügbar.": "L’écran de sortie sélectionné n’est plus disponible.",
+    "Das Betriebssystem hat die Fensterposition oder Größe nicht bestätigt. Die Klickdurchleitung bleibt zum Schutz des Desktops aktiv.": "Le système n’a pas confirmé la position ou la taille de la fenêtre. Les clics continuent de la traverser pour garder le bureau accessible.",
+    "Die Modellgrenzen konnten nicht bestimmt werden.": "Les limites du modèle n’ont pas pu être déterminées."
+  },
+  "es": {
+    "Die Figurgröße wird sofort im Studio, Desktop-Overlay und OBS angezeigt. Andere Entwürfe werden dabei nicht gespeichert. Dauerhaft übernehmen mit Änderungen speichern.": "El tamaño cambia al instante en Studio, la ventana de escritorio y OBS. Los demás borradores no se guardan. Usa Guardar cambios para conservar este ajuste.",
+    "Figurgröße live ändern": "Cambiar el tamaño en directo",
+    "Ausgabemonitor für den Autopiloten": "Monitor de salida para el piloto automático",
+    "Nur die Darstellung wird auf diesen Monitor erweitert. Diese Auswahl erlaubt keine Bildschirmaufnahme. Ohne Autopilot bleibt die feste Fensterposition erhalten.": "Solo la visualización se amplía a este monitor. Esta opción no permite capturar la pantalla. Sin piloto automático, se conserva la posición fija de la ventana.",
+    "Monitor des Figurenfensters": "Monitor de la ventana del personaje",
+    "Monitor nicht verfügbar": "Monitor no disponible",
+    "Beim Wandern reicht das transparente Fenster Mausklicks durch. Stop im Studio, im Tray oder über MCP stellt die feste Fenstergröße und Position wieder her.": "Durante los desplazamientos, los clics atraviesan la ventana transparente. Detener en Studio, la bandeja o MCP restaura el tamaño y la posición fijos.",
+    "Die Desktop-Darstellung konnte nicht angepasst werden.": "No se pudo ajustar la visualización del escritorio.",
+    "Die Figurgröße muss zwischen 0,3 und 2,5 liegen.": "El tamaño debe estar entre 0,3 y 2,5.",
+    "Darstellungsvorschauen werden ausschließlich im Studio gesteuert.": "Las vistas previas de salida solo se controlan desde Studio.",
+    "Kein Ausgabemonitor verfügbar.": "No hay ningún monitor de salida disponible.",
+    "Der gewählte Ausgabemonitor ist nicht mehr verfügbar.": "El monitor de salida seleccionado ya no está disponible.",
+    "Das Betriebssystem hat die Fensterposition oder Größe nicht bestätigt. Die Klickdurchleitung bleibt zum Schutz des Desktops aktiv.": "El sistema no confirmó la posición o el tamaño de la ventana. Los clics siguen atravesándola para mantener el escritorio accesible.",
+    "Die Modellgrenzen konnten nicht bestimmt werden.": "No se pudieron determinar los límites del modelo."
+  }
+}

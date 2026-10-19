@@ -1,8 +1,9 @@
 <script lang="ts">
   import { t } from '../lib/i18n';
   import { onMount, untrack } from 'svelte';
-  import { AvatarStage, type AvatarModelInfo } from '../lib/avatar';
+  import { AvatarStage, type AvatarModelInfo, type DesktopAnchor } from '../lib/avatar';
   import type { AutopilotVisualConfig } from '../lib/autopilot-motion';
+  import type { DesktopLayout } from '../lib/output-presentation';
 
   interface Props {
     profile: any;
@@ -13,9 +14,11 @@
     assetUrl?: string;
     onModelLoaded?: (info: AvatarModelInfo) => void;
     autopilot?: AutopilotVisualConfig;
+    desktop?:DesktopLayout;
+    onDesktopAnchor?:(anchor:DesktopAnchor|undefined)=>void;
   }
 
-  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, onModelLoaded, autopilot }: Props = $props();
+  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, onModelLoaded, autopilot, desktop, onDesktopAnchor }: Props = $props();
   let host: HTMLDivElement;
   let stage = $state<AvatarStage>();
   let failure = $state('');
@@ -26,7 +29,7 @@
 
   onMount(() => {
     try {
-      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot }, (message) => { emoteFailure = message; });
+      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor }, (message) => { emoteFailure = message; });
       stage = renderer;
       return () => { ++assetRequest; renderer.dispose(); };
     } catch (error) {
@@ -37,7 +40,7 @@
   });
 
   $effect(() => {
-    stage?.update({ profile, speaking, level, emotion, transparent, autopilot });
+    stage?.update({ profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor });
   });
 
   $effect(() => {

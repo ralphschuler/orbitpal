@@ -88,7 +88,7 @@ impl OverlayHub {
                 if let Ok(profile)=app.state::<crate::AppState>().store.profile(){event["botId"]=profile["id"].clone();}
             }
         }
-        if event["kind"]=="profile"{if let Some(bot_id)=event["botId"].as_str(){let state=app.state::<crate::AppState>();let config=state.store.bot_profile(bot_id).ok().and_then(|profile|crate::autopilot::config(&profile).ok()).unwrap_or_default();event["autopilotRuntime"]=json!(state.autopilot.runtime(bot_id,&config));}}
+        if event["kind"]=="profile"{if let Some(profile)=event.get("profile"){event["presentation"]=app.state::<crate::AppState>().presentation.snapshot(profile);}if let Some(bot_id)=event["botId"].as_str(){let state=app.state::<crate::AppState>();let config=state.store.bot_profile(bot_id).ok().and_then(|profile|crate::autopilot::config(&profile).ok()).unwrap_or_default();event["autopilotRuntime"]=json!(state.autopilot.runtime(bot_id,&config));}}
         if event["kind"]=="stop" {
             // Tray, Studio, Control-MCP and the global overlay stop all reach
             // this boundary. No background session survives an emergency stop.
@@ -295,7 +295,7 @@ async fn events(State(app):State<tauri::AppHandle>,Query(q):Query<Access>)->Resp
     let Ok(bot_id)=requested_bot(&app,&q)else{return StatusCode::NOT_FOUND.into_response();};
     let state=app.state::<crate::AppState>();let receiver=state.overlay.sender.subscribe();
     let initial=match state.store.scoped(&bot_id).and_then(|store|store.profile()){
-        Ok(profile)=>json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile),"autopilotRuntime":state.autopilot.runtime(&bot_id,&crate::autopilot::config(&profile).unwrap_or_default())}),
+        Ok(profile)=>json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile),"presentation":state.presentation.snapshot(&profile),"autopilotRuntime":state.autopilot.runtime(&bot_id,&crate::autopilot::config(&profile).unwrap_or_default())}),
         Err(_)=>return StatusCode::NOT_FOUND.into_response(),
     };
     let first=stream::once(async move{Ok::<Event,Infallible>(Event::default().data(initial.to_string()))});
@@ -408,11 +408,19 @@ pub fn close_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
     if let Some(window)=app.get_webview_window(&format!("avatar-{bot_id}")){window.close().map_err(|error|error.to_string())?;}
     let _=app.emit("cohost://overlay-state",json!({"botId":bot_id,"active":false}));Ok(())
 }
-pub fn configure_for_bot(app:&tauri::AppHandle,bot_id:&str,always_on_top:bool,click_through:bool)->Result<(),String>{
+pub fn configure_for_bot(app:&tauri::AppHandle,bot_id:&str,_always_on_top:bool,_click_through:bool)->Result<(),String>{
     if !crate::storage::valid_id(bot_id){return Err("Ungültige Bot-ID".into());}
-    if let Some(window)=app.get_webview_window(&format!("avatar-{bot_id}")){
-        window.set_always_on_top(always_on_top).map_err(|error|error.to_string())?;window.set_ignore_cursor_events(click_through).map_err(|error|error.to_string())?;
-    }Ok(())
+    let handle=app.clone();let id=bot_id.to_owned();
+    tauri::async_runtime::spawn(async move{
+        let main=handle.clone();let _=handle.run_on_main_thread(move||{
+            if let Some(window)=main.get_webview_window(&format!("avatar-{id}")){
+                let state=main.state::<crate::AppState>();let Ok(profile)=state.store.bot_profile(&id)else{return;};
+                let always_on_top=profile["output"]["alwaysOnTop"].as_bool().unwrap_or(false);let click_through=profile["output"]["clickThrough"].as_bool().unwrap_or(false);
+                let result=window.set_always_on_top(always_on_top).and_then(|_|window.set_ignore_cursor_events(click_through||main.state::<crate::AppState>().presentation.guarded_window(&id)));
+                if result.is_err(){let _=main.emit("cohost://agent",json!({"kind":"error","botId":id,"text":"Die Desktop-Darstellung konnte nicht angepasst werden."}));}
+            }
+        });
+    });Ok(())
 }
 pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
     let state=app.state::<crate::AppState>();let store=state.store.scoped(bot_id)?;let mut profile=store.profile()?;
@@ -421,35 +429,79 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
         state.overlay.publish(app,json!({"kind":"stop","botId":bot_id}));state.overlay.publish(app,json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile)}));
     }
     let label=format!("avatar-{bot_id}");
-    if let Some(window)=app.get_webview_window(&label){window.show().map_err(|error|error.to_string())?;window.set_focus().map_err(|error|error.to_string())?;let _=app.emit("cohost://overlay-state",json!({"botId":bot_id,"active":true}));return Ok(());}
+    if let Some(window)=app.get_webview_window(&label){crate::overlay_presentation::sync(app,bot_id)?;window.show().map_err(|error|error.to_string())?;window.set_focus().map_err(|error|error.to_string())?;let _=app.emit("cohost://overlay-state",json!({"botId":bot_id,"active":true}));return Ok(());}
     if let Some(legacy)=app.get_webview_window("avatar"){let _=legacy.close();}
     let window=tauri::WebviewWindowBuilder::new(app,&label,tauri::WebviewUrl::App(format!("index.html?overlay=1&bot={bot_id}").into()))
         .title(format!("OrbitPal · {}",profile["name"].as_str().unwrap_or("Charakter"))).inner_size(520.,720.).transparent(true).decorations(false).shadow(false).resizable(true).visible(false)
         .always_on_top(profile["output"]["alwaysOnTop"].as_bool().unwrap_or(false)).build().map_err(|error|error.to_string())?;
+    let signals=Arc::new(crate::window_signals::WindowSignals::default());
+    let mut initial_bounds=None;
     if let Some(bounds)=store.window_bounds()?{
         let x=bounds["x"].as_i64().unwrap_or(0).clamp(-65535,65535)as i32;let y=bounds["y"].as_i64().unwrap_or(0).clamp(-65535,65535)as i32;
         let width=bounds["width"].as_u64().unwrap_or(520).clamp(160,8192)as u32;let height=bounds["height"].as_u64().unwrap_or(720).clamp(160,8192)as u32;
         let visible=window.available_monitors().map(|monitors|monitors.iter().any(|monitor|{let p=monitor.position();let s=monitor.size();(x as i64+width as i64)>p.x as i64&&(y as i64+height as i64)>p.y as i64&&(x as i64)<p.x as i64+s.width as i64&&(y as i64)<p.y as i64+s.height as i64})).unwrap_or(false);
+        initial_bounds=if visible{Some(crate::window_signals::Bounds{x,y,width,height})}else{None};
         let _=window.set_size(tauri::PhysicalSize::new(width,height));if visible{let _=window.set_position(tauri::PhysicalPosition::new(x,y));}else{let _=window.center();}
     }
+    state.presentation.register_window(bot_id,signals.clone(),initial_bounds)?;
     window.set_ignore_cursor_events(profile["output"]["clickThrough"].as_bool().unwrap_or(false)).map_err(|error|error.to_string())?;window.show().map_err(|error|error.to_string())?;
     let handle=app.clone();let bot_id=bot_id.to_owned();let measured=window.clone();let revision=Arc::new(std::sync::atomic::AtomicU64::new(0));
     window.on_window_event(move|event|{
+        match event {
+            tauri::WindowEvent::Moved(position)=>signals.observe_move(position.x,position.y),
+            tauri::WindowEvent::Resized(size)=>signals.observe_resize(size.width,size.height),
+            _=>(),
+        }
+
         if matches!(event,tauri::WindowEvent::Moved(_)|tauri::WindowEvent::Resized(_)|tauri::WindowEvent::CloseRequested{..}){
-            if let(Ok(position),Ok(size))=(measured.outer_position(),measured.inner_size()){
+            revision.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+            if handle.state::<crate::AppState>().presentation.current_window(&bot_id,&signals)&&!handle.state::<crate::AppState>().presentation.suppress_bounds(&bot_id){if let(Ok(position),Ok(size))=(measured.outer_position(),measured.inner_size()){
                 let bounds=json!({"x":position.x,"y":position.y,"width":size.width,"height":size.height});let ticket=revision.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1;
                 if matches!(event,tauri::WindowEvent::CloseRequested{..}){if let Ok(store)=handle.state::<crate::AppState>().store.scoped(&bot_id){let _=store.save_window_bounds(&bounds);}}
-                else{let pending=revision.clone();let app=handle.clone();let bot=bot_id.clone();tauri::async_runtime::spawn(async move{tokio::time::sleep(Duration::from_millis(350)).await;if pending.load(std::sync::atomic::Ordering::Relaxed)==ticket{if let Ok(store)=app.state::<crate::AppState>().store.scoped(&bot){let _=store.save_window_bounds(&bounds);}}});}
+                else{let pending=revision.clone();let app=handle.clone();let bot=bot_id.clone();let current=measured.clone();let instance=signals.clone();tauri::async_runtime::spawn(async move{
+                    tokio::time::sleep(Duration::from_millis(350)).await;let main=app.clone();
+                    let _=app.run_on_main_thread(move||{
+                        if pending.load(std::sync::atomic::Ordering::Relaxed)!=ticket||!main.state::<crate::AppState>().presentation.current_window(&bot,&instance)||main.state::<crate::AppState>().presentation.suppress_bounds(&bot){return;}
+                        if let(Ok(position),Ok(size))=(current.outer_position(),current.inner_size()){
+                            let bounds=json!({"x":position.x,"y":position.y,"width":size.width,"height":size.height});
+                            if let Ok(store)=main.state::<crate::AppState>().store.scoped(&bot){let _=store.save_window_bounds(&bounds);}
+                        }
+                    });
+                });}
             }
         }
+        }
+        if let tauri::WindowEvent::ScaleFactorChanged{..}=event{crate::overlay_presentation::sync_or_report(&handle,&bot_id);}
         if let tauri::WindowEvent::Destroyed=event{
-            let state=handle.state::<crate::AppState>();
-            if let Ok(store)=state.store.scoped(&bot_id){if let Ok(profile)=store.profile(){if profile["output"]["mode"]=="overlay"{
-                if let Ok(profile)=store.patch_output(json!({"streamingEnabled":false,"mode":"studio"})){state.overlay.publish(&handle,json!({"kind":"stop","botId":bot_id}));state.overlay.publish(&handle,json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile)}));}
-            }}}
-            let _=handle.emit("cohost://overlay-state",json!({"botId":bot_id,"active":false}));let _=handle.emit("cohost://playback",json!({"botId":bot_id,"speaking":false,"output":"overlay"}));
+            // Setters can dispatch Destroyed inline on Main. Defer cleanup,
+            // never wait for the transition's Hub mutex from that callback.
+            let app=handle.clone();let bot=bot_id.clone();let instance=signals.clone();
+            tauri::async_runtime::spawn(async move{
+                let main=app.clone();let _=app.run_on_main_thread(move||{
+                    let state=main.state::<crate::AppState>();
+                    let Some(replacing)=state.presentation.forget_window(&bot,&instance)else{return;};
+                    if replacing {
+                        // Retiring a Webview also loses its playing/prepared
+                        // audio client. Cancel exact jobs before replacement;
+                        // never leave host history/playback busy until timeout.
+                        let jobs=state.overlay.speech.lock().map(|entries|entries.iter().filter(|entry|entry.bot_id==bot&&entry.output=="overlay").map(|entry|entry.id.clone()).collect::<Vec<_>>()).unwrap_or_default();
+                        for id in jobs{let _=cancel_playback(&main,&id,&bot,None);}
+                        // Closing/Stop or a profile change may have happened
+                        // since timeout. Reopen only the still-selected output.
+                        if state.store.bot_profile(&bot).is_ok_and(|profile|profile["output"]["mode"]=="overlay"&&profile["output"]["streamingEnabled"]==true){
+                            if let Err(error)=open_for_bot(&main,&bot){let _=main.emit("cohost://agent",json!({"kind":"error","botId":bot,"text":error}));}
+                        }
+                        return;
+                    }
+                    if let Ok(store)=state.store.scoped(&bot){if let Ok(profile)=store.profile(){if profile["output"]["mode"]=="overlay"{
+                        if let Ok(profile)=store.patch_output(json!({"streamingEnabled":false,"mode":"studio"})){state.overlay.publish(&main,json!({"kind":"stop","botId":bot}));state.overlay.publish(&main,json!({"kind":"profile","botId":bot,"profile":public_profile(&profile)}));}
+                    }}}
+                    let _=main.emit("cohost://overlay-state",json!({"botId":bot,"active":false}));let _=main.emit("cohost://playback",json!({"botId":bot,"speaking":false,"output":"overlay"}));
+                });
+            });
         }
     });
+    crate::overlay_presentation::sync(app,profile["id"].as_str().ok_or("Bot-ID fehlt")?)?;
     let _=app.emit("cohost://overlay-state",json!({"botId":profile["id"],"active":true}));Ok(())
 }
 
