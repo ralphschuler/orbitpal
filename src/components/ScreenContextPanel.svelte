@@ -4,6 +4,7 @@
   import { Eye } from '@lucide/svelte';
   import { call, native, prettyError } from '../lib/api';
   import HelpTip from './HelpTip.svelte';
+  import { systemPermission } from '../lib/system-permission';
   import ScreenCapturePermissions from './ScreenCapturePermissions.svelte';
 
   interface ScreenContextConfig { enabled: boolean; displayId: string }
@@ -12,15 +13,27 @@
     config: ScreenContextConfig;
     visionEnabled: boolean;
     disabled?: boolean;
+    permissionContext?: () => string;
   }
-  let { config = $bindable(), visionEnabled, disabled = false }: Props = $props();
+  let { config = $bindable(), visionEnabled, disabled = false, permissionContext = () => '' }: Props = $props();
   let displays = $state<CaptureDisplay[] | null>(null);
   let loading = $state(false);
   let error = $state('');
   let request = 0;
+  let enabling = $state(false);
+  let alive = true;
+  async function toggleScreen(enabled: boolean) {
+    if (!enabled) { config.enabled = false; systemPermission.invalidate(); return; }
+    if (enabling || disabled) return;
+    const expected = JSON.stringify(config); const context = permissionContext();
+    const current = () => alive && !disabled && JSON.stringify(config) === expected && permissionContext() === context;
+    enabling = true;
+    try { if (await systemPermission.ensure('screen', current) && current()) config.enabled = true; }
+    finally { if (alive) enabling = false; }
+  }
   const missingDisplay = $derived(displays !== null && !!config.displayId && !displays.some(display => display.id === config.displayId));
 
-  onDestroy(() => { ++request; });
+  onDestroy(() => { alive = false; ++request; systemPermission.invalidate(); });
 
   async function loadDisplays() {
     if (loading) return;
@@ -43,16 +56,16 @@
 
 <section class="settings-panel screen-context" aria-label={$t("Bildschirm als Kontext")}>
   <div class="section-heading"><Eye size={20}/><div><h2>{$t("Bildschirm als Kontext")}</h2><p>{$t("Eine gemeinsame Einstellung für Chats und Autopilot dieses Bots.")}</p></div></div>
-  <div class="toggle-row"><div><strong>{$t("Bildschirm bei jeder Anfrage mitsenden")} <HelpTip text={$t("Die Desktop-App nimmt vor jedem Aufruf des Dialogmodells einen aktuellen Screenshot auf und fügt ihn als Bild hinzu, auch bei normalen Chat-Antworten und im Autopilot. MCP-Server, Skills und Werkzeugfreigaben werden dafür nicht benötigt. Diese Einstellung erlaubt keine Computersteuerung.")}/></strong><small>{$t("Aktueller Screenshot vor jedem Modellaufruf, kein laufendes Video.")}</small></div><input type="checkbox" role="switch" aria-label={$t("Bildschirm bei jeder Anfrage mitsenden")} bind:checked={config.enabled} {disabled}/></div>
+  <div class="toggle-row"><div><strong>{$t("Bildschirm bei jeder Anfrage mitsenden")} <HelpTip text={$t("Die Desktop-App nimmt vor jedem Aufruf des Dialogmodells einen aktuellen Screenshot auf und fügt ihn als Bild hinzu, auch bei normalen Chat-Antworten und im Autopilot. MCP-Server, Skills und Werkzeugfreigaben werden dafür nicht benötigt. Diese Einstellung erlaubt keine Computersteuerung.")}/></strong><small>{$t("Aktueller Screenshot vor jedem Modellaufruf, kein laufendes Video.")}</small></div><input type="checkbox" role="switch" aria-label={$t("Bildschirm bei jeder Anfrage mitsenden")} checked={config.enabled} disabled={disabled || enabling} onchange={event => toggleScreen(event.currentTarget.checked)}/></div>
   <p class="field-note">{$t("Das Bild wird an das ausgewählte Dialogmodell übertragen. Bei Cloud- oder Remote-Anbietern verlässt es deinen Rechner und kann sichtbare private Inhalte enthalten. Benötigt ein bildfähiges Modell und die aktivierte Einstellung „Bilder an das Modell senden“.")}</p>
   {#if config.enabled}
-    <ScreenCapturePermissions {disabled}/>
+    <ScreenCapturePermissions {disabled} {permissionContext}/>
     <div class="display-choice"><label>{$t("Bildschirm")}<select bind:value={config.displayId} disabled={disabled || loading}><option value="">{$t("Hauptbildschirm (automatisch)")}</option>{#if config.displayId && !displays?.some(display => display.id === config.displayId)}<option value={config.displayId}>{missingDisplay ? $t("Nicht verfügbar") : $t("Gespeicherte Auswahl")} · {config.displayId}</option>{/if}{#each displays || [] as display (display.id)}<option value={display.id}>{display.name || display.id}{display.primary ? ' · ' + $t('Hauptbildschirm') : ''}</option>{/each}</select></label><button class="button secondary" onclick={loadDisplays} disabled={disabled || loading}>{loading ? $t("Lädt …") : $t("Bildschirme laden")}</button></div>
     {#if !visionEnabled}<p class="screen-warning" role="status">{$t("Die Bildübertragung ist für diesen Bot ausgeschaltet. Aktiviere „Bilder an das Modell senden“ unter Modelle, damit Bildschirmkontext funktioniert.")}</p>{/if}
     {#if missingDisplay}<p class="screen-warning" role="status">{$t("Der ausgewählte Bildschirm ist nicht verfügbar. Wähle einen erreichbaren Bildschirm; die App wechselt nicht automatisch auf einen anderen.")}</p>{/if}
     {#if displays?.length === 0}<p class="screen-warning" role="status">{$t("Das Betriebssystem hat keine Bildschirme gemeldet. Bildschirmkontext ist so nicht verfügbar.")}</p>{/if}
     {#if !native}<p class="screen-warning" role="status">{$t("Bildschirmaufnahmen sind nur in der Desktop-App verfügbar. Die Browseransicht kann deinen Bildschirm nicht aufnehmen.")}</p>{/if}
-    <p class="field-note">{$t("Das Betriebssystem kann eine Freigabe für Bildschirmaufnahmen verlangen. Bei verweigerter Freigabe zeigt die App einen Fehler. Screenshots bleiben nur während der Anfrage im Arbeitsspeicher, werden als JPEG auf höchstens 1.280 Pixel Kantenlänge verkleinert und nicht als Datei gespeichert.")}</p>
+    <p class="field-note">{$t("Das Betriebssystem kann eine Freigabe für Bildschirmaufnahmen verlangen. Vor dem Start wird die Freigabe geprüft; bei fehlender Freigabe hilft ein Dialog beim Anfragen und erneuten Prüfen. Screenshots bleiben nur während der Anfrage im Arbeitsspeicher, werden als JPEG auf höchstens 1.280 Pixel Kantenlänge verkleinert und nicht als Datei gespeichert.")}</p>
   {/if}
   {#if error}<p class="screen-warning" role="status">{$t(error)}</p>{/if}
 </section>

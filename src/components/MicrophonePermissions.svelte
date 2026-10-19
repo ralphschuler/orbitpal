@@ -21,7 +21,11 @@
     try { await call('open_microphone_settings'); }
     catch (failure) { error = failure; }
   }
-  onMount(() => { void refresh(); return () => { disposed = true; }; });
+  onMount(() => {
+    void refresh();
+    window.addEventListener('focus', refresh);
+    return () => { disposed = true; window.removeEventListener('focus', refresh); };
+  });
 </script>
 
 {#if native}
