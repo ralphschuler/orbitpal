@@ -110,6 +110,7 @@ impl AutopilotHub {
     }
 }
 pub fn publish(app:&tauri::AppHandle,runtime:Runtime){
+    crate::overlay_presentation::sync_or_report(app,&runtime.bot_id);
     let _=app.emit("cohost://autopilot",&runtime);
     let mut value=serde_json::to_value(runtime).unwrap_or_else(|_|json!({}));value["kind"]=json!("autopilot");app.state::<crate::AppState>().overlay.publish(app,value);
 }

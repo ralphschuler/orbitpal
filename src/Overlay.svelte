@@ -3,6 +3,9 @@
   import { onMount } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import Avatar from './components/Avatar.svelte';
+  import { PresentationVersions, type PresentationSnapshot } from './lib/output-presentation';
+  import { captionPlacement } from './lib/desktop-motion';
+  import type { DesktopAnchor } from './lib/avatar';
   import { AutopilotRuntimeVersions, type AutopilotRuntime } from './lib/autopilot-runtime';
   import { SpeechPlayer } from './lib/audio';
   import { EmoteSequence, type EmotePayload } from './lib/presentation';
@@ -13,6 +16,14 @@
   type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
   type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void> };
   let profile = $state<any>(cloneDefaults());
+  let presentation=$state<PresentationSnapshot>();
+  const presentationVersions=new PresentationVersions();
+  function acceptPresentation(value:unknown){if(presentationVersions.accept(value,botId))presentation=value;}
+  const renderProfile=$derived(presentation?{...profile,avatar:{...profile.avatar,scale:presentation.scale}}:profile);
+  const desktop=$derived(native&&presentation?.desktop.active?presentation.desktop:undefined);
+  let anchor=$state<DesktopAnchor>();
+  let captionWidth=$state(320),captionHeight=$state(80);
+  const captionPosition=$derived(anchor?captionPlacement(anchor,{width:captionWidth,height:captionHeight},anchor.viewport,16):undefined);
   let speaking = $state(false);
   let level = $state(0);
   let emotion = $state('neutral');
@@ -211,8 +222,10 @@
     const targetBot = event.botId || event.profile?.id;
     const globalStop = event.kind === 'stop' && !targetBot;
     if (!globalStop && (!targetBot || (botId && targetBot !== botId))) return;
+    if(event.kind==='presentation'){acceptPresentation(event);return;}
     if (event.kind === 'profile') {
       botId ||= event.profile.id;
+      acceptPresentation(event.presentation);
       ++profileRevision; ++emoteRevision; emoteSequence.stop();emoteAudio?.stop(); profile = event.profile;
       ++runtimeRevision; if(event.autopilotRuntime||event.profile?.autopilotRuntime)acceptAutopilot(event.autopilotRuntime||event.profile.autopilotRuntime);
       // Pin legacy OBS links without a bot parameter after their initial profile arrives.
@@ -247,7 +260,7 @@
   }
 
   async function drag(event: PointerEvent) {
-    if (!native || profile.output?.clickThrough || event.button !== 0) return;
+    if (!native || desktop?.active || profile.output?.clickThrough || event.button !== 0) return;
     event.preventDefault(); event.stopPropagation();
     try { await getCurrentWindow().startDragging(); }
     catch (error) { failureDetail = error instanceof Error ? error.message : String(error); }
@@ -266,6 +279,7 @@
         if (disposed) return;
         botId ||= state.profile.id;
         if (profileRevision === initialRevision) profile = state.profile;
+        acceptPresentation(state.presentation);
         if (runtimeRevision === initialRuntimeRevision) { const runtime=(state.autopilot || []).find((entry:any) => entry.botId === botId); if(runtime)acceptAutopilot(runtime); }
         const url = new URL(state.overlayUrl); url.searchParams.set('bot', botId); overlayUrl = url.toString();
       }).catch(() => { if (!disposed) connectionFailure = 'Charakterprofil konnte nicht geladen werden.'; });
@@ -292,14 +306,14 @@
 </script>
 
 <div class="overlay-scene">
-  <Avatar {profile} {speaking} {level} {emotion} {autopilot} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
-  {#if native && !profile.output?.clickThrough}
+  <Avatar profile={renderProfile} {speaking} {level} {emotion} {autopilot} {desktop} onDesktopAnchor={value=>anchor=value} transparent={true} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  {#if native && !desktop?.active && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>
     </button>
   {/if}
-  {#if text && profile.output.showSubtitles}
-    <div class="overlay-subtitle"><strong>{profile.name}</strong><span>{text}</span></div>
+  {#if text && profile.output.showSubtitles && (!desktop?.active||anchor?.visible)}
+    <div class="overlay-subtitle" class:desktop-caption={desktop?.active&&captionPosition!==undefined} bind:clientWidth={captionWidth} bind:clientHeight={captionHeight} style={desktop?.active&&captionPosition?`left:${captionPosition.left}px;top:${captionPosition.top}px;max-width:${captionPosition.maxWidth}px;max-height:${captionPosition.maxHeight}px`:undefined}><strong>{profile.name}</strong><span>{text}</span></div>
   {/if}
   {#if failure}
     <button class="overlay-audio" onclick={acknowledgeAudioFailure} title={$t(failureDetail)}>{$t(failure)}</button>
@@ -311,6 +325,8 @@
 </div>
 
 <style>
+  .overlay-subtitle.desktop-caption {bottom:auto;right:auto;align-items:center;width:max-content;overflow:hidden;transform:none;overflow-wrap:anywhere;}
+  .desktop-caption>span{max-width:min(360px,calc(100vw - 32px));}
   .overlay-drag { position: absolute; top: 12px; right: 12px; display: grid; place-items: center; width: 36px; height: 29px; border: 1px solid #b2c6e54d; border-radius: 8px; background: #1d2c45c9; color: #d1dff6; cursor: grab; opacity: 0; transition: opacity 0.15s; backdrop-filter: blur(8px); }
   .overlay-scene:hover .overlay-drag, .overlay-drag:focus-visible { opacity: 1; }
   .overlay-drag:active { cursor: grabbing; }
