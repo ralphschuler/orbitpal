@@ -8,6 +8,7 @@ mod chat_route;
 mod mcp;
 mod agent;
 mod overlay;
+mod overlay_http;
 mod memory;
 mod knowledge;
 mod runtime_command;
