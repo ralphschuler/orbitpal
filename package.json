@@ -8,9 +8,10 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
-    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check": "svelte-check --tsgo --tsconfig ./tsconfig.json",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "check:legacy": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "^5.3.0",
@@ -28,6 +29,7 @@
     "@tauri-apps/cli": "^2.0.0",
     "@types/node": "^26.6.5",
     "@types/three": "^0.186.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "svelte-check": "^4.7.7",
     "typescript": "^6.0.3",
     "vite": "^8.3.4",

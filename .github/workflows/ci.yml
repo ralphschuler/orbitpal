@@ -59,8 +59,10 @@ jobs:
         run: node scripts/release-info.mjs
       - name: Check packaging logic
         run: node --test scripts/release-tests.mjs
-      - name: Type and Svelte checks
-        run: pnpm check
+      - name: Type and Svelte checks (native TypeScript 7 and editor-compatible TypeScript 6)
+        run: |
+          pnpm check
+          pnpm check:legacy
       - name: Frontend unit tests (local fixtures and mocks)
         run: pnpm test:run
       - name: Fetch locked Rust dependencies

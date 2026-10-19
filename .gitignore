@@ -24,3 +24,6 @@ work/
 *.deb
 *.rpm
 Thumbs.db
+
+# Transpiled Svelte workspace used by the native TypeScript checker
+.svelte-check/
