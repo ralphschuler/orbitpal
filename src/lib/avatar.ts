@@ -5,9 +5,10 @@ import { desktopFraming, measureDesktopModel } from './desktop-framing';
 import type { DesktopLayout } from './output-presentation';
 export type DesktopAnchor={x:number;y:number;width:number;height:number;visible:boolean;viewport:{width:number;height:number}};
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { createAvatarLoader } from './avatar-loader';
+import { disposeAvatarObject as disposeObject } from './avatar-resources';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { VRMExpressionMorphTargetBind, VRMLoaderPlugin, VRMUtils, type VRM, type VRMExpression } from '@pixiv/three-vrm';
+import { VRMExpressionMorphTargetBind, VRMUtils, type VRM, type VRMExpression } from '@pixiv/three-vrm';
 import { configureBundledAccessories, discoverGenericHumanoid, humanoidArmRest, humanoidFrame, humanoidRotation, humanoidWaveRaise, poseGenericArm, rawHumanoidRig, rotateGenericBone, type GenericHumanoidRig } from './avatar-rig';
 import { AuthoredAnimationProperties, finishVrmAnimationFrame, selectEmoteAnimation, selectIdleAnimation } from './avatar-animation';
 import { ambientGestureActions, discoverWalkingLegs, followAmbientPosition, motionLaneHalfWidth, sampleAmbientMotion, sampleWalkingGait, selectWalkingAnimation, type AutopilotVisualConfig, type WalkingLegs } from './autopilot-motion';
@@ -69,6 +70,7 @@ function morphVowel(name: string): Vowel | undefined {
 /** A self-contained renderer shared by the dashboard, native overlay and OBS. */
 export class AvatarStage {
   private renderer: THREE.WebGLRenderer;
+  private assetLoader: ReturnType<typeof createAvatarLoader>;
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(32, 1, 0.05, 100);
   private desktopCamera=new THREE.OrthographicCamera(-1,1,1,-1,.05,100);
@@ -148,6 +150,7 @@ export class AvatarStage {
     this.options = options;
     this.assetState = initialAssetUrl ? 'loading' : 'ready';
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    this.assetLoader = createAvatarLoader(this.renderer);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -253,17 +256,12 @@ export class AvatarStage {
     try {
       // GLTFLoader can swallow a failed image request and finish with an
       // untextured material. Treat missing resources as an import error.
-      let resourceFailed = false;
-      const manager = new THREE.LoadingManager();
-      manager.onError = () => { resourceFailed = true; };
-      const loader = new GLTFLoader(manager);
-      loader.register((parser) => new VRMLoaderPlugin(parser));
-      const gltf = await loader.loadAsync(next);
+      const gltf = await this.assetLoader.loadAsync(next);
       if (this.disposed || request !== this.request) {
         disposeObject(gltf.scene);
         return;
       }
-      if (resourceFailed) {
+      if (gltf.userData.orbitpalResourceFailed) {
         disposeObject(gltf.scene);
         throw new Error('Texturen oder Modelldaten konnten nicht vollständig geladen werden.');
       }
@@ -1107,31 +1105,13 @@ export class AvatarStage {
     this.controls.dispose();
     this.clearImported();
     disposeObject(this.scene);
+    this.assetLoader.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
   }
 }
 
-function disposeObject(root: THREE.Object3D) {
-  const geometries = new Set<THREE.BufferGeometry>();
-  const materials = new Set<THREE.Material>();
-  const textures = new Set<THREE.Texture>();
-  const skeletons = new Set<THREE.Skeleton>();
-  root.traverse((object) => {
-    const mesh = object as THREE.Mesh;
-    if (mesh.geometry) geometries.add(mesh.geometry);
-    if (object instanceof THREE.SkinnedMesh) skeletons.add(object.skeleton);
-    if (mesh.material) for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
-      materials.add(material);
-      for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
-    }
-  });
-  textures.forEach((texture) => texture.dispose());
-  materials.forEach((material) => material.dispose());
-  geometries.forEach((geometry) => geometry.dispose());
-  skeletons.forEach((skeleton) => skeleton.dispose());
-}
 
 export function createRobot(): Robot {
   const root = new THREE.Group();

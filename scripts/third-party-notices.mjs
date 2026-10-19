@@ -181,6 +181,12 @@ for (const pkg of rust) {
   const directory = path.dirname(pkg.manifest_path);
   section('Rust', pkg.name, pkg.version, pkg.license, pkg.authors || [], notices(directory, `${pkg.name}@${pkg.version}`, pkg.license_file, pkg.license), `https://crates.io/api/v1/crates/${pkg.name}/${pkg.version}/download`);
 }
+// Decoder WASM files include upstream code whose notices differ from Three's
+// own MIT license. Preserve their reviewed full texts and exact source hashes.
+const decoderManifest = json(path.join(root, 'public/decoders/manifest.json'));
+sections.push('', '='.repeat(78), 'LOCALLY BUNDLED AVATAR DECODERS', `Source: ${decoderManifest.source}`);
+for (const file of decoderManifest.files) sections.push(`${file.path || file.bundledAs}: ${file.license}`, `Source file: ${file.source}`, `Source SHA-256: ${file.sourceSha256 || file.sha256}`, `Bundled SHA-256: ${file.sha256}`, ...(file.modification ? [`Modification: ${file.modification}`] : []));
+for (const notice of decoderManifest.notices) sections.push('', `--- ${notice.path} (SHA-256 ${notice.sha256}) ---`, fs.readFileSync(path.join(root, notice.path), 'utf8').trimEnd());
 sections.push('', `Canonical standard-license supplements for archives missing standalone texts: ${standardSupplements}`, '', 'COLLECTION WARNINGS', '===================', ...(warnings.length ? warnings : ['None.']), '');
 fs.mkdirSync(path.dirname(destination), { recursive: true });
 fs.writeFileSync(destination, clean(sections.join('\n')));

@@ -76,7 +76,19 @@
     "glTF-Import: Die GLB-Datei konnte nicht vollständig geschrieben werden.": "glTF import: The GLB file could not be fully written.",
     "glTF-Import: Die validierte GLB-Datei konnte nicht atomar importiert werden. Die Zieldatei darf nicht existieren; das Dateisystem muss Hardlinks unterstützen.": "glTF import: The validated GLB file could not be imported atomically. The destination file must not exist; the file system must support hard links.",
     "glTF-Import: Ressourcen müssen reguläre Dateien sein; FIFOs, Geräte und Verzeichnisse sind nicht erlaubt.": "glTF import: Resources must be regular files; FIFOs, devices and directories are not allowed.",
-    "glTF-Import: Eine Ressource konnte nicht geprüft werden.": "glTF import: A resource could not be checked."
+    "glTF-Import: Eine Ressource konnte nicht geprüft werden.": "glTF import: A resource could not be checked.",
+    "glTF-Import: Ungültiger Meshopt-Fallback-Puffer.": "glTF: Invalid Meshopt fallback buffer.",
+    "glTF-Import: Ungültiger Pufferindex.": "glTF: Invalid buffer index.",
+    "glTF-Import: Ungültiger Meshopt-Quellpuffer.": "glTF: Invalid Meshopt source buffer.",
+    "glTF-Import: Meshopt-Daten dürfen keinen leeren Fallback-Puffer verwenden.": "glTF: Meshopt data cannot use an empty fallback buffer.",
+    "glTF-Import: Unbekannter Meshopt-Quellpuffer.": "glTF: Unknown Meshopt source buffer.",
+    "glTF-Import: Ungültiger Meshopt-Offset.": "glTF: Invalid Meshopt offset.",
+    "glTF-Import: Ungültige Meshopt-Länge.": "glTF: Invalid Meshopt length.",
+    "glTF-Import: Meshopt-Daten liegen außerhalb des Quellpuffers.": "glTF: Meshopt data is outside the source buffer.",
+    "glTF-Import: Der glTF-Import unterstützt PNG-, JPEG- und BasisU-KTX2-Texturen.": "glTF: glTF import supports PNG, JPEG and BasisU KTX2 textures.",
+    "glTF-Import: Externe Texturen müssen PNG-, JPEG- oder KTX2-Dateien sein.": "glTF: External textures must be PNG, JPEG or KTX2 files.",
+    "glTF-Import: Bilddaten müssen in einem echten, unkomprimierten bufferView liegen.": "glTF: Image data must use a real, uncompressed bufferView.",
+    "glTF-Import: Texturinhalt ist kein unterstütztes PNG/JPEG/KTX2 oder sein Dateikopf ist unvollständig.": "glTF: The texture is not a supported PNG/JPEG/KTX2 or its header is incomplete."
   },
   "fr": {
     "glTF-Import: Ressourcengröße ist ungültig.": "Import glTF : La taille de la ressource est invalide.",
@@ -155,7 +167,19 @@
     "glTF-Import: Die GLB-Datei konnte nicht vollständig geschrieben werden.": "Import glTF : Le fichier GLB n’a pas pu être écrit complètement.",
     "glTF-Import: Die validierte GLB-Datei konnte nicht atomar importiert werden. Die Zieldatei darf nicht existieren; das Dateisystem muss Hardlinks unterstützen.": "Import glTF : Le fichier GLB validé n’a pas pu être importé atomiquement. Le fichier de destination ne doit pas exister ; le système de fichiers doit prendre en charge les liens physiques.",
     "glTF-Import: Ressourcen müssen reguläre Dateien sein; FIFOs, Geräte und Verzeichnisse sind nicht erlaubt.": "Import glTF : les ressources doivent être des fichiers ordinaires ; les tubes nommés, périphériques et dossiers ne sont pas autorisés.",
-    "glTF-Import: Eine Ressource konnte nicht geprüft werden.": "Import glTF : une ressource n’a pas pu être vérifiée."
+    "glTF-Import: Eine Ressource konnte nicht geprüft werden.": "Import glTF : une ressource n’a pas pu être vérifiée.",
+    "glTF-Import: Ungültiger Meshopt-Fallback-Puffer.": "glTF: Tampon de secours Meshopt invalide.",
+    "glTF-Import: Ungültiger Pufferindex.": "glTF: Indice de tampon invalide.",
+    "glTF-Import: Ungültiger Meshopt-Quellpuffer.": "glTF: Tampon source Meshopt invalide.",
+    "glTF-Import: Meshopt-Daten dürfen keinen leeren Fallback-Puffer verwenden.": "glTF: Les données Meshopt ne peuvent pas utiliser un tampon de secours vide.",
+    "glTF-Import: Unbekannter Meshopt-Quellpuffer.": "glTF: Tampon source Meshopt inconnu.",
+    "glTF-Import: Ungültiger Meshopt-Offset.": "glTF: Décalage Meshopt invalide.",
+    "glTF-Import: Ungültige Meshopt-Länge.": "glTF: Longueur Meshopt invalide.",
+    "glTF-Import: Meshopt-Daten liegen außerhalb des Quellpuffers.": "glTF: Les données Meshopt dépassent le tampon source.",
+    "glTF-Import: Der glTF-Import unterstützt PNG-, JPEG- und BasisU-KTX2-Texturen.": "glTF: L’import glTF prend en charge les textures PNG, JPEG et BasisU KTX2.",
+    "glTF-Import: Externe Texturen müssen PNG-, JPEG- oder KTX2-Dateien sein.": "glTF: Les textures externes doivent être des fichiers PNG, JPEG ou KTX2.",
+    "glTF-Import: Bilddaten müssen in einem echten, unkomprimierten bufferView liegen.": "glTF: Les images doivent utiliser un bufferView réel et non compressé.",
+    "glTF-Import: Texturinhalt ist kein unterstütztes PNG/JPEG/KTX2 oder sein Dateikopf ist unvollständig.": "glTF: La texture n’est pas un PNG/JPEG/KTX2 pris en charge ou son en-tête est incomplet."
   },
   "es": {
     "glTF-Import: Ressourcengröße ist ungültig.": "Importación glTF: El tamaño del recurso no es válido.",
@@ -234,6 +258,18 @@
     "glTF-Import: Die GLB-Datei konnte nicht vollständig geschrieben werden.": "Importación glTF: No se ha podido escribir el archivo GLB completamente.",
     "glTF-Import: Die validierte GLB-Datei konnte nicht atomar importiert werden. Die Zieldatei darf nicht existieren; das Dateisystem muss Hardlinks unterstützen.": "Importación glTF: No se ha podido importar el archivo GLB validado de forma atómica. El archivo de destino no debe existir; el sistema de archivos debe admitir enlaces duros.",
     "glTF-Import: Ressourcen müssen reguläre Dateien sein; FIFOs, Geräte und Verzeichnisse sind nicht erlaubt.": "Importación glTF: Los recursos deben ser archivos normales; no se permiten FIFO, dispositivos ni directorios.",
-    "glTF-Import: Eine Ressource konnte nicht geprüft werden.": "Importación glTF: No se pudo comprobar un recurso."
+    "glTF-Import: Eine Ressource konnte nicht geprüft werden.": "Importación glTF: No se pudo comprobar un recurso.",
+    "glTF-Import: Ungültiger Meshopt-Fallback-Puffer.": "glTF: Búfer alternativo Meshopt no válido.",
+    "glTF-Import: Ungültiger Pufferindex.": "glTF: Índice de búfer no válido.",
+    "glTF-Import: Ungültiger Meshopt-Quellpuffer.": "glTF: Búfer de origen Meshopt no válido.",
+    "glTF-Import: Meshopt-Daten dürfen keinen leeren Fallback-Puffer verwenden.": "glTF: Los datos Meshopt no pueden usar un búfer alternativo vacío.",
+    "glTF-Import: Unbekannter Meshopt-Quellpuffer.": "glTF: Búfer de origen Meshopt desconocido.",
+    "glTF-Import: Ungültiger Meshopt-Offset.": "glTF: Desplazamiento Meshopt no válido.",
+    "glTF-Import: Ungültige Meshopt-Länge.": "glTF: Longitud Meshopt no válida.",
+    "glTF-Import: Meshopt-Daten liegen außerhalb des Quellpuffers.": "glTF: Los datos Meshopt están fuera del búfer de origen.",
+    "glTF-Import: Der glTF-Import unterstützt PNG-, JPEG- und BasisU-KTX2-Texturen.": "glTF: La importación glTF admite texturas PNG, JPEG y BasisU KTX2.",
+    "glTF-Import: Externe Texturen müssen PNG-, JPEG- oder KTX2-Dateien sein.": "glTF: Las texturas externas deben ser archivos PNG, JPEG o KTX2.",
+    "glTF-Import: Bilddaten müssen in einem echten, unkomprimierten bufferView liegen.": "glTF: Las imágenes deben usar un bufferView real sin comprimir.",
+    "glTF-Import: Texturinhalt ist kein unterstütztes PNG/JPEG/KTX2 oder sein Dateikopf ist unvollständig.": "glTF: La textura no es un PNG/JPEG/KTX2 compatible o su cabecera está incompleta."
   }
 }
