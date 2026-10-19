@@ -553,7 +553,7 @@
       else notify(`${botConfig.name}: ${prettyError(e)}`,true);
       log(`${botConfig.name}: ${prettyError(e)}`,'error');
     }}
-    finally{if(autonomous&&epoch===turnEpoch)autopilotScheduler.finish(botId);if(epoch===turnEpoch){busy=false;answeringAutopilot=false;speechPreparing=false;partial='';answeringBotId='';answeringSpeechId='';}}
+    finally{if(epoch===turnEpoch){busy=false;answeringAutopilot=false;speechPreparing=false;partial='';answeringBotId='';answeringSpeechId='';}}
   }
   async function sendOwn(){if(microphoneStarting||updateInstalling||systemPermission.active)return;unlockEmoteAudio();const text=message;await runMessage(text,'operator','Streamer',profile.id,undefined,true,()=>{if(message===text)message='';});}
   async function answerQueued(item:any,botId=profile.id,interactive=true){
@@ -728,8 +728,8 @@
         if(next){void answerQueued(next,bot.id,false);return;}
       }
       if(autoBlocked)return;
-      const spontaneous=autopilotScheduler.next();
-      if(spontaneous)void runMessage('', 'autopilot', 'Autopilot', spontaneous);
+      const spontaneous=autopilotScheduler.nextClaim();
+      if(spontaneous)void autopilotScheduler.runClaim(spontaneous,()=>runMessage('', 'autopilot', 'Autopilot', spontaneous.botId));
     },1000);
     return()=>{appAlive=false;systemPermission.cancel();disposed=true;autopilotScheduler.stop();turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
   });

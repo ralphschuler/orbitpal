@@ -12,6 +12,8 @@ export interface AutopilotCandidate {
   eligible?: boolean;
 }
 
+export interface AutopilotClaim { readonly botId: string; readonly revision: number }
+
 interface Session {
   seed: string;
   config: AutopilotConfig;
@@ -55,7 +57,7 @@ function sameConfig(left: AutopilotConfig, right: AutopilotConfig): boolean {
 export class AutopilotScheduler {
   private sessions = new Map<string, Session>();
   private budgets = new Map<string, Budget>();
-  private inFlight?: string;
+  private inFlight?: AutopilotClaim;
   private claimOrder = 0;
   private lastTime?: number;
   private readonly now: () => number;
@@ -143,14 +145,32 @@ export class AutopilotScheduler {
     if (!chosen) return undefined;
     chosen.budget.attempts.push(now);
     chosen.budget.lastClaim = ++this.claimOrder;
-    this.inFlight = chosen.botId;
+    this.inFlight = Object.freeze({ botId: chosen.botId, revision: this.claimOrder });
     this.postpone(now);
     return chosen.botId;
   }
 
+  /** Capture the exact turn lease before starting any asynchronous preflight. */
+  nextClaim(blocked = false): AutopilotClaim | undefined {
+    return this.next(blocked) === undefined ? undefined : this.inFlight;
+  }
+
+  /** Own the full attempt, including permission checks and early returns. A late
+   * finally after Stop/restart must never release a newer same-bot turn. */
+  async runClaim(claim: AutopilotClaim, action: () => Promise<unknown>): Promise<void> {
+    if (this.inFlight !== claim) return;
+    try { await action(); }
+    finally {
+      if (this.inFlight === claim) {
+        this.inFlight = undefined;
+        this.postpone(this.time());
+      }
+    }
+  }
+
   /** Call after playback finishes, or after a failed/cancelled claimed attempt. */
   finish(botId: string): void {
-    if (this.inFlight !== botId) return;
+    if (this.inFlight?.botId !== botId) return;
     this.inFlight = undefined;
     this.postpone(this.time());
   }
@@ -163,6 +183,6 @@ export class AutopilotScheduler {
   stop(botId?: string): void {
     if (botId === undefined) { this.sessions.clear(); this.inFlight = undefined; return; }
     this.sessions.delete(botId);
-    if (this.inFlight === botId) { this.inFlight = undefined; this.postpone(this.time()); }
+    if (this.inFlight?.botId === botId) { this.inFlight = undefined; this.postpone(this.time()); }
   }
 }
