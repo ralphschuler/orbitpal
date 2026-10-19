@@ -26,6 +26,7 @@ export interface AvatarModelInfo {
   animations: { name: string; duration: number }[];
   proceduralGestures: string[];
   actions?: AvailableAction[];
+  avatarBinding?: unknown;
   error?: string;
 }
 
@@ -419,7 +420,7 @@ export class AvatarStage {
   getModelInfo(): AvatarModelInfo {
     const actions=availableActions(this.clips,this.proceduralGestures()).filter(action=>action.kind==='gesture'||this.clips.some(clip=>clip.name===action.action&&this.effectiveClip(clip)));
     return {
-      status: this.emoteReady ? 'ready' : 'loading',
+      status: this.emoteReady ? 'ready' : 'loading', avatarBinding: this.loadedEmoteBinding ? JSON.parse(this.loadedEmoteBinding) : undefined,
       format: !this.asset ? 'builtin' : this.vrm ? this.vrm.meta.metaVersion === '0' ? 'vrm0' : 'vrm1' : 'glb',
       animations: actions.filter(action=>action.kind==='clip').map(action=>({name:action.action,duration:action.duration!})),
       proceduralGestures: actions.filter(action=>action.kind==='gesture').map(action=>action.action), actions,
