@@ -20,6 +20,7 @@
   let error = $state('');
   let session = $state<ScreenSession | null>(null);
   let disposed = false;
+  let statusRevision = 0;
   let request = 0;
   const missingDisplay = $derived(displays !== null && !!config.displayId && !displays.some(display => display.id === config.displayId));
 
@@ -32,10 +33,12 @@
 
   async function refreshSession() {
     if (!native) return;
+    const revision = ++statusRevision;
+    const action = request;
     try {
       const result = await call<ScreenSession>('get_screen_session', { botId });
-      if (!disposed) session = result;
-    } catch (cause) { if (!disposed) error = prettyError(cause); }
+      if (!disposed && revision === statusRevision && action === request) session = result;
+    } catch (cause) { if (!disposed && revision === statusRevision && action === request) error = prettyError(cause); }
   }
 
   async function selectWayland() {
@@ -45,13 +48,13 @@
       const result = await call<ScreenSession>('select_screen_source', { botId });
       if (disposed || revision !== request) return;
       if (result.backend !== 'wayland' || result.phase !== 'ready' || !/^wayland:[0-9a-f-]{36}$/.test(result.displayId)) throw new Error('Die Wayland-Quelle wurde nicht verbunden.');
-      config.displayId = result.displayId; session = result;
+      ++statusRevision; config.displayId = result.displayId; session = result;
     } catch (cause) { if (!disposed && revision === request) error = prettyError(cause); }
     finally { if (!disposed && revision === request) loading = false; }
   }
 
   async function disconnectWayland() {
-    ++request; error = '';
+    ++request; ++statusRevision; error = '';
     try { await call('disconnect_screen_source', { botId }); await refreshSession(); }
     catch (cause) { if (!disposed) error = prettyError(cause); }
     finally { if (!disposed) loading = false; }

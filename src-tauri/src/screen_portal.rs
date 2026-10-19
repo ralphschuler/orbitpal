@@ -102,6 +102,16 @@ impl Session {
     }
 }
 
+/// Also bounds cancellation while D-Bus is connecting or registering signal
+/// matches, before the backend has reached its own session watcher.
+#[cfg(any(target_os="linux",test))]
+async fn finish_selection(session:&Session,setup:impl std::future::Future<Output=Result<(),String>>)->Result<(),String>{
+    tokio::select!{
+        result=tokio::time::timeout(Duration::from_secs(125),setup)=>result.map_err(|_|"Wayland-Auswahl hat zu lange gedauert. Bitte erneut auswählen.".to_owned())?,
+        _=async{while !session.cancelled.load(Ordering::SeqCst){tokio::time::sleep(Duration::from_millis(30)).await;}}=>Err("Wayland-Auswahl wurde abgebrochen".into()),
+    }
+}
+
 #[derive(Default)]
 pub struct PortalState { sessions: Mutex<HashMap<String, Arc<Session>>> }
 
@@ -125,7 +135,7 @@ impl PortalState {
         if !is_wayland() { return Err("Der Wayland-Dialog ist nur in einer Linux-Wayland-Sitzung verfügbar".into()); }
         let session = self.begin(bot_id, model)?;
         #[cfg(target_os = "linux")]
-        if let Err(error) = linux::select(session.clone()).await { session.close(&error); return Err(error); }
+        if let Err(error) = finish_selection(&session,linux::select(session.clone())).await { session.close(&error); return Err(error); }
         let status=session.snapshot()?;
         if status.phase!="ready"||session.cancelled.load(Ordering::SeqCst){return Err(status.message);}
         Ok(status)
@@ -227,5 +237,13 @@ mod tests {
         assert!(request.cancel.load(Ordering::SeqCst));
         let _=request.reply.send(Ok(image::RgbImage::from_pixel(2,2,image::Rgb([255,0,0]))));
         assert!(task.join().unwrap().is_err());assert!(hub.capture_for(&profile("nova",&session),Arc::new(AtomicBool::new(false))).is_err());
+    }
+    #[tokio::test] async fn cancellation_drops_pending_setup_before_a_portal_watcher_exists(){
+        struct Cleanup(Arc<AtomicBool>);impl Drop for Cleanup{fn drop(&mut self){self.0.store(true,Ordering::SeqCst);}}
+        let session=Arc::new(Session::new(json!({"model":"fixture"})));let released=Arc::new(AtomicBool::new(false));
+        let cleanup=Cleanup(released.clone());let (started,ready)=tokio::sync::oneshot::channel();
+        let setup=async move{let _cleanup=cleanup;let _=started.send(());std::future::pending::<Result<(),String>>().await};
+        let (result,())=tokio::join!(finish_selection(&session,setup),async{ready.await.unwrap();session.close("fixture revoke during setup");});
+        assert!(result.is_err());assert!(released.load(Ordering::SeqCst));assert_eq!(session.snapshot().unwrap().phase,"closed");
     }
 }
