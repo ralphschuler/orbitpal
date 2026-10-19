@@ -75,7 +75,13 @@ jobs:
           (cd vendor/glib && sha256sum --check COHOST-SHA256SUMS.txt)
           cargo test --locked --release --manifest-path src-tauri/Cargo.toml --test glib_variant_regression
       - name: Rust unit tests (no external accounts)
+        env:
+          ORBITPAL_NATIVE_FIXTURE_DIR: ${{ runner.temp }}/orbitpal-avatar-fixtures
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Offline compressed-avatar WebGL fixtures (installed Chrome)
+        env:
+          ORBITPAL_NATIVE_FIXTURE_DIR: ${{ runner.temp }}/orbitpal-avatar-fixtures
+        run: pnpm test:avatar-decoders
       - name: Build Windows installer migration fixtures (no signing secrets)
         if: runner.os == 'Windows'
         shell: bash

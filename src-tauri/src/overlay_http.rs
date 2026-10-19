@@ -4,7 +4,7 @@ use axum::{extract::Request, http::{header, HeaderValue}, middleware::{self, Nex
 
 const OBS_CSP: &str = concat!(
     "default-src 'none'; ",
-    "script-src 'self'; ",
+    "script-src 'self' 'wasm-unsafe-eval'; ",
     // Svelte uses inline style properties for the avatar/subtitle presentation.
     "style-src 'self' 'unsafe-inline'; ",
     "img-src 'self' data: blob:; ",
@@ -14,7 +14,7 @@ const OBS_CSP: &str = concat!(
     // exact origin. No broad loopback host/port, WebSocket or native IPC grant.
     "connect-src 'self' data: blob:; ",
     "base-uri 'none'; object-src 'none'; frame-src 'none'; ",
-    "worker-src 'none'; form-action 'none'"
+    "worker-src blob:; form-action 'none'"
 );
 
 /// Apply to every response, including HTML, assets, SSE and authorization errors.
@@ -84,11 +84,12 @@ mod tests {
     #[test]
     fn browser_policy_has_only_reviewed_sources_and_never_adds_native_or_external_grants() {
         let directives:std::collections::BTreeMap<_,_>=OBS_CSP.split(';').map(str::trim).filter(|part|!part.is_empty()).map(|part|{let mut words=part.split_whitespace();(words.next().unwrap(),words.collect::<Vec<_>>())}).collect();
-        assert_eq!(directives["default-src"],["'none'"]);assert_eq!(directives["script-src"],["'self'"]);
+        assert_eq!(directives["default-src"],["'none'"]);assert_eq!(directives["script-src"],["'self'","'wasm-unsafe-eval'"]);
         assert_eq!(directives["connect-src"],["'self'","data:","blob:"]);
         assert_eq!(directives["media-src"],["'self'","data:","blob:"]);
-        for disabled in ["base-uri","object-src","frame-src","worker-src","form-action"]{assert_eq!(directives[disabled],["'none'"]);}
-        for sources in directives.values(){for source in sources{assert!(matches!(*source,"'self'"|"'none'"|"'unsafe-inline'"|"data:"|"blob:"));}}
+        for disabled in ["base-uri","object-src","frame-src","form-action"]{assert_eq!(directives[disabled],["'none'"]);}
+        assert_eq!(directives["worker-src"],["blob:"]);
+        for sources in directives.values(){for source in sources{assert!(matches!(*source,"'self'"|"'none'"|"'unsafe-inline'"|"'wasm-unsafe-eval'"|"data:"|"blob:"));}}
         assert!(!directives["script-src"].contains(&"'unsafe-inline'"));assert!(!directives["script-src"].contains(&"'unsafe-eval'"));
     }
 }

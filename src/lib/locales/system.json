@@ -428,7 +428,13 @@
     "Anfrage-ID wurde bereits verwendet": "Request ID has already been used",
     "Anfrage-IDs nicht verfügbar": "Request IDs unavailable",
     "Zu viele aktuelle Anfrage-IDs. Bitte kurz warten.": "Too many recent request IDs. Wait a moment.",
-    "Antwort gehört nicht zur aktuellen Anfrage.": "The reply does not belong to the current request."
+    "Antwort gehört nicht zur aktuellen Anfrage.": "The reply does not belong to the current request.",
+    "Die komprimierten Modelldaten sind ungültig oder überschreiten das Ressourcenlimit.": "The compressed model data is invalid or exceeds the resource limit.",
+    "Meshopt-Fallback-Puffer überschreitet 256 MiB.": "The Meshopt fallback buffer exceeds 256 MiB.",
+    "Das Laden des Modells wurde abgebrochen.": "Model loading was cancelled.",
+    "Der Modell-Decoder ist fehlgeschlagen. Bitte die Datei erneut laden.": "The model decoder failed. Load the file again.",
+    "Das Modell konnte nicht innerhalb von 60 Sekunden geladen werden. Bitte Datei und Decoder prüfen.": "The model could not be loaded within 60 seconds. Check the file and decoder.",
+    "Ungültige Draco-Attributgröße.": "Invalid Draco attribute size."
   },
   "fr": {
     "Für diese Stimme ist keine Sprachausgabe verbunden.": "Aucune sortie vocale n’est connectée pour cette voix.",
@@ -859,7 +865,13 @@
     "Anfrage-ID wurde bereits verwendet": "Cet identifiant de requête a déjà été utilisé",
     "Anfrage-IDs nicht verfügbar": "Identifiants de requête indisponibles",
     "Zu viele aktuelle Anfrage-IDs. Bitte kurz warten.": "Trop d’identifiants de requête récents. Patientez un instant.",
-    "Antwort gehört nicht zur aktuellen Anfrage.": "La réponse ne correspond pas à la requête actuelle."
+    "Antwort gehört nicht zur aktuellen Anfrage.": "La réponse ne correspond pas à la requête actuelle.",
+    "Die komprimierten Modelldaten sind ungültig oder überschreiten das Ressourcenlimit.": "Les données compressées du modèle sont invalides ou dépassent la limite de ressources.",
+    "Meshopt-Fallback-Puffer überschreitet 256 MiB.": "Le tampon de secours Meshopt dépasse 256 Mio.",
+    "Das Laden des Modells wurde abgebrochen.": "Le chargement du modèle a été annulé.",
+    "Der Modell-Decoder ist fehlgeschlagen. Bitte die Datei erneut laden.": "Le décodeur du modèle a échoué. Rechargez le fichier.",
+    "Das Modell konnte nicht innerhalb von 60 Sekunden geladen werden. Bitte Datei und Decoder prüfen.": "Le modèle n’a pas pu être chargé en 60 secondes. Vérifiez le fichier et le décodeur.",
+    "Ungültige Draco-Attributgröße.": "Taille d’attribut Draco invalide."
   },
   "es": {
     "Für diese Stimme ist keine Sprachausgabe verbunden.": "No hay ninguna salida de voz conectada para esta voz.",
@@ -1290,6 +1302,12 @@
     "Anfrage-ID wurde bereits verwendet": "El ID de solicitud ya se ha utilizado",
     "Anfrage-IDs nicht verfügbar": "IDs de solicitud no disponibles",
     "Zu viele aktuelle Anfrage-IDs. Bitte kurz warten.": "Hay demasiados IDs de solicitud recientes. Espera un momento.",
-    "Antwort gehört nicht zur aktuellen Anfrage.": "La respuesta no corresponde a la solicitud actual."
+    "Antwort gehört nicht zur aktuellen Anfrage.": "La respuesta no corresponde a la solicitud actual.",
+    "Die komprimierten Modelldaten sind ungültig oder überschreiten das Ressourcenlimit.": "Los datos comprimidos del modelo no son válidos o superan el límite de recursos.",
+    "Meshopt-Fallback-Puffer überschreitet 256 MiB.": "El búfer alternativo Meshopt supera los 256 MiB.",
+    "Das Laden des Modells wurde abgebrochen.": "Se canceló la carga del modelo.",
+    "Der Modell-Decoder ist fehlgeschlagen. Bitte die Datei erneut laden.": "El decodificador del modelo falló. Vuelve a cargar el archivo.",
+    "Das Modell konnte nicht innerhalb von 60 Sekunden geladen werden. Bitte Datei und Decoder prüfen.": "El modelo no pudo cargarse en 60 segundos. Comprueba el archivo y el decodificador.",
+    "Ungültige Draco-Attributgröße.": "Tamaño de atributo Draco no válido."
   }
 }

@@ -150,6 +150,7 @@ fn data_uri(uri: &str, allowed: &[&str], limit: usize) -> Result<(String, Vec<u8
 }
 
 fn image_type(bytes: &[u8]) -> Result<&'static str, String> {
+    if bytes.starts_with(b"\xabKTX 20\xbb\r\n\x1a\n") { crate::avatar_metadata::validate_ktx2(bytes)?; return Ok("image/ktx2"); }
     let (mime, width, height) = if bytes.len() >= 45 && bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes[8..12] == [0, 0, 0, 13] && &bytes[12..16] == b"IHDR" && &bytes[bytes.len()-8..bytes.len()-4] == b"IEND" {
         ("image/png", u32::from_be_bytes(bytes[16..20].try_into().unwrap()), u32::from_be_bytes(bytes[20..24].try_into().unwrap()))
     } else if bytes.len() >= 14 && bytes.starts_with(&[0xff, 0xd8, 0xff]) && bytes.ends_with(&[0xff, 0xd9]) {
@@ -171,7 +172,7 @@ fn image_type(bytes: &[u8]) -> Result<&'static str, String> {
         }
         let (width, height) = dimensions.ok_or_else(|| invalid("JPEG-Textur hat keinen gültigen Größenheader."))?;
         ("image/jpeg", width, height)
-    } else { return Err(invalid("Texturinhalt ist kein unterstütztes PNG/JPEG oder sein Dateikopf ist unvollständig.")); };
+    } else { return Err(invalid("Texturinhalt ist kein unterstütztes PNG/JPEG/KTX2 oder sein Dateikopf ist unvollständig.")); };
     if width == 0 || height == 0 || width > 16384 || height > 16384 || u64::from(width) * u64::from(height) > 64 * 1024 * 1024 { return Err(invalid("Texturen benötigen gültige Abmessungen bis 16384 Pixel Kantenlänge und 64 Megapixel.")); }
     Ok(mime)
 }
@@ -189,19 +190,6 @@ fn append(binary: &mut Vec<u8>, bytes: &[u8]) -> Result<usize, String> {
     Ok(offset)
 }
 
-fn reject_compression(value: &Value) -> Result<(), String> {
-    match value {
-        Value::Object(fields) => for (key, nested) in fields {
-            if key == "extras" { continue; }
-            if key == "extensions" && nested.as_object().is_some_and(|extensions| extensions.keys().any(|key| ["EXT_meshopt_compression", "KHR_meshopt_compression", "KHR_draco_mesh_compression"].contains(&key.as_str()))) { return Err(invalid("Komprimierte Draco-/Meshopt-Puffer werden nicht importiert. Bitte unkomprimiert exportieren.")); }
-            reject_compression(nested)?;
-        },
-        Value::Array(values) => for value in values { reject_compression(value)?; },
-        _ => (),
-    }
-    Ok(())
-}
-
 fn pack(source: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
     let root = fs::canonicalize(source.parent().ok_or_else(|| invalid("Der Modellordner fehlt."))?).map_err(|_| invalid("Der ausgewählte Modellordner konnte nicht geöffnet werden."))?;
     let filename = Path::new(source.file_name().ok_or_else(|| invalid("Die ausgewählte Modelldatei fehlt."))?);
@@ -210,13 +198,18 @@ fn pack(source: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
     drop(bytes);
     if !document.is_object() || document["asset"]["version"] != "2.0" || document["asset"]["minVersion"].as_str().is_some_and(|version| version != "2.0") { return Err(invalid("Unterstützt wird glTF 2.0 JSON.")); }
     if document["extensions"].get("VRMC_vrm_animation").is_some() { return Err(invalid("VRMA enthält Animationen und ist kein importierbares Charaktermodell.")); }
-    reject_compression(&document)?;
     let buffers = array(&document, "buffers")?;
     let images = array(&document, "images")?;
     if buffers.len().checked_add(images.len()).is_none_or(|count| count > MAX_RESOURCES) { return Err(invalid("Ein Modell darf höchstens 1024 Puffer und Texturen enthalten.")); }
     let mut binary = Vec::new();
     let mut ranges = Vec::with_capacity(buffers.len());
-    for buffer in buffers {
+    let mut virtual_indices = std::collections::BTreeMap::new();
+    let mut virtual_buffers = Vec::new();
+    for (index,buffer) in buffers.iter().enumerate() {
+        if crate::avatar_metadata::is_virtual_buffer(&document,index) {
+            let length = buffer["byteLength"].as_u64().filter(|size| *size > 0 && *size <= MAX_TOTAL as u64).ok_or_else(||invalid("Ungültiger Meshopt-Fallback-Puffer."))? as usize;
+            virtual_indices.insert(index,virtual_buffers.len()+1); virtual_buffers.push(buffer.clone()); ranges.push((0,length)); continue;
+        }
         if !buffer.is_object() || buffer.get("extensions").is_some_and(|value| value.as_object().is_none_or(|extensions| !extensions.is_empty())) { return Err(invalid("Puffererweiterungen können nicht sicher zusammengeführt werden. Bitte ohne Puffererweiterungen exportieren.")); }
         let length = buffer["byteLength"].as_u64().filter(|length| *length > 0 && *length <= MAX_TOTAL as u64).ok_or_else(|| invalid("Ein Puffer hat eine ungültige byteLength."))? as usize;
         let remaining = MAX_TOTAL.checked_sub(aligned(binary.len())?).ok_or_else(|| invalid("Das Modell überschreitet 256 MiB."))?;
@@ -234,26 +227,38 @@ fn pack(source: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
     let mut views = array(&document, "bufferViews")?.to_vec();
     for view in &mut views {
         if !view.is_object() { return Err(invalid("Ein bufferView ist ungültig.")); }
-        let (base, buffer_length) = view["buffer"].as_u64().and_then(|index| usize::try_from(index).ok()).and_then(|index| ranges.get(index)).ok_or_else(|| invalid("Ein bufferView verweist auf einen unbekannten Puffer."))?;
+        let source_index = view["buffer"].as_u64().and_then(|index|usize::try_from(index).ok()).ok_or_else(||invalid("Ungültiger Pufferindex."))?;
+        let (base, buffer_length) = ranges.get(source_index).ok_or_else(|| invalid("Ein bufferView verweist auf einen unbekannten Puffer."))?;
         let offset = match view.get("byteOffset") { Some(value) => value.as_u64().ok_or_else(|| invalid("Ein bufferView hat einen ungültigen Offset."))?, None => 0 };
         let length = view["byteLength"].as_u64().filter(|length| *length > 0).ok_or_else(|| invalid("Ein bufferView hat eine ungültige Länge."))?;
         if offset.checked_add(length).is_none_or(|end| end > *buffer_length as u64) { return Err(invalid("Ein bufferView liegt außerhalb seines Quellpuffers.")); }
-        view["buffer"] = json!(0);
+        view["buffer"] = json!(virtual_indices.get(&source_index).copied().unwrap_or(0));
         view["byteOffset"] = json!(*base as u64 + offset);
+        for name in ["EXT_meshopt_compression","KHR_meshopt_compression"] {
+            if let Some(ext) = view["extensions"].get_mut(name) {
+                let index = ext["buffer"].as_u64().and_then(|index|usize::try_from(index).ok()).ok_or_else(||invalid("Ungültiger Meshopt-Quellpuffer."))?;
+                if virtual_indices.contains_key(&index) { return Err(invalid("Meshopt-Daten dürfen keinen leeren Fallback-Puffer verwenden.")); }
+                let (base,size) = ranges.get(index).ok_or_else(||invalid("Unbekannter Meshopt-Quellpuffer."))?;
+                let offset = match ext.get("byteOffset") { None=>0,Some(value)=>value.as_u64().ok_or_else(||invalid("Ungültiger Meshopt-Offset."))? };
+                let length = ext["byteLength"].as_u64().filter(|length|*length>0).ok_or_else(||invalid("Ungültige Meshopt-Länge."))?;
+                if offset.checked_add(length).is_none_or(|end|end>*size as u64) { return Err(invalid("Meshopt-Daten liegen außerhalb des Quellpuffers.")); }
+                ext["buffer"] = json!(0); ext["byteOffset"] = json!(*base as u64+offset);
+            }
+        }
     }
     let source_view_count = views.len();
     let mut images = images.to_vec();
     for image in &mut images {
         if !image.is_object() || image.get("uri").is_some() == image.get("bufferView").is_some() { return Err(invalid("Ein Bild benötigt entweder uri oder bufferView.")); }
         let declared = image.get("mimeType").map(|value| value.as_str().ok_or_else(|| invalid("Ein Bild-MIME-Typ ist ungültig."))).transpose()?;
-        if declared.is_some_and(|mime| !["image/png", "image/jpeg"].contains(&mime)) { return Err(invalid("Der neue glTF-JSON-Import unterstützt PNG- und JPEG-Texturen. Andere Bildformate bitte vorher konvertieren.")); }
+        if declared.is_some_and(|mime| !["image/png", "image/jpeg", "image/ktx2"].contains(&mime)) { return Err(invalid("Der glTF-Import unterstützt PNG-, JPEG- und BasisU-KTX2-Texturen.")); }
         let (view_index, mime) = if let Some(uri) = image.get("uri") {
             let uri = uri.as_str().ok_or_else(|| invalid("Eine Bild-URI ist ungültig."))?;
             let remaining = MAX_TOTAL.checked_sub(aligned(binary.len())?).unwrap_or(0).min(MAX_IMAGE);
-            let (data_mime, data) = if uri.starts_with("data:") { let (mime, data) = data_uri(uri, &["image/png", "image/jpeg"], remaining)?; (Some(mime), data) } else {
+            let (data_mime, data) = if uri.starts_with("data:") { let (mime, data) = data_uri(uri, &["image/png", "image/jpeg", "image/ktx2"], remaining)?; (Some(mime), data) } else {
                 let relative = relative_uri(uri)?;
                 let extension = relative.extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase();
-                if !["png", "jpg", "jpeg"].contains(&extension.as_str()) { return Err(invalid("Externe Texturen müssen PNG- oder JPEG-Dateien sein.")); }
+                if !["png", "jpg", "jpeg", "ktx2"].contains(&extension.as_str()) { return Err(invalid("Externe Texturen müssen PNG-, JPEG- oder KTX2-Dateien sein.")); }
                 (None, read_local(&root, &relative, remaining)?)
             };
             let mime = image_type(&data)?;
@@ -265,6 +270,7 @@ fn pack(source: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
         } else {
             let index = image["bufferView"].as_u64().and_then(|index| usize::try_from(index).ok()).filter(|index| *index < source_view_count).ok_or_else(|| invalid("Ein Bild verweist auf einen unbekannten bufferView."))?;
             let view = &views[index];
+            if view["buffer"] != 0 || view["extensions"].get("EXT_meshopt_compression").is_some() || view["extensions"].get("KHR_meshopt_compression").is_some() { return Err(invalid("Bilddaten müssen in einem echten, unkomprimierten bufferView liegen.")); }
             let offset = view["byteOffset"].as_u64().unwrap_or(0) as usize;
             let length = view["byteLength"].as_u64().unwrap_or(0) as usize;
             if length > MAX_IMAGE { return Err(invalid("Eine Textur überschreitet 64 MiB.")); }
@@ -278,7 +284,7 @@ fn pack(source: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
         image["mimeType"] = json!(mime);
     }
     let fields = document.as_object_mut().unwrap();
-    if !binary.is_empty() { fields.insert("buffers".into(), json!([{"byteLength":binary.len()}])); }
+    if !binary.is_empty() { let mut packed_buffers = vec![json!({"byteLength":binary.len()})]; packed_buffers.extend(virtual_buffers); fields.insert("buffers".into(), json!(packed_buffers)); }
     else { fields.remove("buffers"); }
     if !views.is_empty() { fields.insert("bufferViews".into(), json!(views)); }
     if !images.is_empty() { fields.insert("images".into(), json!(images)); }
@@ -504,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_versions_compression_and_invalid_embedded_resources() {
+    fn rejects_unsupported_versions_and_malformed_embedded_resources() {
         let fixture = Fixture::new();
         for uri in ["data:application/octet-stream;base64,AAAA", "data:text/plain;base64,AQ==", "data:application/octet-stream,AQ==", "data:application/octet-stream;base64,@@=="] {
             let mut document = base(); document["buffers"] = json!([{"uri":uri,"byteLength":1}]);
@@ -517,7 +523,7 @@ mod tests {
         let mut document = base(); document["extensions"] = json!({"VRMC_vrm_animation":{"specVersion":"1.0"}});
         assert!(fixture.run(&document).unwrap_err().contains("VRMA"));
         let mut document = base(); document["bufferViews"] = json!([{"extensions":{"EXT_meshopt_compression":{"buffer":0}}}]);
-        assert!(fixture.run(&document).unwrap_err().contains("Meshopt")); assert!(fixture.empty_target());
+        assert!(fixture.run(&document).is_err()); assert!(fixture.empty_target());
         let mut document = base(); document["images"] = json!([{"uri":embedded("image/png", &png())},{"bufferView":0,"mimeType":"image/png"}]);
         assert!(fixture.run(&document).unwrap_err().contains("unbekannten bufferView")); assert!(fixture.empty_target());
     }
@@ -587,4 +593,18 @@ mod tests {
         let bytes = STANDARD.decode(bundle["avatar"]["base64"].as_str().unwrap()).unwrap();
         assert_eq!(crate::avatar_metadata::inspect_bytes(&bytes).unwrap().animations[0].name, "Wave");
     }
+    #[test]
+    fn actual_compressed_gltf_sources_pack_with_preserved_streams_and_texture_data() {
+        let directory=Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/compressed-avatar");
+        let fixture=Fixture::new();
+        let output=std::env::var_os("ORBITPAL_NATIVE_FIXTURE_DIR").map(PathBuf::from);
+        if let Some(output)=&output { fs::create_dir_all(output).unwrap(); }
+        for name in ["draco","meshopt-ext","meshopt-khr","meshopt-ext-optional","meshopt-khr-optional","meshopt-ext-virtual","meshopt-khr-virtual","basisu","basisu-optional","basisu-external"] {
+            let source=directory.join(format!("{name}.gltf"));let destination=fixture.root.join("store/avatars").join(format!("{name}.glb"));
+            import(&source,&destination).unwrap_or_else(|error|panic!("{name}: {error}"));
+            let info=crate::avatar_metadata::inspect_file(&destination).unwrap();assert!(info.warnings.is_empty());assert!(info.external_resources.is_empty());
+            if let Some(output)=&output { fs::copy(&destination,output.join(format!("{name}.glb"))).unwrap(); }
+        }
+    }
+
 }
