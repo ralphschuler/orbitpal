@@ -35,6 +35,14 @@ describe('Interface language',()=>{
     const result=translate('Systemstimme konnte nicht sprechen: network-error.',{},'en');
     expect(result).toContain('network-error');expect(result).not.toContain('konnte nicht sprechen');
   });
+  it('localizes transport limits and reconnect advice while retaining diagnostics',()=>{
+    for(const language of ['en','fr','es'] as const){
+      expect(translate('Codex-Appserver stderr überschreitet die Größenbegrenzung',{},language)).not.toContain('Größenbegrenzung');
+      const result=translate('MCP-Verbindung beendet: fixture-diagnostic. Server erneut verbinden.',{},language);
+      expect(result).toContain('fixture-diagnostic');expect(result).not.toContain('erneut verbinden');
+      expect(translate('MCP SSE enthält ungültiges JSON: line 1 column 7',{},language)).toContain('line 1 column 7');
+    }
+  });
   it('uses the selected locale for numbers and dates',()=>{
     expect(formatNumber(1234.5,'de')).toBe('1.234,5');expect(formatNumber(1234.5,'en')).toBe('1,234.5');
     expect(formatDate('2026-10-19T12:30:00Z',{timeZone:'UTC',year:'numeric',month:'2-digit',day:'2-digit'},'de')).toBe('19.10.2026');

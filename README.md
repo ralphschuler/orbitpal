@@ -67,6 +67,8 @@ Cloud dialog providers receive the conversation context, relevant document excer
 
 With **Send images to the model** enabled, permitted MCP image results also reach the selected dialog provider. Images are bounded to four per turn, 5 MiB each and 12 MiB total; Claude Code additionally limits its encoded input envelope to 10 MiB. The app does not fetch arbitrary image URLs or local paths. Image content and tool results are untrusted and grant no new tool access.
 
+External MCP, CLI and Skill process output is bounded while reading, including incomplete lines, chunked HTTP bodies and SSE streams. See the [transport budgets and cancellation behavior](docs/MCP-TRANSPORT-LIMITS.md).
+
 Knowledge retrieval uses bounded local keyword search, not embeddings or model training. Image-only PDFs require prior OCR. Speech mouth motion is an audio/word-boundary approximation, not phoneme-accurate lip sync. Speaking turns are serialized; multiple characters can remain visible. Linux overlay behavior depends on the compositor. OAuth token creation/refresh and model downloads are external to this app.
 
 The Linux GTK stack uses a documented [GLib security backport](vendor/glib/COHOST-BACKPORT.md), with an optimized iterator regression in Linux CI/release builds. See [SECURITY.md](SECURITY.md) for its scope and reporting policy. Automated checks use local fixtures and mocks; live model, speech and streaming-provider compatibility is not implied.
