@@ -3,13 +3,35 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { inspect } from 'node:util';
 import { releaseVersion, verifyTag } from './release-info.mjs';
 import { collect, platformForTarget } from './collect-release.mjs';
 import { rustInventory, nodeInventory } from './dependency-inventories.mjs';
 import { assertCanPublishLatest, createUpdaterManifest, updaterArtifacts, updaterSignature, canonicalRepository, legacyAssetRepository } from './updater-manifest.mjs';
 import { assertMicrophonePermissions, assertMacosIdentity } from './verify-macos-permissions.mjs';
 import { validateSigningPolicy, designatedRequirement, extractDesignatedRequirement, assertPinnedRequirement, signingCommand, quoteSecurityInput } from './macos-signing-policy.mjs';
-import { requireDisposableMac, searchListRestoreCommand } from './macos-release-signing.mjs';
+import { requireDisposableMac, searchListRestoreCommand, validateSigningPassword, decodeSigningArchive } from './macos-release-signing.mjs';
+
+test('macOS signing validation never attaches private inputs to errors or assertion diffs', () => {
+  const password = 'fixture-private-password-must-not-appear!';
+  const archive = Buffer.alloc(101, 0x58);
+  const normalized = archive.toString('base64');
+  const noncanonical = normalized.replace(/=+$/, '');
+  const invalid = `${normalized}!`;
+  assert.notEqual(noncanonical, normalized, 'The fixture needs a genuinely noncanonical representation');
+  const cases = [() => validateSigningPassword(password), () => decodeSigningArchive(noncanonical), () => decodeSigningArchive(invalid)];
+  for (const invalidInput of cases) {
+    let thrown;
+    try { invalidInput(); } catch (error) { thrown = error; }
+    assert.ok(thrown instanceof Error, 'Invalid private input must fail');
+    assert.equal(thrown.constructor, Error, 'A plain generic Error must replace secret-bearing assertion diffs');
+    const description = `${inspect(thrown, { depth: null, showHidden: true })}\n${thrown.stack}\n${JSON.stringify(thrown)}`;
+    for (const marker of [password, normalized, noncanonical, invalid, archive.toString('hex')]) assert.ok(!description.includes(marker), 'Error inspection must not reveal private input or its normalized representation');
+    for (const property of ['actual', 'expected', 'cause', 'input', 'output']) assert.ok(!Object.hasOwn(thrown, property), 'Errors must not retain private diagnostic data');
+  }
+  assert.doesNotThrow(() => validateSigningPassword('a'.repeat(64)));
+  assert.deepEqual(decodeSigningArchive(normalized), archive);
+});
 
 test('persistent macOS signing fails closed before reading an unprovisioned or misdirected certificate', () => {
   const policy = { schemaVersion: 1, mode: 'self-signed', identifier: 'studio.streamer-ai.cohost', certificateSha256: 'a'.repeat(64), certificateFile: 'release/macos-signing-certificate.pem' };

@@ -26,6 +26,26 @@ function securityInput(args) { return runNative('/usr/bin/security', ['-i'], { i
 function stateFile(directory) { return join(directory, 'state.json'); }
 function saveState(directory, state) { writeFileSync(stateFile(directory), JSON.stringify(state), { mode: 0o600 }); }
 
+export function validateSigningPassword(password) {
+  // Plain errors deliberately omit actual/expected/cause fields: assertion
+  // diffs can expose secret values that CI's exact-string masking misses.
+  if (typeof password !== 'string' || !/^[A-Za-z0-9_-]{32,256}$/.test(password)) {
+    throw new Error('The signing archive needs a generated, single-line strong password');
+  }
+}
+
+export function decodeSigningArchive(encoded) {
+  if (typeof encoded !== 'string' || !encoded || encoded.length > 1_400_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    throw new Error('Missing or invalid MACOS_CODESIGN_P12 secret');
+  }
+  const archive = Buffer.from(encoded, 'base64');
+  if (archive.toString('base64') !== encoded || archive.length <= 100 || archive.length >= 1024 * 1024) {
+    archive.fill(0);
+    throw new Error('Invalid signing archive encoding or size');
+  }
+  return archive;
+}
+
 export function searchListRestoreCommand(state) {
   // A failed initial read must never be mistaken for an originally empty
   // keychain search list. No keychain has been created before this snapshot.
@@ -43,7 +63,7 @@ export function runnerDirectory(target, suffix = '') {
 
 export function prepareIdentity(directory, identity, p12, password) {
   requireDisposableMac();
-  assert.match(password, /^[A-Za-z0-9_-]{32,256}$/, 'The signing archive needs a generated, single-line strong password');
+  validateSigningPassword(password);
   assert.ok(Buffer.isBuffer(p12) && p12.length > 100 && p12.length < 1024 * 1024, 'Invalid signing archive size');
   mkdirSync(directory, { mode: 0o700 });
   const state = { keychain: join(directory, 'identity.keychain-db'), certificate: join(directory, 'certificate.pem'), oldKeychains: [], snapshotTaken: false, trustAdded: false };
@@ -122,9 +142,8 @@ export async function build(root, target, bundles) {
   assert.equal(bundles, 'app,dmg', 'Unexpected macOS bundle selection');
   const encoded = process.env.MACOS_CODESIGN_P12?.trim() ?? '';
   const password = process.env.MACOS_CODESIGN_PASSWORD ?? '';
-  assert.ok(encoded && /^[A-Za-z0-9+/]+={0,2}$/.test(encoded), 'Missing or invalid MACOS_CODESIGN_P12 secret');
-  const archive = Buffer.from(encoded, 'base64');
-  assert.equal(archive.toString('base64'), encoded, 'Invalid signing archive encoding');
+  validateSigningPassword(password);
+  const archive = decodeSigningArchive(encoded);
   // Do not give private certificate material to Tauri's Apple-only importer or
   // to arbitrary build subprocesses. Only this parent process imports it.
   const environment = { ...process.env };
