@@ -18,26 +18,31 @@ export function provisionIdentity(directory, { root = resolve(dirname(fileURLToP
   mkdirSync(output, { mode: 0o700 });
   const password = randomBytes(32).toString('hex');
   const passwordPath = join(output, 'password.txt');
+  const archivePasswordPath = join(output, 'archive-password.temporary.txt');
   const keyPath = join(output, 'private-key.encrypted.pem');
   const certificatePath = join(output, 'certificate.pem');
   const archive = join(output, 'identity.p12');
   try {
     writeFileSync(passwordPath, password, { mode: 0o600, flag: 'wx' });
+    // OpenSSL reads two successive lines when -passin/-passout reference the
+    // same file. Separate protected files let both read the same first line.
+    writeFileSync(archivePasswordPath, password, { mode: 0o600, flag: 'wx' });
     const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 4096, publicKeyEncoding: { type: 'spki', format: 'pem' }, privateKeyEncoding: { type: 'pkcs8', format: 'pem', cipher: 'aes-256-cbc', passphrase: password } });
     writeFileSync(keyPath, privateKey, { mode: 0o600, flag: 'wx' });
     const config = join(output, 'certificate.conf');
     writeFileSync(config, '[req]\nprompt = no\ndistinguished_name = subject\nx509_extensions = extensions\n[subject]\nCN = OrbitPal Persistent Release Signing\n[extensions]\nbasicConstraints = critical, CA:TRUE, pathlen:0\nkeyUsage = critical, digitalSignature, keyCertSign\nextendedKeyUsage = critical, codeSigning\nsubjectKeyIdentifier = hash\n', { mode: 0o600, flag: 'wx' });
     const commands = [
       ['req', '-new', '-x509', '-sha256', '-days', '3650', '-key', keyPath, '-passin', `file:${passwordPath}`, '-out', certificatePath, '-config', config],
-      ['pkcs12', '-export', '-name', 'OrbitPal Persistent Release Signing', '-in', certificatePath, '-inkey', keyPath, '-passin', `file:${passwordPath}`, '-out', archive, '-passout', `file:${passwordPath}`],
+      ['pkcs12', '-export', '-name', 'OrbitPal Persistent Release Signing', '-in', certificatePath, '-inkey', keyPath, '-passin', `file:${passwordPath}`, '-out', archive, '-passout', `file:${archivePasswordPath}`],
     ];
     for (const args of commands) {
       const result = spawnSync(openssl, args, { stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
-      assert.ok(!result.error && result.status === 0, 'Offline certificate preparation failed; no private diagnostic output is printed');
+      if (result.error || result.status !== 0) throw new Error(`Offline certificate preparation failed at ${args[0]} (exit ${Number.isInteger(result.status) ? result.status : 'unavailable'}); private diagnostics are withheld`);
     }
     chmodSync(certificatePath, 0o600);
     chmodSync(archive, 0o600);
     rmSync(config);
+    rmSync(archivePasswordPath);
     const certificate = new X509Certificate(readFileSync(certificatePath));
     const certificateSha256 = createHash('sha256').update(certificate.raw).digest('hex');
     const policy = { schemaVersion: 1, mode: 'self-signed', identifier: MACOS_IDENTIFIER, certificateSha256, certificateFile: 'release/macos-signing-certificate.pem' };
