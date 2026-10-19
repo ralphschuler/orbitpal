@@ -250,7 +250,8 @@ export class AvatarStage {
         disposeObject(gltf.scene);
         throw new Error('Texturen oder Modelldaten konnten nicht vollständig geladen werden.');
       }
-      await this.modelAudio.load(gltf.parser.json, index => gltf.parser.getDependency('bufferView', index));
+      try { await this.modelAudio.load(gltf.parser.json, index => gltf.parser.getDependency('bufferView', index)); }
+      catch (error) { disposeObject(gltf.scene); throw error; }
       if (this.disposed || request !== this.request) { disposeObject(gltf.scene); return; }
       const vrm = gltf.userData.vrm as VRM | undefined;
       if (vrm) {
