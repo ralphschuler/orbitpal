@@ -428,7 +428,14 @@
     "Anfrage-ID wurde bereits verwendet": "Request ID has already been used",
     "Anfrage-IDs nicht verfügbar": "Request IDs unavailable",
     "Zu viele aktuelle Anfrage-IDs. Bitte kurz warten.": "Too many recent request IDs. Wait a moment.",
-    "Antwort gehört nicht zur aktuellen Anfrage.": "The reply does not belong to the current request."
+    "Antwort gehört nicht zur aktuellen Anfrage.": "The reply does not belong to the current request.",
+    "Update-Download abgebrochen.": "Update download cancelled.",
+    "Download wird abgebrochen …": "Cancelling download…",
+    "Wird abgebrochen …": "Cancelling…",
+    "Download abbrechen": "Cancel download",
+    "Du kannst Download und Prüfung abbrechen. Sobald die Installation beginnt, ist kein Abbruch mehr möglich.": "You can cancel the download and verification. Once installation begins, cancellation is no longer possible.",
+    "Für einen neuen Versuch bitte erneut prüfen und bestätigen.": "Check again and confirm to retry.",
+    "Die Update-Installation läuft bereits.": "Update installation is already running."
   },
   "fr": {
     "Für diese Stimme ist keine Sprachausgabe verbunden.": "Aucune sortie vocale n’est connectée pour cette voix.",
@@ -859,7 +866,14 @@
     "Anfrage-ID wurde bereits verwendet": "Cet identifiant de requête a déjà été utilisé",
     "Anfrage-IDs nicht verfügbar": "Identifiants de requête indisponibles",
     "Zu viele aktuelle Anfrage-IDs. Bitte kurz warten.": "Trop d’identifiants de requête récents. Patientez un instant.",
-    "Antwort gehört nicht zur aktuellen Anfrage.": "La réponse ne correspond pas à la requête actuelle."
+    "Antwort gehört nicht zur aktuellen Anfrage.": "La réponse ne correspond pas à la requête actuelle.",
+    "Update-Download abgebrochen.": "Téléchargement de la mise à jour annulé.",
+    "Download wird abgebrochen …": "Annulation du téléchargement…",
+    "Wird abgebrochen …": "Annulation…",
+    "Download abbrechen": "Annuler le téléchargement",
+    "Du kannst Download und Prüfung abbrechen. Sobald die Installation beginnt, ist kein Abbruch mehr möglich.": "Tu peux annuler le téléchargement et la vérification. Une fois l’installation commencée, l’annulation n’est plus possible.",
+    "Für einen neuen Versuch bitte erneut prüfen und bestätigen.": "Vérifie à nouveau et confirme pour réessayer.",
+    "Die Update-Installation läuft bereits.": "L’installation de la mise à jour est déjà en cours."
   },
   "es": {
     "Für diese Stimme ist keine Sprachausgabe verbunden.": "No hay ninguna salida de voz conectada para esta voz.",
@@ -1290,6 +1304,13 @@
     "Anfrage-ID wurde bereits verwendet": "El ID de solicitud ya se ha utilizado",
     "Anfrage-IDs nicht verfügbar": "IDs de solicitud no disponibles",
     "Zu viele aktuelle Anfrage-IDs. Bitte kurz warten.": "Hay demasiados IDs de solicitud recientes. Espera un momento.",
-    "Antwort gehört nicht zur aktuellen Anfrage.": "La respuesta no corresponde a la solicitud actual."
+    "Antwort gehört nicht zur aktuellen Anfrage.": "La respuesta no corresponde a la solicitud actual.",
+    "Update-Download abgebrochen.": "Descarga de la actualización cancelada.",
+    "Download wird abgebrochen …": "Cancelando descarga…",
+    "Wird abgebrochen …": "Cancelando…",
+    "Download abbrechen": "Cancelar descarga",
+    "Du kannst Download und Prüfung abbrechen. Sobald die Installation beginnt, ist kein Abbruch mehr möglich.": "Puedes cancelar la descarga y la verificación. Una vez iniciada la instalación, ya no es posible cancelarla.",
+    "Für einen neuen Versuch bitte erneut prüfen und bestätigen.": "Vuelve a buscar actualizaciones y confirma para reintentar.",
+    "Die Update-Installation läuft bereits.": "La instalación de la actualización ya está en curso."
   }
 }

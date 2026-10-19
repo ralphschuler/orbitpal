@@ -27,7 +27,7 @@ export interface UpdateState {
   available: UpdateCandidate | null;
   installSupported: boolean;
   unavailableReason: string | null;
-  phase: 'idle' | UpdateProgress['phase'];
+  phase: 'idle' | 'cancelling' | 'cancelled' | UpdateProgress['phase'];
   downloaded: number;
   total: number | null;
   lastChecked: number | null;
@@ -38,7 +38,7 @@ export const emptyUpdateState = (): UpdateState => ({
   checking: false, available: null, installSupported: false, unavailableReason: null,
   phase: 'idle', downloaded: 0, total: null, lastChecked: null, error: '',
 });
-export const updateInProgress = (state: UpdateState) => ['downloading', 'installing', 'restarting'].includes(state.phase);
+export const updateInProgress = (state: UpdateState) => ['downloading', 'cancelling', 'installing', 'restarting'].includes(state.phase);
 
 interface Dependencies {
   call: (command: string, args?: Record<string, unknown>) => Promise<any>;
@@ -53,6 +53,7 @@ export class UpdateController {
   private state = emptyUpdateState();
   private alive = true;
   private confirmedId = '';
+  private revision = 0;
   constructor(private dependencies: Dependencies) {}
   private publish(patch: Partial<UpdateState>) {
     if (!this.alive) return;
@@ -79,6 +80,7 @@ export class UpdateController {
   }
   async check() {
     if (!this.alive || this.state.checking || updateInProgress(this.state)) return;
+    ++this.revision;this.confirmedId='';
     this.publish({ checking: true, available: null, error: '', phase: 'idle' });
     try {
       const result: UpdateCheck = await this.dependencies.call('check_update');
@@ -90,17 +92,38 @@ export class UpdateController {
   async confirm(candidateId: string, busyReason: string) {
     if (!this.alive || busyReason || this.state.checking || !this.state.installSupported || updateInProgress(this.state)
       || !this.state.available || this.state.available.id !== candidateId) return false;
+    const revision=++this.revision;
     this.confirmedId = candidateId;
     this.dependencies.lock(true);
     this.publish({ phase: 'downloading', downloaded: 0, total: null, error: '' });
     try {
-      await this.dependencies.call('install_update', { candidateId, confirmed: true });
+      const result=await this.dependencies.call('install_update', { candidateId, confirmed: true });
+      if(!this.alive||revision!==this.revision)return false;
+      if(result?.cancelled){this.confirmedId='';this.dependencies.lock(false);this.publish({phase:'cancelled',available:null,downloaded:0,total:null,error:''});return false;}
       this.publish({ phase: 'restarting' });
       return true;
     } catch (error) {
+      if(!this.alive||revision!==this.revision)return false;
       this.confirmedId = '';
       this.dependencies.lock(false);
       this.publish({ phase: 'error', available: null, error: this.dependencies.errorText(error) });
+      return false;
+    }
+  }
+  private currentPhase(){return this.state.phase;}
+  async cancel() {
+    if(!this.alive||this.state.phase!=='downloading'||!this.confirmedId)return false;
+    const candidateId=this.confirmedId,revision=this.revision;
+    this.publish({phase:'cancelling',error:''});
+    try{
+      const result=await this.dependencies.call('cancel_update',{candidateId});
+      if(!this.alive||revision!==this.revision||this.confirmedId!==candidateId)return false;
+      if(!result?.cancelled&&this.currentPhase()==='cancelling')this.publish({phase:'installing'});
+      // Only install_update completion releases the Studio lock. Until then
+      // the native request may still be dropping its stream/verification data.
+      return !!result?.cancelled;
+    }catch(error){
+      if(this.alive&&revision===this.revision&&this.confirmedId===candidateId&&this.currentPhase()==='cancelling')this.publish({phase:'downloading',error:this.dependencies.errorText(error)});
       return false;
     }
   }
@@ -109,9 +132,11 @@ export class UpdateController {
     // Only the awaited install command releases the UI lock on failure. A late
     // event must not reopen the studio while native installation is still busy.
     if (event.phase === 'error') { this.publish({ error: event.message || 'Update fehlgeschlagen.' }); return; }
+    if(event.phase==='downloading'&&this.state.phase!=='downloading')return;
+    if(this.state.phase==='restarting'&&event.phase!=='restarting')return;
     const downloaded = Number.isFinite(event.downloaded) ? Math.max(this.state.downloaded, event.downloaded) : this.state.downloaded;
     const total = typeof event.total === 'number' && Number.isFinite(event.total) && event.total > 0 ? event.total : this.state.total;
     this.publish({ phase: event.phase, downloaded, total });
   }
-  destroy() { this.alive = false; }
+  destroy() { this.alive = false;++this.revision; }
 }

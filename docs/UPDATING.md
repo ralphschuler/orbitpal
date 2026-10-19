@@ -8,6 +8,12 @@ Speichere deine Änderungen und beende laufende Antworten, Audioausgaben und Mik
 
 Netzwerk- oder Signaturfehler werden angezeigt. Bei einem Fehler wird keine ungeprüfte Datei installiert. Nutze bei anhaltenden Problemen die passende Datei auf der offiziellen Release-Seite und melde den Fehler ohne Zugangsdaten, private Chatverläufe oder exportierte Profile.
 
+## Download abbrechen
+
+Während Download und Signaturprüfung steht **Download abbrechen** zur Verfügung. Die App wartet auf die native Freigabe der laufenden Anfrage, bevor das Studio wieder bedienbar wird. Danach sind eine neue Update-Prüfung und eine neue Bestätigung erforderlich. Verspätete Fortschrittsmeldungen oder Daten eines abgebrochenen Downloads können keine Installation auslösen.
+
+Sobald **Update wird installiert** erscheint, beginnt der geschützte Austausch der App und der Abbruch ist gesperrt. Bei einem gleichzeitigen Klick auf Abbrechen und dem Installationsbeginn entscheidet die native Zustandsmaschine, welcher Schritt zuerst gilt. Die App bleibt bis Abschluss oder Fehlermeldung gesperrt.
+
 ## Unterstützte Installationen
 
 | System | Installation des Updates |

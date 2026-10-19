@@ -22,7 +22,7 @@
   const downloadedMiB = $derived(formatNumber(state.downloaded / 1048576, $locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
   const totalMiB = $derived(formatNumber((state.total ?? 0) / 1048576, $locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 }));
   let controller: UpdateController;
-  const phaseLabels = { downloading: 'Update wird heruntergeladen …', installing: 'Signatur geprüft · Update wird installiert …', restarting: 'App wird neu gestartet …', idle: '', error: '' };
+  const phaseLabels = { downloading: 'Update wird heruntergeladen …', installing: 'Signatur geprüft · Update wird installiert …', restarting: 'App wird neu gestartet …', cancelling:'Download wird abgebrochen …', cancelled:'Update-Download abgebrochen.', idle: '', error: '' };
 
   function close() { if (!installing) open = false; }
   function keyboard(event: KeyboardEvent) {
@@ -77,15 +77,17 @@
             {#if state.available.notes}<pre class="update-notes">{state.available.notes}</pre>{/if}
             <button class="text-link" onclick={releaseNotes}><ExternalLink size={14}/>{$t("Release auf GitHub ansehen")}</button>
           {:else}
-            <div class="update-status"><ShieldCheck size={24}/><div><h3>{state.checking ? $t("Suche nach einer neuen Version …") : state.lastChecked && !state.error ? $t("Du bist auf dem neuesten Stand.") : $t("Bereit für die nächste Version.")}</h3><p>{$t("Installierte Version: {version}", { version })}</p></div></div>
+            <div class="update-status"><ShieldCheck size={24}/><div><h3>{state.phase==='cancelled' ? $t("Update-Download abgebrochen.") : state.checking ? $t("Suche nach einer neuen Version …") : state.lastChecked && !state.error ? $t("Du bist auf dem neuesten Stand.") : $t("Bereit für die nächste Version.")}</h3><p>{$t("Installierte Version: {version}", { version })}</p></div></div>
           {/if}
         </div>
+        {#if state.phase==='downloading'||state.phase==='cancelling'}<p class="update-note">{$t("Du kannst Download und Prüfung abbrechen. Sobald die Installation beginnt, ist kein Abbruch mehr möglich.")}</p>{/if}
+        {#if state.phase==='cancelled'}<p class="update-note" role="status">{$t("Für einen neuen Versuch bitte erneut prüfen und bestätigen.")}</p>{/if}
         {#if state.error}<p class="update-error" role="alert"><CircleHelp size={16}/>{$t(state.error)}</p>{/if}
         {#if state.available && !installing}
           <p class="update-note"><ShieldCheck size={16}/>{$t("Das Paket wird vor der Installation kryptografisch geprüft. Mit deiner Bestätigung beginnt der Download; anschließend wird die App installiert und neu gestartet. Deine gespeicherten Profile bleiben erhalten.")}</p>
           {#if !state.installSupported}<p class="update-warning">{state.unavailableReason ? $t(state.unavailableReason) : $t("Bitte installiere diese Version über GitHub Releases.")}</p>{:else if busyReason}<p class="update-warning">{busyReason}</p>{/if}
         {/if}
-        <div class="modal-footer"><button class="button secondary" onclick={close} disabled={installing}>{state.available ? $t("Später") : $t("Schließen")}</button><button class="button secondary" onclick={() => controller.check()} disabled={installing || state.checking}><RefreshCw size={15}/>{state.checking ? $t("Prüft …") : $t("Jetzt prüfen")}</button>{#if state.available}<button class="button primary" onclick={() => state.available && controller.confirm(state.available.id, busyReason)} disabled={installing || state.checking || !state.installSupported || !!busyReason}><Download size={15}/>{$t("Bestätigen & installieren")}</button>{/if}</div>
+        <div class="modal-footer">{#if state.phase==='downloading'||state.phase==='cancelling'}<button class="button secondary" onclick={()=>controller.cancel()} disabled={state.phase==='cancelling'}><X size={15}/>{state.phase==='cancelling'?$t("Wird abgebrochen …"):$t("Download abbrechen")}</button>{/if}<button class="button secondary" onclick={close} disabled={installing}>{state.available ? $t("Später") : $t("Schließen")}</button><button class="button secondary" onclick={() => controller.check()} disabled={installing || state.checking}><RefreshCw size={15}/>{state.checking ? $t("Prüft …") : $t("Jetzt prüfen")}</button>{#if state.available}<button class="button primary" onclick={() => state.available && controller.confirm(state.available.id, busyReason)} disabled={installing || state.checking || !state.installSupported || !!busyReason}><Download size={15}/>{$t("Bestätigen & installieren")}</button>{/if}</div>
         {#if state.lastChecked}<p class="update-checked">{$t('Zuletzt geprüft: {date}', { date: formatDate(state.lastChecked, { dateStyle: 'medium', timeStyle: 'medium' }, $locale) })}</p>{/if}
       {/if}
     </div>
