@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use std::{fs, path::{Path, PathBuf}, sync::Mutex};
+use std::{fs, io::{Read, Write}, path::{Path, PathBuf}, sync::Mutex};
 
 const DEFAULT_PROFILE: &str = include_str!("../../public/default-profile.json");
 static EXTENSION_MUTATIONS: Mutex<()> = Mutex::new(());
@@ -90,10 +90,15 @@ impl Store {
         rows.map(|row|serde_json::from_str(&row.map_err(error)?).map_err(error)).collect()
     }
     pub fn extension_library(&self)->Result<Value,String>{
+        let _mutation=EXTENSION_MUTATIONS.lock().map_err(error)?;
         Ok(json!({"mcpServers":self.library_mcp()?,"skills":crate::skill_library::SkillLibrary::new(&self.root)?.list()?}))
     }
     pub fn save_library_mcp(&self,server:Value)->Result<Value,String>{
         let _mutation=EXTENSION_MUTATIONS.lock().map_err(error)?;
+        self.save_library_mcp_locked(server)
+    }
+    // Caller owns EXTENSION_MUTATIONS, including complete control installs.
+    fn save_library_mcp_locked(&self,server:Value)->Result<Value,String>{
         let creating=!server["id"].as_str().is_some_and(|id|!id.is_empty());
         let server=crate::extensions::definition(&server)?;
         if creating{if let Some(existing)=self.library_mcp()?.into_iter().find(|existing|crate::extensions::signature(existing)==crate::extensions::signature(&server)){return Ok(existing);}}
@@ -105,13 +110,14 @@ impl Store {
         let catalog=self.library_mcp()?;
         if let Some(existing)=catalog.iter().find(|existing|crate::extensions::signature(existing)==crate::extensions::signature(&server)){return Ok(existing.clone());}
         if catalog.iter().any(|existing|existing["id"]==server["id"]){server["id"]=json!(uuid::Uuid::new_v4().to_string());}
-        self.save_library_mcp(server)
+        self.save_library_mcp_locked(server)
     }
     pub fn install_control_extension(&self,skill_content:&str)->Result<Value,String>{
+        let _mutation=EXTENSION_MUTATIONS.lock().map_err(error)?;
         let mut server=self.install_mcp(&json!({"id":"cohost-control","name":"OrbitPal Control","transport":"builtin","builtin":"cohost-control"}))?;
         // Refresh only the former bundled label during an explicit install.
         // Operator-defined names, IDs and all bot grants remain untouched.
-        if server["name"]=="Streamer AI Cohost Control" {server["name"]=json!("OrbitPal Control");server=self.save_library_mcp(server)?;}
+        if server["name"]=="Streamer AI Cohost Control" {server["name"]=json!("OrbitPal Control");server=self.save_library_mcp_locked(server)?;}
         let library=crate::skill_library::SkillLibrary::new(&self.root)?;
         let previous=self.db.lock().map_err(error)?.query_row("SELECT value FROM settings WHERE key='cohost_control_install_v1'",[],|row|row.get::<_,String>(0)).ok().and_then(|encoded|serde_json::from_str::<Value>(&encoded).ok());
         // Installation markers contain IDs only. A later install click must
@@ -323,11 +329,11 @@ impl Store {
         self.db.lock().map_err(error)?.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,bounds.to_string()]).map_err(error)?;Ok(())
     }
     pub fn save_document(&self,name:&str,content:&str) -> Result<(),String> {
-        if !["AGENTS.md","PERSONA.md"].contains(&name) {return Err("Nur AGENTS.md und PERSONA.md sind erlaubt".into());}
-        if content.len()>512_000 {return Err("Anweisungsdatei ist zu groß".into());}
+        validate_instruction_document(name,content)?;
         fs::write(self.profile_dir(&self.profile()?)?.join(name),content).map_err(error)
     }
     pub fn skills(&self) -> Result<Vec<Value>,String> {
+        let _mutation=EXTENSION_MUTATIONS.lock().map_err(error)?;
         crate::skill_library::SkillLibrary::new(&self.root)?.list()
     }
     pub fn save_skill(&self,id:&str,content:&str) -> Result<(),String> {
@@ -430,74 +436,241 @@ impl Store {
         fs::write(destination,serde_json::to_vec_pretty(&bundle).map_err(error)?).map_err(error)
     }
     pub fn import(&self,source:&Path) -> Result<Value,String> {
-        let meta=fs::metadata(source).map_err(error)?;
-        if meta.len()>512*1024*1024 {return Err("Profilpaket ist zu groß".into());}
-        let bundle:Value=serde_json::from_slice(&fs::read(source).map_err(error)?).map_err(error)?;
+        // All Store library/profile writers share this lock. No package content
+        // becomes visible until its complete isolated staging has succeeded.
+        let _mutation=EXTENSION_MUTATIONS.lock().map_err(error)?;
+        if self.fixed_profile.is_some(){return Err("Ein Bot-Kontext darf kein anderes Profil importieren".into());}
+        let metadata=fs::metadata(source).map_err(error)?;
+        if !metadata.is_file(){return Err("Profilpaket muss eine reguläre Datei sein".into());}
+        if metadata.len()>512*1024*1024{return Err("Profilpaket ist zu groß".into());}
+        let file=fs::File::open(source).map_err(error)?;let metadata=file.metadata().map_err(error)?;
+        if !metadata.is_file(){return Err("Profilpaket muss eine reguläre Datei sein".into());}
+        if metadata.len()>512*1024*1024{return Err("Profilpaket ist zu groß".into());}
+        let mut bytes=Vec::new();file.take(512*1024*1024+1).read_to_end(&mut bytes).map_err(error)?;
+        if bytes.len()>512*1024*1024{return Err("Profilpaket ist zu groß".into());}
+        let bundle:Value=serde_json::from_slice(&bytes).map_err(error)?;
         let mut profile=if bundle.get("profile").is_some(){bundle["profile"].clone()}else{bundle.clone()};
         validate_profile(&profile)?;
         let id=profile["id"].as_str().ok_or("Profil-ID fehlt")?.to_owned();
         let exists=self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM bot_profiles WHERE id=?1)",[&id],|r|r.get::<_,bool>(0)).map_err(error)?;
-        if exists || self.profile_dir(&profile)?.exists(){profile["id"]=json!(new_bot_id(profile["name"].as_str().unwrap_or("Bot")));}
+        if exists || self.profile_dir(&profile)?.symlink_metadata().is_ok(){profile["id"]=json!(new_bot_id(profile["name"].as_str().unwrap_or("Bot")));}
         reset_imported_authority(&mut profile,&self.secret_ids()?)?;
         profile["output"]["streamingEnabled"]=json!(false);profile["output"]["mode"]=json!("studio");
         if profile["hindsight"].is_object(){profile["hindsight"]["enabled"]=json!(false);profile["hindsight"]["bankId"]=json!("");}
-        // Installing a portable package never replaces an existing library
-        // resource. Imported MCP commands require a new explicit activation.
-        let mut bindings=Vec::new();
-        for server in profile["mcpServers"].as_array().into_iter().flatten(){
-            let definition=self.install_mcp(&export_sanitize(sanitize(server.clone())))?;
-            let mut binding=crate::extensions::binding(server)?;binding["id"]=definition["id"].clone();binding["enabled"]=json!(false);bindings.push(binding);
-        }
-        profile["mcpServers"]=json!(crate::extensions::merge_bindings(bindings));
         profile["allowSkillScripts"]=json!(false);
         let builtin=profile["avatar"]["assetPath"].as_str().filter(|path|known_builtin(path)).map(str::to_owned);
         profile["avatar"]["assetPath"]=builtin.map(Value::String).unwrap_or(Value::Null);
-        if let Some(encoded)=bundle["avatar"]["base64"].as_str() {
-            use base64::Engine;
-            let ext=Path::new(bundle["avatar"]["name"].as_str().unwrap_or("avatar.vrm")).extension().and_then(|e|e.to_str()).unwrap_or("vrm").to_ascii_lowercase();
-            if !["vrm","glb"].contains(&ext.as_str()) {return Err("Ungültiges Avatarformat im Profilpaket".into());}
-            let bytes=base64::engine::general_purpose::STANDARD.decode(encoded).map_err(error)?;
-            if bytes.len()>256*1024*1024 {return Err("Avatar ist zu groß".into());}
-            crate::avatar_metadata::inspect_bytes(&bytes)?;
-            let name=format!("{}.{}",uuid::Uuid::new_v4(),ext);
-            fs::write(self.root.join("avatars").join(&name),bytes).map_err(error)?;
-            profile["avatar"]["assetPath"]=json!(name);
+        let mut stage=ImportStaging::new(&self.root)?;
+        let result=(|| {
+            let profile_stage=stage.root.join("profile");
+            fs::create_dir(&profile_stage).map_err(error)?;
+            for folder in ["skills","knowledge"]{fs::create_dir(profile_stage.join(folder)).map_err(error)?;}
+            for (key,name,default) in [("agents","AGENTS.md",DEFAULT_AGENTS),("persona","PERSONA.md",DEFAULT_PERSONA)]{
+                let content=match bundle["documents"].get(key){None|Some(Value::Null)=>default,Some(value)=>value.as_str().ok_or("Anweisungsdatei muss Text enthalten")?};
+                validate_instruction_document(name,content)?;
+                stage.write(&profile_stage.join(name),content.as_bytes())?;
+            }
+            if !bundle["documents"].is_null()&&!bundle["documents"].is_object(){return Err("Anweisungsdateien müssen ein JSON-Objekt sein".into());}
+            let mut catalog=self.library_mcp()?;let mut new_servers=Vec::new();let mut bindings=Vec::new();
+            for server in profile["mcpServers"].as_array().into_iter().flatten(){
+                let mut definition=crate::extensions::definition(&export_sanitize(sanitize(server.clone())))?;
+                if let Some(existing)=catalog.iter().find(|entry|crate::extensions::signature(entry)==crate::extensions::signature(&definition)){
+                    definition=existing.clone();
+                }else{
+                    if catalog.iter().any(|entry|entry["id"]==definition["id"]){definition["id"]=json!(uuid::Uuid::new_v4().to_string());}
+                    catalog.push(definition.clone());new_servers.push(definition.clone());
+                }
+                let mut binding=crate::extensions::binding(server)?;binding["id"]=definition["id"].clone();binding["enabled"]=json!(false);bindings.push(binding);
+            }
+            profile["mcpServers"]=json!(crate::extensions::merge_bindings(bindings));
+            let mut avatar=None;
+            if !bundle["avatar"].is_null(){
+                let encoded=bundle["avatar"]["base64"].as_str().ok_or("Avatarinhalt fehlt im Profilpaket")?;
+                let ext=Path::new(bundle["avatar"]["name"].as_str().unwrap_or("avatar.vrm")).extension().and_then(|value|value.to_str()).unwrap_or("vrm").to_ascii_lowercase();
+                if !["vrm","glb"].contains(&ext.as_str()){return Err("Ungültiges Avatarformat im Profilpaket".into());}
+                let data=decode_package_file(encoded,256*1024*1024)?;
+                crate::avatar_metadata::inspect_bytes(&data)?;
+                let name=format!("{}.{}",uuid::Uuid::new_v4(),ext);let path=stage.root.join("avatar");stage.write(&path,&data)?;
+                profile["avatar"]["assetPath"]=json!(name);avatar=Some((path,name));
+            }
+            let mut skill_files:std::collections::BTreeMap<String,Vec<(PathBuf,Vec<u8>)>>=std::collections::BTreeMap::new();
+            if let Some(skills)=bundle.get("skills").filter(|value|!value.is_null()){
+                for skill in skills.as_array().ok_or("Skills im Profilpaket müssen eine Liste sein")?{
+                    let id=skill["id"].as_str().filter(|id|valid_id(id)).ok_or("Ungültiger Skill im Profilpaket")?;
+                    let content=skill["content"].as_str().ok_or("Skillinhalt fehlt im Profilpaket")?;
+                    if content.len()>512_000||skill_files.contains_key(id){return Err("Ungültiger oder doppelter Skill im Profilpaket".into());}
+                    skill_files.insert(id.into(),vec![(PathBuf::from("SKILL.md"),content.as_bytes().to_vec())]);
+                }
+            }
+            let mut profile_files=Vec::new();let mut names=std::collections::BTreeSet::new();let mut total=0usize;
+            if let Some(files)=bundle.get("files").filter(|value|!value.is_null()){
+                let files=files.as_array().ok_or("Dateien im Profilpaket müssen eine Liste sein")?;
+                if files.len()>4096{return Err("Profilpaket enthält zu viele Dateien".into());}
+                for file in files{
+                    let relative=file["path"].as_str().ok_or("Ungültiger Pfad im Profilpaket")?;
+                    validate_package_path(relative)?;
+                    if !names.insert(relative.to_lowercase()){return Err("Doppelter Dateipfad im Profilpaket".into());}
+                    let data=decode_package_file(file["base64"].as_str().ok_or("Dateiinhalt fehlt")?,64*1024*1024-total)?;
+                    total+=data.len();
+                    if let Some(path)=relative.strip_prefix("skills/"){
+                        let (id,path)=path.split_once('/').ok_or("Skillpfad im Profilpaket ist unvollständig")?;
+                        if !valid_id(id){return Err("Ungültiger Skillpfad im Profilpaket".into());}
+                        let entries=skill_files.entry(id.into()).or_default();entries.retain(|(existing,_)|existing!=Path::new(path));entries.push((PathBuf::from(path),data));
+                    }else{profile_files.push((PathBuf::from(relative),data));}
+                }
+            }
+            let skill_bytes=skill_files.values().flatten().try_fold(0usize,|sum,(_,data)|sum.checked_add(data.len()).ok_or("Profilpaket zu groß"))?;
+            let profile_bytes=profile_files.iter().map(|(_,data)|data.len()).sum::<usize>();
+            if skill_bytes.saturating_add(profile_bytes)>64*1024*1024{return Err("Skill-/Wissensdateien überschreiten 64 MB".into());}
+            // Use the shared validator/installer against an isolated library,
+            // never against the operator's installed packages during staging.
+            let staged_library=crate::skill_library::SkillLibrary::new(&stage.root)?;let mut packages=Vec::new();
+            for (requested,files) in skill_files{
+                let item=staged_library.install_files(&requested,&files)?;packages.push((requested,item["id"].as_str().ok_or("Installierte Skill-ID fehlt")?.to_owned()));
+            }
+            for (relative,data) in profile_files{
+                let target=profile_stage.join(relative);if let Some(parent)=target.parent(){fs::create_dir_all(parent).map_err(error)?;}stage.write(&target,&data)?;
+            }
+            // Missing library anchors are owned by this import too, so an
+            // interrupted write cannot leave new empty directories behind.
+            stage.directory(&self.root,&["library","skills"])?;
+            let library=crate::skill_library::SkillLibrary::new(&self.root)?;
+            let mut installed=library.list()?;let mut mapping=std::collections::BTreeMap::new();
+            let mut staged_ids:std::collections::BTreeMap<String,String>=std::collections::BTreeMap::new();let mut skill_moves=Vec::new();
+            for (requested,staged_id) in packages{
+                let staged_id=staged_id.as_str();
+                if let Some(id)=staged_ids.get(staged_id){mapping.insert(requested,id.clone());continue;}
+                let incoming=staged_library.files(staged_id)?;let mut reused=None;
+                for existing in &installed{
+                    let id=existing["id"].as_str().ok_or("Installierte Skill-ID fehlt")?;
+                    // Newly planned packages are already deduplicated by the
+                    // staged library; only read resources that actually exist.
+                    if skill_moves.iter().any(|(_,planned_id)|planned_id==id){continue;}
+                    if library.files(id)?==incoming{reused=Some(id.to_owned());break;}
+                }
+                let target_id=if let Some(id)=reused{id}else{
+                    if installed.len()>=512{return Err("Die gemeinsame Bibliothek darf höchstens 512 Skills enthalten".into());}
+                    let collision=installed.iter().any(|entry|entry["id"].as_str().is_some_and(|id|id.eq_ignore_ascii_case(staged_id)))||self.root.join("library/skills").join(staged_id).symlink_metadata().is_ok();
+                    let id=if collision{format!("{}-{}",staged_id.chars().take(59).collect::<String>(),uuid::Uuid::new_v4())}else{staged_id.to_owned()};
+                    skill_moves.push((stage.root.join("library/skills").join(staged_id),id.clone()));installed.push(json!({"id":id}));id
+                };
+                staged_ids.insert(staged_id.to_owned(),target_id.clone());mapping.insert(requested,target_id);
+            }
+            profile["skillsEnabled"]=json!(profile["skillsEnabled"].as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|id|mapping.get(id).cloned()).collect::<Vec<_>>());
+            let clean=sanitize(profile);validate_profile(&clean)?;
+            // Resolve the return value before committing, so a successful
+            // import cannot later be reported as failed by a fallible reload.
+            let mut saved=clean.clone();let mut effective=Vec::new();
+            for binding in clean["mcpServers"].as_array().into_iter().flatten(){
+                let mut server=catalog.iter().find(|entry|entry["id"]==binding["id"]).ok_or("MCP-Definition fehlt im Profilpaket")?.clone();
+                for (key,value) in binding.as_object().ok_or("Ungültige MCP-Zuweisung")?{server[key]=value.clone();}effective.push(server);
+            }
+            saved["mcpServers"]=json!(effective);
+            if saved.get("autopilot").is_none_or(Value::is_null){saved["autopilot"]=serde_json::to_value(crate::autopilot::Config::default()).map_err(error)?;}
+            let mut db=self.db.lock().map_err(error)?;let tx=db.transaction().map_err(error)?;
+            for server in new_servers{tx.execute("INSERT INTO mcp_library(id,server) VALUES(?1,?2)",params![server["id"].as_str().ok_or("MCP-ID fehlt")?,server.to_string()]).map_err(error)?;}
+            tx.execute("INSERT INTO bot_profiles(id,profile) VALUES(?1,?2)",params![clean["id"].as_str().ok_or("Profil-ID fehlt")?,clean.to_string()]).map_err(error)?;
+            tx.execute("INSERT INTO settings(key,value) VALUES('profile',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[clean.to_string()]).map_err(error)?;
+            // Only brand-new paths are promoted. A failed promotion or SQLite
+            // commit removes those exact paths and leaves all old data intact.
+            for (source,id) in skill_moves{stage.publish(&source,&self.root,&["library","skills"],&id)?;}
+            if let Some((source,name))=avatar{stage.publish(&source,&self.root,&["avatars"],&name)?;}
+            stage.publish(&profile_stage,&self.root,&["profiles"],clean["id"].as_str().ok_or("Profil-ID fehlt")?)?;
+            tx.commit().map_err(error)?;
+            stage.committed=true;
+            Ok(saved)
+        })();
+        if let Err(problem)=result{
+            return match stage.rollback(){Ok(())=>Err(problem),Err(rollback)=>Err(format!("{problem}; Import-Rollback fehlgeschlagen: {rollback}"))};
         }
-        let mut skill_files:std::collections::BTreeMap<String,Vec<(PathBuf,Vec<u8>)>>=std::collections::BTreeMap::new();
-        if let Some(skills)=bundle["skills"].as_array(){for skill in skills{if let (Some(id),Some(content))=(skill["id"].as_str(),skill["content"].as_str()){
-            if !valid_id(id)||content.len()>512_000{return Err("Ungültiger Skill im Profilpaket".into());}
-            skill_files.entry(id.into()).or_default().push((PathBuf::from("SKILL.md"),content.as_bytes().to_vec()));
-        }}}
-        let mut profile_files=Vec::new();
-        if let Some(files)=bundle["files"].as_array(){
-            use base64::Engine;
-            let mut total=0usize;
-            for file in files {
-                let relative=file["path"].as_str().ok_or("Ungültiger Pfad im Profilpaket")?;
-                if !safe_relative(relative) || !["skills/","knowledge/","voice/","sounds/"].iter().any(|prefix|relative.starts_with(prefix)){return Err("Dateipfad außerhalb des Profils im Paket".into());}
-                let data=base64::engine::general_purpose::STANDARD.decode(file["base64"].as_str().ok_or("Dateiinhalt fehlt")?).map_err(error)?;
-                total=total.checked_add(data.len()).ok_or("Profilpaket zu groß")?;
-                if total>64*1024*1024{return Err("Skill-/Wissensdateien überschreiten 64 MB".into());}
-                if let Some(path)=relative.strip_prefix("skills/"){
-                    let (id,path)=path.split_once('/').ok_or("Skillpfad im Profilpaket ist unvollständig")?;
-                    if !valid_id(id)||!safe_relative(path){return Err("Ungültiger Skillpfad im Profilpaket".into());}
-                    let entries=skill_files.entry(id.into()).or_default();entries.retain(|(existing,_)|existing!=Path::new(path));entries.push((PathBuf::from(path),data));
-                }else{profile_files.push((PathBuf::from(relative),data));}
+        result
+    }
+
+}
+
+fn validate_instruction_document(name:&str,content:&str)->Result<(),String>{
+    if !["AGENTS.md","PERSONA.md"].contains(&name){return Err("Nur AGENTS.md und PERSONA.md sind erlaubt".into());}
+    if content.len()>512_000{return Err("Anweisungsdatei ist zu groß".into());}Ok(())
+}
+fn decode_package_file(encoded:&str,limit:usize)->Result<Vec<u8>,String>{
+    use base64::Engine;
+    if encoded.len()>limit.saturating_add(2)/3*4{return Err("Datei überschreitet die Profilpaket-Grenze".into());}
+    let data=base64::engine::general_purpose::STANDARD.decode(encoded).map_err(error)?;
+    if data.len()>limit{return Err("Datei überschreitet die Profilpaket-Grenze".into());}Ok(data)
+}
+fn validate_package_path(relative:&str)->Result<(),String>{
+    if !safe_relative(relative)||relative.len()>1024||relative.split('/').any(|part|part.is_empty()||part.len()>255||part.chars().any(|ch|ch.is_control()||matches!(ch,':'|'*'|'?'|'"'|'<'|'>'|'|'))||part.ends_with([' ','.']))
+        || !["skills/","knowledge/","voice/","sounds/"].iter().any(|prefix|relative.starts_with(prefix)){
+        return Err("Dateipfad außerhalb des Profils oder nicht plattformübergreifend im Paket".into());
+    }Ok(())
+}
+
+/// Rollback owns only newly created paths. It never edits or snapshots an
+/// existing bot, document, Skill, avatar, or credential. SQLite remains the
+/// atomic visibility boundary for the registry, active profile and MCP catalog.
+struct ImportStaging{root:PathBuf,published:Vec<(PathBuf,bool)>,committed:bool}
+impl ImportStaging{
+    fn new(root:&Path)->Result<Self,String>{
+        let root=root.join(format!(".profile-import-{}",uuid::Uuid::new_v4()));fs::create_dir(&root).map_err(error)?;
+        Ok(Self{root,published:Vec::new(),committed:false})
+    }
+    fn write(&self,path:&Path,bytes:&[u8])->Result<(),String>{
+        let mut file=fs::OpenOptions::new().write(true).create_new(true).open(path).map_err(error)?;file.write_all(bytes).map_err(error)?;file.sync_all().map_err(error)
+    }
+    fn directory(&mut self,root:&Path,parents:&[&str])->Result<PathBuf,String>{
+        let mut parent=root.to_path_buf();
+        for part in parents{
+            parent.push(part);
+            match fs::symlink_metadata(&parent){
+                Ok(meta) if meta.is_dir()&&!import_redirected(&meta)=>(),
+                Ok(_)=>return Err("Importziel darf keine Datei oder Umleitung sein".into()),
+                Err(problem) if problem.kind()==std::io::ErrorKind::NotFound=>{fs::create_dir(&parent).map_err(error)?;self.published.push((parent.clone(),false));},
+                Err(problem)=>return Err(error(problem)),
             }
         }
-        let library=crate::skill_library::SkillLibrary::new(&self.root)?;let mut mapping=std::collections::BTreeMap::new();
-        for (id,files) in skill_files{let installed=library.install_files(&id,&files)?;mapping.insert(id,installed["id"].as_str().ok_or("Installierte Skill-ID fehlt")?.to_owned());}
-        profile["skillsEnabled"]=json!(profile["skillsEnabled"].as_array().into_iter().flatten().filter_map(Value::as_str).filter_map(|id|mapping.get(id).cloned()).collect::<Vec<_>>());
-        let saved=self.save_profile(profile)?;
-        for (key,name) in [("agents","AGENTS.md"),("persona","PERSONA.md")] {if let Some(content)=bundle["documents"][key].as_str() {self.save_document(name,content)?;}}
-        let root=self.profile_dir(&saved)?;
-        for (relative,data) in profile_files{let target=root.join(relative);let parent=target.parent().ok_or("Ungültiger Profilpfad")?;fs::create_dir_all(parent).map_err(error)?;
-            if !parent.canonicalize().map_err(error)?.starts_with(root.canonicalize().map_err(error)?){return Err("Profilpfad führt über einen Symlink nach außen".into());}
-            if target.symlink_metadata().map(|m|m.file_type().is_symlink()).unwrap_or(false){return Err("Symlink-Datei im Profil wird nicht überschrieben".into());}
-            fs::write(target,data).map_err(error)?;
-        }
-        Ok(saved)
+        Ok(parent)
     }
+    fn publish(&mut self,source:&Path,root:&Path,parents:&[&str],name:&str)->Result<(),String>{
+        let target=self.directory(root,parents)?.join(name);import_rename_noreplace(source,&target)?;self.published.push((target,true));Ok(())
+    }
+    fn rollback(&mut self)->Result<(),String>{
+        if self.committed{return Ok(());}
+        let mut failures=Vec::new();
+        for (path,owned_tree) in self.published.iter().rev(){
+            // Remove anchors only when empty; an unrelated concurrent writer
+            // must never lose its files as collateral damage of this rollback.
+            let result=if path.is_dir(){if *owned_tree{fs::remove_dir_all(path)}else{fs::remove_dir(path)}}else{fs::remove_file(path)};
+            if let Err(problem)=result{if problem.kind()!=std::io::ErrorKind::NotFound{failures.push(error(problem));}}
+        }
+        if failures.is_empty(){self.published.clear();Ok(())}else{Err(failures.join("; "))}
+    }
+}
+impl Drop for ImportStaging{fn drop(&mut self){let _=self.rollback();let _=fs::remove_dir_all(&self.root);}}
+fn import_redirected(meta:&fs::Metadata)->bool{
+    #[cfg(target_os="windows")]{use std::os::windows::fs::MetadataExt;meta.file_attributes()&0x400!=0}
+    #[cfg(not(target_os="windows"))]{meta.file_type().is_symlink()}
+}
+// std::fs::rename replaces existing destinations on Unix. The OS no-replace
+// primitive closes that race for both directories and files. Windows uses
+// MoveFileEx without REPLACE_EXISTING. Everything stays on one volume.
+fn import_rename_noreplace(source:&Path,target:&Path)->Result<(),String>{
+    #[cfg(any(target_os="macos",target_os="linux"))]{
+        use std::{ffi::CString,os::unix::ffi::OsStrExt};
+        let source=CString::new(source.as_os_str().as_bytes()).map_err(error)?;let target=CString::new(target.as_os_str().as_bytes()).map_err(error)?;
+        #[cfg(target_os="macos")]
+        let status=unsafe{libc::renamex_np(source.as_ptr(),target.as_ptr(),libc::RENAME_EXCL)};
+        #[cfg(target_os="linux")]
+        let status=unsafe{libc::renameat2(libc::AT_FDCWD,source.as_ptr(),libc::AT_FDCWD,target.as_ptr(),libc::RENAME_NOREPLACE)};
+        if status!=0{return Err(error(std::io::Error::last_os_error()));}Ok(())
+    }
+    #[cfg(target_os="windows")]{
+        use std::os::windows::ffi::OsStrExt;
+        #[link(name="kernel32")]
+        unsafe extern "system"{fn MoveFileExW(source:*const u16,target:*const u16,flags:u32)->i32;}
+        let source:Vec<u16>=source.as_os_str().encode_wide().chain(Some(0)).collect();let target:Vec<u16>=target.as_os_str().encode_wide().chain(Some(0)).collect();
+        if unsafe{MoveFileExW(source.as_ptr(),target.as_ptr(),0)}==0{return Err(error(std::io::Error::last_os_error()));}Ok(())
+    }
+    #[cfg(not(any(target_os="macos",target_os="linux",target_os="windows")))]{let _=(source,target);Err("Transaktionaler Import wird auf diesem Betriebssystem nicht unterstützt".into())}
 }
 
 /// Portable configuration never authorizes access to credentials already stored
@@ -812,5 +985,88 @@ mod extension_tests{
         let mut profile=store.profile().unwrap();profile["mcpServers"]=json!([{"id":installed["server"]["id"],"enabled":true,"allowedTools":["cohost_status"],"viewerAllowedTools":[]}]);profile["skillsEnabled"]=json!([installed["skill"]["id"]]);store.save_profile(profile).unwrap();
         let package=fixture.0.join("control-profile.json");store.export(&package).unwrap();let bundle:Value=serde_json::from_slice(&fs::read(&package).unwrap()).unwrap();let definition=&bundle["profile"]["mcpServers"][0];assert_eq!(definition["builtin"],"cohost-control");assert!(definition.get("url").is_none());assert!(definition.get("token").is_none());assert!(definition.get("apiKeyId").is_none());
         let destination=Fixture::new();let other=Store::new(destination.0.clone()).unwrap();let imported=other.import(&package).unwrap();assert_eq!(imported["mcpServers"][0]["transport"],"builtin");assert_eq!(imported["mcpServers"][0]["builtin"],"cohost-control");assert_eq!(imported["mcpServers"][0]["enabled"],false);
+    }
+}
+
+#[cfg(test)]
+mod import_transaction_tests{
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD,Engine};
+    struct Fixture(PathBuf);
+    impl Fixture{fn new()->Self{let root=std::env::temp_dir().join(format!("orbitpal-profile-import-{}",uuid::Uuid::new_v4()));fs::create_dir(&root).unwrap();Self(root)}}
+    impl Drop for Fixture{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
+    fn glb()->Vec<u8>{
+        let mut document=serde_json::to_vec(&json!({"asset":{"version":"2.0"},"scene":0,"scenes":[{"nodes":[]}],"nodes":[]})).unwrap();while document.len()%4!=0{document.push(b' ');}
+        let mut bytes=b"glTF".to_vec();bytes.extend(2u32.to_le_bytes());bytes.extend((20+document.len() as u32).to_le_bytes());bytes.extend((document.len() as u32).to_le_bytes());bytes.extend(0x4e4f534au32.to_le_bytes());bytes.extend(document);bytes
+    }
+    fn package(store:&Store)->Value{
+        let mut profile=store.profile().unwrap();profile["id"]=json!("imported-fixture");profile["name"]=json!("Imported fixture");
+        profile["mcpServers"]=json!([{"id":"imported-server","name":"Fixture","transport":"stdio","command":"fixture-only-not-executed","enabled":true,"allowedTools":["*"],"viewerAllowedTools":[]}]);
+        profile["skillsEnabled"]=json!(["imported-skill"]);profile["allowSkillScripts"]=json!(true);
+        json!({"format":"streamer-ai-cohost-profile","version":2,"profile":profile,"documents":{"agents":"Imported agent instructions","persona":"Imported persona"},"skills":[{"id":"imported-skill","content":"Imported Skill instructions"}],"avatar":{"name":"fixture.glb","base64":STANDARD.encode(glb())},"files":[{"path":"skills/imported-skill/references/facts.txt","base64":STANDARD.encode(b"Skill resource")},{"path":"knowledge/facts.txt","base64":STANDARD.encode(b"Knowledge facts")},{"path":"voice/reference.txt","base64":STANDARD.encode(b"Voice reference")},{"path":"sounds/resource.bin","base64":STANDARD.encode(b"Sound resource")} ]})
+    }
+    fn source(fixture:&Fixture,bundle:&Value)->PathBuf{let path=fixture.0.join("package.json");fs::write(&path,serde_json::to_vec(bundle).unwrap()).unwrap();path}
+    fn snapshot(store:&Store)->Value{
+        fn visit(root:&Path,dir:&Path,files:&mut std::collections::BTreeMap<String,Value>){
+            for entry in fs::read_dir(dir).unwrap(){let entry=entry.unwrap();let name=entry.path().strip_prefix(root).unwrap().to_string_lossy().replace('\\',"/");
+                if name=="cohost.sqlite3"||name=="cohost.sqlite3-wal"||name=="cohost.sqlite3-shm"{continue;}
+                let kind=entry.file_type().unwrap();if kind.is_dir(){files.insert(format!("{name}/"),Value::Null);visit(root,&entry.path(),files);}else{files.insert(name,json!(STANDARD.encode(fs::read(entry.path()).unwrap())));}
+            }
+        }
+        let mut files=std::collections::BTreeMap::new();visit(&store.root,&store.root,&mut files);
+        let db=store.db.lock().unwrap();let mut rows=db.prepare("SELECT id,profile FROM bot_profiles ORDER BY id").unwrap();let bots=rows.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap();drop(rows);
+        let mut rows=db.prepare("SELECT key,value FROM settings ORDER BY key").unwrap();let settings=rows.query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap();drop(rows);drop(db);
+        json!({"active":store.profile().unwrap(),"bots":bots,"settings":settings,"library":store.extension_library().unwrap(),"files":files,"secretIds":store.secret_ids().unwrap()})
+    }
+    #[test]
+    fn invalid_documents_assets_and_late_package_resources_leave_everything_unchanged(){
+        let target=Fixture::new();let input=Fixture::new();let store=Store::new(target.0.clone()).unwrap();store.save_skill("existing-skill","Existing operator content").unwrap();let before=snapshot(&store);
+        let mut cases=Vec::new();let mut invalid=package(&store);invalid["documents"]["persona"]=json!("x".repeat(512_001));cases.push(invalid);
+        let mut invalid=package(&store);invalid["documents"]["agents"]=json!({"invalid":"not text"});cases.push(invalid);
+        let mut invalid=package(&store);invalid["avatar"]["base64"]=json!(STANDARD.encode(b"invalid GLB"));cases.push(invalid);
+        let mut invalid=package(&store);invalid["files"].as_array_mut().unwrap().push(json!({"path":"knowledge/../escape.txt","base64":"eA=="}));cases.push(invalid);
+        let mut invalid=package(&store);invalid["files"].as_array_mut().unwrap().push(json!({"path":"skills/broken/SKILL.md","base64":STANDARD.encode([0u8,255])}));cases.push(invalid);
+        let mut invalid=package(&store);invalid["files"].as_array_mut().unwrap().push(json!({"path":"knowledge/facts.txt/child.txt","base64":"eA=="}));cases.push(invalid);
+        for bundle in cases{assert!(store.import(&source(&input,&bundle)).is_err());assert_eq!(snapshot(&store),before);}
+        let oversized=input.0.join("oversized.json");fs::File::create(&oversized).unwrap().set_len(512*1024*1024+1).unwrap();
+        assert_eq!(store.import(&oversized).unwrap_err(),"Profilpaket ist zu groß");assert_eq!(snapshot(&store),before);
+    }
+    #[test]
+    fn failed_resource_promotion_rolls_back_new_skills_and_database_changes(){
+        let target=Fixture::new();let input=Fixture::new();let store=Store::new(target.0.clone()).unwrap();let bundle=package(&store);
+        // A deterministic filesystem failure (also when tests run as admin):
+        // one Skill can be promoted, but the avatar parent is a regular file.
+        fs::remove_dir(target.0.join("avatars")).unwrap();fs::write(target.0.join("avatars"),b"Operator-owned blocking fixture").unwrap();let before=snapshot(&store);
+        let problem=store.import(&source(&input,&bundle)).unwrap_err();assert!(problem.contains("Importziel"));assert_eq!(snapshot(&store),before);
+    }
+    #[test]
+    fn failed_sqlite_commit_removes_all_promoted_files_and_preserves_active_bot(){
+        let target=Fixture::new();let input=Fixture::new();let store=Store::new(target.0.clone()).unwrap();let bundle=package(&store);
+        store.db.lock().unwrap().execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE import_parent(id TEXT PRIMARY KEY); CREATE TABLE import_failure(id TEXT REFERENCES import_parent(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_import_commit AFTER INSERT ON bot_profiles WHEN NEW.id='imported-fixture' BEGIN INSERT INTO import_failure(id) VALUES('missing-parent'); END;").unwrap();
+        let before=snapshot(&store);let problem=store.import(&source(&input,&bundle)).unwrap_err();assert!(problem.contains("FOREIGN KEY"));assert_eq!(snapshot(&store),before);
+        let count:i64=store.db.lock().unwrap().query_row("SELECT count(*) FROM import_failure",[],|row|row.get(0)).unwrap();assert_eq!(count,0);
+        drop(store);let reopened=Store::new(target.0.clone()).unwrap();assert_eq!(snapshot(&reopened),before);
+    }
+    #[test]
+    fn successful_import_commits_all_resources_together_and_reuses_without_overwriting(){
+        let target=Fixture::new();let input=Fixture::new();let store=Store::new(target.0.clone()).unwrap();store.save_skill("imported-skill","Existing unrelated instructions").unwrap();let original=store.profile().unwrap();
+        let bundle=package(&store);let imported=store.import(&source(&input,&bundle)).unwrap();let id=imported["id"].as_str().unwrap();assert_eq!(store.profile().unwrap(),imported);assert_eq!(store.bot_profile(original["id"].as_str().unwrap()).unwrap(),original);
+        let scoped=store.scoped(id).unwrap();assert_eq!(scoped.documents().unwrap(),bundle["documents"]);let root=store.profile_dir(&imported).unwrap();
+        for (path,bytes) in [("knowledge/facts.txt",b"Knowledge facts".as_slice()),("voice/reference.txt",b"Voice reference".as_slice()),("sounds/resource.bin",b"Sound resource".as_slice())]{assert_eq!(fs::read(root.join(path)).unwrap(),bytes);}
+        assert_eq!(fs::read(target.0.join("avatars").join(imported["avatar"]["assetPath"].as_str().unwrap())).unwrap(),glb());
+        let skill=imported["skillsEnabled"][0].as_str().unwrap();assert_ne!(skill,"imported-skill");let library=crate::skill_library::SkillLibrary::new(&target.0).unwrap();assert_eq!(library.read("imported-skill").unwrap()["content"],"Existing unrelated instructions");assert_eq!(library.read_resource(skill,"references/facts.txt").unwrap(),"Skill resource");
+        assert_eq!(imported["mcpServers"][0]["enabled"],false);assert_eq!(imported["allowSkillScripts"],false);assert_eq!(imported["screenContext"]["enabled"],false);assert_ne!(imported["model"]["apiKeyId"],original["model"]["apiKeyId"]);
+        let second=store.import(&source(&input,&bundle)).unwrap();assert_ne!(second["id"],imported["id"]);assert_eq!(second["skillsEnabled"],imported["skillsEnabled"]);assert_eq!(library.list().unwrap().len(),3);
+        assert!(!fs::read_dir(&target.0).unwrap().any(|entry|entry.unwrap().file_name().to_string_lossy().starts_with(".profile-import-")));
+    }
+    #[test]
+    fn scoped_import_and_noreplace_refuse_to_mutate_existing_targets(){
+        let target=Fixture::new();let input=Fixture::new();let store=Store::new(target.0.clone()).unwrap();let bundle=package(&store);let before=snapshot(&store);
+        assert!(store.scoped("nova").unwrap().import(&source(&input,&bundle)).is_err());assert_eq!(snapshot(&store),before);
+        let a=input.0.join("source");let b=input.0.join("target");fs::create_dir(&a).unwrap();fs::create_dir(&b).unwrap();fs::write(b.join("existing.txt"),b"untouched").unwrap();
+        assert!(import_rename_noreplace(&a,&b).is_err());assert!(a.is_dir());assert_eq!(fs::read(b.join("existing.txt")).unwrap(),b"untouched");
+        fs::remove_file(b.join("existing.txt")).unwrap();assert!(import_rename_noreplace(&a,&b).is_err());assert!(a.is_dir());assert!(b.is_dir());
+        fs::remove_dir(&a).unwrap();fs::remove_dir(&b).unwrap();fs::write(&a,b"incoming").unwrap();fs::write(&b,b"existing").unwrap();
+        assert!(import_rename_noreplace(&a,&b).is_err());assert_eq!(fs::read(&a).unwrap(),b"incoming");assert_eq!(fs::read(&b).unwrap(),b"existing");
     }
 }
