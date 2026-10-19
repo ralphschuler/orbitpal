@@ -3,6 +3,7 @@ export type SynthesizedAudio = { audioBase64: string; mimeType: string };
 /** Exactly one audible utterance at a time. Stop also invalidates pending synthesis. */
 export class SpeechPlayer {
   private generation = 0;
+  private startCancellation?: AbortController;
   private context?: AudioContext;
   private source?: AudioBufferSourceNode;
   private gain?: GainNode;
@@ -23,10 +24,12 @@ export class SpeechPlayer {
     voice: any,
     fetchAudio?: (text: string) => Promise<SynthesizedAudio>,
     onStart?: () => void,
+    beforeStart?: () => Promise<void>,
   ): Promise<void> {
     this.stop();
     if (this.disposed || voice?.enabled === false || !text.trim()) return;
     const generation = this.generation;
+    this.startCancellation = new AbortController();
     let started = false;
     const start = () => {
       if (!this.current(generation) || started) return;
@@ -35,7 +38,7 @@ export class SpeechPlayer {
       if (this.current(generation)) onStart?.();
     };
     if (!voice?.provider || ['system', 'browser'].includes(voice.provider)) {
-      await this.speakSystem(text, voice, generation, start);
+      await this.speakSystem(text, voice, generation, start, beforeStart);
       return;
     }
     if (!fetchAudio) throw new Error('Für diese Stimme ist keine Sprachausgabe verbunden.');
@@ -65,6 +68,10 @@ export class SpeechPlayer {
     }
     if (!this.current(generation)) return;
     await this.resumeContext(context);
+    if (!this.current(generation)) return;
+    // Fetch and decoding may finish while the character returns to its speaking
+    // position. Only the actual playback start waits for that presentation gate.
+    if (beforeStart && !await this.waitForStart(beforeStart, generation)) return;
     if (!this.current(generation)) return;
 
     const source = context.createBufferSource();
@@ -112,6 +119,8 @@ export class SpeechPlayer {
 
   stop(): void {
     ++this.generation;
+    this.startCancellation?.abort();
+    this.startCancellation = undefined;
     cancelAnimationFrame(this.meterFrame);
     this.meterFrame = 0;
     const finish = this.finish;
@@ -172,6 +181,27 @@ export class SpeechPlayer {
 
   private current(generation: number) { return !this.disposed && generation === this.generation; }
 
+  /** A stopped/replaced utterance must settle even if its presentation hook
+   * never does. Its late completion or rejection cannot affect a newer turn. */
+  private waitForStart(beforeStart: () => Promise<void>, generation: number): Promise<boolean> {
+    const signal = this.startCancellation?.signal;
+    if (!this.current(generation) || !signal || signal.aborted) return Promise.resolve(false);
+    return new Promise<boolean>((resolve, reject) => {
+      const cancel = () => { signal.removeEventListener('abort', cancel); resolve(false); };
+      signal.addEventListener('abort', cancel, { once: true });
+      Promise.resolve().then(() => {
+        if (this.current(generation) && !signal.aborted) return beforeStart();
+      }).then(() => {
+        signal.removeEventListener('abort', cancel);
+        resolve(this.current(generation) && !signal.aborted);
+      }, error => {
+        signal.removeEventListener('abort', cancel);
+        if (this.current(generation) && !signal.aborted) reject(error);
+        else resolve(false);
+      });
+    });
+  }
+
   private setSpeaking(speaking: boolean) {
     if (this.state !== speaking) {
       this.state = speaking;
@@ -214,7 +244,7 @@ export class SpeechPlayer {
     tick();
   }
 
-  private async speakSystem(text: string, voice: any, generation: number, onStart: () => void): Promise<void> {
+  private async speakSystem(text: string, voice: any, generation: number, onStart: () => void, beforeStart?: () => Promise<void>): Promise<void> {
     if (!('speechSynthesis' in window)) throw new Error('Dieser WebView bietet keine Systemstimme. Bitte eine lokale oder Cloud-Stimme einrichten.');
     const synth = window.speechSynthesis;
     let voices = synth.getVoices();
@@ -243,6 +273,8 @@ export class SpeechPlayer {
     utterance.rate = clamp(voice?.rate, 0.5, 2, 1);
     utterance.volume = clamp(voice?.volume, 0, 1, 0.85);
     utterance.pitch = clamp(voice?.pitch, 0.5, 2, 1);
+    if (beforeStart && !await this.waitForStart(beforeStart, generation)) return;
+    if (!this.current(generation)) return;
     this.utterance = utterance;
 
     await new Promise<void>((resolve, reject) => {
