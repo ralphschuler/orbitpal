@@ -366,10 +366,20 @@ impl Store {
     }
     pub fn add_message(&self,role:&str,text:&str,source:&str,user:&str) -> Result<Value,String> {
         let id=uuid::Uuid::new_v4().to_string();
+        self.add_message_with_id(&id,role,text,source,user)
+    }
+    pub fn add_message_with_id(&self,id:&str,role:&str,text:&str,source:&str,user:&str) -> Result<Value,String> {
+        if !valid_id(id){return Err("Ungültige Nachrichten-ID".into());}
         let created=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(error)?.as_millis() as i64;
         let profile_id=self.profile()?["id"].as_str().unwrap_or("nova").to_owned();
-        self.db.lock().map_err(error)?.execute("INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6,?7)",params![id,profile_id,role,text,source,user,created]).map_err(error)?;
-        Ok(json!({"id":id,"role":role,"text":text,"source":source,"user":user,"createdAt":created}))
+        let db=self.db.lock().map_err(error)?;
+        db.execute("INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO NOTHING",params![id,profile_id,role,text,source,user,created]).map_err(error)?;
+        let message=db.query_row("SELECT role,text,source,user_name,created_at FROM messages WHERE id=?1 AND profile_id=?2",params![id,profile_id],|r|Ok(json!({"id":id,"role":r.get::<_,String>(0)?,"text":r.get::<_,String>(1)?,"source":r.get::<_,String>(2)?,"user":r.get::<_,String>(3)?,"createdAt":r.get::<_,i64>(4)?}))).map_err(error)?;
+        if message["role"]!=role||message["text"]!=text||message["source"]!=source||message["user"]!=user{return Err("Nachrichten-ID gehört bereits zu einem anderen Inhalt".into());}
+        Ok(message)
+    }
+    pub fn contains_message(&self,id:&str)->Result<bool,String>{
+        self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1)",[id],|r|r.get(0)).map_err(error)
     }
     pub fn clear_history(&self) -> Result<(),String> {
         let id=self.profile()?["id"].as_str().unwrap_or("nova").to_owned();

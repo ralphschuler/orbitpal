@@ -125,7 +125,7 @@ pub fn set_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:Str
     publish(&app,runtime.clone());Ok(runtime)
 }
 #[tauri::command]
-pub async fn send_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String)->Result<Value,String>{main_only(window.label())?;crate::agent::send_autopilot(app,bot_id).await}
+pub async fn send_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,request_id:Option<String>)->Result<Value,String>{main_only(window.label())?;crate::agent::send_autopilot(app,bot_id,request_id).await}
 
 #[cfg(test)]
 mod tests{

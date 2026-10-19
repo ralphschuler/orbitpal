@@ -10,7 +10,7 @@
   import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
 
-  type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; emotion?: string; emotes?: EmotePayload[] };
+  type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
   type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void> };
   let profile = $state<any>(cloneDefaults());
   let speaking = $state(false);
@@ -176,7 +176,8 @@
     try {
       await ready;
       if (disposed || current !== job || job.finished) return;
-      const voice = { ...profile.voice };
+      if (!event.voice) throw new Error('Stimme des Wiedergabeauftrags fehlt.');
+      const voice = { ...event.voice };
       if(plannedEmoteRevision===emoteRevision&&profile.output.mode===(native?'overlay':'obs'))await emoteAudio.prepare(Array.isArray(event.emotes) ? event.emotes : [], resolveSound);
       if (disposed || current !== job || job.finished) return;
       if (voice.enabled === false) { onStart(); return; }
@@ -223,6 +224,7 @@
       void manualEmote(event);
       return;
     }
+    if (event.kind === 'cancel-speech') { if (current?.event.id === event.id) cancelCurrent(); return; }
     if (event.kind === 'stop') { ++runtimeRevision; autopilot = undefined; cancelCurrent(); failure = ''; failureDetail = ''; return; }
     if (event.kind === 'error') { subtitles.cancel(); connectionFailure = event.text || 'Die Verbindung zur App ist nicht verfügbar.'; return; }
     if (event.kind !== 'speech' || !event.id || receivedIds.has(event.id)) return;
