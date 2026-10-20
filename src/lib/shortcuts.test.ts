@@ -38,3 +38,8 @@ describe('keyboard actions respect input and dialog boundaries', () => {
     expect(shortcutFor(event({ key: 'Enter', ctrlKey: true }), { ...context, modal: true })).toBeNull();
   });
 });
+
+it('opens the ninth shared API access page with its physical digit shortcut',()=>{
+  expect(shortcutFor({key:'9',code:'Digit9',ctrlKey:false,metaKey:false,altKey:true,shiftKey:false,repeat:false,isComposing:false},{editing:false,modal:false,studio:false})).toEqual({page:8});
+  expect(shortcutFor({key:'9',code:'Digit9',ctrlKey:false,metaKey:false,altKey:true,shiftKey:false,repeat:false,isComposing:false},{editing:true,modal:false,studio:false})).toBeNull();
+});
