@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use std::{fs, io::{Read, Write}, path::{Path, PathBuf}, sync::Mutex};
+use std::{fs, io::{Read, Write}, path::{Path, PathBuf}, sync::{Mutex,Arc}};
 
 const MAX_PROFILE_RESOURCE_FILES:usize=4096;
 const DEFAULT_PROFILE: &str = include_str!("../../public/default-profile.json");
@@ -9,16 +9,23 @@ pub const DEFAULT_AGENTS: &str = "# Arbeitsanweisungen\nDu bist ein KI-Co-Host f
 pub const DEFAULT_PERSONA: &str = "# Nova\nDu bist Nova, ein neugieriger, freundlicher Roboter und Co-Host. Dein Humor ist trocken und respektvoll. Du bist offen darüber, eine KI zu sein. Vermeide lange Monologe und schließe nicht jede Antwort mit einer Frage ab.\n";
 pub const DEFAULT_SKILL: &str = "---\nname: stream-begruessung\ndescription: Begrüße neue Zuschauer, wenn der Streamer eine Begrüßung anfordert.\n---\n# Stream-Begrüßung\nBegrüße die Person mit ihrem angezeigten Namen in einem kurzen Satz. Verwende keine erfundenen persönlichen Informationen. Variiere die Formulierung. Bei unbekanntem Namen begrüße die Community gemeinsam.\n";
 
-pub struct Store { pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String> }
+#[path="life_store.rs"]
+pub(crate) mod life_store;
+
+pub struct Store { pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>,life_recovery:Arc<Mutex<life_store::RecoveryStatus>> }
 pub fn valid_id(id: &str) -> bool { !id.is_empty() && id.len() <= 96 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') }
 fn error(e: impl std::fmt::Display) -> String { e.to_string() }
 
 impl Store {
     pub fn new(root: PathBuf) -> Result<Self,String> {
+        Self::new_at(root,life_store::wall_clock_ms())
+    }
+    fn new_at(root: PathBuf, life_now_ms:u64) -> Result<Self,String> {
         fs::create_dir_all(root.join("avatars")).map_err(error)?;
-        let db = Connection::open(root.join("cohost.sqlite3")).map_err(error)?;
+        let mut db = Connection::open(root.join("cohost.sqlite3")).map_err(error)?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL, source TEXT NOT NULL, user_name TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS secret_ids (id TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS bot_profiles (id TEXT PRIMARY KEY, profile TEXT NOT NULL); CREATE TABLE IF NOT EXISTS mcp_library (id TEXT PRIMARY KEY, server TEXT NOT NULL);").map_err(error)?;
-        let store = Self {root,db:Mutex::new(db),fixed_profile:None};
+        let life_status=life_store::RecoveryStatus::new(life_store::initialize(&mut db).err());
+        let store = Self {root,db:Mutex::new(db),fixed_profile:None,life_recovery:Arc::new(Mutex::new(life_status))};
         let profile = store.profile()?;
         store.ensure_profile(&profile)?;
         // The previous single-profile settings row remains authoritative during
@@ -31,6 +38,7 @@ impl Store {
             tx.commit().map_err(error)?;
         }
         store.migrate_extensions()?;
+        store.recover_life_after_restart(life_now_ms);
         Ok(store)
     }
     pub fn profile(&self) -> Result<Value,String> {
@@ -63,7 +71,7 @@ impl Store {
         self.bot_profile(id)?;
         let connection=Connection::open(self.root.join("cohost.sqlite3")).map_err(error)?;
         connection.busy_timeout(std::time::Duration::from_secs(3)).map_err(error)?;
-        Ok(Self{root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned())})
+        Ok(Self{root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned()),life_recovery:self.life_recovery.clone()})
     }
     fn extensions_migrated(&self)->Result<bool,String>{
         self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key='extension_library_v1')",[],|row|row.get(0)).map_err(error)
@@ -209,6 +217,7 @@ impl Store {
         if name.is_empty()||name.len()>160||name.chars().any(|c|c.is_control()){return Err("Bitte einen Botnamen mit maximal 160 Bytes ohne Steuerzeichen eingeben".into());}
         let previous=self.profile()?;
         let mut profile=if copy_current{export_sanitize(sanitize(previous.clone()))}else{serde_json::from_str(DEFAULT_PROFILE).map_err(error)?};
+        life_store::strip_profile_payload(&mut profile);
         let id=new_bot_id(name);
         profile["id"]=json!(id);profile["name"]=json!(name);
         profile["screenContext"]=json!(crate::screen_context::Config::default());
@@ -283,6 +292,7 @@ impl Store {
     }
     // Caller must hold EXTENSION_MUTATIONS; never acquire it again here.
     fn save_profile_locked(&self,mut profile:Value)->Result<Value,String>{
+        life_store::strip_profile_payload(&mut profile);
         crate::screen_context::migrate(&mut profile);
         validate_profile(&profile)?;
         if self.fixed_profile.as_ref().map(|id|profile["id"].as_str()!=Some(id.as_str())).unwrap_or(false){return Err("Ein Bot-Kontext darf kein anderes Profil überschreiben".into());}
@@ -416,6 +426,7 @@ impl Store {
     }
     pub fn export(&self,destination:&Path) -> Result<(),String> {
         let mut profile=export_sanitize(sanitize(self.profile()?));
+        life_store::strip_profile_payload(&mut profile);
         let motion_directory=self.profile_dir(&profile)?;crate::motions::refresh(&mut profile,&motion_directory)?;
         let mut avatar:Option<Value>=None;
         if let Some(name)=profile["avatar"]["assetPath"].as_str() {
@@ -467,10 +478,12 @@ impl Store {
         if bytes.len()>512*1024*1024{return Err("Profilpaket ist zu groß".into());}
         let bundle:Value=serde_json::from_slice(&bytes).map_err(error)?;
         let mut profile=if bundle.get("profile").is_some(){bundle["profile"].clone()}else{bundle.clone()};
+        life_store::strip_profile_payload(&mut profile);
         validate_profile(&profile)?;
         let id=profile["id"].as_str().ok_or("Profil-ID fehlt")?.to_owned();
         let exists=self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM bot_profiles WHERE id=?1)",[&id],|r|r.get::<_,bool>(0)).map_err(error)?;
-        if exists || self.profile_dir(&profile)?.symlink_metadata().is_ok(){profile["id"]=json!(new_bot_id(profile["name"].as_str().unwrap_or("Bot")));}
+        let life_collision={let db=self.db.lock().map_err(error)?;life_store::profile_id_has_life(&db,&id)};
+        if exists || life_collision || self.profile_dir(&profile)?.symlink_metadata().is_ok(){profile["id"]=json!(new_bot_id(profile["name"].as_str().unwrap_or("Bot")));}
         reset_imported_authority(&mut profile,&self.secret_ids()?)?;
         profile["output"]["streamingEnabled"]=json!(false);profile["output"]["mode"]=json!("studio");
         if profile["hindsight"].is_object(){profile["hindsight"]["enabled"]=json!(false);profile["hindsight"]["bankId"]=json!("");}
