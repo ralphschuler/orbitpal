@@ -40,5 +40,7 @@ jobs:
         run: cargo install cargo-audit --version 0.22.2 --locked
       - name: Rust dependency advisories
         run: cargo audit --file src-tauri/Cargo.lock
+      - name: Legacy credential migration reference advisories (test-only lockfile)
+        run: cargo audit --file scripts/fixtures/keyring-compat/Cargo.lock
       # Local GLib source is checked against the documented upstream backport
       # by optimized tests and source hashes in CI; do not add advisory ignores.

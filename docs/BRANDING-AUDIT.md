@@ -20,7 +20,7 @@ The scan also covered the pending issue integration for decoder, VRMA, model-aud
 | Retained name or family | Where and why |
 | --- | --- |
 | `studio.streamer-ai.cohost` | Tauri bundle/app-data identity, OS permission identity, installer fixtures and signing guidance. Changing it would create another application identity. |
-| `streamer-ai-cohost` keyring service | `storage.rs`; existing credentials must stay accessible without copying or reading them for this audit. |
+| `streamer-ai-cohost` keyring service | `credentials.rs`; existing credentials must stay accessible without copying or reading them for this audit. |
 | `streamer-ai-cohost-profile` | Export package format identifier; existing exported files must remain recognizable. |
 | `streamer-ai-cohost.ui-language` | Persisted UI preference key; users keep their chosen language. |
 | `cohost://`, `cohost_*`, `cohost-control` | Event/protocol/tool IDs, installed control Skill and MCP grants. Existing clients and per-bot assignments keep their bindings. The MCP bearer realm `streamer-ai-cohost` is also retained as an authentication-protocol namespace. |

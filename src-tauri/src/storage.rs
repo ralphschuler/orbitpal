@@ -393,17 +393,16 @@ impl Store {
     pub fn secret(&self,id:&str) -> Result<Option<String>,String> {
         if id.is_empty() {return Ok(None);}
         if !self.secret_ids()?.iter().any(|known|known==id) {return Ok(None);}
-        let entry=keyring::Entry::new("streamer-ai-cohost",id).map_err(error)?;
-        match entry.get_password() {Ok(v)=>Ok(Some(v)),Err(keyring::Error::NoEntry)=>Ok(None),Err(e)=>Err(format!("Zugriff auf den sicheren Schlüsselspeicher fehlgeschlagen: {e}"))}
+        crate::credentials::read(id)
     }
     pub fn set_secret(&self,id:&str,value:&str) -> Result<(),String> {
         if !valid_id(id) {return Err("Ungültige Zugangsdaten-ID".into());}
         if value.is_empty() {return Err("Zugangsdaten dürfen nicht leer sein".into());}
-        keyring::Entry::new("streamer-ai-cohost",id).map_err(error)?.set_password(value).map_err(|e|format!("Sicherer Schlüsselspeicher: {e}"))?;
+        crate::credentials::write(id,value)?;
         self.db.lock().map_err(error)?.execute("INSERT OR IGNORE INTO secret_ids(id) VALUES(?1)",[id]).map_err(error)?; Ok(())
     }
     pub fn delete_secret(&self,id:&str) -> Result<(),String> {
-        match keyring::Entry::new("streamer-ai-cohost",id).map_err(error)?.delete_credential() {Ok(())|Err(keyring::Error::NoEntry)=>(),Err(e)=>return Err(error(e))}
+        crate::credentials::delete(id)?;
         self.db.lock().map_err(error)?.execute("DELETE FROM secret_ids WHERE id=?1",[id]).map_err(error)?; Ok(())
     }
     pub fn key_for(&self,config:&Value) -> Result<Option<String>,String> {self.secret(config["apiKeyId"].as_str().or_else(||config["secretId"].as_str()).unwrap_or_default())}
