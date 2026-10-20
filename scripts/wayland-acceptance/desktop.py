@@ -94,7 +94,8 @@ def visible(node):
 
 def sensitive(node):
     try:
-        return node.getState().contains(pyatspi.STATE_SENSITIVE)
+        states = node.getState()
+        return states.contains(pyatspi.STATE_SENSITIVE) and states.contains(pyatspi.STATE_ENABLED)
     except (RuntimeError, AttributeError):
         return False
 
@@ -157,7 +158,7 @@ def button(dialog, name):
     return None
 
 
-def select_single_monitor(dialog):
+def select_single_monitor(dialog, attempt=None):
     TRACE.log("monitor.scan.begin")
     # Do not confuse KDE's always-visible restore-permission checkbox with an
     # output card. These roles are defined by the reviewed packaged choosers.
@@ -179,25 +180,33 @@ def select_single_monitor(dialog):
     # Ambiguity fails instead of selecting a different resource by accident.
     TRACE.log("monitor.scan.end", candidates=len(candidates))
     if len(candidates) != 1:
-        return False
+        return False, False
     candidate = candidates[0]
     TRACE.log("monitor.state.begin")
     states = candidate.getState()
     selected = states.contains(pyatspi.STATE_PRESSED) or states.contains(pyatspi.STATE_CHECKED) or states.contains(pyatspi.STATE_SELECTED)
     TRACE.log("monitor.state.end", selected=selected)
     if selected:
-        return False  # Do not toggle an already selected monitor off.
-    if action(candidate):
-        return True
-    # Qt5 ItemDelegate can expose only a focus action. Send a real pointer
-    # click through the private test compositor, using freshly observed bounds.
-    # This does not synthesize a ScreenCast response or bypass its chooser.
+        return True, False  # Never toggle an already selected monitor off.
+    if attempt == "accessible":
+        action(candidate)
+        return False, True  # Accepted action is not an observed selection.
+    if attempt == "pointer":
+        pointer_click(candidate)
+        return False, True
+    return False, False
+
+
+def pointer_click(node):
+    # Qt5's accessibility bridge can accept an action without changing the UI.
+    # Only use this fallback after an observed no-op, at fresh real UI bounds.
+    # It is genuine input to the private compositor, never a portal response.
     helper = ROOT / "pointer"
     if DESKTOP != "kde" or not helper.is_file() or helper.is_symlink():
         return False
     try:
         TRACE.log("pointer.geometry.begin")
-        bounds = candidate.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+        bounds = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
         x, y = bounds.x + bounds.width / 2, bounds.y + bounds.height / 2
         TRACE.log("pointer.geometry.end", x=x, y=y, width=bounds.width, height=bounds.height)
         if bounds.width <= 0 or bounds.height <= 0 or not (0 <= x < 1280 and 0 <= y < 720):
@@ -208,7 +217,7 @@ def select_single_monitor(dialog):
         if completed.returncode != 0:
             print("KDE pointer helper: " + completed.stderr.decode("utf-8", errors="replace")[:1000], flush=True)
             raise RuntimeError("Private compositor pointer input was rejected")
-        print("Genuine KDE chooser card pointer click", flush=True)
+        print("Genuine KDE chooser pointer click", flush=True)
         return True
     except (RuntimeError, AttributeError, NotImplementedError, subprocess.TimeoutExpired):
         return False
@@ -238,6 +247,9 @@ class Desktop:
         self.pending = None
         self.deadline = 0
         self.selection_attempted = False
+        self.selection_pointer_attempted = False
+        self.consent_attempted = False
+        self.consent_pointer_attempted = False
         self.color = (0.82, 0.12, 0.24)
         self.window = Gtk.Window(title="OrbitPal synthetic acceptance pattern")
         self.window.set_decorated(False)
@@ -276,6 +288,9 @@ class Desktop:
                     self.pending = command["action"]
                     self.deadline = time.monotonic() + 25
                     self.selection_attempted = False
+                    self.selection_pointer_attempted = False
+                    self.consent_attempted = False
+                    self.consent_pointer_attempted = False
                     TRACE.begin(self.sequence, self.pending)
                     if self.pending in ("red", "blue"):
                         self.color = (0.82, 0.12, 0.24) if self.pending == "red" else (0.12, 0.24, 0.82)
@@ -286,16 +301,40 @@ class Desktop:
                 TRACE.log("chooser.poll.begin")
                 dialog = chooser()
                 TRACE.log("chooser.poll.end", found=dialog is not None)
-                if dialog is not None:
-                    target = button(dialog, "Share" if self.pending == "allow" else "Cancel")
-                    # Preserve short-circuit evaluation and its existing RPCs.
-                    enabled = sensitive(target) if target is not None else False
-                    TRACE.log("button.sensitive.end", exists=target is not None, enabled=enabled)
-                    if target is not None and enabled and action(target):
-                        print(f"Genuine {DESKTOP} chooser action: {self.pending}", flush=True)
-                        self.ack()
-                    elif self.pending == "allow" and not self.selection_attempted:
-                        self.selection_attempted = select_single_monitor(dialog)
+                if dialog is None and self.consent_attempted:
+                    # A successful AT-SPI call proves dispatch only. Observe the
+                    # real chooser closing before acknowledging its UI action;
+                    # the native test independently requires the portal result.
+                    TRACE.log("chooser.dismissed")
+                    self.ack()
+                elif dialog is not None:
+                    ready = self.pending == "cancel"
+                    if not ready:
+                        attempt = None
+                        if not self.selection_attempted:
+                            attempt = "accessible"
+                        elif DESKTOP == "kde" and not self.selection_pointer_attempted:
+                            attempt = "pointer"
+                        ready, attempted = select_single_monitor(dialog, attempt)
+                        if attempted:
+                            if attempt == "accessible":
+                                self.selection_attempted = True
+                            elif attempt == "pointer":
+                                self.selection_pointer_attempted = True
+                    if ready:
+                        target = button(dialog, "Share" if self.pending == "allow" else "Cancel")
+                        enabled = sensitive(target) if target is not None else False
+                        TRACE.log("button.sensitive.end", exists=target is not None, enabled=enabled)
+                        if target is not None and enabled:
+                            if not self.consent_attempted:
+                                self.consent_attempted = True
+                                action(target)
+                            elif DESKTOP == "kde" and not self.consent_pointer_attempted:
+                                # The same real chooser is still present on a
+                                # subsequent poll: the accepted press did not
+                                # dismiss it. One genuine pointer retry only.
+                                self.consent_pointer_attempted = True
+                                pointer_click(target)
                 if self.pending and time.monotonic() >= self.deadline:
                     TRACE.log("timeout.tree.begin")
                     (ROOT / "chooser-tree.txt").write_text(text_tree(), encoding="utf-8")
