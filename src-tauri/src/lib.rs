@@ -36,6 +36,8 @@ mod autopilot;
 mod life_availability;
 mod life_runtime;
 pub mod life_domain;
+mod world_state;
+mod world_hub;
 mod screen_capture;
 mod screen_context;
 mod screen_portal;
@@ -61,14 +63,15 @@ pub struct AppState {
     updater:updater::UpdateState,
     autopilot:autopilot::AutopilotHub,
     life_runtime:life_runtime::LifeRuntime,
+    world:world_hub::WorldHub,
     screen_context:screen_context::ScreenState,
 }
 
 #[tauri::command]
-fn get_app_state(state:State<'_,AppState>,app:tauri::AppHandle,bot_id:Option<String>)->Result<Value,String> {
+fn get_app_state(window:tauri::WebviewWindow,state:State<'_,AppState>,app:tauri::AppHandle,bot_id:Option<String>)->Result<Value,String> {
     let id=bot_id.unwrap_or_else(||state.store.profile().ok().and_then(|p|p["id"].as_str().map(str::to_owned)).unwrap_or("nova".into()));
     let store=state.store.scoped(&id)?;let profile=store.profile()?;let presentation=state.presentation.snapshot(&profile);
-    Ok(json!({"profile":profile,"presentation":presentation,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy(),"autopilot":state.autopilot.all()?.into_iter().map(|runtime|state.life_runtime.present(runtime)).collect::<Vec<_>>(),"lifeRuntime":state.life_runtime.snapshot_for(&state.autopilot)?}))
+    Ok(json!({"profile":profile,"presentation":presentation,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy(),"autopilot":state.autopilot.all()?.into_iter().map(|runtime|state.life_runtime.present(runtime)).collect::<Vec<_>>(),"lifeRuntime":state.life_runtime.snapshot_for(&state.autopilot)?,"world":if window.label()=="main"{Some(state.world.snapshot()?)}else if window.label().strip_prefix("avatar-")==Some(id.as_str()){state.world.snapshot_for(&id)}else{None}}))
 }
 #[tauri::command]
 fn get_emote_capabilities(state:State<'_,AppState>,bot_id:String)->Result<Value,String>{
@@ -177,9 +180,9 @@ fn get_emote_sound(state:State<'_,AppState>,sound_id:String,bot_id:String)->Resu
     emote_audio::read(&state.store.root,&profile,&sound_id)
 }
 #[tauri::command]
-async fn import_motion(window:tauri::Window,state:State<'_,AppState>,source_path:String,bot_id:String)->Result<motions::Motion,String>{
+async fn import_motion(app:tauri::AppHandle,window:tauri::Window,state:State<'_,AppState>,source_path:String,bot_id:String)->Result<motions::Motion,String>{
     if window.label()!="main"{return Err("VRMA-Import ist nur im Steuerungsfenster verfügbar.".into());}
-    state.life_runtime.invalidate_bot(&bot_id);
+    state.life_runtime.invalidate_bot(&app,&bot_id);
     state.updater.ensure_idle()?;
     let profile=state.store.bot_profile(&bot_id)?;
     if profile["motions"].as_array().is_some_and(|motions|motions.len()>=motions::MAX_MOTIONS){return Err("Maximal 32 Bewegungsdateien pro Bot.".into());}
@@ -293,7 +296,7 @@ fn configure_overlay(app:tauri::AppHandle,always_on_top:bool,click_through:bool,
     let id=bot_id.unwrap_or(app.state::<AppState>().store.profile()?["id"].as_str().unwrap_or("nova").to_owned());overlay::configure_for_bot(&app,&id,always_on_top,click_through)
 }
 #[tauri::command]
-fn import_avatar(state:State<'_,AppState>,source_path:String)->Result<String,String>{let id=state.store.profile()?["id"].as_str().ok_or("Bot-ID fehlt")?.to_owned();state.life_runtime.invalidate_bot(&id);state.store.import_avatar(std::path::Path::new(&source_path))}
+fn import_avatar(app:tauri::AppHandle,state:State<'_,AppState>,source_path:String)->Result<String,String>{let id=state.store.profile()?["id"].as_str().ok_or("Bot-ID fehlt")?.to_owned();state.life_runtime.invalidate_bot(&app,&id);state.store.import_avatar(std::path::Path::new(&source_path))}
 #[tauri::command]
 async fn get_avatar_info(state:State<'_,AppState>,asset_path:Option<String>,bot_id:Option<String>)->Result<avatar_metadata::AvatarInfo,String>{
     if let Some(id)=bot_id.as_deref(){state.store.bot_profile(id)?;}
@@ -319,13 +322,14 @@ pub fn run(){
             app.manage(ui_locale::UiLocaleState::default());
             let root=app.path().app_data_dir()?;
             let store=storage::Store::new(root).map_err(std::io::Error::other)?;
-            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),presentation:overlay_presentation::PresentationHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default(),life_runtime:life_runtime::LifeRuntime::default(),screen_context:screen_context::ScreenState::default()});
+            let world=world_hub::WorldHub::new(&store);
+            app.manage(AppState {world,store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),presentation:overlay_presentation::PresentationHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default(),life_runtime:life_runtime::LifeRuntime::default(),screen_context:screen_context::ScreenState::default()});
             tauri::async_runtime::block_on(overlay::start(app.handle().clone())).map_err(std::io::Error::other)?;
             app.state::<AppState>().life_runtime.install(app.handle());
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler({let handler:fn(tauri::ipc::Invoke)->bool=tauri::generate_handler![life_runtime::get_life_runtime,life_runtime::get_life_bot,life_runtime::set_life_mode,life_runtime::connect_life_ui,life_runtime::disconnect_life_ui,life_runtime::report_life_ui,credential_session_settings::get_credential_session,credential_session_settings::set_credential_session,credential_session_settings::lock_credential_session,usage_settings::get_usage_budget,usage_settings::set_usage_limits,overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,send_automatic_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source];move|invoke:tauri::ipc::Invoke|{life_runtime::operator_invoke(&invoke);handler(invoke)}})
+        .invoke_handler({let handler:fn(tauri::ipc::Invoke)->bool=tauri::generate_handler![world_hub::get_world_settings,world_hub::get_world_state,world_hub::save_world_config,world_hub::place_world_actor,life_runtime::get_life_runtime,life_runtime::get_life_bot,life_runtime::set_life_mode,life_runtime::connect_life_ui,life_runtime::disconnect_life_ui,life_runtime::report_life_ui,credential_session_settings::get_credential_session,credential_session_settings::set_credential_session,credential_session_settings::lock_credential_session,usage_settings::get_usage_budget,usage_settings::set_usage_limits,overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,send_automatic_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source];move|invoke:tauri::ipc::Invoke|{life_runtime::operator_invoke(&invoke);handler(invoke)}})
         .build(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden").run(|app,event|{
             if matches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit){app.state::<AppState>().life_runtime.shutdown(app);app.state::<AppState>().screen_context.portal.close_all();}
         });

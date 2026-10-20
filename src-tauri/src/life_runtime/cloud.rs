@@ -164,6 +164,14 @@ impl super::LifeRuntime {
             core.observe_system(system, now);
             core.reconcile_visibility(is_visible, now);
             if let (Some(claim), Some(available)) = (claim, route) {
+                if core.sessions.get(&claim.bot_id).is_some_and(|session| {
+                    session.session_id == claim.session_id
+                        && session.revision == claim.revision
+                        && session.output != available
+                }) {
+                    let state = app.state::<crate::AppState>();
+                    state.world.revoke_actor(&state.store, &claim.bot_id);
+                }
                 core.set_output_available(
                     &claim.bot_id,
                     &claim.session_id,

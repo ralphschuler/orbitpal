@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a shared native stage with explicit participants, versioned local anchors, canonical positions and exclusive session/action-bound reservations. Preserve individual Life histories, isolate invalid optional stage data and prevent imported bots from reviving old membership.
+- Add a shared stage editor in all four interface languages with percentage coordinates, a 2D draft preview and confirmed world data. Preserve drafts across navigation and bot changes. Character movement to shared objects and rendered arrival remain separate renderer/action work.
+
 - Move spontaneous scheduling into one native runtime with explicit Ambient/Life sessions, confirmed local Life checkpoints, fresh Studio status and exact cancellation identities. Preserve existing playback timing and show native status in all four interface languages.
 - Pause autonomous dialog, speech synthesis and memory dispatch while native session availability is blocked or unknown. Add platform observers, clean hidden-Studio handling and conservative reconnect behavior; document macOS compatibility limits and the remaining real-device acceptance matrix.
 

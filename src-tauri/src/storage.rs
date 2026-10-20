@@ -13,8 +13,10 @@ pub const DEFAULT_SKILL: &str = "---\nname: stream-begruessung\ndescription: Beg
 mod usage_store;
 #[path="life_store.rs"]
 pub(crate) mod life_store;
+#[path="world_store.rs"]
+pub(crate) mod world_store;
 
-pub struct Store { pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>, credential_session:Arc<crate::credential_session::Session>, life_recovery:Arc<Mutex<life_store::RecoveryStatus>>,usage_error:Option<crate::usage_budget::Denial> }
+pub struct Store { pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>, credential_session:Arc<crate::credential_session::Session>, life_recovery:Arc<Mutex<life_store::RecoveryStatus>>,usage_error:Option<crate::usage_budget::Denial>,world_error:Option<world_store::WorldStoreError> }
 pub fn valid_id(id: &str) -> bool { !id.is_empty() && id.len() <= 96 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') }
 fn error(e: impl std::fmt::Display) -> String { e.to_string() }
 
@@ -27,13 +29,14 @@ impl Store {
         let mut db = Connection::open(root.join("cohost.sqlite3")).map_err(error)?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL, source TEXT NOT NULL, user_name TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS secret_ids (id TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS bot_profiles (id TEXT PRIMARY KEY, profile TEXT NOT NULL); CREATE TABLE IF NOT EXISTS mcp_library (id TEXT PRIMARY KEY, server TEXT NOT NULL);").map_err(error)?;
         let usage_error=crate::usage_budget::initialize(&mut db,crate::usage_budget::today()).err();
+        let world_error=world_store::initialize(&mut db).err();
         // Optional security policy must fail closed without blocking startup.
         // Return only a boolean from SQLite, never materialize an oversized or
         // corrupt optional setting as a Rust String or put its payload in errors.
         let reuse_credentials=db.query_row("SELECT CASE WHEN typeof(value)='text' AND length(CAST(value AS BLOB))=4 THEN value='true' ELSE 0 END FROM settings WHERE key='macos_credential_session_reuse'",[],|row|row.get::<_,bool>(0)).unwrap_or(false);
         let credential_session=Arc::new(crate::credential_session::Session::new(cfg!(any(target_os="macos",test)),reuse_credentials));
         let life_status=life_store::RecoveryStatus::new(life_store::initialize(&mut db).err());
-        let store = Self {root,db:Mutex::new(db),fixed_profile:None,credential_session,life_recovery:Arc::new(Mutex::new(life_status)),usage_error};
+        let store = Self {root,db:Mutex::new(db),fixed_profile:None,credential_session,life_recovery:Arc::new(Mutex::new(life_status)),usage_error,world_error};
         let profile = store.profile()?;
         store.ensure_profile(&profile)?;
         // The previous single-profile settings row remains authoritative during
@@ -79,7 +82,7 @@ impl Store {
         self.bot_profile(id)?;
         let connection=Connection::open(self.root.join("cohost.sqlite3")).map_err(error)?;
         connection.busy_timeout(std::time::Duration::from_secs(3)).map_err(error)?;
-        Ok(Self{root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned()),credential_session:self.credential_session.clone(),life_recovery:self.life_recovery.clone(),usage_error:self.usage_error})
+        Ok(Self{root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned()),credential_session:self.credential_session.clone(),life_recovery:self.life_recovery.clone(),usage_error:self.usage_error,world_error:self.world_error})
     }
     fn extensions_migrated(&self)->Result<bool,String>{
         self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key='extension_library_v1')",[],|row|row.get(0)).map_err(error)
@@ -506,8 +509,8 @@ impl Store {
         validate_profile(&profile)?;
         let id=profile["id"].as_str().ok_or("Profil-ID fehlt")?.to_owned();
         let exists=self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM bot_profiles WHERE id=?1)",[&id],|r|r.get::<_,bool>(0)).map_err(error)?;
-        let life_collision={let db=self.db.lock().map_err(error)?;life_store::profile_id_has_life(&db,&id)};
-        if exists || life_collision || self.profile_dir(&profile)?.symlink_metadata().is_ok(){profile["id"]=json!(new_bot_id(profile["name"].as_str().unwrap_or("Bot")));}
+        let native_collision={let db=self.db.lock().map_err(error)?;life_store::profile_id_has_life(&db,&id)||world_store::profile_id_reserved(&db,&id)};
+        if exists || native_collision || self.profile_dir(&profile)?.symlink_metadata().is_ok(){profile["id"]=json!(new_bot_id(profile["name"].as_str().unwrap_or("Bot")));}
         reset_imported_authority(&mut profile,&self.secret_ids()?)?;
         profile["output"]["streamingEnabled"]=json!(false);profile["output"]["mode"]=json!("studio");
         if profile["hindsight"].is_object(){profile["hindsight"]["enabled"]=json!(false);profile["hindsight"]["bankId"]=json!("");}
