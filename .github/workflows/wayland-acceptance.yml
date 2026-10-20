@@ -1,0 +1,93 @@
+name: Wayland portal prototype
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/wayland-acceptance.yml'
+      - 'scripts/wayland-acceptance/**'
+      - 'src-tauri/src/screen_portal*.rs'
+      - 'docs/WAYLAND-VALIDATION.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wayland-prototype-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portal:
+    name: Real portal (${{ matrix.desktop }}, Ubuntu 26.04)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        desktop: [gnome, kde]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check harness parsing and refusal boundaries without desktop access
+        run: |
+          bash -n scripts/wayland-acceptance/run.sh scripts/wayland-acceptance/session.sh
+          python3 scripts/wayland-acceptance/test-safety.py
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.25.0
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri -> target
+          # PR jobs never write a shared native cache.
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Install packaged native and isolated desktop prerequisites
+        env:
+          ACCEPTANCE_DESKTOP: ${{ matrix.desktop }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev libpipewire-0.3-dev libclang-dev patchelf dbus-x11 pipewire pipewire-bin wireplumber xdg-desktop-portal at-spi2-core python3-pyatspi python3-gi python3-gi-cairo gir1.2-gtk-3.0 libgl1-mesa-dri libegl-dev libgles-dev libgbm-dev libdrm-dev gsettings-desktop-schemas
+          if [ "$ACCEPTANCE_DESKTOP" = gnome ]; then
+            sudo apt-get install -y gnome-shell xdg-desktop-portal-gnome
+          else
+            sudo apt-get install -y kwin-wayland plasma-workspace qt6-wayland xdg-desktop-portal-kde libwayland-dev libwayland-bin plasma-wayland-protocols
+          fi
+      - name: Compile genuine GBM EGL rendering capability check
+        run: |
+          cc -std=c11 -Wall -Wextra -Werror scripts/wayland-acceptance/render-probe.c $(pkg-config --cflags --libs gbm egl glesv2 libdrm) -o "$RUNNER_TEMP/orbitpal-wayland-render-probe"
+      - name: Compile genuine private-compositor input helper (KDE only)
+        if: matrix.desktop == 'kde'
+        run: |
+          wayland-scanner client-header /usr/share/plasma-wayland-protocols/fake-input.xml "$RUNNER_TEMP/fake-input-client-protocol.h"
+          wayland-scanner private-code /usr/share/plasma-wayland-protocols/fake-input.xml "$RUNNER_TEMP/fake-input-protocol.c"
+          cc -std=c11 -Wall -Wextra -Werror -I "$RUNNER_TEMP" scripts/wayland-acceptance/pointer.c "$RUNNER_TEMP/fake-input-protocol.c" $(pkg-config --cflags --libs wayland-client) -o "$RUNNER_TEMP/orbitpal-wayland-pointer"
+      - name: Prepare frontend assets required by the native crate
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Compile the ignored production-path harness without opening a desktop
+        run: |
+          set -o pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml --locked --lib --no-run --message-format=json | python3 scripts/wayland-acceptance/test-binary.py > "$RUNNER_TEMP/wayland-test-binary"
+      - name: Exercise real chooser and production portal on a synthetic private desktop
+        env:
+          ACCEPTANCE_DESKTOP: ${{ matrix.desktop }}
+        run: |
+          binary=$(cat "$RUNNER_TEMP/wayland-test-binary")
+          bash scripts/wayland-acceptance/run.sh "$ACCEPTANCE_DESKTOP" "$binary"
+      - name: Upload bounded text diagnostics, never captured frames
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wayland-prototype-${{ matrix.desktop }}-${{ github.sha }}
+          path: ${{ runner.temp }}/wayland-acceptance-${{ matrix.desktop }}/*.txt
+          if-no-files-found: warn
+          retention-days: 7
