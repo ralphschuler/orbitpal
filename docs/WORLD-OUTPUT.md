@@ -158,6 +158,32 @@ their existing behavior. These host checks are not real OS event-timing proof.
 Confirmed native-window layout/DPI/restoration, its own renderer measurement
 and speech ownership handoff remain separate implementation and platform work.
 
+### Private geometry observations
+
+`WindowSignals` also has private typed request, event and getter-correlation
+helpers. They have no production callers in this increment. One exact signal
+instance holds at most one typed owner and two field records. Typed requests
+start with empty legacy queues and issue fresh request IDs; they never adopt a
+coalesced legacy request. Every legacy request invocation, including identical
+coalescing, and every restore fence invalidates typed ownership while retaining
+the existing legacy result, FIFO order and restoration behavior. Cancellation
+and dropping an owner leave pending native requests queued for safe cleanup.
+
+Opaque handles check their exact instance and current owner. Stale or foreign
+handles cannot cancel a healthy successor. Poison, invalid typed dimensions and
+exhausted counters return no usable typed fact. Matching an event to a queued
+request establishes correlation only: the OS event carries no operation ID.
+The host must sample a later fresh native getter; the one-use comparison checks
+unchanged ownership, event/request counters, empty queues and the target bounds.
+It cannot authenticate a caller-supplied getter value or establish setter
+causality, continuing visibility, monitor/DPI identity or rendered size.
+
+The future coordinator still owns the original deadline, exact window/context
+checks, cleanup lease and actual native calls. These helpers expose no IPC,
+LayoutPrepared promotion, Ready, renderer registration, action or speech grant.
+Their synthetic tests establish no real Main-thread, event-order or OS timing
+acceptance.
+
 ## Validation status
 
 The actual production Tauri suite passed **552 tests**, including real
