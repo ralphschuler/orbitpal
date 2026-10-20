@@ -12,6 +12,7 @@
   import ModelFeatures from './components/ModelFeatures.svelte';
   import AutopilotPanel from './components/AutopilotPanel.svelte';
   import LifeRuntimePanel from './components/LifeRuntimePanel.svelte';
+  import WorldStatePanel from './components/WorldStatePanel.svelte';
   import UsageBudgetPanel from './components/UsageBudgetPanel.svelte';
   import ScreenContextPanel from './components/ScreenContextPanel.svelte';
   import { prepareScreenSession } from './lib/screen-session';
@@ -62,6 +63,9 @@
   let autopilots = $state<Record<string,AutopilotRuntime>>({});
   let autopilotPending = $state(false);
   let usageBudgetDirty = $state(false);
+  let worldDirty = $state(false);
+  let worldBusy = $state(false);
+  let worldPanel = $state<{saveDraft:()=>Promise<void>}>();
   let autopilotStartRevision = 0;
   let autopilotEventRevision = 0;
   const autopilotVersions = new AutopilotRuntimeVersions();
@@ -148,7 +152,8 @@
     }
   }
   async function toggleLife(mode:LifeMode,active:boolean,initialize=false){
-    if(active&&(autopilotPending||updateInstalling))return;
+    if(active&&(autopilotPending||updateInstalling||worldBusy))return;
+    if(active&&worldDirty){notify(translate('Speichere oder verwirf zuerst den gemeinsamen Bühnenentwurf.'));return;}
     if(active&&(busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing)){notify(translate("Beende zuerst die laufende Antwort oder Aufnahme."));return;}
     if(active&&mode==='ambient'&&profile.autopilot.speak&&!profile.model.model&&!cliProvider){navigate('models');notify(translate("Wähle zuerst ein Dialogmodell oder schalte selbstständiges Sprechen aus."));return;}
     unlockEmoteAudio();const target=profile.id;const revision=++autopilotStartRevision;autopilotPending=active;
@@ -346,7 +351,8 @@
   type Confirmation = {title:string;message:string;confirmLabel:string;action:()=>void|Promise<void>;danger?:boolean;dismissBeforeAction?:boolean};
   let confirmation = $state<Confirmation>();
   let confirming = $state(false);
-  const hasUnsavedChanges = $derived(dirty||documentDirty||extensionDirty);
+  const hasUnsavedChanges = $derived(dirty||documentDirty||extensionDirty||worldDirty);
+  function confirmWorldDiscard(action:()=>void){confirmation={title:translate('Bühnenentwurf verwerfen?'),message:translate('Nicht gespeicherte Bühnenangaben und Positionsentwürfe werden verworfen. Der bestätigte native Zustand bleibt bestehen.'),confirmLabel:translate('Entwurf verwerfen'),action,danger:true,dismissBeforeAction:true};}
   function requestDiscard(action:()=>void) {
     confirmation={title:translate('Entwurf verwerfen?'),message:translate('Deine Änderungen in der Bibliothek wurden noch nicht gespeichert. Beim Fortfahren gehen sie verloren.'),confirmLabel:translate('Entwurf verwerfen'),action,danger:true,dismissBeforeAction:true};
   }
@@ -370,7 +376,7 @@
   const autopilotBlocker = $derived(speechBlocker({
     permission:!!$systemPermission, update:updateInstalling, starting:autopilotPending, reply:(busy||speaking||speechPreparing)&&!nativeOwnOutput,
     sound:foregroundEmotePlaying&&!nativeOwnSound||externalForeignSound, recording:microphone||microphoneStarting,
-    transcription:transcribing, saving, botChange:switchingBot||creatingBot,
+    transcription:transcribing, saving:saving||worldBusy, botChange:switchingBot||creatingBot,
     extensions:extensionEditing||extensionBusy, botDialog:botDialog||!!confirmation||confirming||shortcutHelp||$operatorDialogActive, updatesDialog:updatesOpen, unsaved:hasUnsavedChanges||usageBudgetDirty,
     draft:!!message.trim(), secretDraft:Object.values(secretInputs).some(value=>!!value.trim()),
   }));
@@ -396,7 +402,7 @@
     Object.keys(autopilots).length||lifeRuntime?.sessions.some(session=>session.active) ? $t("Pausiere zuerst alle Autopiloten.") :
     running ? $t("Pausiere zuerst die automatischen Chat-Antworten.") :
     hasUnsavedChanges || usageBudgetDirty || message.trim() || Object.values(secretInputs).some(value=>!!value.trim()) ? $t("Speichere deine Änderungen und sende oder leere Entwürfe vor der Installation.") :
-    saving || switchingBot || creatingBot || autopilotPending || extensionEditing || botDialog ? $t("Schließe zuerst laufende Bearbeitungen und Speichervorgänge.") : ''
+    saving || worldBusy || switchingBot || creatingBot || autopilotPending || extensionEditing || botDialog ? $t("Schließe zuerst laufende Bearbeitungen und Speichervorgänge.") : ''
   );
   const currentPage = $derived(nav.find(n => n.id === page));
 
@@ -577,7 +583,8 @@
     catch(e){notify(prettyError(e),true);return false;}
   }
   async function saveContext(){
-    if(saving||switchingBot||extensionBusy)return;
+    if(saving||worldBusy||switchingBot||extensionBusy)return;
+    if(page==='autopilot'&&worldDirty){await worldPanel?.saveDraft();return;}
     if(page==='extensions'){window.dispatchEvent(new CustomEvent('cohost:save-extension'));return;}
     if(await saveCurrentBot())notify(translate('Änderungen für {name} gespeichert.',{name:profile.name}));
   }
@@ -1044,6 +1051,7 @@
       {#if page==='extensions'}<div class="scope-strip shared"><span>{$t('Für alle Bots installiert')}</span><p>{$t("Freigaben rechts gelten ausschließlich für den gewählten Bot.")}</p></div>{/if}
 
       <div class="page-heading"><div><h1>{$t(headings[page])}</h1><p>{$t(subheadings[page])}</p></div>{#if page==='studio'}<button class="button primary" class:running onclick={toggleRunning}>{#if running}<Pause size={16}/>{$t("Cohost pausieren")}{:else}<Play size={16} fill="currentColor"/>{$t("Cohost starten")}{/if}</button>{/if}</div>
+      {#if worldDirty&&page!=='autopilot'}<div class="scope-strip shared"><span>{$t('Gemeinsamer Bühnenentwurf wartet auf Speichern oder Verwerfen.')}</span><button class="text-link" onclick={()=>navigate('autopilot')}>{$t('Zum Bühnenentwurf')}</button></div>{/if}
       <div class="wake-control" hidden={page!=='studio'&&!profile.wakeWord?.enabled}><WakeWord {permissionContext} sttConfig={profile.stt} bind:config={profile.wakeWord} botId={profile.id} sttProvider={profile.stt.provider} blocked={updateInstalling||busy||speaking||speechPreparing||emoteSoundPlaying||externalEmotePlaying||microphone||microphoneStarting||transcribing} stopSignal={wakeStopSignal} onTrigger={text=>runMessage(text,'microphone','Streamer',profile.id,undefined,false)} onError={message=>notify(message,true)} onConfigChange={()=>persist(true)} onActiveChange={active=>wakeActive=active}/></div>
 
       {#if page==='studio'}
@@ -1164,6 +1172,7 @@
       {/if}
 
       {#if page==='character'}<section class="settings-panel emote-settings"><div class="emote-section-heading"><div class="section-heading"><PartyPopper size={19}/><div><h2>{$t("Eigene Emotes")}</h2><p>{$t("Winken, verstecken, freuen. Oder eine Animation deiner importierten Figur.")}</p></div></div><button class="button secondary small" disabled={!availableEmoteActions.length} onclick={addEmote}><Plus size={14}/>{$t("Emote hinzufügen")}</button></div><div class="emote-grid">{#each profile.emotes || [] as emote}<div class="emote-card"><div class="emote-card-heading"><input aria-label={$t("Emote-Name")} bind:value={emote.name}/><button class="icon-button danger-text" title={$t("Emote entfernen")} aria-label={$t("Emote entfernen")} onclick={()=>profile.emotes=profile.emotes.filter((e:any)=>e.id!==emote.id)}><Trash2 size={14}/></button></div><div class="field-with-help"><div class="field-label"><label for={'cohost-field-10-'+emote.id}>{$t("Aktion oder Clipname")} </label><HelpTip text={$t("Wähle eine tatsächlich vorhandene Aktion dieser Figur. Veraltete Einträge bleiben sichtbar, bis du sie ersetzt oder entfernst.")}/></div><select id={'cohost-field-10-'+emote.id} value={resolveAvailableAction(availableEmoteActions,emote.action)?.action||emote.action} onchange={event=>emote.action=event.currentTarget.value}>{#if !emoteAvailable(emote)}<option value={emote.action} disabled>{emote.action} · {$t("Für diese Figur nicht verfügbar")}</option>{/if}{#each availableEmoteActions as action}<option value={action.action}>{action.kind==='gesture'?$t({wave:'Winken',hide:'Verstecken',celebrate:'Freuen',nod:'Nicken',dance:'Tanzen'}[action.action]||action.name):action.name}</option>{/each}</select>{#if !emoteAvailable(emote)}<p class="field-note" role="status">{$t(unavailableEmote)}</p>{/if}</div><div class="field-row"><label>{$t("Dauer (Sekunden)")}<input type="number" min="0.2" max={emote.action?.startsWith('vrma:')?120:15} disabled={emote.action?.startsWith('vrma:')} step="0.1" bind:value={emote.duration}/></label><label>{$t("Intensität")}<input type="number" min="0" max="2" step="0.1" bind:value={emote.intensity}/></label></div><div class="field-with-help"><div class="field-label"><label for={'cohost-field-11-'+emote.id}>{$t("Sound")} </label><HelpTip text={$t("Optionaler Klang, der mit dieser Geste startet. Wähle einen integrierten Effekt oder importiere einen eigenen Clip. WAV ist besonders portabel; die verfügbaren weiteren Formate hängen vom Systemdecoder ab. Maximal 5 MiB, Wiedergabe höchstens 15 Sekunden.")}/></div><select id={'cohost-field-11-'+emote.id} value={emote.sound||''} onchange={event=>emote.sound=event.currentTarget.value}><option value="">{$t("Kein Sound")}</option><option value="builtin:wave">{$t("Heller Gruß")}</option><option value="builtin:cheer">{$t("Freudenklang")}</option><option value="builtin:whoosh">{$t("Whoosh")}</option>{#if emote.sound?.startsWith('custom:')}<option value={emote.sound}>{$t("Eigener Audioclip")}</option>{/if}</select></div><div class="emote-sound-row"><button class="button secondary small" onclick={()=>importEmoteSound(emote.id)} disabled={busy||saving}><Upload size={13}/>{$t("Sound importieren")}</button></div>{#if emote.sound}<label>{$t("Soundlautstärke")} <span>{formatNumber(Math.round((emote.soundVolume??0.7)*100),$locale)} %</span><input aria-label={$t('Soundlautstärke für {name}',{name:emote.name})} type="range" min="0" max="1" step="0.05" value={emote.soundVolume??0.7} oninput={event=>emote.soundVolume=Number(event.currentTarget.value)}/></label>{/if}<div class="toggle-row"><div><strong>{$t("Für Chat-Anfragen")} <HelpTip text={$t("Gibt dieses Emote zusätzlich für Zuschaueranfragen frei. Ohne diese Freigabe kann der Streamer es weiterhin selbst auslösen.")}/></strong><small>{$t("Der Agent darf dieses Emote auf Zuschauerwunsch ausführen.")}</small></div><input type="checkbox" role="switch" aria-label={$t("Für Chat-Anfragen")} bind:checked={emote.allowChat}/></div><button class="button secondary full" disabled={!emoteAvailable(emote)} onclick={()=>triggerEmote(emote.id)}><Play size={13}/>{$t("Ausführen")}</button></div>{/each}</div><p class="field-note">{$t("Eigene Emotes können vorhandene Animationsclips einer importierten GLB-Datei über ihren Namen verwenden. Bewegungen bei VRM werden an die vorhandenen Humanoidknochen angepasst.")}</p></section><section class="settings-panel output-settings"><div class="section-heading"><Monitor size={19}/><div><h2>{$t("Darstellung & Ausgabe")}</h2><p>{$t("Dein Cohost bekommt seinen eigenen Platz.")}</p></div></div><div class="three-fields"><label>{$t("Ausgabe")}<select bind:value={profile.output.mode} onchange={()=>profile.output.mode==='overlay'?openCharacterWindow():profile.output.mode==='obs'?copyObs():useStudio()}><option value="studio">{$t("Studioansicht")}</option><option value="overlay">{$t("Desktop-Overlay")}</option><option value="obs">{$t("OBS-Browserquelle")}</option></select></label><label>{$t("Bildrate")}<select bind:value={profile.output.fps}><option value={30}>30 FPS</option><option value={60}>60 FPS</option></select></label><div class="button-row align-end"><button class="button secondary" onclick={openCharacterWindow}><MoveUpRight size={14}/>{$t("Figur öffnen")}</button><button class="button secondary" onclick={copyObs}><Copy size={14}/>{$t("OBS-Link")}</button></div></div><div class="toggle-row"><div><strong>{$t("Immer im Vordergrund")} <HelpTip text={$t("Hält das separate Figurenfenster über anderen Fenstern. Nützlich als Desktop-Begleiter; die Unterstützung hängt vom Betriebssystem ab.")}/></strong><small>{$t("Abhängig von Betriebssystem und Fenstermanager.")}</small></div><input type="checkbox" role="switch" aria-label={$t("Immer im Vordergrund")} bind:checked={profile.output.alwaysOnTop} onchange={configureOverlay}/></div><div class="toggle-row"><div><strong>{$t("Mausklicks durchreichen")} <HelpTip text={$t("Klicks gehen durch das Figurenfenster an das darunterliegende Programm. Zum Verschieben oder Bedienen zuerst hier wieder ausschalten.")}/></strong><small>{$t("Zum Bearbeiten im Steuerungsfenster wieder ausschalten.")}</small></div><input type="checkbox" role="switch" aria-label={$t("Mausklicks durchreichen")} bind:checked={profile.output.clickThrough} disabled={!!selectedAutopilot?.active&&!!selectedAutopilot?.wander} onchange={configureOverlay}/></div><div class="toggle-row"><div><strong>{$t("Untertitel anzeigen")} <HelpTip text={$t("Zeigt den bereinigten Antworttext ab dem Beginn der Sprachausgabe. Er verschwindet 15 Sekunden nach dem Ende der gesprochenen Antwort.")}/></strong><small>{$t("Gesprochener Text unter der Figur.")}</small></div><input type="checkbox" role="switch" aria-label={$t("Untertitel anzeigen")} bind:checked={profile.output.showSubtitles}/></div>{#if overlayUrl}<label>{$t("OBS-Browserquelle")}<input readonly value={overlayUrl}/></label>{/if}</section>{/if}
+      <div hidden={page!=='autopilot'}><WorldStatePanel bind:this={worldPanel} {bots} displays={outputDisplays} visible={page==='autopilot'} disabled={updateInstalling||saving||switchingBot||creatingBot} onDirtyChange={value=>worldDirty=value} onBusyChange={value=>worldBusy=value} confirmDiscard={confirmWorldDiscard}/></div>
       <footer class="workspace-footer"><span>OrbitPal</span><span>{$t("Gemacht für deinen nächsten Stream.")}</span><span><span class="status-dot" class:online={native}></span>{native?$t("Lokal auf deinem Rechner"):$t("Vorschau · Integrationen in der Desktop-App")}</span></footer>
     </main>
   </div>
