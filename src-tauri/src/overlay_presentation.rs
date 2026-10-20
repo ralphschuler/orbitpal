@@ -5,6 +5,9 @@ use std::{collections::HashMap, sync::{Arc, Mutex}};
 use crate::window_signals::{WindowSignals, RestoreFence};
 pub use crate::window_signals::Bounds;
 use tauri::Manager;
+#[path = "overlay_presentation/native_layout.rs"]
+mod native_layout;
+pub(crate) use native_layout::{LayoutError, LayoutHandle, LayoutMain, LayoutOwner, LayoutPhase, LayoutSample, LayoutWindow, NativeLayoutMain};
 
 const ERROR: &str = "Die Desktop-Darstellung konnte nicht angepasst werden.";
 #[derive(Clone, Debug, Serialize)]
@@ -29,7 +32,7 @@ struct Bot {
     initial_bounds: Option<Bounds>,
 }
 #[derive(Default)]
-pub struct PresentationHub { bots: Mutex<HashMap<String, Bot>> }
+pub struct PresentationHub { bots: Mutex<HashMap<String, Bot>>, native: Arc<native_layout::NativePresentations> }
 fn advance(bot:&mut Bot){bot.revision=bot.revision.saturating_add(1).min(9_007_199_254_740_991);}
 fn scale(profile:&Value)->f64{profile["avatar"]["scale"].as_f64().filter(|v|v.is_finite()&&(0.3..=2.5).contains(v)).unwrap_or(1.0)}
 pub fn validate_scale(value:f64)->Result<(),String>{if value.is_finite()&&(0.3..=2.5).contains(&value){Ok(())}else{Err("Die Figurgröße muss zwischen 0,3 und 2,5 liegen.".into())}}
@@ -139,8 +142,26 @@ fn needs_replacement(bot:&Bot,target:Option<Bounds>,pending:bool,attempt:u8)->bo
     target.is_none()&&bot.normal.is_some()&&pending&&attempt>=20
 }
 impl PresentationHub {
-    pub fn suppress_bounds(&self,id:&str)->bool{self.bots.try_lock().map(|bots|bots.get(id).is_some_and(|bot|bot.normal.is_some()||bot.initial_bounds.is_some())).unwrap_or(true)}
-    pub fn guarded_window(&self,id:&str)->bool{self.bots.lock().map(|bots|bots.get(id).is_some_and(|bot|bot.normal.is_some())).unwrap_or(true)}
+    pub fn suppress_bounds(&self,id:&str)->bool{self.native.guarded(id)||self.bots.try_lock().map(|bots|bots.get(id).is_some_and(|bot|bot.normal.is_some()||bot.initial_bounds.is_some())).unwrap_or(true)}
+    pub fn guarded_window(&self,id:&str)->bool{self.native.guarded(id)||self.bots.lock().map(|bots|bots.get(id).is_some_and(|bot|bot.normal.is_some())).unwrap_or(true)}
+    pub(crate) fn native_guarded(&self,id:&str)->bool{self.native.guarded(id)}
+    pub(crate) fn any_native_work(&self)->bool{self.native.any_work()}
+    pub(crate) fn admit_dialog(&self)->Result<(),String>{if self.any_native_work(){Err("Der Co-Host verarbeitet bereits eine Nachricht. Bitte warten oder abbrechen.".into())}else{Ok(())}}
+    pub(crate) fn retain_native_window(&self,id:&str,window:tauri::WebviewWindow,signals:Arc<WindowSignals>,tracked:bool)->bool{
+        self.retain_layout_window(id,Arc::new(native_layout::TauriLayoutWindow{window}),signals,tracked)
+    }
+    pub(crate) fn retain_layout_window(&self,id:&str,window:Arc<dyn LayoutWindow>,signals:Arc<WindowSignals>,tracked:bool)->bool{tracked&&self.native.register(id,window,signals).is_ok()}
+    pub(crate) fn native_handle(&self,id:&str)->Result<LayoutHandle,LayoutError>{self.native.handle(id)}
+    pub(crate) fn reserve_native(&self,handle:&LayoutHandle,sample:&LayoutSample,issued:u64,deadline:u64,cancel:Arc<std::sync::atomic::AtomicBool>)->Result<Arc<LayoutOwner>,LayoutError>{
+        let bots=self.bots.lock().map_err(|_|LayoutError::Unavailable)?;
+        let bot=bots.get(handle.bot()).ok_or(LayoutError::Stale)?;
+        if !Arc::ptr_eq(&bot.signals,handle.signals())||bot.normal.is_some()||bot.initial_bounds.is_some(){return Err(LayoutError::Busy);}
+        self.native.reserve(handle,sample,issued,deadline,cancel)
+    }
+    pub(crate) fn finish_native(&self,owner:&Arc<LayoutOwner>)->bool{self.native.finish(owner)}
+    /// Exactly one observer records each OS geometry event, including legacy FIFO.
+    pub(crate) fn native_moved(&self,id:&str,signals:&Arc<WindowSignals>,x:i32,y:i32)->bool{self.native.observe(id,signals,Some((x,y)),None)}
+    pub(crate) fn native_resized(&self,id:&str,signals:&Arc<WindowSignals>,width:u32,height:u32)->bool{self.native.observe(id,signals,None,Some((width,height)))}
     pub fn register_window(&self,id:&str,signals:Arc<WindowSignals>,initial_bounds:Option<Bounds>)->Result<(),String>{
         let mut bots=self.bots.lock().map_err(|_|ERROR)?;let bot=bots.entry(id.into()).or_default();
         bot.signals=signals;bot.normal=None;bot.replacing=false;bot.initial_bounds=initial_bounds;advance(bot);Ok(())
@@ -153,6 +174,7 @@ impl PresentationHub {
     }
     /// Called on a deferred Main task, never inline from a setter callback.
     pub fn forget_window(&self,id:&str,signals:&Arc<WindowSignals>)->Option<bool>{
+        self.native.retire(id,signals);
         let mut bots=self.bots.lock().ok()?;let bot=bots.get_mut(id)?;
         if !Arc::ptr_eq(&bot.signals,signals){return None;}
         let replacing=bot.replacing;bot.normal=None;bot.replacing=false;advance(bot);Some(replacing)
@@ -166,6 +188,9 @@ impl PresentationHub {
 pub fn publish(app:&tauri::AppHandle,profile:&Value){let state=app.state::<crate::AppState>();state.overlay.publish(app,state.presentation.snapshot(profile));}
 fn sync_on_main(app:&tauri::AppHandle,id:&str,attempt:u8,expected:Option<&Arc<WindowSignals>>)->Result<(),String>{
     let state=app.state::<crate::AppState>();
+    // The native owner alone restores this exact constructor. Legacy sync must
+    // not acquire its Normal or enqueue geometry that revokes typed fields.
+    if state.presentation.native_guarded(id){return Ok(());}
     let Some(window)=app.get_webview_window(&format!("avatar-{id}"))else{return Ok(());};
     let mut bots=state.presentation.bots.lock().map_err(|_|ERROR)?;let bot=bots.entry(id.into()).or_default();
     if expected.is_some_and(|signals|!Arc::ptr_eq(signals,&bot.signals)){return Ok(());}
@@ -221,6 +246,7 @@ fn schedule(app:&tauri::AppHandle,id:&str,attempt:u8,delay:u64,expected:Option<A
     });
 }
 pub fn sync_or_report(app:&tauri::AppHandle,id:&str){if let Err(error)=sync(app,id){use tauri::Emitter;let _=app.emit("cohost://agent",json!({"kind":"error","botId":id,"text":error}));}}
+pub(crate) fn sync_after_native_release(app:&tauri::AppHandle,id:&str,signals:Arc<WindowSignals>){schedule(app,id,0,0,Some(signals));}
 #[tauri::command]
 pub fn list_output_displays(window:tauri::WebviewWindow)->Result<Vec<Display>,String>{main_only(window.label())?;displays(&window)}
 #[tauri::command]

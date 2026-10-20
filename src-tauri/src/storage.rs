@@ -19,8 +19,10 @@ pub(crate) mod world_store;
 pub(crate) mod action_store;
 #[path="api_connection_store.rs"]
 pub(crate) mod api_connection_store;
+#[path="profile_mutation.rs"]
+pub(crate) mod profile_mutation;
 
-pub struct Store { api_management:Arc<Mutex<()>>,api_error:Option<api_connection_store::Error>, pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>, credential_session:Arc<crate::credential_session::Session>, life_recovery:Arc<Mutex<life_store::RecoveryStatus>>,usage_error:Option<crate::usage_budget::Denial>,world_error:Option<world_store::WorldStoreError> }
+pub struct Store { api_management:Arc<Mutex<()>>,api_error:Option<api_connection_store::Error>, pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>, credential_session:Arc<crate::credential_session::Session>, life_recovery:Arc<Mutex<life_store::RecoveryStatus>>,profile_mutations:Arc<profile_mutation::ProfileMutations>,usage_error:Option<crate::usage_budget::Denial>,world_error:Option<world_store::WorldStoreError> }
 pub fn valid_id(id: &str) -> bool { !id.is_empty() && id.len() <= 96 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') }
 fn error(e: impl std::fmt::Display) -> String { e.to_string() }
 
@@ -40,7 +42,7 @@ impl Store {
         let reuse_credentials=db.query_row("SELECT CASE WHEN typeof(value)='text' AND length(CAST(value AS BLOB))=4 THEN value='true' ELSE 0 END FROM settings WHERE key='macos_credential_session_reuse'",[],|row|row.get::<_,bool>(0)).unwrap_or(false);
         let credential_session=Arc::new(crate::credential_session::Session::new(cfg!(any(target_os="macos",test)),reuse_credentials));
         let life_status=life_store::RecoveryStatus::new(life_store::initialize(&mut db).err());
-        let mut store = Self {api_management:Arc::new(Mutex::new(())),api_error:None,root,db:Mutex::new(db),fixed_profile:None,credential_session,life_recovery:Arc::new(Mutex::new(life_status)),usage_error,world_error};
+        let mut store = Self {api_management:Arc::new(Mutex::new(())),api_error:None,root,db:Mutex::new(db),fixed_profile:None,credential_session,life_recovery:Arc::new(Mutex::new(life_status)),profile_mutations:Arc::new(profile_mutation::ProfileMutations::default()),usage_error,world_error};
         let profile = store.profile()?;
         store.ensure_profile(&profile)?;
         // The previous single-profile settings row remains authoritative during
@@ -87,7 +89,7 @@ impl Store {
         self.bot_profile(id)?;
         let connection=Connection::open(self.root.join("cohost.sqlite3")).map_err(error)?;
         connection.busy_timeout(std::time::Duration::from_secs(3)).map_err(error)?;
-        Ok(Self{api_management:self.api_management.clone(),api_error:self.api_error,root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned()),credential_session:self.credential_session.clone(),life_recovery:self.life_recovery.clone(),usage_error:self.usage_error,world_error:self.world_error})
+        Ok(Self{api_management:self.api_management.clone(),api_error:self.api_error,root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned()),credential_session:self.credential_session.clone(),life_recovery:self.life_recovery.clone(),profile_mutations:self.profile_mutations.clone(),usage_error:self.usage_error,world_error:self.world_error})
     }
     fn extensions_migrated(&self)->Result<bool,String>{
         self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key='extension_library_v1')",[],|row|row.get(0)).map_err(error)
@@ -286,6 +288,7 @@ impl Store {
         Ok(())
     }
     pub fn save_profile(&self, profile:Value) -> Result<Value,String> {
+        let _policy_write=self.profile_mutations.begin();
         let _mutation=EXTENSION_MUTATIONS.lock().map_err(error)?;
         self.save_profile_locked(profile)
     }
@@ -293,6 +296,7 @@ impl Store {
     /// the current profile under the same mutation lock as its write so an old
     /// window snapshot cannot restore revoked screen grants or model settings.
     pub fn patch_output(&self,patch:Value)->Result<Value,String>{
+        let _policy_write=self.profile_mutations.begin();
         let patch=patch.as_object().ok_or("Ausgabeänderungen müssen ein JSON-Objekt sein")?;
         for (key,value) in patch{
             match key.as_str(){
@@ -306,6 +310,14 @@ impl Store {
         let output=profile.get_mut("output").and_then(Value::as_object_mut).ok_or("Profilbereich output muss ein JSON-Objekt sein")?;
         for (key,value) in patch{output.insert(key.clone(),value.clone());}
         self.save_profile_locked(profile)
+    }
+    /// Worker-only read. The receipt has no DB/GUI lock and only detects writes
+    /// in this Store family; external SQL/unrelated Store::new is not covered.
+    pub(crate) fn native_layout_policy(&self,bot:&str)->Option<profile_mutation::NativeLayoutPolicy>{
+        let receipt=self.profile_mutations.receipt()?;
+        let profile=self.bot_profile(bot).ok()?;
+        if !receipt.current(){return None;}
+        Some(profile_mutation::NativeLayoutPolicy::new(profile["output"]["clickThrough"].as_bool().unwrap_or(false),profile["output"]["alwaysOnTop"].as_bool().unwrap_or(false),receipt))
     }
     // Caller must hold EXTENSION_MUTATIONS; never acquire it again here.
     fn save_profile_locked(&self,mut profile:Value)->Result<Value,String>{

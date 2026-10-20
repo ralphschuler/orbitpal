@@ -5,6 +5,8 @@ mod action_host;
 mod action_output;
 #[path = "life_runtime/native_output_route.rs"]
 mod native_output_route;
+#[path = "life_runtime/native_layout.rs"]
+pub(crate) mod native_layout;
 pub(crate) use native_output_route::NativeWindowChange;
 #[path = "life_runtime/session_output.rs"]
 pub(crate) mod session_output;
@@ -518,6 +520,8 @@ impl LifeRuntime {
     ) -> bool {
         self.native_routes.window_changed_with_output(bot, signals, change, &self.outputs)
     }
+    pub(crate) fn native_geometry_begin(&self,bot:&str,signals:&Arc<crate::window_signals::WindowSignals>)->Option<native_output_route::GeometryClassification>{self.native_routes.begin_geometry(bot,signals,&self.outputs)}
+    pub(crate) fn native_geometry_finish(&self,fact:native_output_route::GeometryClassification,accepted:bool){self.native_routes.finish_geometry(fact,accepted);}
     pub fn output_window_lost(&self, label: &str) {
         if label == "main" {
             self.native_routes.revoke(None);
@@ -728,6 +732,9 @@ impl LifeRuntime {
         if !has_pending {
             let blocked = state.updater.ensure_idle().is_err()
                 || state.overlay.has_any_pending_speech()
+                // Same app-wide presentation/generation barrier as pending
+                // speech: not a new persisted per-bot autonomy mode.
+                || state.presentation.any_native_work()
                 || state.generation.try_lock().is_err();
             let claim = self.core.lock().ok().and_then(|mut core| {
                 core.claim(self.now(), blocked, uuid::Uuid::new_v4().to_string())
@@ -869,6 +876,7 @@ pub fn connect_life_ui(
     main_only(window.label())?;
     let id = uuid::Uuid::new_v4().to_string();
     state.life_runtime.outputs.ui_connect(&id);
+    state.life_runtime.native_routes.ui_connect(&id);
     state
         .life_runtime
         .core
@@ -885,6 +893,7 @@ pub fn disconnect_life_ui(
 ) -> Result<(), String> {
     main_only(window.label())?;
     state.life_runtime.outputs.ui_disconnect(&connection_id);
+    state.life_runtime.native_routes.ui_disconnect(&connection_id);
     state
         .life_runtime
         .core
@@ -905,6 +914,7 @@ pub fn report_life_ui(
         report.sequence,
         report.blocked || report.activity,
     );
+    state.life_runtime.native_routes.ui_report(&report.connection_id,report.sequence,report.blocked||report.activity);
     let is_visible = window.is_visible().unwrap_or(false);
     Ok(state
         .life_runtime

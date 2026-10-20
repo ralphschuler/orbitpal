@@ -911,3 +911,6 @@ fn pending_core_intent_cannot_register_after_new_ui_or_later_block() {
 
 #[path = "world_action_tests.rs"]
 mod world_visual;
+
+#[path = "native_layout_store_tests.rs"]
+mod native_layout_driver;

@@ -477,13 +477,33 @@ pub fn configure_for_bot(app:&tauri::AppHandle,bot_id:&str,_always_on_top:bool,_
     tauri::async_runtime::spawn(async move{
         let main=handle.clone();let _=handle.run_on_main_thread(move||{
             if let Some(window)=main.get_webview_window(&format!("avatar-{id}")){
-                let state=main.state::<crate::AppState>();let Ok(profile)=state.store.bot_profile(&id)else{return;};
+                let state=main.state::<crate::AppState>();
+                // The exact retained native owner applies CURRENT policy only
+                // after restoration. Do not steal its click/normal guard.
+                if state.presentation.native_guarded(&id){return;}
+                let Ok(profile)=state.store.bot_profile(&id)else{return;};
                 let always_on_top=profile["output"]["alwaysOnTop"].as_bool().unwrap_or(false);let click_through=profile["output"]["clickThrough"].as_bool().unwrap_or(false);
                 let result=window.set_always_on_top(always_on_top).and_then(|_|window.set_ignore_cursor_events(click_through||main.state::<crate::AppState>().presentation.guarded_window(&id)));
                 if result.is_err(){let _=main.emit("cohost://agent",json!({"kind":"error","botId":id,"text":"Die Desktop-Darstellung konnte nicht angepasst werden."}));}
             }
         });
     });Ok(())
+}
+/// Reapply a preview deferred by NativeLayout only after exact confirmed Hub
+/// release. Worker reads current policy; Main touches the retained constructor
+/// only. Profile changes between OS setters are detected/reprotected/retried,
+/// not represented as an atomic policy/kernel transaction.
+pub(crate) fn configure_after_native_release(app:&tauri::AppHandle,window:crate::overlay_presentation::LayoutHandle){
+    let app=app.clone();tauri::async_runtime::spawn(async move{
+        for _ in 0..20{
+            if !window.current(){return;}
+            let policy=app.state::<crate::AppState>().store.native_layout_policy(window.bot());
+            let Some(policy)=policy else{tokio::time::sleep(Duration::from_millis(50)).await;continue;};
+            let (tx,rx)=tokio::sync::oneshot::channel();let exact=window.clone();
+            if app.run_on_main_thread(move||{let result=exact.resync_policy(policy.clicks,policy.top,||policy.current());let _=tx.send(result);}).is_err(){return;}
+            match rx.await{Ok(Ok(()))=>return,Err(_)=>return,_=>tokio::time::sleep(Duration::from_millis(50)).await}
+        }
+    });
 }
 pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
     let state=app.state::<crate::AppState>();let store=state.store.scoped(bot_id)?;let mut profile=store.profile()?;
@@ -536,7 +556,8 @@ fn open_window(app:&tauri::AppHandle,bot_id:&str,profile:Value,session:Option<&c
     state.presentation.register_window(bot_id,signals.clone(),initial_bounds)?;
     // This tracks native instance identity only; no World layout/readiness or
     // rendering permission follows from opening the ordinary overlay.
-    let _=state.life_runtime.native_output_window_registered(bot_id,&label,&signals);
+    let tracked=state.life_runtime.native_output_window_registered(bot_id,&label,&signals);
+    let _=state.presentation.retain_native_window(bot_id,window.clone(),signals.clone(),tracked);
     let session_owned_constructor=session.is_some();
     let handle=app.clone();let bot_id=bot_id.to_owned();let measured=window.clone();let revision=Arc::new(std::sync::atomic::AtomicU64::new(0));
     window.on_window_event(move|event|{
@@ -548,12 +569,14 @@ fn open_window(app:&tauri::AppHandle,bot_id:&str,profile:Value,session:Option<&c
             tauri::WindowEvent::Destroyed=>Some(NativeWindowChange::Destroyed),
             _=>None,
         };
-        if let Some(change)=route_change{handle.state::<crate::AppState>().life_runtime.native_output_window_changed(&bot_id,&signals,change);}
-        match event {
-            tauri::WindowEvent::Moved(position)=>signals.observe_move(position.x,position.y),
-            tauri::WindowEvent::Resized(size)=>signals.observe_resize(size.width,size.height),
-            _=>(),
-        }
+        let state=handle.state::<crate::AppState>();
+        let geometry=if matches!(event,tauri::WindowEvent::Moved(_)|tauri::WindowEvent::Resized(_)){state.life_runtime.native_geometry_begin(&bot_id,&signals)}else{if let Some(change)=route_change{state.life_runtime.native_output_window_changed(&bot_id,&signals,change);}None};
+        let accepted=match event {
+            tauri::WindowEvent::Moved(position)=>state.presentation.native_moved(&bot_id,&signals,position.x,position.y),
+            tauri::WindowEvent::Resized(size)=>state.presentation.native_resized(&bot_id,&signals,size.width,size.height),
+            _=>false,
+        };
+        if let Some(geometry)=geometry{state.life_runtime.native_geometry_finish(geometry,accepted);}
 
         if matches!(event,tauri::WindowEvent::Moved(_)|tauri::WindowEvent::Resized(_)|tauri::WindowEvent::CloseRequested{..}){
             revision.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
