@@ -3092,15 +3092,15 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "orbitpal"
-version = "0.11.1"
+version = "0.12.0"
 dependencies = [
  "apple-native-keyring-store",
  "axum",
  "base64 0.23.1",
  "block2",
  "chrono",
- "core-graphics",
  "core-foundation-sys",
+ "core-graphics",
  "dbus-secret-service-keyring-store",
  "foreign-types",
  "futures-util",

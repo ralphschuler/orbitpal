@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.12.0 — 2026-10-20
+
+- Start the Linux session monitor on Tauri's owned async runtime from synchronous application setup. Do not require a thread-local Tokio runtime during cold start; preserve observation, Stop and cancellation behavior.
 - Add an optional Studio 3D World view in all four interface languages, with up to eight participants and one shared object layer. In an explicitly started Life session, the selected Studio character can execute one operator-requested MoveTo; other participants are mirrors. Native overlay/OBS and broader visual activities remain open under #72.
 - Connect native-issued render challenges and ordered delivery/start/completion receipts to actual renderer frames. Preserve checked Life/World/SQLite admission, frozen reference anchors, Stop and stale-result cancellation. A private native-window registry remains preparatory and grants no native rendering capability.
 - Use an explicit host-pinned enclosure contract with bounded rigid-source preparation and current conservative draw bounds. Keep exact geometry helpers, deformation fallback, work limits and the five-second deadline. Validate actual Metal rendering, eight directions, distance-based gait, ACK holds and context/resize/Stop barriers with local fixtures; synthetic host acknowledgements establish no native-window/OBS acceptance or performance benchmark.
@@ -16,7 +19,7 @@
 - Add an explicit ten-second quiet rest and activity status in all four interface languages. It runs without a model or voice in an already active Life session, has no animation or need reward, and starts no successor. Keep saved outcomes separate from runtime observations and reject obsolete Studio reports and delayed results.
 
 - Add a shared native stage with explicit participants, versioned local anchors, canonical positions and exclusive session/action-bound reservations. Preserve individual Life histories, isolate invalid optional stage data and prevent imported bots from reviving old membership.
-- Add a shared stage editor in all four interface languages with percentage coordinates, a 2D draft preview and confirmed world data. Preserve drafts across navigation and bot changes. Character movement to shared objects and rendered arrival remain separate renderer/action work.
+- Add a shared stage editor in all four interface languages with percentage coordinates, a 2D draft preview and confirmed world data. Preserve drafts across navigation and bot changes. Selected Studio MoveTo is available in the 3D view; object-use activities and coordinated multi-actor arrival remain follow-up work.
 
 - Move spontaneous scheduling into one native runtime with explicit Ambient/Life sessions, confirmed local Life checkpoints, fresh Studio status and exact cancellation identities. Preserve existing playback timing and show native status in all four interface languages.
 - Pause autonomous dialog, speech synthesis and memory dispatch while native session availability is blocked or unknown. Add platform observers, clean hidden-Studio handling and conservative reconnect behavior; document macOS compatibility limits and the remaining real-device acceptance matrix.
@@ -27,7 +30,7 @@
 - Avoid unused macOS Keychain reads for Codex/Claude Code dialog and model-list operations and browser/system speech, while preserving configured HTTP authentication. Explain per-item persistent authorization beside credential fields in all four interface languages.
 - Persist bot-bound life snapshots and bounded event histories atomically in SQLite with version validation and revision conflicts. Cancel interrupted actions on restart, bound offline clock progression, isolate corrupt life data from profiles and other bots, and prevent profile packages from inheriting local life identities.
 
-- Define a pure, versioned character-life contract with validated actor/world identities, deterministic bounded time and randomness, explicit action phases, exactly-once completion effects, bounded history and a deliberate public projection. Runtime activation, persistence, rendering and social behavior remain separate follow-up work.
+- Define a pure, versioned character-life contract with validated actor/world identities, deterministic bounded time and randomness, explicit action phases, exactly-once completion effects, bounded history and a deliberate public projection. Integrate it with the native runtime, local persistence and selected Studio movement described above; self-care and social behavior remain follow-up work.
 - Add optional macOS reuse of successfully retrieved keys during the current app session, shared across bots and off by default. Provide explicit Lock/resume controls, reject late reads after session changes, invalidate copies on writes/deletes, and retain permanent credentials only in the OS store.
 
 - Distribute automatic chat turns fairly across eligible bots within each priority class, even while the queue keeps filling. Preserve direct-address and manual priority, reserve asynchronous preflight, and invalidate exact claims on Stop without replaying late work.
