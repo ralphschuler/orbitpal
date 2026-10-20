@@ -123,14 +123,14 @@ speech ownership handoff remain separate implementation and platform work.
 
 ## Validation status
 
-The actual production Tauri/Store suite passed **549 tests**, including native
-registry/geometry/arrival, real Core/WorldHub/SQLite lifecycle and held-write-lock
-cases, plus all 15 native-route regressions. That gate ran on source checkpoint
-`cfe752f`. Follow-up `c1b31f4` only removed one terminal newline byte from each
-of the two new route files; byte comparison verified
-`final == tested.rstrip(b'\n') + b'\n'`. The suite was not rerun for that
-whitespace-only change. The foundation composition preserves those native bytes;
-its combined checks are a separate gate.
+Native tests cover registry/geometry/arrival, actual Core/WorldHub/SQLite
+lifecycle and held-write-lock cases, including the native-route cancellation
+regressions. They validate protocol and storage behavior independently of a GPU.
+
+Reviewed World reports, Life UI heartbeat/status, playback reports and selected
+metadata getters use Tauri asynchronous dispatch for their Core/SQLite waits.
+This is not a guarantee of native Stop latency under worker starvation; actual
+window/event scheduling remains part of #75 acceptance.
 
 These results do not establish successful WebGL rendering, real motion quality,
 native/OBS execution or multi-actor authority. A separate experimental actual-

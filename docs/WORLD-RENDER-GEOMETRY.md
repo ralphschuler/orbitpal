@@ -147,23 +147,17 @@ choose a bounded cadence, invalidate stale geometry and preserve action liveness
 
 ## Validation status
 
-Fixtures are written against actual Three CPU meshes, relative morphs, a real
-AnimationMixer/bone pose, stale cached bounds, material groups/ranges/layers,
+Fixtures use actual Three CPU meshes, relative morphs, a real AnimationMixer and
+bone poses. They cover stale cached bounds, material groups/ranges/layers, stock
 MToon body versus outline, frame/binding changes, failed/context-lost rendering,
-clipping/empty/nonfinite geometry, bounded work and no-clamp target mapping. The
-original focused run passed **28 of 29** fixtures and failed the real stock MToon
-body positive because its own compile callback was rejected. That failure remains
-recorded; the positive assertion has not been weakened. The follow-up adds stock
-MToon morph/skin/copy and stock Three material positives, custom-material negatives,
-reordered surface and collapsed-interval regressions. All **57 geometry fixtures
-pass**; the combined focused gate passes **86 fixtures** with the 29 pure motion
-fixtures. Current Svelte/TypeScript checking reports **zero errors and warnings**.
-The first typecheck exposed two implicit fixture/hook types; explicit annotations
-fixed them without changing behavior, and the failure log is retained.
-Their draw port is deliberately synthetic; they create no WebGL context, native
-window or arrival proof. Broad frontend/build/native checks were not run for this
-isolated follow-up. Actual render acceptance and the final combined checks remain
-required before integration.
+clipping/empty/nonfinite geometry, bounded work and no-clamp target mapping.
+Stock material positives retain their real shader contracts; custom deformation
+negatives do not rely on a material flag alone.
+
+The draw port is deliberately synthetic. It creates no WebGL context or native
+window, and establishes no arrival, visible-pixel or performance proof. Combined
+source/build checks and platform CI are recorded with the contribution; real
+render acceptance is a separate integration gate.
 
 A separate experimental actual-renderer integration failed its acceptance
 exercise and is excluded from this foundation packet. The synthetic draw port
