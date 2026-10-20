@@ -120,11 +120,14 @@
         <input type="number" min="15" max="3600" step="1" bind:value={config.maxSeconds}/>
       </label>
     </div>
-    <label for={`${uid}-hourly-budget`}>
-      {$t('Höchstens KI-Aufrufe pro Stunde')}
-      <HelpTip text={$t('Ein rollendes Stundenbudget pro Bot. Auch fehlgeschlagene oder stille Versuche zählen. Eine neue Sitzung setzt das Budget während derselben App-Laufzeit nicht zurück. Bewegungen verbrauchen keine KI-Aufrufe.')}/>
-      <input type="number" min="1" max="120" step="1" id={`${uid}-hourly-budget`} bind:value={config.maxTurnsPerHour}/>
-    </label>
+    <div class="field-with-help">
+      <div class="field-label">
+        <label for={`${uid}-hourly-budget`}>{$t('Höchstens Sprechversuche pro Stunde')}</label>
+        <HelpTip label={$t('Hilfe zum Stundenlimit')} text={$t('Rollendes Stundenlimit pro Bot: Stille und fehlgeschlagene Versuche zählen mit. Stop und Neustart des Autopiloten setzen es während derselben App-Laufzeit nicht zurück. Ein Versuch kann mehrere Modell- und Werkzeugrunden sowie weitere Anfragen für Stimme und Hindsight auslösen. Das Limit begrenzt weder einzelne Anbieteranfragen noch einen Geldbetrag. Bewegungen zählen nicht.')}/>
+      </div>
+      <input type="number" min="1" max="120" step="1" id={`${uid}-hourly-budget`} aria-describedby={`${uid}-hourly-budget-note`} bind:value={config.maxTurnsPerHour}/>
+      <p class="field-note" id={`${uid}-hourly-budget-note`}>{$t('Pro Bot; auch reine Textbeiträge bei ausgeschalteter Stimme zählen als Sprechversuch.')}</p>
+    </div>
     <details class="settings-details">
       <summary>{$t('Zusätzliche Hinweise für spontane Beiträge')}</summary>
       <label>
@@ -160,6 +163,8 @@
   .toggle-row:first-of-type { margin-top: 0; }
   label { color: var(--text); font-size: 12px; line-height: 1.6; }
   input[type='number'], textarea { min-height: 40px; color: var(--text); background: var(--input-bg); border-color: var(--line); font-size: 13px; }
+  .field-note { margin: 7px 0 0; overflow-wrap: anywhere; }
+  .field-label > label { min-width: 0; }
   .settings-details { margin-top: 20px; border-top: 1px solid var(--line); }
   summary { padding: 16px 0; color: var(--text); font-size: 12px; font-weight: 600; line-height: 1.6; cursor: pointer; }
   summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 3px; }
