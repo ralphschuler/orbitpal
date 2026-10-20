@@ -86,7 +86,10 @@ fn prepare() -> (Fixture, Store, WorldHub, String, Vec<NativeActor>) {
                 WorldId::new(world).unwrap(),
                 Needs::new(1234, 2345, 3456, 4567).unwrap(),
                 RandomState::seeded(9),
-                crate::storage::life_store::wall_clock_ms(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
             )
             .unwrap();
     }

@@ -212,12 +212,20 @@ privacy, negative origins, DPI conversion and deterministic monitor fallback.
 The standalone actual-source fixture passed all 40 tests (21 world cases and 19
 imported Life-domain tests), offline with one build job and no OS calls. Source
 hashes were captured before the run and verified unchanged afterward. This
-establishes the pure module's behavior only. The additional production Store/Hub regressions cover CAS, live corruption,
-restart/repair epochs, scope/import isolation and Core/output fences. Their final
-whole-crate execution and the composed four-locale UI/native gates are recorded
-only after completion. Native topology GUI observations and future measured
-rendering/physical presentation acceptance remain separate controlled OS/#72
-gates; no user desktop/session/capture actions were exercised by these fixtures.
+establishes the pure module's behavior only. The composed implementation passed
+443 native tests on macOS, including all 10 Hub and 6 production Store regressions
+for CAS, live corruption, restart/repair epochs, scope/import isolation and
+Core/output fences. All 502 frontend tests, both TypeScript checkers with zero
+diagnostics and the production build passed. Existing and foundation dead-code
+warnings and the bundle-size warning remain visible.
+
+Synthetic browser fixtures executed the actual editor's save/place operations
+and the Studio's navigation, bot switching, dirty-start guard and discard dialog.
+Four-language checks used 360/1,100-pixel viewports. Invalid full-page captures
+were excluded; raw bottom-frame clipping was not treated as proof of an entire
+visible form. Successful centered-control geometry checks are recorded separately.
+These fixtures use synthetic native responses and do not establish native
+window/monitor delivery or actual 3D arrival.
 
 The bounded native-adapter fixture passed 11/11 executable scenarios, locked and
 offline with one build job. It imports the exact production WorldHub state,
@@ -227,5 +235,8 @@ it does not replace SQL/Hub/Core behavior. Cases cover two persisted lineages,
 shared scope/privacy/restart, external CAS rollback/reload, live corruption,
 Core Stop/output loss, topology/alias fencing, exclusive-slot race, repair epoch
 and orphan-ID reservation. Source hashes were unchanged after execution. The
-full production Store constructors/import and native IPC/monitor/emission paths
-still require the composed whole-crate gate; no host monitor query was executed.
+full production Store constructor/import regressions also passed in the composed
+whole-crate suite. Real IPC delivery, GUI monitor changes and future measured
+rendering/physical presentation remain controlled OS/#72/#75 gates; no user
+desktop/session/capture actions were exercised by these fixtures. Platform CI
+must validate the final combined head before merge.

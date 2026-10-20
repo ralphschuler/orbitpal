@@ -31,6 +31,8 @@ Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, sil
 
 [Native Ambient and Life sessions](docs/LIFE-RUNTIME.md) share one scheduler across Studio reloads and reconnects. Start each bot explicitly for the current app session. Ambient keeps roaming and gestures; Life maintains its confirmed local state without requiring a dialog model. World-object activities and social scenes remain tracked follow-up work. Native lock/sleep availability gates autonomous network work, with platform compatibility limits documented in the guide.
 
+The [shared stage editor](docs/WORLD-STATE.md) lets you explicitly select participants and save rest, meeting and play places independently of the selected bot. It shows a 2D draft and confirmed world positions while keeping each bot's Life history separate. Saving a stage starts no autonomous mode. Character movement to these places and their 3D scene presentation remain subsequent action/renderer work.
+
 [Autonomous usage budgets](docs/USAGE-BUDGETS.md) add shared installation-wide UTC-day limits for dialog dispatches, spoken characters, Hindsight requests and image data, with per-bot reporting and optional conservative hard tokens. Direct-request mode excludes opaque CLI jobs; the default counts OrbitPal calls/CLI jobs and does not claim provider-internal billing limits. Manual Studio actions remain available.
 
 
