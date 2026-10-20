@@ -83,6 +83,16 @@ jobs:
         env:
           ORBITPAL_NATIVE_FIXTURE_DIR: ${{ runner.temp }}/orbitpal-avatar-fixtures
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Linux disposable credential fixture dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y gnome-keyring libglib2.0-bin
+      - name: Credential fixture isolation guards (no native store access)
+        run: node --test scripts/keyring-compat-tests.mjs
+      - name: Native credential migration (synthetic entries in disposable stores)
+        run: node scripts/test-keyring-compat-ci.mjs
+      - name: Restore disposable credential fixture keychains
+        if: always() && runner.os == 'macOS'
+        run: node scripts/test-keyring-compat-ci.mjs --cleanup
       - name: Offline compressed-avatar WebGL fixtures (installed Chrome)
         env:
           ORBITPAL_NATIVE_FIXTURE_DIR: ${{ runner.temp }}/orbitpal-avatar-fixtures

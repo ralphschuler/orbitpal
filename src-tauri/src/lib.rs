@@ -1,4 +1,5 @@
 mod storage;
+mod credentials;
 mod providers;
 mod transcription;
 mod cli_provider;

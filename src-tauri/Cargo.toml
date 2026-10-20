@@ -34,11 +34,13 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2"
 pdf-extract = "0.12.1"
+keyring-core = "1.0.1"
 # Screenshot pixels remain in memory; enable only the JPEG codec we send.
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
+# Keep the legacy file-based User Keychain and service/account mapping.
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 core-graphics = "0.25"
 foreign-types = "0.5"
 objc2 = "0.6"
@@ -50,11 +52,12 @@ block2 = "0.6"
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3", features = ["windows-native"] }
+windows-native-keyring-store = "1.1.0"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+# Persistent synchronous Secret Service; never replace with a volatile keyutils store.
+dbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust"] }
 zbus = { version = "6.0", default-features = false, features = ["tokio", "proxy"] }
 pipewire = "0.10.1"
 # Pure Rust X11/RandR transport: no libxcb generator or portal temp files.
