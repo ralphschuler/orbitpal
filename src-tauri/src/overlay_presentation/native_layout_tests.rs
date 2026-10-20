@@ -16,6 +16,24 @@ fn reserve(hub:&NativePresentations,handle:&LayoutHandle)->Arc<LayoutOwner>{hub.
 fn release(hub:&NativePresentations,owner:&Arc<LayoutOwner>){owner.cancelled();owner.begin_restore().unwrap();assert!(owner.restore_once(false,false,||true).unwrap());assert!(hub.finish(owner));}
 
 #[test]
+fn retained_normal_window_allows_dialog_but_cleanup_owner_keeps_it_guarded(){
+    let hub=super::super::PresentationHub::default();
+    let handle=register(&hub.native,"nova");
+    assert!(handle.current());
+    assert!(!hub.any_native_work());
+    assert!(hub.admit_dialog().is_ok(),"ordinary Life windows retain a constructor without owning layout work");
+    let owner=reserve(&hub.native,&handle);
+    assert!(hub.any_native_work());
+    assert!(hub.admit_dialog().is_err());
+    owner.cancelled();
+    assert!(hub.admit_dialog().is_err(),"cancellation alone does not prove normal geometry was restored");
+    release(&hub.native,&owner);
+    assert!(handle.current());
+    assert!(!hub.any_native_work());
+    assert!(hub.admit_dialog().is_ok(),"confirmed cleanup releases the guard without discarding the normal window");
+}
+
+#[test]
 fn sixty_four_retained_constructors_count_old_queued_handles_until_drained(){
     let hub=NativePresentations::default();let mut pending=Vec::new();for _ in 0..64{pending.push(register(&hub,"nova"));}
     assert!(matches!(hub.register("nova",Arc::new(View(Mutex::new(bounds()))),Arc::new(WindowSignals::default())),Err(LayoutError::Capacity)));
