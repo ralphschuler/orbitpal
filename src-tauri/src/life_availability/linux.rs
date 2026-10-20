@@ -40,7 +40,7 @@ struct Control {
 pub(super) struct Monitor {
     control: Arc<Control>,
     requests: mpsc::Sender<Request>,
-    _task: tokio::task::JoinHandle<()>,
+    _task: super::task::TaskJoinHandle<()>,
 }
 struct Session {
     connection: Connection,
@@ -57,7 +57,7 @@ impl Monitor {
             stop: Notify::new(),
         });
         let (requests, receiver) = mpsc::channel(8);
-        let task = tokio::spawn(monitor(control.clone(), receiver));
+        let task = super::task::spawn(monitor(control.clone(), receiver));
         Self {
             control,
             requests,
@@ -556,7 +556,7 @@ mod tests {
         let worker = {
             let control = control.clone();
             let connection = connection.clone();
-            tokio::spawn(monitor_using(control, receive, move || {
+            super::super::task::spawn(monitor_using(control, receive, move || {
                 let connection = connection.clone();
                 async move { Ok(connection) }
             }))
