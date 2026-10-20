@@ -1468,6 +1468,24 @@ impl Executor {
         self.jobs.remove(key.actor.as_str());
         Ok(())
     }
+    /// Native host only, after exact Core/World/registered-output revocation.
+    /// No wire receipt/boolean may supply that proof; terminal outbox is retained.
+    pub(crate) fn retire_uncommitted_visual(
+        &mut self,
+        authority: &NativeAuthority,
+        key: &JobKey,
+    ) -> Result<(), ActionError> {
+        let job = self.job(authority, key)?;
+        if job.policy.presentation != Presentation::Visual
+            || !matches!(job.status, Status::Cancelled | Status::Failed)
+            || job.terminal_committed
+            || self.cleanup.iter().any(|item| item.key == *key)
+        {
+            return Err(ActionError::InvalidState);
+        }
+        self.jobs.remove(key.actor.as_str());
+        Ok(())
+    }
     /// Membership removal may forget only terminal work after native cleanup;
     /// queued terminal tombstones remain ordered until dispatched.
     pub fn forget_terminal(&mut self, actor: &ActorId) -> bool {

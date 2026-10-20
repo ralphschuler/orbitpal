@@ -487,9 +487,21 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
         let _=window.set_size(tauri::PhysicalSize::new(width,height));if visible{let _=window.set_position(tauri::PhysicalPosition::new(x,y));}else{let _=window.center();}
     }
     state.presentation.register_window(bot_id,signals.clone(),initial_bounds)?;
+    // This tracks native instance identity only; no World layout/readiness or
+    // rendering permission follows from opening the ordinary overlay.
+    let _=state.life_runtime.native_output_window_registered(bot_id,&label,&signals);
     window.set_ignore_cursor_events(profile["output"]["clickThrough"].as_bool().unwrap_or(false)).map_err(|error|error.to_string())?;window.show().map_err(|error|error.to_string())?;
     let handle=app.clone();let bot_id=bot_id.to_owned();let measured=window.clone();let revision=Arc::new(std::sync::atomic::AtomicU64::new(0));
     window.on_window_event(move|event|{
+        use crate::life_runtime::NativeWindowChange;
+        let route_change=match event{
+            tauri::WindowEvent::Moved(_)|tauri::WindowEvent::Resized(_)=>Some(NativeWindowChange::Geometry),
+            tauri::WindowEvent::ScaleFactorChanged{..}=>Some(NativeWindowChange::Scale),
+            tauri::WindowEvent::CloseRequested{..}=>Some(NativeWindowChange::Closing),
+            tauri::WindowEvent::Destroyed=>Some(NativeWindowChange::Destroyed),
+            _=>None,
+        };
+        if let Some(change)=route_change{handle.state::<crate::AppState>().life_runtime.native_output_window_changed(&bot_id,&signals,change);}
         if matches!(event,tauri::WindowEvent::Destroyed|tauri::WindowEvent::CloseRequested{..}){handle.state::<crate::AppState>().life_runtime.output_window_lost(&format!("avatar-{bot_id}"));}
         match event {
             tauri::WindowEvent::Moved(position)=>signals.observe_move(position.x,position.y),

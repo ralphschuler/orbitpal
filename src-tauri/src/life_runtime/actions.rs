@@ -76,13 +76,37 @@ pub(crate) fn prepare_operator<R: tauri::Runtime>(
         if let Ok(profile) = state.store.profile() {
             if profile["id"] == bot {
                 if let Some(generation) = output_generation {
-                    core.prepare_rest_intent(
-                        &bot,
-                        profile,
-                        &proof,
-                        generation,
-                        state.life_runtime.now(),
-                    );
+                    if invoke.message.command() == "start_life_move" {
+                        let target = match invoke.message.payload() {
+                            tauri::ipc::InvokeBody::Json(value) => {
+                                serde_json::from_value::<crate::world_state::coordinates::Point>(
+                                    value["target"].clone(),
+                                )
+                                .ok()
+                            }
+                            _ => None,
+                        };
+                        if let Some(target) = target {
+                            core.prepare_move_intent(
+                                &bot,
+                                profile,
+                                &proof,
+                                generation,
+                                target,
+                                state.life_runtime.now(),
+                            );
+                        } else {
+                            core.operator_activity(state.life_runtime.now());
+                        }
+                    } else {
+                        core.prepare_rest_intent(
+                            &bot,
+                            profile,
+                            &proof,
+                            generation,
+                            state.life_runtime.now(),
+                        );
+                    }
                 }
                 return;
             }
@@ -101,7 +125,7 @@ impl Drop for IntentGuard<'_> {
         }
     }
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_life_actions(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -137,6 +161,7 @@ pub async fn start_life_rest(
         .lock()
         .map_err(|_| action_host::UNAVAILABLE)?
         .rest_intent(&bot_id, &ui)
+        .filter(|intent| intent.move_target.is_none())
         .ok_or(action_host::UNAVAILABLE)?;
     let _guard = IntentGuard {
         runtime: &state.life_runtime,
@@ -320,6 +345,7 @@ impl LifeRuntime {
                 super::wall_ms,
             );
         }
+        super::world_output::publish(app);
         publish(app);
     }
     pub(crate) fn before_dialog(

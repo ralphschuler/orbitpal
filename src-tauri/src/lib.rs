@@ -41,6 +41,7 @@ pub mod life_domain;
 mod action_executor;
 mod world_state;
 mod world_hub;
+mod world_output;
 mod screen_capture;
 mod screen_context;
 mod screen_portal;
@@ -70,20 +71,20 @@ pub struct AppState {
     screen_context:screen_context::ScreenState,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_app_state(window:tauri::WebviewWindow,state:State<'_,AppState>,app:tauri::AppHandle,bot_id:Option<String>)->Result<Value,String> {
     let id=bot_id.unwrap_or_else(||state.store.profile().ok().and_then(|p|p["id"].as_str().map(str::to_owned)).unwrap_or("nova".into()));
     let store=state.store.scoped(&id)?;let profile=store.profile()?;let presentation=state.presentation.snapshot(&profile);
     Ok(json!({"profile":profile,"presentation":presentation,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy(),"autopilot":state.autopilot.all()?.into_iter().map(|runtime|state.life_runtime.present(runtime)).collect::<Vec<_>>(),"lifeRuntime":state.life_runtime.snapshot_for(&state.autopilot)?,"world":if window.label()=="main"{Some(state.world.snapshot()?)}else if window.label().strip_prefix("avatar-")==Some(id.as_str()){state.world.snapshot_for(&id)}else{None}}))
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn get_emote_capabilities(state:State<'_,AppState>,bot_id:String)->Result<Value,String>{
     let profile=state.store.bot_profile(&bot_id)?;
     Ok(emote_capabilities::configured(&emote_capabilities::inspect(&state.store.root,&profile)?,&profile))
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn get_extension_library(state:State<'_,AppState>)->Result<Value,String>{state.store.extension_library()}
-#[tauri::command]
+#[tauri::command(async)]
 fn get_library_skill(state:State<'_,AppState>,id:String)->Result<Value,String>{skill_library::SkillLibrary::new(&state.store.root)?.read(&id)}
 #[tauri::command]
 fn install_control_extension(state:State<'_,AppState>,app:tauri::AppHandle,window:tauri::WebviewWindow)->Result<Value,String>{
@@ -92,7 +93,7 @@ fn install_control_extension(state:State<'_,AppState>,app:tauri::AppHandle,windo
     let installed=state.store.install_control_extension(control_mcp::CONTROL_SKILL)?;
     let _=app.emit("cohost://library-changed",json!({"kind":"control"}));Ok(installed)
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn get_control_mcp_config(app:tauri::AppHandle,window:tauri::WebviewWindow)->Result<Value,String>{if window.label()!="main"{return Err("Die Control-Verbindungskonfiguration ist nur für den Streamer im Studio verfügbar".into());}app.state::<AppState>().control_mcp.client_config(&app)}
 #[tauri::command]
 async fn save_library_mcp(state:State<'_,AppState>,app:tauri::AppHandle,server:Value)->Result<Value,String>{
@@ -112,7 +113,7 @@ fn bot_summaries(state:&AppState,app:&tauri::AppHandle)->Result<Vec<Value>,Strin
     for bot in &mut bots{let id=bot["id"].as_str().unwrap_or_default().to_owned();bot["live"]=json!(live.contains(&id));bot["overlayUrl"]=json!(state.overlay.url_for_bot(&id));}
     Ok(bots)
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn list_bots(state:State<'_,AppState>,app:tauri::AppHandle)->Result<Vec<Value>,String>{bot_summaries(&state,&app)}
 #[tauri::command]
 async fn create_bot(state:State<'_,AppState>,app:tauri::AppHandle,name:String,copy_current:bool)->Result<Value,String>{
@@ -265,14 +266,14 @@ async fn connect_platform(state:State<'_,AppState>,app:tauri::AppHandle,platform
 }
 #[tauri::command]
 async fn disconnect_platform(state:State<'_,AppState>,platform:String)->Result<(),String>{state.chat.disconnect(&platform).await}
-#[tauri::command]
+#[tauri::command(async)]
 fn report_playback(app:tauri::AppHandle,id:String,bot_id:String,speaking:bool,error:Option<String>)->Result<Value,String>{overlay::report_playback(&app,&id,&bot_id,speaking,error.as_deref())}
-#[tauri::command]
+#[tauri::command(async)]
 fn cancel_speech_job(app:tauri::AppHandle,window:tauri::WebviewWindow,id:String,bot_id:String)->Result<Value,String>{
     if window.label()!="main"{return Err("Ausstehende Wiedergaben werden ausschließlich im Studio abgebrochen".into());}
     overlay::cancel_playback(&app,&id,&bot_id,Some("Keine Abschlussmeldung der Sprachausgabe. Automatische Antworten pausiert."))
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:String,playing:bool,activity:Option<String>,speech_id:Option<String>)->Result<Value,String>{overlay::report_emote_playback(&app,&bot_id,&output,&id,playing,activity.as_deref(),speech_id.as_deref())}
 #[tauri::command]
 async fn get_speech_audio(app:tauri::AppHandle,id:String,bot_id:String)->Result<Value,String>{overlay::speech_audio(&app,&id,&bot_id).await}
@@ -332,7 +333,7 @@ pub fn run(){
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler({let handler:fn(tauri::ipc::Invoke)->bool=tauri::generate_handler![api_connection_settings::get_api_connections,api_connection_settings::get_api_binding,api_connection_settings::create_api_connection,api_connection_settings::rename_api_connection,api_connection_settings::set_default_api_connection,api_connection_settings::remove_api_connection,api_connection_settings::set_api_connection_secret,life_runtime::actions::get_life_actions,life_runtime::actions::start_life_rest,world_hub::get_world_settings,world_hub::get_world_state,world_hub::save_world_config,world_hub::place_world_actor,life_runtime::get_life_runtime,life_runtime::get_life_bot,life_runtime::set_life_mode,life_runtime::connect_life_ui,life_runtime::disconnect_life_ui,life_runtime::report_life_ui,credential_session_settings::get_credential_session,credential_session_settings::set_credential_session,credential_session_settings::lock_credential_session,usage_settings::get_usage_budget,usage_settings::set_usage_limits,overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,send_automatic_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source];move|invoke:tauri::ipc::Invoke|{life_runtime::operator_invoke(&invoke);handler(invoke)}})
+        .invoke_handler({let handler:fn(tauri::ipc::Invoke)->bool=tauri::generate_handler![life_runtime::world_output::register_world_output,life_runtime::world_output::report_world_measurement,life_runtime::world_output::report_world_action,life_runtime::world_output::unregister_world_output,life_runtime::world_output::get_world_output_status,life_runtime::world_output::start_life_move,api_connection_settings::get_api_connections,api_connection_settings::get_api_binding,api_connection_settings::create_api_connection,api_connection_settings::rename_api_connection,api_connection_settings::set_default_api_connection,api_connection_settings::remove_api_connection,api_connection_settings::set_api_connection_secret,life_runtime::actions::get_life_actions,life_runtime::actions::start_life_rest,world_hub::get_world_settings,world_hub::get_world_state,world_hub::save_world_config,world_hub::place_world_actor,life_runtime::get_life_runtime,life_runtime::get_life_bot,life_runtime::set_life_mode,life_runtime::connect_life_ui,life_runtime::disconnect_life_ui,life_runtime::report_life_ui,credential_session_settings::get_credential_session,credential_session_settings::set_credential_session,credential_session_settings::lock_credential_session,usage_settings::get_usage_budget,usage_settings::set_usage_limits,overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,send_automatic_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source];move|invoke:tauri::ipc::Invoke|{life_runtime::operator_invoke(&invoke);handler(invoke)}})
         .build(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden").run(|app,event|{
             if matches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit){app.state::<AppState>().life_runtime.shutdown(app);app.state::<AppState>().screen_context.portal.close_all();}
         });
@@ -353,7 +354,7 @@ fn setup_tray(app:&mut tauri::App)->Result<(),Box<dyn std::error::Error>>{
     }).build(app);
     // A desktop without a tray keeps normal close behavior rather than hiding all controls.
     if let Some(window)=app.get_webview_window("main"){
-        let hide_to_tray=tray.is_ok();let hidden=window.clone();window.on_window_event(move|event|{if matches!(event,tauri::WindowEvent::Destroyed|tauri::WindowEvent::CloseRequested{..}){hidden.state::<AppState>().life_runtime.output_window_lost("main");}if hide_to_tray{if let tauri::WindowEvent::CloseRequested {api,..}=event{api.prevent_close();hidden.state::<AppState>().life_runtime.hide_main(&hidden);}}});
+        let hide_to_tray=tray.is_ok();let hidden=window.clone();window.on_window_event(move|event|{if matches!(event,tauri::WindowEvent::Destroyed|tauri::WindowEvent::CloseRequested{..}|tauri::WindowEvent::Resized(_)|tauri::WindowEvent::Moved(_)|tauri::WindowEvent::ScaleFactorChanged{..}){hidden.state::<AppState>().life_runtime.output_window_lost("main");}if hide_to_tray{if let tauri::WindowEvent::CloseRequested {api,..}=event{api.prevent_close();hidden.state::<AppState>().life_runtime.hide_main(&hidden);}}});
     }
     Ok(())
 }

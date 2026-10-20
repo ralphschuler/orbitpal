@@ -38,6 +38,10 @@ fn with_actions<T>(
 fn current(core: &Core, job: &NativeJob, now: u64) -> bool {
     !job.cancel.load(Ordering::SeqCst)
         && core.local_current(job.key.actor().as_str(), &job.fence, now)
+        && job
+            .visual
+            .as_ref()
+            .is_none_or(|visual| visual.current(&core.world_outputs, now))
 }
 fn replace(core: &mut Core, job: &NativeJob, snapshot: &LifeSnapshot) {
     core.replace_confirmed(
@@ -181,6 +185,7 @@ pub(crate) fn admit_rest(
             }
         };
         let job = NativeJob {
+            visual: None,
             authority,
             key,
             fence,
@@ -239,6 +244,10 @@ fn commit_request(
             .apply_life_action_checked(bot, wall(), |actual, tx| {
                 if !cancelling
                     && (!current(core, job, now())
+                        || job
+                            .visual
+                            .as_ref()
+                            .is_some_and(|visual| !visual.fresh(now()))
                         || !crate::storage::action_store::matches(
                             tx,
                             bot,
@@ -327,7 +336,7 @@ pub(crate) fn poll(
                         Failure::Interrupted,
                         now(),
                     );
-                } else if status == Some(Status::Started) {
+                } else if status == Some(Status::Started) && job.visual.is_none() {
                     match store.load_life(&id) {
                         Ok(Some(snapshot)) => match actions.executor.tick_native_dwell(
                             &job.authority,
@@ -423,6 +432,7 @@ pub(crate) fn poll(
                 }
             }
         }
+        flush_visual_dispatch(actions, core, now());
         let committed = actions
             .jobs
             .iter()
@@ -480,11 +490,22 @@ pub(crate) fn poll(
             if world.revoke_action_context(&job.world).is_err() {
                 continue;
             }
-            if actions
-                .executor
-                .retire_uncommitted_native_rest(&job.authority, &job.key)
-                .is_ok()
-            {
+            if job.visual.is_some() {
+                core.world_outputs.cancel_actor(Some(&id));
+            }
+            let retired = if let Some(visual) = &job.visual {
+                if !visual.output.cancel.load(Ordering::SeqCst) {
+                    continue;
+                }
+                actions
+                    .executor
+                    .retire_uncommitted_visual(&job.authority, &job.key)
+            } else {
+                actions
+                    .executor
+                    .retire_uncommitted_native_rest(&job.authority, &job.key)
+            };
+            if retired.is_ok() {
                 actions.jobs.remove(&id);
                 actions
                     .retired
@@ -497,8 +518,21 @@ pub(crate) fn poll(
         }
         // #72 has no real adapter yet. NativeRest has no Offer; consume internal
         // terminal/control messages without misrouting them to speech/legacy outputs.
-        while actions.executor.take_dispatch().is_some() {}
-        while actions.executor.take_invalidated_output().is_some() {}
+        flush_visual_dispatch(actions, core, now());
+        while let Some(output) = actions.executor.take_invalidated_output() {
+            for job in actions.jobs.values() {
+                if job
+                    .visual
+                    .as_ref()
+                    .is_some_and(|v| v.output.stamp == output)
+                {
+                    job.cancel.store(true, Ordering::SeqCst);
+                    if let Some(v) = &job.visual {
+                        v.output.cancel.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
+        }
         actions.changed();
         Ok(())
     })?;
@@ -540,10 +574,457 @@ pub(crate) fn status(
     let actions = core.actions.as_ref().ok_or(UNAVAILABLE)?;
     let runtime=actions.jobs.get(bot).and_then(|job|actions.executor.snapshot(&job.key)).or_else(||actions.retired.iter().rev().find(|s|s.action_id.actor_id().as_str()==bot).cloned()).map(|s|json!({"actionId":s.action_id,"presentation":s.presentation,"status":s.status,"failure":s.failure,"activeMilliseconds":s.active_ms}));
     Ok(
-        json!({"version":1,"instanceId":actions.instance_id,"sequence":actions.sequence,"botId":bot,"availability":availability,"reason":reason,"visualAvailable":false,"confirmed":confirmed,"runtime":runtime}),
+        json!({"version":1,"instanceId":actions.instance_id,"sequence":actions.sequence,"botId":bot,"availability":availability,"reason":reason,"visualAvailable":core.world_output_current(bot,now) && profile["output"]["mode"].as_str().unwrap_or("studio")=="studio" && store.profile().ok().is_some_and(|p|p["id"]==bot),"confirmed":confirmed,"runtime":runtime}),
     )
 }
 
 #[cfg(test)]
 #[path = "action_tests.rs"]
 mod tests;
+
+/// Real checked Plan for selected Studio MoveTo only. No model/voice/provider
+/// readiness is involved; an actual registered exposed frame is required.
+pub(crate) fn admit_move(
+    core: &mut Core,
+    store: &Store,
+    world: &WorldHub,
+    bot: &str,
+    profile: &Value,
+    fence: LocalFence,
+    context: ActionContext,
+    output: crate::world_output::OutputProof,
+    target: crate::world_state::coordinates::Point,
+    cancel: Arc<AtomicBool>,
+    now: impl Fn() -> u64,
+    wall: impl Fn() -> u64,
+) -> Result<(), String> {
+    with_actions(core, |actions, core| {
+        let actor = ActorId::new(bot).map_err(invalid)?;
+        actions.forget(bot);
+        if actions.actor_busy(bot)
+            || !actions.executor.can_admit(&actor)
+            || !core.local_current(bot, &fence, now())
+            || cancel.load(Ordering::SeqCst)
+            || !core.world_output_current(bot, now())
+            || !core.world_outputs.check_proof(&output, now())
+        {
+            return Err(UNAVAILABLE.into());
+        }
+        let visual =
+            crate::world_output::VisualExecution::new(output, target, now()).map_err(invalid)?;
+        let authority = NativeAuthority::new(
+            context.session.clone(),
+            context.source_world.clone(),
+            context.stage.clone(),
+            context.config_revision,
+            context.topology_revision,
+            visual.output.stamp.clone(),
+            visual.output.binding.asset_revision,
+        )
+        .map_err(invalid)?;
+        let caps = Capabilities::new(authority.clone(), vec![(Activity::MoveTo, 0)], false)
+            .map_err(invalid)?;
+        let persisted_profile = store.action_profile_token(bot, profile).map_err(invalid)?;
+        if persisted_profile != visual.output.profile_token {
+            return Err(UNAVAILABLE.into());
+        }
+        let (commit, prepared) = world.with_action_context(store, &context, || {
+            store
+                .apply_life_action_checked(bot, wall(), |actual, tx| {
+                    if cancel.load(Ordering::SeqCst)
+                        || !core.local_current(bot, &fence, now())
+                        || !core.world_outputs.check_proof(&visual.output, now())
+                        || !crate::storage::action_store::matches(
+                            tx,
+                            bot,
+                            &persisted_profile,
+                            &context.record,
+                            true,
+                        )
+                    {
+                        return Err(LifeStoreError::InvalidInput);
+                    }
+                    let plan = PreparedPlan::new(
+                        authority.clone(),
+                        actual.state(),
+                        actual.random(),
+                        Activity::MoveTo,
+                        Goal::Point(target),
+                        Presentation::Visual,
+                        &caps,
+                    )
+                    .map_err(|_| LifeStoreError::InvalidInput)?;
+                    Ok((plan.event().clone(), plan.expected_revision(), plan))
+                })
+                .map_err(invalid)
+        })?;
+        if commit.outcome != WriteOutcome::Applied {
+            return Err(UNAVAILABLE.into());
+        }
+        let planned = commit.snapshot;
+        core.replace_confirmed(
+            bot,
+            &fence.session,
+            fence.revision,
+            planned.state().clone(),
+            None,
+        );
+        let key = match actions
+            .executor
+            .install_plan(prepared, planned.state(), None, now())
+        {
+            Ok(key) => key,
+            Err(_) => {
+                let action = planned
+                    .state()
+                    .current_action()
+                    .ok_or(UNAVAILABLE)?
+                    .intent()
+                    .id()
+                    .clone();
+                match store.apply_life_action_checked(bot, wall(), |actual, _| {
+                    if actual
+                        .state()
+                        .current_action()
+                        .is_none_or(|a| a.intent().id() != &action)
+                    {
+                        return Err(LifeStoreError::InvalidInput);
+                    }
+                    Ok((
+                        LifeEvent::Cancel {
+                            action_id: action.clone(),
+                            reason: CancelReason::Unavailable,
+                        },
+                        actual.state().revision(),
+                        (),
+                    ))
+                }) {
+                    Ok((commit, _)) => {
+                        core.replace_confirmed(
+                            bot,
+                            &fence.session,
+                            fence.revision,
+                            commit.snapshot.state().clone(),
+                            None,
+                        );
+                    }
+                    Err(_) => {
+                        core.mark_storage_failure(bot, now());
+                        world.revoke_actor(store, bot);
+                    }
+                }
+                return Err(UNAVAILABLE.into());
+            }
+        };
+        actions.jobs.insert(
+            bot.into(),
+            NativeJob {
+                visual: Some(visual),
+                authority,
+                key,
+                fence,
+                world: context,
+                profile: profile.clone(),
+                persisted_profile,
+                cancel,
+            },
+        );
+        flush_visual_dispatch(actions, core, now());
+        actions.changed();
+        Ok(())
+    })
+}
+fn flush_visual_dispatch(actions: &mut NativeActions, core: &mut Core, now: u64) {
+    while let Some(dispatch) = actions.executor.take_dispatch() {
+        let (action, delivery) = match &dispatch.message {
+            ex::Message::Offer {
+                action_id,
+                delivery_id,
+                ..
+            }
+            | ex::Message::Pause {
+                action_id,
+                delivery_id,
+            }
+            | ex::Message::Resume {
+                action_id,
+                delivery_id,
+            }
+            | ex::Message::Terminal {
+                action_id,
+                delivery_id,
+                ..
+            } => (action_id.clone(), delivery_id.clone()),
+        };
+        let Some(job) = actions
+            .jobs
+            .get_mut(action.actor_id().as_str())
+            .filter(|j| j.key.action_id() == &action)
+        else {
+            continue;
+        };
+        let Some(visual) = &mut job.visual else {
+            continue;
+        };
+        if visual.output.stamp != dispatch.output {
+            job.cancel.store(true, Ordering::SeqCst);
+            continue;
+        }
+        let fence = visual
+            .fence
+            .clone()
+            .unwrap_or_else(|| visual.fence(action.clone(), delivery.clone()));
+        if fence.delivery_id != delivery {
+            job.cancel.store(true, Ordering::SeqCst);
+            continue;
+        }
+        visual.fence = Some(fence.clone());
+        let command = match dispatch.message {
+            ex::Message::Offer {
+                activity: Activity::MoveTo,
+                presentation: Presentation::Visual,
+                ..
+            } => crate::world_output::MotionCommand::Offer {
+                version: 1,
+                sequence: dispatch.sequence,
+                fence,
+                activity: "move_to",
+                from: visual.from,
+                target: visual.destination,
+                maximum_speed: visual.maximum_speed,
+                acceleration: visual.acceleration,
+                valid_for_ms: 30_000,
+            },
+            ex::Message::Pause { .. } => crate::world_output::MotionCommand::Pause {
+                version: 1,
+                sequence: dispatch.sequence,
+                fence,
+            },
+            ex::Message::Resume { .. } => crate::world_output::MotionCommand::Resume {
+                version: 1,
+                sequence: dispatch.sequence,
+                fence,
+            },
+            ex::Message::Terminal { status, .. } => {
+                core.world_outputs.record_terminal(
+                    fence.clone(),
+                    status,
+                    visual.last_receipt,
+                    visual.last_hash,
+                );
+                crate::world_output::MotionCommand::Terminal {
+                    version: 1,
+                    sequence: dispatch.sequence,
+                    fence,
+                    status,
+                }
+            }
+            _ => {
+                job.cancel.store(true, Ordering::SeqCst);
+                continue;
+            }
+        };
+        if core.world_outputs.enqueue(command).is_err() {
+            job.cancel.store(true, Ordering::SeqCst);
+            visual.output.cancel.store(true, Ordering::SeqCst);
+            let _ = actions
+                .executor
+                .fail(&job.authority, &job.key, Failure::OutputLost, now);
+        }
+    }
+}
+/// Caller authenticates current main attachment before entering this owner.
+/// Frame arrival time is captured BEFORE any Main/Core/SQLite wait.
+pub(crate) fn visual_report(
+    core: &mut Core,
+    store: &Store,
+    world: &WorldHub,
+    report: &crate::world_output::ActionReport,
+    received: u64,
+    now: impl Fn() -> u64,
+    wall: impl Fn() -> u64,
+) -> Result<crate::world_output::ActionReportAck, String> {
+    use crate::world_output::{ActionReportAck, RenderReason, ReportKind, ReportOutcome};
+    if !report.valid() {
+        return Err(UNSUPPORTED.into());
+    }
+    let (_, fence, sequence, frame, kind) = report.parts();
+    use sha2::{Digest, Sha256};
+    let report_hash: [u8; 32] =
+        Sha256::digest(serde_json::to_vec(report).map_err(|_| UNAVAILABLE)?).into();
+    with_actions(core, |actions, core| {
+        if let Some(status) = core
+            .world_outputs
+            .terminal_duplicate(fence, sequence, &report_hash)
+        {
+            let phase = store
+                .load_life(&fence.actor_id)
+                .ok()
+                .flatten()
+                .and_then(|life| {
+                    life.state()
+                        .current_action()
+                        .filter(|a| a.intent().id() == &fence.action_id)
+                        .map(|a| a.phase())
+                });
+            return Ok(ActionReportAck {
+                version: 1,
+                receipt_sequence: sequence,
+                outcome: ReportOutcome::Duplicate,
+                runtime_status: Some(status),
+                confirmed_phase: phase,
+                reason: None,
+            });
+        }
+        let mut job = actions
+            .jobs
+            .get(&fence.actor_id)
+            .filter(|job| job.key.action_id() == &fence.action_id)
+            .cloned()
+            .ok_or(UNAVAILABLE)?;
+        let mut visual = job
+            .visual
+            .clone()
+            .filter(|v| v.fence.as_ref() == Some(fence))
+            .ok_or(UNAVAILABLE)?;
+        let current_phase = |store: &Store| {
+            store
+                .load_life(&fence.actor_id)
+                .ok()
+                .flatten()
+                .and_then(|life| life.state().current_action().map(|a| a.phase()))
+        };
+        if sequence < visual.last_receipt
+            || (sequence == visual.last_receipt && visual.last_hash != Some(report_hash))
+        {
+            return Err(UNAVAILABLE.into());
+        }
+        if sequence == visual.last_receipt {
+            return Ok(ActionReportAck {
+                version: 1,
+                receipt_sequence: sequence,
+                outcome: ReportOutcome::Duplicate,
+                runtime_status: actions.executor.status(&job.key),
+                confirmed_phase: current_phase(store),
+                reason: None,
+            });
+        }
+        let attempt = (|| -> Result<(), Failure> {
+            if !current(core, &job, now())
+                || store.bot_profile(&fence.actor_id).ok().as_ref() != Some(&job.profile)
+            {
+                return Err(Failure::Interrupted);
+            }
+            core.world_outputs
+                .check_frame(&visual.output, frame, now())
+                .map_err(|_| Failure::Protocol)?;
+            let position = visual
+                .observe(frame, kind, received, now())
+                .map_err(|_| Failure::Protocol)?;
+            let before = store
+                .load_life(&fence.actor_id)
+                .map_err(|_| Failure::Storage)?
+                .ok_or(Failure::Storage)?;
+            if !visual.fresh(now()) || !current(core, &job, now()) {
+                return Err(Failure::Interrupted);
+            }
+            let status = actions.executor.status(&job.key);
+            if !matches!(
+                (kind, status),
+                (ReportKind::Delivered, Some(Status::AwaitingDelivery))
+                    | (ReportKind::Started, Some(Status::Delivered))
+                    | (
+                        ReportKind::Progress | ReportKind::Completed,
+                        Some(Status::Started)
+                    )
+            ) {
+                return Err(Failure::Protocol);
+            }
+            visual.last_receipt = sequence;
+            visual.last_hash = Some(report_hash);
+            job.visual = Some(visual.clone());
+            actions.jobs.insert(fence.actor_id.clone(), job.clone());
+            let receipt = match kind {
+                ReportKind::Delivered => ex::Receipt::Delivered,
+                ReportKind::Started => ex::Receipt::Started,
+                ReportKind::Progress => ex::Receipt::Progress,
+                ReportKind::Completed => ex::Receipt::Completed(ex::Evidence::Arrived(position)),
+            };
+            let decision = actions
+                .executor
+                .receipt(
+                    &job.authority,
+                    &job.key,
+                    &fence.delivery_id,
+                    sequence,
+                    receipt,
+                    before.state(),
+                    now(),
+                )
+                .map_err(|_| Failure::Protocol)?;
+            if actions
+                .executor
+                .status(&job.key)
+                .is_some_and(|s| matches!(s, Status::Cancelled | Status::Failed))
+            {
+                return Err(Failure::Interrupted);
+            }
+            // Start's genuine Store commit precedes accepting its first displacement.
+            if kind == ReportKind::Started {
+                if let Decision::Commit(request) = decision.clone() {
+                    commit_request(
+                        actions, core, store, world, &job, request, false, &now, &wall,
+                    )?;
+                }
+            }
+            if kind != ReportKind::Delivered {
+                job.world = world
+                    .apply_visual_progress(store, &job.world, position, || {
+                        current(core, &job, now()) && visual.fresh(now())
+                    })
+                    .map_err(|_| Failure::Interrupted)?;
+            }
+            core.world_outputs
+                .accept_frame(&visual.output, frame, position, received)
+                .map_err(|_| Failure::Protocol)?;
+            actions.jobs.insert(fence.actor_id.clone(), job.clone());
+            if kind == ReportKind::Completed {
+                if let Decision::Commit(request) = decision {
+                    commit_request(
+                        actions, core, store, world, &job, request, false, &now, &wall,
+                    )?;
+                }
+            }
+            Ok(())
+        })();
+        let (reason, outcome) = if let Err(failure) = attempt {
+            job.cancel.store(true, Ordering::SeqCst);
+            let _ = actions
+                .executor
+                .fail(&job.authority, &job.key, failure, now());
+            if failure == Failure::Storage {
+                core.mark_storage_failure(&fence.actor_id, now());
+            }
+            (
+                Some(if failure == Failure::Storage {
+                    RenderReason::StorageUnavailable
+                } else {
+                    RenderReason::Cancelled
+                }),
+                ReportOutcome::Cancelled,
+            )
+        } else {
+            (None, ReportOutcome::Accepted)
+        };
+        flush_visual_dispatch(actions, core, now());
+        actions.changed();
+        Ok(ActionReportAck {
+            version: 1,
+            receipt_sequence: sequence,
+            outcome,
+            runtime_status: actions.executor.status(&job.key),
+            confirmed_phase: current_phase(store),
+            reason,
+        })
+    })
+}

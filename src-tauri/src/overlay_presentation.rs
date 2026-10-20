@@ -222,7 +222,7 @@ pub fn sync_or_report(app:&tauri::AppHandle,id:&str){if let Err(error)=sync(app,
 pub fn list_output_displays(window:tauri::WebviewWindow)->Result<Vec<Display>,String>{main_only(window.label())?;displays(&window)}
 #[tauri::command]
 pub fn preview_avatar_scale(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,value:f64)->Result<Value,String>{
-    main_only(window.label())?;validate_scale(value)?;let state=app.state::<crate::AppState>();state.updater.ensure_idle()?;let profile=state.store.bot_profile(&bot_id)?;
+    main_only(window.label())?;validate_scale(value)?;let state=app.state::<crate::AppState>();state.updater.ensure_idle()?;state.life_runtime.invalidate_world_presentation(Some(&bot_id));let profile=state.store.bot_profile(&bot_id)?;
     {let mut bots=state.presentation.bots.lock().map_err(|_|ERROR)?;let bot=bots.entry(bot_id).or_default();bot.scale=Some(value);advance(bot);}
     publish(&app,&profile);Ok(state.presentation.snapshot(&profile))
 }

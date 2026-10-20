@@ -6,7 +6,7 @@ pub(crate) fn main_only(label: &str) -> Result<(), String> {
         Err("Verbrauchsbudgets werden ausschließlich im Studio verwaltet.".into())
     }
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_usage_budget(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,

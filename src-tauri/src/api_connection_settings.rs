@@ -28,7 +28,7 @@ fn begin_write(window: &WebviewWindow, app: &tauri::AppHandle) -> Result<(), Str
     state.overlay.invalidate_speech(None);
     Ok(())
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_api_connections(
     window: WebviewWindow,
     state: State<'_, AppState>,
@@ -36,7 +36,7 @@ pub fn get_api_connections(
     main_only(window.label())?;
     Ok(state.store.api_snapshot())
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_api_binding(
     window: WebviewWindow,
     state: State<'_, AppState>,

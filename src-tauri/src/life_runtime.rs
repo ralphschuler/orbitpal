@@ -3,6 +3,9 @@
 mod action_host;
 #[path = "life_runtime/action_output.rs"]
 mod action_output;
+#[path = "life_runtime/native_output_route.rs"]
+mod native_output_route;
+pub(crate) use native_output_route::NativeWindowChange;
 #[path = "life_runtime/action_state.rs"]
 pub(crate) mod action_state;
 #[path = "life_runtime/actions.rs"]
@@ -11,6 +14,8 @@ pub(crate) mod actions;
 pub(crate) mod cloud;
 #[path = "life_runtime/core.rs"]
 pub(crate) mod core;
+#[path = "life_runtime/world_output.rs"]
+pub(crate) mod world_output;
 use self::core::{Claim, Core, Mode, RuntimeSnapshot, SpeechConfig};
 use crate::{
     life_availability::{
@@ -90,6 +95,11 @@ pub fn operator_command(command: &str) -> bool {
         "get_app_state"
             | "get_api_connections"
             | "get_api_binding"
+            | "get_world_output_status"
+            | "register_world_output"
+            | "report_world_measurement"
+            | "report_world_action"
+            | "unregister_world_output"
             | "get_world_state"
             | "get_world_settings"
             | "get_life_runtime"
@@ -129,7 +139,10 @@ pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
     let webview = invoke.message.webview_ref();
     if webview.label() == "main" && operator_command(invoke.message.command()) {
         if let Some(state) = webview.try_state::<crate::AppState>() {
-            if invoke.message.command() == "start_life_rest" {
+            if matches!(
+                invoke.message.command(),
+                "start_life_rest" | "start_life_move"
+            ) {
                 actions::prepare_operator(&state, invoke);
             } else {
                 state.life_runtime.operator_activity();
@@ -140,6 +153,7 @@ pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
 
 pub struct LifeRuntime {
     outputs: action_output::OutputGate,
+    native_routes: native_output_route::NativeOutputRoutes,
     core: Mutex<Core>,
     monitor: OnceLock<NativeMonitor>,
     started: Instant,
@@ -150,6 +164,7 @@ impl Default for LifeRuntime {
     fn default() -> Self {
         Self {
             outputs: action_output::OutputGate::default(),
+            native_routes: native_output_route::NativeOutputRoutes::default(),
             core: Mutex::new(Core::new(SystemSnapshot {
                 state: Availability::Unknown,
                 reason: SystemReason::Initializing,
@@ -268,6 +283,7 @@ impl LifeRuntime {
         }
     }
     pub fn operator_activity(&self) {
+        self.native_routes.revoke(None);
         self.outputs.bot(None);
         if let Ok(mut core) = self.core.lock() {
             core.operator_activity(self.now());
@@ -295,7 +311,8 @@ impl LifeRuntime {
         runtime
     }
     pub fn invalidate_bot(&self, app: &tauri::AppHandle, bot: &str) {
-        self.outputs.bot(Some(bot));
+        self.native_routes.revoke(Some(bot));
+        self.outputs.geometry(Some(bot));
         if let Ok(mut core) = self.core.lock() {
             core.invalidate_bot(bot, self.now());
             core.operator_activity(self.now());
@@ -354,7 +371,8 @@ impl LifeRuntime {
         bot: &str,
         write: impl FnOnce() -> Result<Value, String>,
     ) -> Result<(Value, Option<crate::autopilot::Runtime>), String> {
-        self.outputs.bot(Some(bot));
+        self.native_routes.revoke(Some(bot));
+        self.outputs.geometry(Some(bot));
         let mut core = self.core.lock().map_err(|_| UNAVAILABLE)?;
         core.invalidate_bot(bot, self.now());
         core.operator_activity(self.now());
@@ -378,7 +396,8 @@ impl LifeRuntime {
         result
     }
     pub fn stop(&self, app: &tauri::AppHandle, bot: Option<&str>) {
-        self.outputs.bot(bot);
+        self.native_routes.revoke(bot);
+        self.outputs.geometry(bot);
         let state = app.state::<crate::AppState>();
         // Runtime -> AutopilotHub -> Store is the admitted mutation/commit order.
         // Keep Stop and a concurrent new Start indivisible; emit only after unlock.
@@ -427,10 +446,38 @@ impl LifeRuntime {
         actions::publish(app);
     }
 
+    pub(crate) fn invalidate_world_presentation(&self, bot: Option<&str>) {
+        self.native_routes.revoke(bot);
+        self.outputs.geometry(bot);
+    }
+    /// Only the actual native constructor supplies this Arc. Tracking never
+    /// enables World registration; an unprepared window remains unsupported.
+    pub(crate) fn native_output_window_registered(
+        &self,
+        bot: &str,
+        label: &str,
+        signals: &Arc<crate::window_signals::WindowSignals>,
+    ) -> bool {
+        self.native_routes.track_window(bot, label, signals, self.now()).is_ok()
+    }
+    /// Short cancellation latch, called before native callbacks can wait for
+    /// Core, persistence, presentation transitions or any GUI getter.
+    pub(crate) fn native_output_window_changed(
+        &self,
+        bot: &str,
+        signals: &Arc<crate::window_signals::WindowSignals>,
+        change: NativeWindowChange,
+    ) -> bool {
+        self.native_routes.window_changed(bot, signals, change)
+    }
     pub fn output_window_lost(&self, label: &str) {
+        if label == "main" {
+            self.native_routes.revoke(None);
+        }
         self.outputs.window(label);
     }
     pub fn hide_main(&self, window: &tauri::WebviewWindow) {
+        self.native_routes.revoke(None);
         self.outputs.window("main");
         let barrier = self
             .core
@@ -443,6 +490,7 @@ impl LifeRuntime {
         }
     }
     pub fn shown(&self) {
+        self.native_routes.revoke(None);
         self.outputs.window("main");
         if let Ok(mut core) = self.core.lock() {
             core.shown(self.now());
@@ -757,7 +805,7 @@ pub struct UiReport {
     blocked: bool,
     activity: bool,
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_life_runtime(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -765,7 +813,7 @@ pub fn get_life_runtime(
     main_only(window.label())?;
     state.life_runtime.snapshot_for(&state.autopilot)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn connect_life_ui(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -781,7 +829,7 @@ pub fn connect_life_ui(
         .connect_ui(id.clone(), state.life_runtime.now());
     Ok(UiConnection { connection_id: id })
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disconnect_life_ui(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -797,7 +845,7 @@ pub fn disconnect_life_ui(
         .disconnect_ui(&connection_id, state.life_runtime.now());
     Ok(())
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn report_life_ui(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -824,7 +872,7 @@ pub fn report_life_ui(
             state.life_runtime.now(),
         ))
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_life_bot(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,

@@ -71,6 +71,12 @@ impl From<Rect> for RectWire {
     }
 }
 impl Rect {
+    pub fn min(self) -> Point {
+        self.min
+    }
+    pub fn max(self) -> Point {
+        self.max
+    }
     pub fn new(min: Point, max: Point) -> Result<Self, WorldError> {
         let v = Self { min, max };
         v.validate()?;

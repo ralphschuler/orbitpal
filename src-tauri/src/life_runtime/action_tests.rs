@@ -908,3 +908,6 @@ fn old_ui_identity_or_sequence_cannot_revoke_new_output_job() {
 fn pending_core_intent_cannot_register_after_new_ui_or_later_block() {
     run("output_intent_interleaving")
 }
+
+#[path = "world_action_tests.rs"]
+mod world_visual;

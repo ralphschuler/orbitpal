@@ -101,7 +101,7 @@ fn main_only(label: &str) -> Result<(), String> {
         Err(MAIN_ONLY.into())
     }
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_world_state(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -114,7 +114,7 @@ pub fn get_world_state(
         })?;
     state.world.snapshot()
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_world_settings(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -152,7 +152,7 @@ pub async fn save_world_config(
     publish(&app);
     Ok(result)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn place_world_actor(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
