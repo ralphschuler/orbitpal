@@ -194,12 +194,12 @@ coalesced so enumeration order cannot change the selected arena. This enumerates
 without reading other apps, screens, screenshots or session/permission data.
 
 Output events may describe a validated local logical `arena` size, together with
-`presentationAvailable:false`. The pure coordinate conversion helpers are not a
-renderer placement acknowledgement. Actual viewport/mesh measurement, world
-motion consumption, clipping and physical arrival belong to issue #72. There is
-no placeholder figure footprint, automatic fullscreen expansion of fixed Life
-avatars or claimed completed animation/movement. Existing #69 output behavior
-continues until that measured output contract is available.
+`presentationAvailable:false`. Arena metadata and pure coordinate conversions
+are not renderer placement acknowledgements. The optional selected-bot
+[Studio World adapter](WORLD-OUTPUT.md) separately registers actual submitted
+geometry and reports fenced movement frames. Native fullscreen layout, physical
+arrival and OBS World execution remain part of #72; fixed Life avatar windows
+are not automatically expanded by this Studio view.
 
 ## Validation status
 

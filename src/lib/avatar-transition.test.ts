@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
+import { WorldAvatarController } from './world-avatar';
 import { AvatarStage } from './avatar';
 
 /** Real mixer evaluation catches disabled actions and bind-pose fallbacks;
@@ -23,10 +24,13 @@ function walkingStage() {
     finishEmote(): void;
     time: number;
   } & Record<string, unknown>;
+  const robot={root:new THREE.Group()},imported=root,travel=new THREE.Group(),worldHeading=new THREE.Group(),worldOffset=new THREE.Group();
+  worldOffset.add(robot.root,imported);worldHeading.add(worldOffset);travel.add(worldHeading);
   Object.assign(stage, {
-    mixer, clips, idleAction, walkingAction, walking: false, time: 0,
-    robot: { root: new THREE.Group() }, imported: new THREE.Group(),
-    humanoidPose: new Map(), humanoidBasis: new THREE.Quaternion(),
+    options:{profile:{id:'transition-fixture'},motionSource:'fixed'},previousMotionSource:'fixed',worldRecovery:false,
+    world:new WorldAvatarController(travel,worldHeading,worldOffset),travel,worldHeading,worldOffset,
+    mixer, clips, idleAction, walkingAction, walking: false, time: 0,emoteReady:true,asset:'fixture.glb',
+    robot, imported,humanoidPose: new Map(), humanoidBasis: new THREE.Quaternion(),
   });
   mixer.update(0.016);
   return { stage, mixer, arm, idlePose, walkPose, idleAction, walkingAction };

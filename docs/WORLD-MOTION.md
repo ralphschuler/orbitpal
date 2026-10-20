@@ -1,17 +1,18 @@
-# Pure World motion and render-order foundation
+# World motion and render order
 
-`src/lib/world-motion.ts` is an unwired source slice for issue #72. It controls
-no real figure yet. There is no Avatar/App/native/OBS registration, Three.js,
-timer, randomness, DOM query, capture, permission or provider integration here.
+`src/lib/world-motion.ts` is the pure motion follower used by the selected
+Studio World adapter for issue #72. The helper itself performs no Three.js,
+timer, randomness, DOM query, capture, permission or provider work.
 It consumes native-authorized **local CSS** coordinates. Native output code must
 validate canonical targets, slot leases, measured footprint, safe region, monitor
 origins/DPI and selected confirmation owner before constructing these inputs.
 
-The repository also contains the separate [native output foundation](WORLD-OUTPUT.md).
-No bridge connects their wire versions: the stable reference revision, native
-receipt ordering and actual exposed-frame observations must be reconciled before
-mounting an adapter. The normal App/Avatar/overlay and all current controls remain
-unchanged; including this helper does not enable a 3D World view or MoveTo button.
+The [native output bridge](WORLD-OUTPUT.md) validates the required enclosure
+policy before stripping that native wrapper into the pure binding contract.
+`WorldAvatarController` connects the follower to actual submitted poses, a stable
+reference and acknowledged delivery/start barriers. Fixed and Ambient modes keep
+their existing routing; only an explicitly opened Studio World view selects this
+adapter. Native overlay/OBS World execution remains unsupported.
 
 ## Binding and ordering
 
@@ -107,9 +108,9 @@ attachments cannot be resurrected by callbacks.
 
 Missing walk support or reduced motion rejects travel. This slice supports no
 teleport/static-travel fallback and never chooses another clip or gesture.
-Ambient/fixed motion, actual authored animations, speech/emote/SFX presentation
-leases and object draw ownership are unchanged because no integration exists.
-The eventual motion router must select exactly one of fixed/Ambient/World.
+The motion router selects exactly one of fixed/Ambient/World. Embedded clips
+remain preferred for gait; procedural fallback uses actual ground distance.
+The World view is muted and does not acquire normal speech/emote/SFX leases.
 
 ## Validation status
 
@@ -119,10 +120,9 @@ superseded frames, actual subpixel displacement, target observations without
 completion, pauses, frame gaps, stale callback clocks, asset/layout/scale/
 reconnect barriers, reduced motion, safe bounds and actor isolation.
 
-The focused pure suite passed 29 tests with one worker. These use synthetic
-after-render observations. No source fixture can establish actual WebGL measurement,
-delivery, real OS windows, Studio/OBS ownership, native arrival or full issue #72
-acceptance. Those integrations and exact combined checks remain required.
-An experimental actual-renderer integration failed its acceptance exercise and
-is excluded from this foundation packet; synthetic motion results do not repair
-or supersede that result. Issue #72 remains open.
+Pure fixtures use synthetic after-render observations. A separate local actual
+AvatarStage/Metal exercise passes all eight directions, actual distance-based
+gait, stationary Start-ACK holds, pause/Resume/Stop and stale/context barriers.
+Its native bindings and acknowledgements are synthetic. Native window/Store
+integration, OBS execution and platform acceptance remain separate gates;
+issue #72 remains open.

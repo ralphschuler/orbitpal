@@ -13,10 +13,12 @@ visible pose, animation, arrival or recharge. It neither invokes providers nor
 requires a dialogue model, voice or usage-budget reservation. It does not start
 Life, enqueue a successor or implement the later self-care planner.
 
-Visual actions remain unsupported before any Plan allocation until #72 has a
-registered, measured output adapter. Existing arena metadata is not proof of
-visual capability. This implementation never sends visual Offers to the legacy
-speech/character renderer.
+The optional [Studio World adapter](WORLD-OUTPUT.md) supports a one-use operator
+MoveTo for the selected Studio character in an already active Life session.
+Registration, current measured geometry and native route authority are required
+before Plan allocation. Arena metadata alone is not visual capability. Other
+participants remain mirrors; native overlay/OBS and other visual activities stay
+unavailable. Visual Offers never go to the legacy speech/character renderer.
 
 ## Fixed policy and persistent identity
 

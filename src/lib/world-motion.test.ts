@@ -8,16 +8,17 @@ import { parseMotionBinding, parseWorldMotionCommand, WorldMotionFollower, WORLD
 function binding(overrides: Partial<MotionBinding> = {}): MotionBinding {
   return { actorId: 'nova', sourceWorldId: 'nova-world', renderSessionId: 'render-1', bindingSequence: 1,
     worldInstanceId: 'world-observation-1', stageId: 'shared-stage', configRevision: 1, topologyRevision: 1,
-    layoutRevision: 1, assetRevision: 1, measurementRevision: 1, viewport: { width: 1000, height: 800 },
+    layoutRevision: 1, assetRevision: 1, measurementRevision: 1, referenceRevision: 1, viewport: { width: 1000, height: 800 },
     safeCenters: { left: 20, top: 40, right: 980, bottom: 760 }, maximumFootprint: { width: 40, height: 80 },
     position: { x: 500, y: 400 }, groundBasis: { right: { x: .01, z: 0 }, down: { x: 0, z: .02 } },
-    modelForwardYaw: 0, scale: 1, reducedMotion: false, walkSupported: true, ...overrides };
+    referenceLocal: { x: 0, y: 1.45, z: 0 }, envelopeExtents: { left: 20, top: 40, right: 20, bottom: 40 },
+    profileScale: 1, effectiveScale: 1, modelForwardYaw: 0, scale: 1, reducedMotion: false, walkSupported: true, ...overrides };
 }
 function fence(value: MotionBinding, ordinal = 1): MotionFence {
   return { actorId: value.actorId, renderSessionId: value.renderSessionId, bindingSequence: value.bindingSequence,
     worldInstanceId: value.worldInstanceId, stageId: value.stageId, configRevision: value.configRevision,
     topologyRevision: value.topologyRevision, layoutRevision: value.layoutRevision, assetRevision: value.assetRevision,
-    measurementRevision: value.measurementRevision, actionId: { actorId: value.actorId, worldId: value.sourceWorldId, ordinal }, deliveryId: `delivery-${ordinal}` };
+    measurementRevision: value.measurementRevision, referenceRevision: value.referenceRevision, actionId: { actorId: value.actorId, worldId: value.sourceWorldId, ordinal }, deliveryId: `delivery-${ordinal}` };
 }
 function offer(value: MotionBinding, target: CssPoint = { x: 600, y: 400 }, sequence = 1, ordinal = 1): MotionOffer {
   return { version: 1, type: 'offer', sequence, fence: fence(value, ordinal), activity: 'move_to', from: value.position,
@@ -74,6 +75,27 @@ describe('strict local motion protocol', () => {
     expect(parseMotionBinding(bad)).toBeNull(); expect(calls).toBe(0);
     const terminal = { version: 1, type: 'terminal', sequence: 2, fence: fence(binding()), status: { toString() { throw new Error('must not invoke'); } } };
     expect(parseWorldMotionCommand(terminal)).toBeNull();
+  });
+  it('requires a finite frozen reference, matching envelope and separately bounded user and model scales', () => {
+    const legacy = Object.fromEntries(Object.entries(binding()).filter(([key]) => key !== 'referenceRevision'));
+    expect(parseMotionBinding(legacy)).toBeNull();
+    for (const value of [
+      binding({ referenceRevision: 0 }), binding({ referenceRevision: 1.5 }),
+      binding({ referenceRevision: Number.MAX_SAFE_INTEGER + 1 }),
+      binding({ referenceLocal: { x: 0, y: NaN, z: 0 } }),
+      binding({ envelopeExtents: { left: -1, top: 40, right: 20, bottom: 40 } }),
+      binding({ envelopeExtents: { left: 20, top: 40, right: 21, bottom: 40 } }),
+      binding({ profileScale: .299 }), binding({ effectiveScale: 2.501 }),
+      binding({ scale: .009 }), binding({ scale: 100.001 }),
+    ]) expect(parseMotionBinding(value)).toBeNull();
+
+    // Native user values and measured normalized-root scale are distinct units.
+    const parsed = parseMotionBinding(binding({ profileScale: 2.5, effectiveScale: .3, scale: 100,
+      envelopeExtents: { left: 0, top: 0, right: 20, bottom: 40 } }));
+    expect(parsed).not.toBeNull();
+    expect(parsed!.profileScale).toBe(2.5); expect(parsed!.effectiveScale).toBe(.3); expect(parsed!.scale).toBe(100);
+    expect(Object.isFrozen(parsed!.referenceLocal)).toBe(true);
+    expect(Object.isFrozen(parsed!.envelopeExtents)).toBe(true);
   });
 });
 
@@ -172,6 +194,50 @@ describe('applied eight-direction motion and successful-render barrier', () => {
     expect(observation.groundDistance).toBeCloseTo(pending.groundDistance / 2, 10);
     expect(follower.snapshot().groundDistance).toBeCloseTo(pending.groundDistance / 2, 10);
   });
+  it('does not turn a leaning body outside its frozen anchor into semantic travel', () => {
+    const { follower, value } = running();
+    for (const [index, offset] of [5, -15, 3].entries()) {
+      const now = (index + 1) * 16, pending = follower.sample(now, 0)!;
+      const body = { left: pending.position.x + offset, right: pending.position.x + offset + 10,
+        top: pending.position.y + 5, bottom: pending.position.y + 15 };
+      const observation = follower.afterSuccessfulRender(pending.token, {
+        ...evidence(value, pending, now, index + 1), posedBounds: body,
+      });
+      expect(observation).not.toBeNull();
+      expect(observation!.position).toEqual(value.position);
+      expect(observation!.groundDistance).toBe(0);
+      expect(observation!.walking).toBe(false);
+      expect(observation!.targetIdleFrames).toBe(0);
+    }
+    expect(follower.snapshot().position).toEqual(value.position);
+    expect(follower.snapshot().groundDistance).toBe(0);
+    expect(follower.snapshot().phase).toBe('running');
+  });
+  it.each(['left', 'top', 'right', 'bottom'] as const)('cancels a %s envelope breach without enlarging the accepted calibration', edge => {
+    const { follower, value } = running(), pending = follower.sample(16, .016)!;
+    const bounds = { left: pending.position.x - 5, top: pending.position.y - 5,
+      right: pending.position.x + 5, bottom: pending.position.y + 5 };
+    const limit = edge === 'left' ? pending.position.x - value.envelopeExtents.left
+      : edge === 'right' ? pending.position.x + value.envelopeExtents.right
+        : edge === 'top' ? pending.position.y - value.envelopeExtents.top
+          : pending.position.y + value.envelopeExtents.bottom;
+    bounds[edge] = limit + (edge === 'left' || edge === 'top' ? -.251 : .251);
+    expect(follower.afterSuccessfulRender(pending.token, { ...evidence(value, pending, 16), posedBounds: bounds })).toBeNull();
+    expect(follower.snapshot().reason).toBe('invalid_render');
+    expect(follower.snapshot().position).toEqual(value.position);
+    expect(follower.snapshot().groundDistance).toBe(0);
+    expect(follower.afterSuccessfulRender(pending.token, evidence(value, pending, 17, 2))).toBeNull();
+    expect(follower.sample(32, .016)).toBeNull();
+    expect(value.envelopeExtents).toEqual({ left: 20, top: 40, right: 20, bottom: 40 });
+  });
+  it('uses the already inverse-scaled ground basis without applying user or model scale twice', () => {
+    const value = binding({ profileScale: 2.5, effectiveScale: .3, scale: 10 });
+    const { follower } = running({ x: 600, y: 500 }, value), pending = follower.sample(16, .016)!;
+    const observation = follower.afterSuccessfulRender(pending.token, evidence(value, pending, 16))!;
+    expect(observation.groundDistance).toBeCloseTo(Math.hypot(observation.travel.x * .01, observation.travel.y * .02), 12);
+    expect(observation.groundDistance).toBeGreaterThan(0);
+    expect(observation.totalGroundDistance).toBe(observation.groundDistance);
+  });
   it('rejects mismatched/clipped/unmeasured render evidence without claiming travel', () => {
     for (const mutate of [
       (v: any) => v.position.x += 10, (v: any) => v.viewport.width++,
@@ -229,7 +295,7 @@ describe('pause and render-binding invalidation', () => {
     expect(follower.receive({ version: 1, type: 'resume', sequence: 3, fence: move.fence }, 1000)).toBe('accepted');
     expect(follower.sample(1016, .016)!.cssDistance).toBeLessThan(1);
   });
-  it.each(['assetRevision', 'layoutRevision', 'measurementRevision', 'topologyRevision'] as const)('requires a new registration after %s changes and rejects old frame callbacks', key => {
+  it.each(['assetRevision', 'layoutRevision', 'measurementRevision', 'topologyRevision', 'referenceRevision'] as const)('requires a new registration after %s changes and rejects old frame callbacks', key => {
     const { follower, value, move } = running(), pending = follower.sample(16, .016)!;
     const next = binding({ ...value, bindingSequence: 2, [key]: 2, scale: 1.5 });
     expect(follower.bind(next, 16)).toBe(true);
@@ -238,6 +304,25 @@ describe('pause and render-binding invalidation', () => {
     expect(follower.receive(offer(next, undefined, 101, 1), 16)).toBe('stale');
     expect(follower.receive(offer(next, undefined, 102, 2), 16)).toBe('accepted');
     expect(follower.snapshot().groundDistance).toBe(0);
+  });
+  it('cannot use a newer reference fence to resume a paused action or let a stale frame poison a fresh one', () => {
+    const { follower, value, move } = running(), prePause = follower.sample(16, .016)!;
+    expect(follower.receive({ version: 1, type: 'pause', sequence: 2, fence: move.fence }, 16)).toBe('accepted');
+    for (let frame = 1; frame <= 5; frame++) {
+      const now = frame * 100, pending = follower.sample(now, .1)!;
+      const observation = follower.afterSuccessfulRender(pending.token, evidence(value, pending, now, frame))!;
+      expect(observation.walking).toBe(false); expect(observation.groundDistance).toBe(0);
+    }
+    expect(follower.receive({ version: 1, type: 'resume', sequence: 999,
+      fence: { ...move.fence, referenceRevision: 2 } }, 500)).toBe('stale');
+    expect(follower.afterSuccessfulRender(prePause.token, evidence(value, prePause, NaN, 999))).toBeNull();
+    expect(follower.receive({ version: 1, type: 'resume', sequence: 3, fence: move.fence }, 600)).toBe('accepted');
+    const fresh = follower.sample(616, .016)!;
+    expect(fresh.cssDistance).toBeGreaterThan(0); expect(fresh.cssDistance).toBeLessThan(1);
+    expect(follower.afterSuccessfulRender(fresh.token, evidence(value, fresh, 616, 6))).not.toBeNull();
+    expect(follower.receive({ version: 1, type: 'terminal', sequence: 4, fence: move.fence, status: 'cancelled' }, 632)).toBe('accepted');
+    expect(follower.receive({ version: 1, type: 'resume', sequence: 5, fence: move.fence }, 632)).toBe('stale');
+    expect(follower.sample(648, .016)).toBeNull();
   });
   it('an obsolete frame callback cannot poison a replacement with its invalid timestamp', () => {
     const { follower, value } = running(), old = follower.sample(16, .016)!;

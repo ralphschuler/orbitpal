@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
+import { WorldAvatarController } from './world-avatar';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm';
 import { createVRMAnimationClip } from '@pixiv/three-vrm-animation';
@@ -75,7 +76,11 @@ describe('Official VRMA 1.0 loader and VRM 0/1 retargeting',()=>{
     const vrm=await target('1');ensureMotionLookAtProxy(vrm);
     const clip=createVRMAnimationClip((await parseMotion(file('greeting.vrma')))[0],vrm);clip.name=motionAction(id,0);
     const stage=Object.create(AvatarStage.prototype) as any;
-    Object.assign(stage,{emoteReady:true,vrm,mixer:new THREE.AnimationMixer(vrm.scene),clips:[clip],robot:{root:new THREE.Group()},imported:vrm.scene,humanoidPose:new Map(),humanoidBasis:new THREE.Quaternion(),time:0});
+    const robot={root:new THREE.Group()},imported=vrm.scene,travel=new THREE.Group(),worldHeading=new THREE.Group(),worldOffset=new THREE.Group();
+    worldOffset.add(robot.root,imported);worldHeading.add(worldOffset);travel.add(worldHeading);
+    Object.assign(stage,{options:{profile:{id:'vrma-fixture'},motionSource:'fixed'},previousMotionSource:'fixed',worldRecovery:false,
+      travel,worldHeading,worldOffset,world:new WorldAvatarController(travel,worldHeading,worldOffset),
+      emoteReady:true,vrm,mixer:new THREE.AnimationMixer(vrm.scene),clips:[clip],robot,imported,humanoidPose:new Map(),humanoidBasis:new THREE.Quaternion(),time:0});
     stage.triggerEmote(clip.name,15_000,1);
     expect(stage.emote.duration).toBe(1.25);expect(stage.emote.clip.timeScale).toBe(1);
     const action=stage.emote.clip;stage.finishEmote();

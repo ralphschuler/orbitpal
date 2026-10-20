@@ -18,7 +18,7 @@ export interface ActionIdentity { actorId:string;worldId:string;ordinal:number; 
 export interface LifeActionsSnapshot {
   version:1;instanceId:string;sequence:number;botId:string;
   availability:'ready'|'not_initialized'|'unavailable';reason:keyof typeof actionReasons|null;
-  visualAvailable:false;
+  visualAvailable:boolean;
   confirmed:{actionId:ActionIdentity;activity:keyof typeof activityLabels;phase:keyof typeof phaseLabels;cancellation:keyof typeof cancellationLabels|null;revision:number}|null;
   runtime:{actionId:ActionIdentity;presentation:'native_rest_dwell'|'visual';status:keyof typeof actionStatusLabels;failure:keyof typeof actionFailureLabels|null;activeMilliseconds:number}|null;
 }
@@ -32,13 +32,13 @@ function identity(value:unknown,botId:string):ActionIdentity{const item=object(v
 export function sameAction(a:ActionIdentity,b:ActionIdentity):boolean{return a.actorId===b.actorId&&a.worldId===b.worldId&&a.ordinal===b.ordinal;}
 export function parseLifeActions(value:unknown,expectedBotId:string):LifeActionsSnapshot{
   const item=object(value),botId=id(item.botId);
-  if(item.version!==1||botId!==id(expectedBotId)||typeof item.instanceId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(item.instanceId)||item.visualAvailable!==false)throw invalid();
+  if(item.version!==1||botId!==id(expectedBotId)||typeof item.instanceId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(item.instanceId)||typeof item.visualAvailable!=='boolean')throw invalid();
   if(!['ready','not_initialized','unavailable'].includes(String(item.availability)))throw invalid();
   const availability=item.availability as LifeActionsSnapshot['availability'],reason=item.reason===null?null:key(item.reason,actionReasons);
   if(availability==='ready'&&reason!==null||availability==='not_initialized'&&reason!=='life_not_initialized'||availability==='unavailable'&&(reason===null||reason==='life_not_initialized'))throw invalid();
   const confirmed=item.confirmed===null?null:(()=>{const data=object(item.confirmed),phase=key(data.phase,phaseLabels),cancellation=data.cancellation===null?null:key(data.cancellation,cancellationLabels);if((phase==='cancelled')!==(cancellation!==null))throw invalid();return{actionId:identity(data.actionId,botId),activity:key(data.activity,activityLabels),phase,cancellation,revision:count(data.revision)};})();
   const runtime=item.runtime===null?null:(()=>{const data=object(item.runtime),status=key(data.status,actionStatusLabels),failure=data.failure===null?null:key(data.failure,actionFailureLabels);if(!['native_rest_dwell','visual'].includes(String(data.presentation))||(status==='failed')!==(failure!==null))throw invalid();return{actionId:identity(data.actionId,botId),presentation:data.presentation as 'native_rest_dwell'|'visual',status,failure,activeMilliseconds:count(data.activeMilliseconds)};})();
-  return{version:1,instanceId:item.instanceId,sequence:count(item.sequence),botId,availability,reason,visualAvailable:false,confirmed,runtime};
+  return{version:1,instanceId:item.instanceId,sequence:count(item.sequence),botId,availability,reason,visualAvailable:item.visualAvailable,confirmed,runtime};
 }
 export type ActionsInvoke=(command:string,args?:Record<string,unknown>)=>Promise<unknown>;
 /** Explicit main-window request only. No mode initialization, automatic retry,
@@ -53,5 +53,20 @@ export async function requestQuietRest(invoke:ActionsInvoke,reporter:Pick<LifeUI
   if(!current())return;
   const next=parseLifeActions(raw,target);
   if(!next.runtime||next.runtime.presentation!=='native_rest_dwell'||!next.confirmed||next.confirmed.activity!=='rest'||!sameAction(next.runtime.actionId,next.confirmed.actionId))throw invalid();
+  return next;
+}
+/** A single operator-selected canonical destination. This never starts a mode,
+ * retries an old action, chooses a random target or grants missing capabilities. */
+export async function requestLifeMove(invoke:ActionsInvoke,reporter:Pick<LifeUI,'reportProof'>,botId:string,target:{x:number;y:number},current:()=>boolean,onProof:()=>void=()=>{}):Promise<LifeActionsSnapshot|undefined>{
+  const owner=id(botId),point={x:count(target.x),y:count(target.y)};
+  if(point.x>1_000_000||point.y>1_000_000)throw invalid();
+  if(!current())throw actionChanged();
+  const raw=await reporter.reportProof(false,true,proof=>{
+    if(!current())return Promise.reject(actionChanged());
+    onProof();return invoke('start_life_move',{botId:owner,target:point,ui:{connectionId:proof.connectionId,sequence:proof.sequence}});
+  });
+  if(!current())return;
+  const next=parseLifeActions(raw,owner);
+  if(!next.runtime||next.runtime.presentation!=='visual'||!next.confirmed||next.confirmed.activity!=='move_to'||!sameAction(next.runtime.actionId,next.confirmed.actionId))throw invalid();
   return next;
 }

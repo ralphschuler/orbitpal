@@ -2,8 +2,9 @@
 
 ## Unreleased
 
-- Add developer foundations for native World render registration, ordered MoveTo receipts and checked Life/World/SQLite admission, plus private native-window identity and cancellation tracking. No 3D World view or movement control is mounted; ordinary unregistered flows keep visual actions unavailable.
-- Add unwired deterministic motion and bounded submitted-frame geometry helpers with synthetic fixtures. Actual renderer integration, native overlay/OBS execution and real rendering/performance acceptance remain open under #72; this foundation does not claim successful visible movement.
+- Add an optional Studio 3D World view in all four interface languages, with up to eight participants and one shared object layer. In an explicitly started Life session, the selected Studio character can execute one operator-requested MoveTo; other participants are mirrors. Native overlay/OBS and broader visual activities remain open under #72.
+- Connect native-issued render challenges and ordered delivery/start/completion receipts to actual renderer frames. Preserve checked Life/World/SQLite admission, frozen reference anchors, Stop and stale-result cancellation. A private native-window registry remains preparatory and grants no native rendering capability.
+- Use an explicit host-pinned enclosure contract with bounded rigid-source preparation and current conservative draw bounds. Keep exact geometry helpers, deformation fallback, work limits and the five-second deadline. Validate actual Metal rendering, eight directions, distance-based gait, ACK holds and context/resize/Stop barriers with local fixtures; synthetic host acknowledgements establish no native-window/OBS acceptance or performance benchmark.
 
 - Manage API credentials centrally for the installation, with named accounts, exact destination bindings and explicit shared defaults. Select connections per bot for dialog, voice, transcription, Hindsight and YouTube Data; retain per-bot model, voice and memory settings and separate OAuth/MCP permissions.
 - Adopt existing credential references without reading or copying their OS-store values, preserve distinct accounts, and leave imported profiles unbound. Add the shared manager and per-bot selectors in all four interface languages with guarded drafts, keyboard access and honest partial-save errors.
