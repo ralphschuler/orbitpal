@@ -43,6 +43,7 @@ export type LifeBot = { availability: 'ready'; actor: PublicActor | null } | { a
 export interface LifeReply {
   id: string; botId: string; skipped?: boolean; text: string; speechText?: string;
   voice?: { provider: string; voiceId: string | null; language: string; enabled: boolean; rate: number; volume: number; pitch: number };
+  presentationOutput?:'studio'|'overlay'|'obs';presentationRouteId?:string|null;
   emotion?: string; emotes: EmotePayload[]; source: string; user: string;
 }
 export interface LifeTurn { kind: 'started' | 'reply' | 'finished'; botId: string; sessionId: string; revision: number; turnId: string; reply: LifeReply | null; }
@@ -94,6 +95,9 @@ function reply(value: unknown, botId: string, turnId: string): LifeReply {
   if (item.skipped === true) return { id: turnId, botId, skipped: true, text: '', emotes: [], source: 'autopilot', user: 'Autopilot' };
   if (item.id !== turnId || item.botId !== botId || !Array.isArray(item.emotes) || item.emotes.length > 64) throw invalid();
   const voice = object(item.voice);
+  const presentationOutput=item.presentationOutput===undefined?undefined:choice(item.presentationOutput,['studio','overlay','obs']);
+  const presentationRouteId=item.presentationRouteId===undefined?undefined:item.presentationRouteId===null?null:token(item.presentationRouteId);
+  if(presentationRouteId&&presentationOutput!=='overlay')throw invalid();
   const emotes: EmotePayload[] = item.emotes.map(value => {
     const emote = object(value), result: EmotePayload = { action: text(emote.action, 512, false) };
     for (const name of ['id', 'sound', 'bufferSound'] as const) if (emote[name] !== undefined) result[name] = text(emote[name], 512);
@@ -101,7 +105,7 @@ function reply(value: unknown, botId: string, turnId: string): LifeReply {
     for (const name of ['duration', 'intensity', 'soundVolume', 'soundOffset', 'soundRate'] as const) if (emote[name] !== undefined) result[name] = finite(emote[name], 0, 3600);
     return result;
   });
-  return { id: turnId, botId, text: text(item.text, 200_000), ...(item.speechText === undefined ? {} : { speechText: text(item.speechText, 200_000) }),
+  return { id: turnId, botId, ...(presentationOutput?{presentationOutput}:{}), ...(presentationRouteId===undefined?{}:{presentationRouteId}), text: text(item.text, 200_000), ...(item.speechText === undefined ? {} : { speechText: text(item.speechText, 200_000) }),
     voice: { provider: text(voice.provider, 64, false), voiceId: voice.voiceId === null ? null : text(voice.voiceId, 2048), language: text(voice.language, 64), enabled: flag(voice.enabled), rate: finite(voice.rate, .5, 2), volume: finite(voice.volume, 0, 1), pitch: finite(voice.pitch, .5, 2) },
     emotion: text(item.emotion ?? 'neutral', 256), emotes, source: text(item.source ?? 'autopilot', 64), user: text(item.user ?? 'Autopilot', 256) };
 }

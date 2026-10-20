@@ -19,6 +19,9 @@ fn main_only(label: &str) -> Result<(), String> {
 /// A config-enabled OBS link is not a connected output. #72 will add real
 /// registration; this nonvisual path currently supports only actual native UI.
 fn rest_output(app: &tauri::AppHandle, profile: &Value) -> bool {
+    if let Some(available) = profile["id"].as_str().and_then(|id| app.state::<crate::AppState>().life_runtime.session_outputs.available(id)) {
+        return available;
+    }
     match profile["output"]["mode"].as_str().unwrap_or("studio") {
         "studio" => {
             app.get_webview_window("main")

@@ -1867,3 +1867,7 @@ main > .settings-panel + .settings-panel, main > .settings-grid + .settings-pane
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+
+.life-options{margin:20px 0;border-top:1px solid var(--line);padding-top:16px}
+.life-options>summary{cursor:pointer;font-family:'Space Grotesk','Manrope Variable',sans-serif;font-size:15px;padding:8px 0;color:var(--light)}
+.life-options[open]>summary{margin-bottom:16px}

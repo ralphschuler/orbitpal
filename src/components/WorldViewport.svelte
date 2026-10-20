@@ -2,10 +2,10 @@
   import { onMount, tick, untrack } from 'svelte';
   import { Box, RefreshCw, X, Navigation } from '@lucide/svelte';
   import Avatar from './Avatar.svelte';
-  import HelpTip from './HelpTip.svelte';
-  import { call, native, onEvent, assetUrl, prettyError } from '../lib/api';
-  import { t, locale, formatNumber } from '../lib/i18n';
-  import { percentToCanonical, type WorldState } from '../lib/world-state';
+    import { call, native, onEvent, assetUrl, prettyError } from '../lib/api';
+  import { t,locale,formatNumber } from '../lib/i18n';
+  import type { WorldState } from '../lib/world-state';
+  import {pointerTarget,stepTarget,type TargetBounds} from '../lib/world-target';
   import { WorldOutputBridge, type WorldRenderAdapter } from '../lib/world-output-bridge';
   import type { CanonicalPoint, MeasurementChallenge, NativeMotionBinding as MotionBinding, RegisteredWorldActor,
     RegisterWorldActor, WorldAdapterIdentity, WorldAdapterReason } from '../lib/world-output';
@@ -25,7 +25,8 @@
   let active = $state(false), exposed = $state(false), layers = $state<Layer[]>([]);
   let revision = $state(0), moving = $state(false), error = $state('');
   let mountsReady = $state(false);
-  let target = $state({ x: '50', y: '50' });
+  let target = $state<CanonicalPoint>({ x: 500_000, y: 500_000 });
+  let targetChosen = $state(false);
   let documentVisible = $state(true);
   let viewport = $state<HTMLDivElement>();
   let alive = false, generation = 0, refreshingGeneration: number | null = null;
@@ -55,7 +56,7 @@
       && identity.bindingSequence === layer.output?.bindingSequence;
   }
   function clear() {
-    ++generation; exposed = false; mountsReady = false;
+    ++generation; exposed = false; mountsReady = false; targetChosen = false;
     for (const layer of layers) layer.bridge?.dispose();
     layers = [];
   }
@@ -132,12 +133,25 @@
       if (alive && ticket === generation) mountsReady = true;
     } finally { if (refreshingGeneration === ticket) refreshingGeneration = null; }
   }
+  function targetBounds():TargetBounds|undefined {
+    const binding=selected?.binding;
+    return binding?{...binding.safeCenters,width:binding.viewport.width,height:binding.viewport.height}:undefined;
+  }
+  function chooseTarget(event:MouseEvent) {
+    const bounds=targetBounds();if(!canMove||!bounds)return;
+    try{target=pointerTarget(event.clientX,event.clientY,event.currentTarget instanceof Element?event.currentTarget.getBoundingClientRect():{left:0,top:0,width:0,height:0},bounds);targetChosen=true;error='';}catch(cause){error=prettyError(cause);}
+  }
+  function targetKey(event:KeyboardEvent) {
+    const bounds=targetBounds();if(!canMove||!bounds)return;
+    if(event.key==='Enter'&&targetChosen){event.preventDefault();void move();return;}
+    try{const next=stepTarget(target,event.key,event.shiftKey,bounds);if(!next)return;
+      event.preventDefault();target=next;targetChosen=true;error='';
+    }catch(cause){event.preventDefault();error=prettyError(cause);}
+  }
   async function move() {
-    if (!canMove) return;
+    if (!canMove || !targetChosen) return;
     const ticket = generation, actor = selectedBotId;
-    let point: CanonicalPoint;
-    try { point = { x: percentToCanonical(target.x), y: percentToCanonical(target.y) }; }
-    catch (cause) { error = prettyError(cause); return; }
+    const point={...target};
     moving = true; error = '';
     try { await onMove(point); }
     catch (cause) { if (alive && generation === ticket && selectedBotId === actor) error = prettyError(cause); }
@@ -181,20 +195,22 @@
       <div class="world-object-layer" aria-hidden="true">
         {#each snapshot.anchors as anchor (anchor.id)}<span class="world-object" style:left={`${anchor.position.x / 10000}%`} style:top={`${anchor.position.y / 10000}%`} title={$t(anchor.kind === 'rest' ? 'Ruhe- oder Ladeplatz' : anchor.kind === 'meeting' ? 'Treffpunkt' : 'Spielobjekt')}>{anchor.kind === 'rest' ? '◒' : anchor.kind === 'meeting' ? '◎' : '◇'}</span>{/each}
       </div>
+      <button class="world-target-picker" disabled={!canMove} aria-describedby={`${uid}-target-status`} aria-label={$t('Ziel auf der Bühne wählen. Mit Pfeiltasten verschieben, mit Eingabe losgehen.')} onclick={chooseTarget} onkeydown={targetKey}>
+        {#if targetChosen}<span class="world-target-marker" style:left={`${target.x/10000}%`} style:top={`${target.y/10000}%`} aria-hidden="true"><Navigation size={19}/></span>{/if}
+      </button>
       {#if !selected?.prepared || selected?.reason}<div class="world-preparing" role="status"><span>{$t(selected?.reason ? 'Die Figur ist für diese Bewegung nicht verfügbar. Darstellung neu verbinden oder eine unterstützte Figur auswählen.' : 'Figur und Bewegungsbereich werden geprüft …')}</span></div>{/if}
     </div>
     <div class="world-participants" aria-label={$t('Sichtbare Teilnehmer')}>{#each layers as layer (layer.mountId)}<span><i class:ready={!!layer.binding && !layer.reason}></i>{name(layer.actorId)} · {$t(layer.reason ? 'Darstellung nicht bestätigt' : layer.binding ? layer.output?.role === 'owner_candidate' ? 'Bewegung verfügbar' : 'Spiegelansicht' : layer.output?.role === 'mirror' ? 'Spiegelansicht' : 'Wird geprüft …')}</span>{/each}</div>
     {#if profiles.length > 8}<p class="field-note">{$t('Diese Darstellung zeigt höchstens acht Teilnehmer gleichzeitig.')}</p>{/if}
-    <form class="world-move" onsubmit={event => {event.preventDefault(); void move();}}>
-      <fieldset disabled={!canMove}><legend>{$t('{name} einmal zum Ziel gehen lassen', {name: name(selectedBotId)})}<HelpTip text={$t('X und Y sind Prozent der gesamten sichtbaren Bühne. Das Ziel muss mit der ganzen Figur in den bestätigten Bewegungsbereich passen. Der Auftrag startet keine Folgeaktivität und verändert keine Bedürfnisse. Stop bricht ihn ab.')}/></legend>
-        <div class="world-move-fields"><label for={`${uid}-x`}>{$t('Ziel X')} (%)<input id={`${uid}-x`} inputmode="decimal" maxlength="9" bind:value={target.x}/></label><label for={`${uid}-y`}>{$t('Ziel Y')} (%)<input id={`${uid}-y`} inputmode="decimal" maxlength="9" bind:value={target.y}/></label><button class="button secondary small" type="submit"><Navigation size={14}/>{$t(moving ? 'Bewegung wird angefordert …' : 'Zum Ziel gehen')}</button></div>
-      </fieldset>
-    </form>
-    {#if selected?.binding}<p class="field-note">{$t('Bestätigte Zielmitte: X {minX}–{maxX} % · Y {minY}–{maxY} %.', {minX: formatNumber(selected.binding.safeCenters.left / selected.binding.viewport.width * 100, $locale, {maximumFractionDigits: 1}), maxX: formatNumber(selected.binding.safeCenters.right / selected.binding.viewport.width * 100, $locale, {maximumFractionDigits: 1}), minY: formatNumber(selected.binding.safeCenters.top / selected.binding.viewport.height * 100, $locale, {maximumFractionDigits: 1}), maxY: formatNumber(selected.binding.safeCenters.bottom / selected.binding.viewport.height * 100, $locale, {maximumFractionDigits: 1})})}</p>{/if}
+    <p class="sr-only" id={`${uid}-target-status`} aria-live="polite" aria-atomic="true">{targetChosen?$t('Laufziel: {x} Prozent von links, {y} Prozent von oben.',{x:formatNumber(target.x/10000,$locale,{maximumFractionDigits:1}),y:formatNumber(target.y/10000,$locale,{maximumFractionDigits:1})}):$t('Noch kein Laufziel gewählt.')}</p>
+    <div class="world-move">
+      <p class="field-note">{$t('Klicke in die Vorschau, um ein Laufziel zu wählen. Mit den Pfeiltasten kannst du es verschieben; Umschalt bewegt es in größeren Schritten.')}</p>
+      <button class="button secondary small" onclick={()=>void move()} disabled={!canMove||!targetChosen}><Navigation size={14}/>{$t(moving ? 'Bewegung wird angefordert …' : '{name} zum Ziel schicken',{name:name(selectedBotId)})}</button>
+    </div>
   {:else if active}<p class="field-note" role="status">{$t('Die sichtbare Bühne wartet auf eine bestätigte Studio-Verbindung und freie Bedienoberfläche.')}</p>{/if}
   {#if error}<p class="world-render-error" role="alert">{$t(error)}</p>{/if}
 </section>
 
 <style>
-  .world-output{border-top:1px solid var(--line);margin-top:24px;padding-top:18px}.world-output-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.world-output-heading h3{display:flex;align-items:center;gap:8px;margin:0}.world-output-tools{display:flex;align-items:center;gap:8px;flex-shrink:0}.field-note{font-size:12px;color:var(--muted);line-height:1.7;margin:10px 0}.world-viewport{position:relative;isolation:isolate;height:460px;min-height:360px;background:radial-gradient(ellipse at 50% 80%,#91cfc412,transparent 70%),var(--input-bg);border:1px solid var(--line);margin:18px 0}.world-actor-layer,.world-object-layer{position:absolute;inset:0;pointer-events:none}.world-object-layer{z-index:20}.world-object{position:absolute;color:var(--accent);font-size:24px;line-height:1}.world-preparing{position:absolute;inset:0;z-index:30;display:grid;place-items:center;padding:24px;background:var(--panel);color:var(--muted);font-size:12px;text-align:center}.world-participants{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:11px;color:var(--muted)}.world-participants span{display:flex;align-items:center;gap:6px;overflow-wrap:anywhere}.world-participants i{width:6px;height:6px;border-radius:50%;background:var(--muted)}.world-participants i.ready{background:var(--accent)}fieldset{border:0;padding:0;margin:18px 0 0;min-width:0}legend{font-weight:600;font-size:12px;margin-bottom:10px}.world-move-fields{display:flex;align-items:end;gap:12px}.world-move-fields label{max-width:140px;margin:0}.world-move-fields input{margin-bottom:0}.world-move-fields button{margin-bottom:0;min-height:40px}.world-render-error{padding:12px;border-left:3px solid var(--danger);color:var(--danger);font-size:12px;overflow-wrap:anywhere}@media(max-width:600px){.world-output-heading{flex-direction:column}.world-move-fields{flex-wrap:wrap}.world-move-fields label{max-width:none;flex:1;min-width:90px}.world-move-fields button{width:100%}.world-viewport{height:380px}}
+  .world-output{border-top:1px solid var(--line);margin-top:24px;padding-top:18px}.world-output-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}.world-output-heading h3{display:flex;align-items:center;gap:8px;margin:0}.world-output-tools{display:flex;align-items:center;gap:8px;flex-shrink:0}.field-note{font-size:12px;color:var(--muted);line-height:1.7;margin:10px 0}.world-viewport{position:relative;isolation:isolate;height:460px;min-height:360px;background:radial-gradient(ellipse at 50% 80%,#91cfc412,transparent 70%),var(--input-bg);border:1px solid var(--line);margin:18px 0}.world-actor-layer,.world-object-layer{position:absolute;inset:0;pointer-events:none}.world-object-layer{z-index:20}.world-object{position:absolute;color:var(--accent);font-size:24px;line-height:1}.world-preparing{position:absolute;inset:0;z-index:30;display:grid;place-items:center;padding:24px;background:var(--panel);color:var(--muted);font-size:12px;text-align:center}.world-participants{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:11px;color:var(--muted)}.world-participants span{display:flex;align-items:center;gap:6px;overflow-wrap:anywhere}.world-participants i{width:6px;height:6px;border-radius:50%;background:var(--muted)}.world-participants i.ready{background:var(--accent)}.world-target-picker{position:absolute;inset:0;z-index:25;border:0;background:transparent;cursor:crosshair;padding:0}.world-target-picker:disabled{opacity:1;cursor:default}.world-target-marker{position:absolute;display:grid;place-items:center;width:34px;height:34px;transform:translate(-50%,-50%);border:2px solid var(--accent);border-radius:50%;color:var(--accent);background:var(--input-bg);pointer-events:none}.world-move{display:flex;align-items:center;justify-content:space-between;gap:20px}.world-move p{max-width:60ch}.world-move button{flex-shrink:0}.world-render-error{padding:12px;border-left:3px solid var(--danger);color:var(--danger);font-size:12px;overflow-wrap:anywhere}@media(max-width:600px){.world-output-heading{flex-direction:column}.world-move{align-items:stretch;flex-direction:column;gap:0}.world-viewport{height:380px}}
 </style>

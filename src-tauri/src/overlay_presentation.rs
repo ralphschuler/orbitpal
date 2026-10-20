@@ -148,6 +148,9 @@ impl PresentationHub {
     pub fn current_window(&self,id:&str,signals:&Arc<WindowSignals>)->bool{
         self.bots.try_lock().is_ok_and(|bots|bots.get(id).is_some_and(|bot|Arc::ptr_eq(&bot.signals,signals)))
     }
+    pub(crate) fn window_signals(&self,id:&str)->Option<Arc<WindowSignals>>{
+        self.bots.lock().ok()?.get(id).map(|bot|bot.signals.clone())
+    }
     /// Called on a deferred Main task, never inline from a setter callback.
     pub fn forget_window(&self,id:&str,signals:&Arc<WindowSignals>)->Option<bool>{
         let mut bots=self.bots.lock().ok()?;let bot=bots.get_mut(id)?;

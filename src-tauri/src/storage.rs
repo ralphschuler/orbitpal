@@ -406,6 +406,20 @@ impl Store {
         if message["role"]!=role||message["text"]!=text||message["source"]!=source||message["user"]!=user{return Err("Nachrichten-ID gehört bereits zu einem anderen Inhalt".into());}
         Ok(message)
     }
+    pub(crate) fn add_message_with_id_checked(&self,id:&str,role:&str,text:&str,source:&str,user:&str,current:impl Fn()->bool) -> Result<Value,String> {
+        if !valid_id(id){return Err("Ungültige Nachrichten-ID".into());}
+        let created=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(error)?.as_millis() as i64;
+        let profile_id=self.profile()?["id"].as_str().unwrap_or("nova").to_owned();
+        let mut db=self.db.lock().map_err(error)?;
+        let tx=db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(error)?;
+        if !current(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
+        tx.execute("INSERT INTO messages VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(id) DO NOTHING",params![id,profile_id,role,text,source,user,created]).map_err(error)?;
+        let message=tx.query_row("SELECT role,text,source,user_name,created_at FROM messages WHERE id=?1 AND profile_id=?2",params![id,profile_id],|r|Ok(json!({"id":id,"role":r.get::<_,String>(0)?,"text":r.get::<_,String>(1)?,"source":r.get::<_,String>(2)?,"user":r.get::<_,String>(3)?,"createdAt":r.get::<_,i64>(4)?}))).map_err(error)?;
+        if message["role"]!=role||message["text"]!=text||message["source"]!=source||message["user"]!=user{return Err("Nachrichten-ID gehört bereits zu einem anderen Inhalt".into());}
+        if !current(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
+        tx.commit().map_err(error)?;
+        Ok(message)
+    }
     pub fn contains_message(&self,id:&str)->Result<bool,String>{
         self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1)",[id],|r|r.get(0)).map_err(error)
     }
@@ -894,6 +908,22 @@ fn export_sanitize(value:Value)->Value {
 #[cfg(test)]
 mod extension_tests{
     use super::*;
+    #[test]
+    fn checked_playback_history_rejects_before_insert_and_rolls_back_a_late_revocation() {
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
+        let before=store.profile().unwrap();
+        assert!(store.add_message_with_id_checked("before-playback","assistant","not heard","operator","Nova",||false).is_err());
+        assert!(!store.contains_message("before-playback").unwrap());
+        let checks=std::cell::Cell::new(0);
+        assert!(store.add_message_with_id_checked("late-playback","assistant","not heard","operator","Nova",||{
+            let value=checks.get()+1;checks.set(value);value==1
+        }).is_err());
+        assert_eq!(checks.get(),2);assert!(!store.contains_message("late-playback").unwrap());
+        assert_eq!(store.profile().unwrap(),before);
+        store.add_message_with_id_checked("heard-playback","assistant","heard","operator","Nova",||true).unwrap();
+        store.add_message_with_id_checked("heard-playback","assistant","heard","operator","Nova",||true).unwrap();
+        assert_eq!(store.history().unwrap().iter().filter(|message|message["id"]=="heard-playback").count(),1);
+    }
     #[test]
     fn malformed_optional_session_settings_fail_closed_without_losing_other_app_data(){
         use rusqlite::types::Value as SqlValue;

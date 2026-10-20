@@ -1,6 +1,7 @@
 import { describe,expect,it,vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import catalogue from './locales/world-state.json';
+import editorCatalogue from './locales/life-editor.json';
 import { canonicalToPercent,draftWorld,newWorldDraft,parseWorldConfig,parseWorldSettings,parseWorldState,percentToCanonical,placeWorld,saveWorld,worldDraft,worldDraftChanged } from './world-state';
 const instanceId='11111111-1111-1111-1111-111111111111';
 const config=()=>({schemaVersion:1,stageId:'stage_1',revision:1,safeRegion:{min:{x:50000,y:50000},max:{x:950000,y:950000}},members:['_nova','james'],anchors:[{id:'rest',kind:'rest',position:{x:200000,y:700000},slots:[{id:'rest_1',position:{x:200000,y:700000}}]}]});
@@ -56,7 +57,7 @@ describe('Shared stage UI scope and localisation',()=>{
   it('covers German source labels in English, French and Spanish without changing placeholders',()=>{
     const component=readFileSync(new URL('../components/WorldStatePanel.svelte',import.meta.url),'utf8');
     const literals=[...component.matchAll(/\$t\('([^']+)'/g)].map(match=>match[1]);
-    for(const language of ['en','fr','es'] as const){const messages=catalogue[language] as Record<string,string>;for(const key of literals)expect(messages[key]?.trim(),`${language}: ${key}`).toBeTruthy();for(const[source,translated]of Object.entries(messages))expect([...translated.matchAll(/\{(\w+)\}/g)].map(match=>match[1]).sort()).toEqual([...source.matchAll(/\{(\w+)\}/g)].map(match=>match[1]).sort());}
+    for(const language of ['en','fr','es'] as const){const messages={...catalogue[language],...editorCatalogue[language]} as Record<string,string>;for(const key of literals)expect(messages[key]?.trim(),`${language}: ${key}`).toBeTruthy();for(const[source,translated]of Object.entries(messages))expect([...translated.matchAll(/\{(\w+)\}/g)].map(match=>match[1]).sort()).toEqual([...source.matchAll(/\{(\w+)\}/g)].map(match=>match[1]).sort());}
   });
   it('keeps one shared draft mounted across navigation and includes it in native/updater unsaved guards',()=>{
     const app=readFileSync(new URL('../App.svelte',import.meta.url),'utf8');
