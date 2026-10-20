@@ -11,6 +11,8 @@ pub(crate) mod actions;
 pub(crate) mod cloud;
 #[path = "life_runtime/core.rs"]
 pub(crate) mod core;
+#[path = "life_runtime/world_output.rs"]
+pub(crate) mod world_output;
 use self::core::{Claim, Core, Mode, RuntimeSnapshot, SpeechConfig};
 use crate::{
     life_availability::{
@@ -90,6 +92,11 @@ pub fn operator_command(command: &str) -> bool {
         "get_app_state"
             | "get_api_connections"
             | "get_api_binding"
+            | "get_world_output_status"
+            | "register_world_output"
+            | "report_world_measurement"
+            | "report_world_action"
+            | "unregister_world_output"
             | "get_world_state"
             | "get_world_settings"
             | "get_life_runtime"
@@ -129,7 +136,10 @@ pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
     let webview = invoke.message.webview_ref();
     if webview.label() == "main" && operator_command(invoke.message.command()) {
         if let Some(state) = webview.try_state::<crate::AppState>() {
-            if invoke.message.command() == "start_life_rest" {
+            if matches!(
+                invoke.message.command(),
+                "start_life_rest" | "start_life_move"
+            ) {
                 actions::prepare_operator(&state, invoke);
             } else {
                 state.life_runtime.operator_activity();
@@ -295,7 +305,7 @@ impl LifeRuntime {
         runtime
     }
     pub fn invalidate_bot(&self, app: &tauri::AppHandle, bot: &str) {
-        self.outputs.bot(Some(bot));
+        self.outputs.geometry(Some(bot));
         if let Ok(mut core) = self.core.lock() {
             core.invalidate_bot(bot, self.now());
             core.operator_activity(self.now());
@@ -354,7 +364,7 @@ impl LifeRuntime {
         bot: &str,
         write: impl FnOnce() -> Result<Value, String>,
     ) -> Result<(Value, Option<crate::autopilot::Runtime>), String> {
-        self.outputs.bot(Some(bot));
+        self.outputs.geometry(Some(bot));
         let mut core = self.core.lock().map_err(|_| UNAVAILABLE)?;
         core.invalidate_bot(bot, self.now());
         core.operator_activity(self.now());
@@ -378,7 +388,7 @@ impl LifeRuntime {
         result
     }
     pub fn stop(&self, app: &tauri::AppHandle, bot: Option<&str>) {
-        self.outputs.bot(bot);
+        self.outputs.geometry(bot);
         let state = app.state::<crate::AppState>();
         // Runtime -> AutopilotHub -> Store is the admitted mutation/commit order.
         // Keep Stop and a concurrent new Start indivisible; emit only after unlock.
@@ -427,6 +437,9 @@ impl LifeRuntime {
         actions::publish(app);
     }
 
+    pub(crate) fn invalidate_world_presentation(&self, bot: Option<&str>) {
+        self.outputs.geometry(bot);
+    }
     pub fn output_window_lost(&self, label: &str) {
         self.outputs.window(label);
     }

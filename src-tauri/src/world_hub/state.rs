@@ -564,6 +564,98 @@ impl WorldHub {
                 .map_err(|_| UNAVAILABLE)?,
         })
     }
+    /// Registration observes explicit participants without minting a MemberHandle,
+    /// output grant or Life session. Nonselected Studio layers are mirrors only.
+    pub(crate) fn registration_context(
+        &self,
+        store: &Store,
+        session: &SessionStamp,
+        lineage: &WorldId,
+    ) -> Result<(ActionContext, coordinates::Rect), String> {
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        Self::refresh_record(&mut hub, store)?;
+        let world = hub.world.as_ref().ok_or(UNAVAILABLE)?;
+        if !world.is_participant(session.actor_id())
+            || hub.unavailable.contains(session.actor_id().as_str())
+            || hub.topology_revision == 0
+            || hub
+                .topology
+                .as_ref()
+                .is_none_or(|t| t.observed.elapsed() > Duration::from_secs(5))
+        {
+            return Err(UNAVAILABLE.into());
+        }
+        let position = world
+            .snapshot()
+            .actors
+            .into_iter()
+            .find(|a| &a.actor_id == session.actor_id())
+            .ok_or(UNAVAILABLE)?
+            .position;
+        Ok((
+            ActionContext {
+                session: session.clone(),
+                source_world: lineage.clone(),
+                stage: world.config().stage_id().clone(),
+                config_revision: world.config().revision(),
+                topology_revision: hub.topology_revision,
+                position,
+                instance_id: hub.instance_id.clone(),
+                record: serde_json::to_value(hub.record.as_ref().ok_or(UNAVAILABLE)?)
+                    .map_err(|_| UNAVAILABLE)?,
+            },
+            world.config().safe_region(),
+        ))
+    }
+    /// Currentness is rechecked after the actual read-through Store wait. The
+    /// caller already holds Core; its pure admission closure must not lock or I/O.
+    pub(crate) fn apply_visual_progress(
+        &self,
+        store: &Store,
+        expected: &ActionContext,
+        position: Point,
+        admit: impl FnOnce() -> bool,
+    ) -> Result<ActionContext, String> {
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        Self::refresh_record(&mut hub, store)?;
+        let bot = expected.session.actor_id().as_str();
+        let world = hub.world.as_ref().ok_or(UNAVAILABLE)?;
+        if hub.instance_id != expected.instance_id
+            || hub.bound.get(bot) != Some(&expected.session)
+            || hub.unavailable.contains(bot)
+            || world.config().stage_id() != &expected.stage
+            || world.config().revision() != expected.config_revision
+            || hub.topology_revision != expected.topology_revision
+            || hub
+                .topology
+                .as_ref()
+                .is_none_or(|t| t.observed.elapsed() > Duration::from_secs(5))
+            || world
+                .snapshot()
+                .actors
+                .iter()
+                .find(|a| a.actor_id.as_str() == bot)
+                .is_none_or(|a| {
+                    a.position != expected.position
+                        || a.life
+                            .as_ref()
+                            .is_none_or(|life| life.world_id() != &expected.source_world)
+                })
+            || !admit()
+        {
+            return Err(UNAVAILABLE.into());
+        }
+        let world = hub.world.as_mut().ok_or(UNAVAILABLE)?;
+        let handle = world
+            .member_handle(expected.session.actor_id())
+            .ok_or(UNAVAILABLE)?;
+        world
+            .move_actor(&handle, position)
+            .map_err(|_| UNAVAILABLE)?;
+        let mut next = expected.clone();
+        next.position = position;
+        Ok(next)
+    }
     /// Caller holds Core. The closure may enter Store only; no Core/WorldHub
     /// reentry, GUI getter, await or publication while this guard is held.
     pub(crate) fn with_action_context<T>(

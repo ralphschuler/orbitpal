@@ -137,6 +137,7 @@ impl Default for Operator {
     }
 }
 pub struct Core {
+    pub(crate) world_outputs: crate::world_output::Registry,
     pub(crate) actions: Option<super::action_state::NativeActions>,
     rest_intents: BTreeMap<String, super::action_state::RestIntent>,
     next_rest_intent: u64,
@@ -172,6 +173,7 @@ fn due(session: &mut Session, now: u64) -> u64 {
 impl Core {
     pub fn new(system: SystemSnapshot) -> Self {
         Self {
+            world_outputs: crate::world_output::Registry::default(),
             actions: Some(super::action_state::NativeActions::new()),
             rest_intents: BTreeMap::new(),
             next_rest_intent: 1,
@@ -254,6 +256,62 @@ impl Core {
         }
         None
     }
+    pub(crate) fn world_ui_current(&self, proof: &super::action_state::UiProof, raw: u64) -> bool {
+        self.ui_clear(raw.max(self.last_time))
+            && !self.ui.hidden
+            && self.ui.connection.as_deref() == Some(proof.connection_id.as_str())
+            && self.ui.sequence >= proof.sequence
+    }
+    /// Capability/readiness must use the current private Life/UI owner, not
+    /// merely a still-fresh observation retained from an older session revision.
+    pub(crate) fn world_output_current(&self, bot: &str, raw: u64) -> bool {
+        let Some(fence) = self.local_fence(bot, raw) else {
+            return false;
+        };
+        let Some(source) = self.world_outputs.source(bot) else {
+            return false;
+        };
+        let Ok(stamp) = crate::world_state::SessionStamp::new(
+            source.context.session.actor_id().clone(),
+            &fence.session,
+            fence.revision,
+        ) else {
+            return false;
+        };
+        source.context.session == stamp
+            && source.context.session.actor_id().as_str() == bot
+            && self.world_ui_connection(raw) == Some(source.ui_connection.as_str())
+            && self
+                .sessions
+                .get(bot)
+                .and_then(|s| s.state.as_ref())
+                .is_some_and(|life| life.world_id() == &source.context.source_world)
+            && self
+                .world_outputs
+                .ready(bot, raw.max(self.last_time))
+                .is_ok()
+    }
+    /// Re-evaluate receipt freshness AFTER source/Store/World read-through waits.
+    /// The shared pure path is also exercised with the real Store mutex held.
+    pub(crate) fn accept_world_measurement(
+        &mut self,
+        report: &crate::world_output::RenderMeasurement,
+        source: &crate::world_output::NativeSource,
+        received: u64,
+        raw: u64,
+    ) -> Result<crate::world_output::MeasurementAck, crate::world_output::RenderReason> {
+        let now = raw.max(self.last_time);
+        if self.world_ui_connection(now) != Some(source.ui_connection.as_str()) {
+            return Err(crate::world_output::RenderReason::StaleBinding);
+        }
+        self.world_outputs
+            .measurement(report, source, received, now)
+    }
+    pub(crate) fn world_ui_connection(&self, raw: u64) -> Option<&str> {
+        (self.ui_clear(raw.max(self.last_time)) && !self.ui.hidden)
+            .then_some(self.ui.connection.as_deref())
+            .flatten()
+    }
     pub(crate) fn local_fence(
         &self,
         bot: &str,
@@ -323,6 +381,7 @@ impl Core {
         self.rest_intents.insert(
             bot.into(),
             super::action_state::RestIntent {
+                move_target: None,
                 serial,
                 bot: bot.into(),
                 session: fence.session,
@@ -336,6 +395,20 @@ impl Core {
                 output_generation,
             },
         );
+    }
+    pub(crate) fn prepare_move_intent(
+        &mut self,
+        bot: &str,
+        profile: serde_json::Value,
+        proof: &super::action_state::UiProof,
+        output_generation: u64,
+        target: crate::world_state::coordinates::Point,
+        raw: u64,
+    ) {
+        self.prepare_rest_intent(bot, profile, proof, output_generation, raw);
+        if let Some(intent) = self.rest_intents.get_mut(bot) {
+            intent.move_target = Some(target);
+        }
     }
     pub(crate) fn rest_intent(
         &self,
