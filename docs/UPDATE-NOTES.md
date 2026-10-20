@@ -4,7 +4,7 @@ API-Verbindungen werden jetzt zentral für die gesamte Installation verwaltet. M
 
 Auf macOS lassen sich bereits erfolgreich gelesene Schlüssel optional bis zum Ende der App-Sitzung wiederverwenden. Diese Option ist standardmäßig ausgeschaltet und kann ausdrücklich gesperrt werden. Sie ersetzt keine Berechtigung des macOS-Schlüsselbunds und verspricht keine vollständige Beseitigung seiner Rückfragen.
 
-Die neue native Life-Laufzeit, ein gemeinsamer Bühneneditor und eine optionale 3D-World-Ansicht ergänzen den Studio-Modus. Nach ausdrücklichem Start einer Life-Sitzung kann die ausgewählte Studio-Figur zu einem vorgegebenen Ziel laufen. Weitere Teilnehmer werden zunächst als Spiegelansichten dargestellt. Gemeinsame Szenen mit mehreren handelnden Figuren sowie native World-Overlays und OBS bleiben in Arbeit.
+Die neue native Life-Laufzeit, ein gemeinsamer Bühneneditor und eine optionale, derzeit stumme 3D-World-Ansicht ergänzen den Studio-Modus. Nach ausdrücklichem Start einer Life-Sitzung kann die ausgewählte Studio-Figur zu einem vorgegebenen Ziel laufen. Weitere Teilnehmer werden zunächst als Spiegelansichten dargestellt. Gemeinsame Szenen mit mehreren handelnden Figuren sowie native World-Overlays und OBS bleiben in Arbeit.
 
 Installationsweite Limits begrenzen autonome Anbieteranfragen, Sprachzeichen, Erinnerungsanfragen und Bildübertragungen. Der Verbrauch bleibt über Neustarts erhalten. Dazu kommen fair verteilte automatische Chatantworten und eine ausdrücklich gestartete stille Ruheaktion. Gespeicherte Einstellungen starten keinen autonomen Modus.
 

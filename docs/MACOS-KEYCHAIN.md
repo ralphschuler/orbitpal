@@ -62,7 +62,7 @@ when the operator explicitly enables it.
 
 ## Optional reuse during an OrbitPal session
 
-Under **Models**, macOS users can enable **Reuse approved keys during this
+Under **API connections**, macOS users can enable **Reuse approved keys during this
 session**. It is **off by default**. The preference belongs to this installation,
 applies to all bots, and is never copied or exported with a profile. Windows and
 Linux retain their existing persistent-backend behavior and expose no session
