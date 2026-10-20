@@ -78,7 +78,9 @@
     "Die maximale Anzahl an Life-Sitzungen wurde erreicht.": "The maximum number of Life sessions has been reached.",
     "Die Konfiguration der Life-Laufzeit wurde abgelehnt.": "Life runtime configuration was rejected.",
     "Die native Ausgabe wurde abgebrochen.": "Native output was cancelled.",
-    "Stimme des Wiedergabeauftrags fehlt.": "The playback job has no voice configuration."
+    "Stimme des Wiedergabeauftrags fehlt.": "The playback job has no voice configuration.",
+    "Ungültige native Anfragefreigabe.": "Invalid native request authorization.",
+    "Spontane Beiträge werden von der nativen Laufzeit geplant.": "Spontaneous contributions are scheduled by the native runtime."
   },
   "fr": {
     "Bereit für selbstständige Beiträge.": "Prêt pour les interventions autonomes.",
@@ -159,7 +161,9 @@
     "Die maximale Anzahl an Life-Sitzungen wurde erreicht.": "Le nombre maximal de sessions Life a été atteint.",
     "Die Konfiguration der Life-Laufzeit wurde abgelehnt.": "La configuration de l’exécution Life a été refusée.",
     "Die native Ausgabe wurde abgebrochen.": "La sortie native a été annulée.",
-    "Stimme des Wiedergabeauftrags fehlt.": "La tâche de lecture n’a pas de configuration vocale."
+    "Stimme des Wiedergabeauftrags fehlt.": "La tâche de lecture n’a pas de configuration vocale.",
+    "Ungültige native Anfragefreigabe.": "Autorisation native de requête invalide.",
+    "Spontane Beiträge werden von der nativen Laufzeit geplant.": "Les interventions spontanées sont planifiées par l’exécution native."
   },
   "es": {
     "Bereit für selbstständige Beiträge.": "Listo para intervenciones autónomas.",
@@ -240,6 +244,8 @@
     "Die maximale Anzahl an Life-Sitzungen wurde erreicht.": "Se ha alcanzado el número máximo de sesiones de Life.",
     "Die Konfiguration der Life-Laufzeit wurde abgelehnt.": "Se rechazó la configuración del entorno de Life.",
     "Die native Ausgabe wurde abgebrochen.": "Se canceló la salida nativa.",
-    "Stimme des Wiedergabeauftrags fehlt.": "La tarea de reproducción no tiene configuración de voz."
+    "Stimme des Wiedergabeauftrags fehlt.": "La tarea de reproducción no tiene configuración de voz.",
+    "Ungültige native Anfragefreigabe.": "Autorización nativa de solicitud no válida.",
+    "Spontane Beiträge werden von der nativen Laufzeit geplant.": "El entorno nativo programa las intervenciones espontáneas."
   }
 }
