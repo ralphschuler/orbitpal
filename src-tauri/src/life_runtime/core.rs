@@ -1210,9 +1210,10 @@ mod tests {
         assert!(core.sessions["other"].output);
         core.set_output_available("nova", &current.session_id, current.revision, true, 15_002);
         assert_eq!(core.sessions["nova"].due, 30_002);
-        let other = claim(&mut core, 15_002);
+        // Claim admission itself began a global quiet period at15000.
+        let other = claim(&mut core, 30_000);
         assert_eq!(other.bot_id, "other");
-        assert_eq!(core.snapshot(15_002).sessions.len(), 2);
+        assert_eq!(core.snapshot(30_000).sessions.len(), 2);
     }
     #[test]
     fn stale_output_observation_cannot_overwrite_replacement_session_route() {
