@@ -1,6 +1,6 @@
 # Global API connections
 
-Issue [#94](https://github.com/ralphschuler/orbitpal/issues/94) makes API accounts installation-wide. In **API access**, create a named connection, save its key, and optionally choose it as the default for its service and destination. Assign a connection or its explicit default alias in the character's integration settings. Choosing no connection sends no stored API key; it never silently selects a default.
+Issue [#94](https://github.com/ralphschuler/orbitpal/issues/94) makes API accounts installation-wide. In **API connections**, create a named connection, save its key, and optionally choose it as the default for its service and destination. Assign a connection or its explicit default alias in the character's integration settings. Choosing no connection sends no stored API key; it never silently selects a default.
 
 OpenAI dialog and transcription can share the same connection. ElevenLabs speech and transcription can share another. Anthropic, Hindsight, compatible HTTP endpoints and the YouTube Data API have their own destination-bound connections. Custom hosts, paths, non-default ports and authentication header styles form separate scopes. A local HTTP server can still use an explicitly assigned key. Codex/Claude CLI and system voice do not look up an unused HTTP key.
 
