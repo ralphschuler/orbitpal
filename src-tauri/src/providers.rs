@@ -16,6 +16,8 @@ fn client() -> Result<Client, String> {
     Client::builder().retry(reqwest::retry::never()).redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180)).build().map_err(|_| "HTTP-Client konnte nicht erstellt werden.".into())
 }
+/// Coding CLIs accept their own default model when the selector is blank.
+pub fn dialog_model_ready(config:&Value)->bool{!config["model"].as_str().unwrap_or_default().trim().is_empty()||matches!(config["provider"].as_str(),Some("codex"|"claude-code"))}
 fn field<'a>(v: &'a Value, key: &str, fallback: &'a str) -> &'a str {
     v.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()).unwrap_or(fallback)
 }
@@ -203,11 +205,14 @@ fn dialog_cost(config:&Value,messages:&[Value])->Result<crate::usage_budget::Cos
     }
     Ok(if matches!(field(config,"provider","compatible"),"codex"|"claude-code"){crate::usage_budget::Cost::cli_dialog(count,bytes)}else{crate::usage_budget::Cost::dialog(count,bytes,token_upper(config))})
 }
-pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>, usage:(&crate::storage::Store,&crate::usage_budget::Context)) -> Result<Completion, String> {
+pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>, usage:(&crate::storage::Store,&crate::usage_budget::Context),authority:&crate::life_runtime::cloud::CloudAuthority) -> Result<Completion, String> {
     if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen.".into());}
     let cost=dialog_cost(config,&messages)?;
-    let operation=async {let mut observed=None;let result=complete_inner(config,messages,tools,api_key,app,turn_id,cancel,&mut observed).await;(result,observed)};
-    let (store,context)=usage;store.metered_usage(context,cost,operation).await
+    let (store,context)=usage;
+    if !authority.matches(context,&cancel){return Err("Ungültige native Anfragefreigabe.".into());}
+    let permit=authority.admit().await?;
+    let operation=async {let mut observed=None;let result=async{permit.check()?;complete_inner(config,messages,tools,api_key,app,turn_id,cancel,&mut observed).await}.await;(result,observed)};
+    store.metered_usage(context,cost,operation).await
 }
 async fn complete_inner(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>, observed:&mut Option<u64>) -> Result<Completion, String> {
     if matches!(field(config,"provider","compatible"), "claude-code" | "codex") {
@@ -370,11 +375,18 @@ pub async fn synthesize(config: &Value, text: &str, api_key: Option<String>) -> 
     Ok(json!({"audioBase64":STANDARD.encode(audio),"mimeType":if mime == "application/octet-stream" { "audio/mpeg" } else { &mime }}))
 }
 
+#[cfg(test)]
 pub async fn synthesize_metered(config:&Value,text:&str,api_key:Option<String>,store:&crate::storage::Store,context:&crate::usage_budget::Context,cancel:Arc<AtomicBool>)->Result<Value,String>{
+    let authority=crate::life_runtime::cloud::CloudAuthority::fixture(context,cancel.clone());
+    synthesize_guarded(config,text,api_key,store,context,cancel,&authority).await
+}
+pub async fn synthesize_guarded(config:&Value,text:&str,api_key:Option<String>,store:&crate::storage::Store,context:&crate::usage_budget::Context,cancel:Arc<AtomicBool>,authority:&crate::life_runtime::cloud::CloudAuthority)->Result<Value,String>{
     if cancel.load(Ordering::Relaxed){return Err("Sprachausgabe wurde abgebrochen".into());}
     if text.trim().is_empty()||text.len()>20_000{return Err("Sprachtext ist leer oder zu lang (maximal 20.000 Bytes).".into());}
+    if !authority.matches(context,&cancel){return Err("Ungültige native Anfragefreigabe.".into());}
+    let permit=authority.admit().await?;
     // Count the exact sent Unicode characters, including provider audio tags.
-    store.metered_usage(context,crate::usage_budget::Cost::tts(text.chars().count() as u64),async{(cancellable(&cancel,synthesize(config,text,api_key)).await.and_then(|result|result),None)}).await
+    store.metered_usage(context,crate::usage_budget::Cost::tts(text.chars().count() as u64),async{let result=async{permit.check()?;cancellable(&cancel,synthesize(config,text,api_key)).await.and_then(|result|result)}.await;(result,None)}).await
 }
 
 fn validated_usage(value:&Value)->Option<u64>{

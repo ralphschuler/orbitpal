@@ -1,7 +1,7 @@
 <script lang="ts">
   import { t, translate, locale, formatNumber } from '../lib/i18n';
   import { onMount, tick, untrack } from 'svelte';
-  import { open } from '@tauri-apps/plugin-dialog';
+  import { open } from '../lib/operator-dialog';
   import { LibraryBig, Cable, BookOpen, Search, Plus, Upload, Check, Pencil, Trash2, X, Plug, Unplug, ShieldCheck, Users, FileText, FolderOpen, ArrowRight } from '@lucide/svelte';
   import HelpTip from './HelpTip.svelte';
   import ControlMcpSetup from './ControlMcpSetup.svelte';

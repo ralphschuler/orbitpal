@@ -30,7 +30,7 @@ export interface SpeechStatusInput {
   outputAvailable: boolean;
   modelConfigured: boolean;
   blocked?: SpeechBlocker;
-  schedule?: AutopilotSchedule;
+  schedule?: Omit<AutopilotSchedule, 'dueAt'> & { dueAt?: number };
 }
 export interface SpeechStatus {
   message: string;

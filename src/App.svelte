@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick, untrack } from 'svelte';
   import { t, translate, locale, supportedLocales, setLocale, formatNumber, formatDate } from './lib/i18n';
-  import { open, save } from '@tauri-apps/plugin-dialog';
+  import { open, save, operatorDialogActive, registerOperatorDialogBarrier } from './lib/operator-dialog';
   import { openPath, openUrl } from '@tauri-apps/plugin-opener';
   import { Radio, SlidersHorizontal, Sparkles, Plug, BrainCircuit, Blocks, FileText, History, Play, Pause, Square, ArrowUpRight, Plus, ChevronDown, X, Check, Copy, Upload, Download, ExternalLink, Mic, Send, Volume2, Monitor, MoreHorizontal, RotateCcw, Circle, Settings2, Cable, FolderOpen, Trash2, CheckCheck, Search, MoveUpRight, PanelLeftClose, WandSparkles, MessageCircle, TvMinimalPlay as Youtube, CircleHelp, Zap, Hand, EyeOff, PartyPopper } from '@lucide/svelte';
   import Avatar from './components/Avatar.svelte';
@@ -11,10 +11,12 @@
   import type { MotionAsset } from './lib/avatar-motion';
   import ModelFeatures from './components/ModelFeatures.svelte';
   import AutopilotPanel from './components/AutopilotPanel.svelte';
+  import LifeRuntimePanel from './components/LifeRuntimePanel.svelte';
   import UsageBudgetPanel from './components/UsageBudgetPanel.svelte';
   import ScreenContextPanel from './components/ScreenContextPanel.svelte';
   import { prepareScreenSession } from './lib/screen-session';
-  import { AutopilotScheduler, type AutopilotClaim, type AutopilotSchedule } from './lib/autopilot';
+  import { LifeUI } from './lib/life-ui';
+  import { LifeTurnAdmissions, LifeSnapshots, parseLifeBot, parseLifeTurn, nativeSchedule, currentLifeTurn, sameLifeTurn, type LifeSnapshot, type LifeMode, type LifeBot, type LifeTurn } from './lib/life-runtime';
   import { ChatScheduler, appendChatMessage, chatPriority, chatParticipants, type ChatClaim } from './lib/chat-scheduler';
   import { speechBlocker, speechStatus } from './lib/autopilot-status';
   import { AutopilotRuntimeVersions, mayUpdateAutopilot, type AutopilotRuntime } from './lib/autopilot-runtime';
@@ -64,23 +66,34 @@
   let autopilotEventRevision = 0;
   const autopilotVersions = new AutopilotRuntimeVersions();
   let autopilotPreview = $state<AutopilotRuntime>();
-  let answeringAutopilot = false;
-  const autopilotScheduler = new AutopilotScheduler();
+  let answeringAutopilot = $state(false);
+  let lifeRuntime = $state<LifeSnapshot>();
+  let lifeBots = $state<Record<string, LifeBot>>({});
+  let lifeError = $state('');
+  let lifeConnected = $state(false);
+  let lifeMounted = $state(false);
+  let lifeStopping = false;
+  let nativeLifeTurn = $state<LifeTurn>();
+  let nativeLifeOutput = $state('');
+  let nativeReplyId = '';
+  let nativePlaybackCompleted = '';
+  let lifeActivity = false;
+  let operatorRevision = 0;
+  let nativeOperatorPending = $state(false);
+  let lifeUi: LifeUI;
+  const lifeSnapshots = new LifeSnapshots();
+  const lifeAdmissions = new LifeTurnAdmissions();
   const chatScheduler = new ChatScheduler();
-  let speechSchedules = $state<Record<string, AutopilotSchedule | undefined>>({});
   let silentAutopilots = $state<Record<string, string>>({});
-  function refreshSpeechSchedules(){
-    speechSchedules=Object.fromEntries(Object.keys(autopilots).map(id=>[id,autopilotScheduler.snapshot(id)]));
-  }
   function acceptAutopilot(runtime:AutopilotRuntime,allowStart=false){
     ++autopilotEventRevision;
     if(!autopilotVersions.accept(runtime)||!mayUpdateAutopilot(autopilots[runtime.botId],runtime,allowStart))return;
     if(runtime.active)autopilots={...autopilots,[runtime.botId]:runtime};
-    else{const next={...autopilots};delete next[runtime.botId];autopilots=next;autopilotScheduler.stop(runtime.botId);}
+    else{const next={...autopilots};delete next[runtime.botId];autopilots=next;}
   }
   function loadAutopilots(values:AutopilotRuntime[]){
     const ids=new Set(values.map(value=>value.botId));
-    for(const id of Object.keys(autopilots))if(!ids.has(id)){const next={...autopilots};delete next[id];autopilots=next;autopilotScheduler.stop(id);}
+    for(const id of Object.keys(autopilots))if(!ids.has(id)){const next={...autopilots};delete next[id];autopilots=next;}
     for(const runtime of values)acceptAutopilot(runtime,true);
   }
   function previewAutopilot(){
@@ -88,25 +101,73 @@
     clearEmotes();autopilotPreview={botId:profile.id,active:true,wander:!!profile.autopilot.wander,gestures:!!profile.autopilot.gestures,startedAt:Date.now(),seed:crypto.randomUUID(),revision:0};
     void tick().then(()=>document.querySelector('.autopilot-stage')?.scrollIntoView({block:'center',behavior:'smooth'}));
   }
-  async function toggleAutopilot(active:boolean){
-    if(autopilotPending||updateInstalling)return;
-    if(active&&(busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing)){notify(translate("Beende zuerst die laufende Antwort oder Aufnahme."));return;}
-    if(active&&profile.autopilot.speak&&!profile.model.model&&!cliProvider){navigate('models');notify(translate("Wähle zuerst ein Dialogmodell oder schalte selbstständiges Sprechen aus."));return;}
-    unlockEmoteAudio();autopilotPending=true;
-    const target=profile.id;const revision=++autopilotStartRevision;const epoch=turnEpoch;const context=permissionContext();
-    const current=()=>appAlive&&context===permissionContext()&&revision===autopilotStartRevision&&epoch===turnEpoch&&target===profile.id&&!updateInstalling;
-    try{
-      if(active&&!await ensureScreenFor([profileSnapshot()], true, current))return;
-      if(active&&!await saveCurrentBot())return;
-      if(!current())return;
-      const runtime=await call<AutopilotRuntime>('set_autopilot',{botId:target,active});
-      if(!current()){if(active){const next={...autopilots};delete next[target];autopilots=next;autopilotScheduler.stop(target);await call('set_autopilot',{botId:target,active:false});}return;}
-      acceptAutopilot(runtime,active);autopilotPreview=undefined;
-      if(!active&&answeringAutopilot&&answeringBotId===target){++turnEpoch;player?.stop();subtitleLifetime?.cancel();clearEmotes();finishPlayback();busy=false;speechPreparing=false;answeringBotId='';answeringSpeechId='';answeringAutopilot=false;}
-      log(translate(active?'{name}: Autopilot gestartet.':'{name}: Autopilot pausiert.',{name:profile.name}));
-      notify(active?translate("Autopilot gestartet. Der erste Beitrag kommt nach einer ruhigen Phase."):translate("Autopilot pausiert."));
-    }catch(error){notify(prettyError(error),true);}finally{autopilotPending=false;}
+  function invalidateNativePlayback(botId?: string, nativeFinished=false, keepAdmission=false) {
+    if(!keepAdmission)lifeAdmissions.cancel(botId);
+    const previous=nativeLifeTurn;
+    if(!previous||botId&&previous.botId!==botId)return;
+    nativeLifeTurn=undefined;nativeReplyId='';
+    const completed=nativeFinished&&nativePlaybackCompleted===previous.turnId;nativePlaybackCompleted='';
+    if(answeringAutopilot&&answeringBotId===previous.botId&&answeringSpeechId===previous.turnId){
+      // A confirmed playback end keeps its normal subtitle/emote tail. Stop,
+      // cancellation and any unfinished output still invalidate immediately.
+      if(!completed){++turnEpoch;player?.stop();subtitleLifetime?.cancel(previous.turnId);clearEmotes();}
+      finishPlayback(previous.turnId);
+      busy=false;speechPreparing=false;speaking=false;level=0;partial='';answeringBotId='';answeringSpeechId='';answeringAutopilot=false;
+    }
   }
+  function acceptLifeRuntime(value:unknown) {
+    if(lifeStopping)return;
+    try{const next=lifeSnapshots.accept(value);if(!next)return;lifeRuntime=next;lifeError='';if(nativeLifeTurn&&!currentLifeTurn(nativeLifeTurn,next))invalidateNativePlayback(undefined,true,true);}
+    catch(error){lifeRuntime=undefined;lifeError=prettyError(error);invalidateNativePlayback();}
+  }
+  async function refreshLifeBot(target=profile.id) {
+    if(!native)return;
+    try{const value=parseLifeBot(await call('get_life_bot',{botId:target}));if(appAlive)lifeBots={...lifeBots,[target]:value};}
+    catch(error){if(appAlive&&target===profile.id)lifeError=prettyError(error);}
+  }
+  async function refreshLifeRuntime() {
+    if(!native)return;
+    try{acceptLifeRuntime(await call('get_life_runtime'));await refreshLifeBot();}
+    catch(error){lifeRuntime=undefined;lifeError=prettyError(error);invalidateNativePlayback();}
+  }
+  async function reconnectLifeUI() {
+    if(!native||!lifeUi)return;
+    try{await lifeUi.connect();await refreshLifeRuntime();await lifeUi.report(!!autopilotBlocker||!lifeRuntime,true);lifeError='';}
+    catch(error){lifeError=prettyError(error);}
+  }
+  async function ensureOperatorBarrier() {
+    if(!native)return;
+    const revision=++operatorRevision;nativeOperatorPending=true;invalidateNativePlayback();
+    try{if(!lifeUi)throw new Error('Studio unavailable');await lifeUi.report(true,true);if(revision===operatorRevision)nativeOperatorPending=false;}
+    catch{
+      // A failed reporter is never a clear status. Only confirmed native Stop
+      // can let this explicit operator action continue without the reporter.
+      await call('stop_generation');invalidateNativePlayback();autopilots={};lifeRuntime=undefined;
+      if(revision===operatorRevision)nativeOperatorPending=false;
+      notify(translate('Die native Autonomie wurde gestoppt, weil der Studio-Status nicht bestätigt werden konnte. Dein Auftrag kann fortfahren.'));
+    }
+  }
+  async function toggleLife(mode:LifeMode,active:boolean,initialize=false){
+    if(active&&(autopilotPending||updateInstalling))return;
+    if(active&&(busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing)){notify(translate("Beende zuerst die laufende Antwort oder Aufnahme."));return;}
+    if(active&&mode==='ambient'&&profile.autopilot.speak&&!profile.model.model&&!cliProvider){navigate('models');notify(translate("Wähle zuerst ein Dialogmodell oder schalte selbstständiges Sprechen aus."));return;}
+    unlockEmoteAudio();const target=profile.id;const revision=++autopilotStartRevision;autopilotPending=active;
+    const epoch=turnEpoch;
+    const startContext=()=>{const value=profileSnapshot();if(['claude-code','codex'].includes(value.model?.provider)&&!value.model.model?.trim())value.model.model='default';return JSON.stringify([value,$state.snapshot(documents)]);};
+    const context=startContext();const current=()=>appAlive&&context===startContext()&&revision===autopilotStartRevision&&epoch===turnEpoch&&target===profile.id&&!updateInstalling;
+    try{
+      if(!active)invalidateNativePlayback(target);
+      if(active)await ensureOperatorBarrier();
+      if(active&&profile.autopilot.speak&&(profile.model.model||cliProvider)&&!await ensureScreenFor([profileSnapshot()],true,current))return;
+      if(active&&!await saveCurrentBot())return;
+      if(active&&!current())return;
+      const runtime=await call('set_life_mode',{botId:target,mode,active,initialize:active&&initialize});
+      if(active&&!current()){await call('set_life_mode',{botId:target,mode,active:false});return;}
+      acceptLifeRuntime(runtime);autopilotPreview=undefined;await refreshLifeBot(target);
+      notify(translate(active?'Gewählter Modus gestartet. Selbstständige Sprache wartet auf eine ruhige und freigegebene Phase.':'Selbstständiger Modus gestoppt.'));
+    }catch(error){lifeError=prettyError(error);notify(lifeError,true);}finally{if(revision===autopilotStartRevision)autopilotPending=false;}
+  }
+  function toggleAutopilot(active:boolean){return toggleLife('ambient',active);}
   function acceptOutputUpdate(output:any){
     const baseline=JSON.parse(savedProfile);baseline.output??={};
     for(const [key,value] of Object.entries(output||{})){
@@ -149,6 +210,7 @@
   let savedProfile = $state(JSON.stringify(cloneDefaults()));
   const availableEmoteActions=$derived(uiEmoteActions(profile,liveAvatar?renderedModel:undefined,hostEmoteCapabilities));
   const selectedAutopilot = $derived(autopilots[profile.id]);
+  const selectedLifeSession = $derived(lifeRuntime?.sessions.find(session=>session.botId===profile.id));
   const motionRuntime = $derived(selectedAutopilot?.active ? selectedAutopilot : autopilotPreview?.botId===profile.id ? autopilotPreview : undefined);
 
   let documents = $state({agents:defaultAgents,persona:defaultPersona});
@@ -221,10 +283,11 @@
   function modelAudioPlaying(value:boolean,activity:SoundActivity){modelSoundPlaying=value;modelSoundActivity=activity;updateSoundPlaying();}
   let emoteSoundPlaying = $state(false);
   let foregroundEmotePlaying = $state(false);
-  let emoteRevision = 0;
-  let automaticEmoteRevision = 0;
+  let emoteRevision = $state(0);
+  let automaticEmoteRevision = $state(0);
   let externalEmotePlaying = $state(false);
   let externalEmoteBlocking = $state(false);
+  let externalEmoteRevision = $state(0);
   let externalEmotes: ExternalEmotePlayback;
   let emoteOutput = {botId:"",audio:false};
   let recorder: MediaRecorder | null = null;
@@ -232,7 +295,7 @@
   let recordingTimer: ReturnType<typeof setTimeout> | undefined;
   let turnEpoch = 0;
   const playbackWaiters = new PlaybackWaiters();
-  let answeringSpeechId = "";
+  let answeringSpeechId = $state('');
   const presentedReplies = new Set<string>();
   const undisplayedReplies = new Set<string>();
   function clearEmotes(){modelAudioStop++;++emoteRevision;emoteSequence?.stop();emoteAudio?.stop();profile.avatar.emote=undefined;}
@@ -301,24 +364,36 @@
     catch(error){notify(prettyError(error),true);}
     finally{confirming=false;}
   }
+  const nativeOwnOutput = $derived(!!nativeLifeTurn&&answeringAutopilot&&answeringBotId===nativeLifeTurn.botId&&answeringSpeechId===nativeLifeTurn.turnId);
+  const nativeOwnSound = $derived(nativeOwnOutput&&automaticEmoteRevision===emoteRevision);
+  const externalForeignSound = $derived.by(()=>{externalEmoteRevision;return externalEmotes?.blocksExcept(nativeOwnOutput&&nativeLifeTurn?{botId:nativeLifeTurn.botId,output:nativeLifeOutput,speechId:nativeLifeTurn.turnId}:undefined)??externalEmoteBlocking;});
   const autopilotBlocker = $derived(speechBlocker({
-    permission:!!$systemPermission, update:updateInstalling, starting:autopilotPending, reply:busy||speaking||speechPreparing,
-    sound:foregroundEmotePlaying||externalEmoteBlocking, recording:microphone||microphoneStarting,
+    permission:!!$systemPermission, update:updateInstalling, starting:autopilotPending, reply:(busy||speaking||speechPreparing)&&!nativeOwnOutput,
+    sound:foregroundEmotePlaying&&!nativeOwnSound||externalForeignSound, recording:microphone||microphoneStarting,
     transcription:transcribing, saving, botChange:switchingBot||creatingBot,
-    extensions:extensionEditing, botDialog, updatesDialog:updatesOpen, unsaved:hasUnsavedChanges||usageBudgetDirty,
+    extensions:extensionEditing||extensionBusy, botDialog:botDialog||!!confirmation||confirming||shortcutHelp||$operatorDialogActive, updatesDialog:updatesOpen, unsaved:hasUnsavedChanges||usageBudgetDirty,
     draft:!!message.trim(), secretDraft:Object.values(secretInputs).some(value=>!!value.trim()),
   }));
   const autopilotSpeechStatus = $derived(speechStatus({
-    active:!!selectedAutopilot?.active, speak:profile.autopilot.speak===true,
+    active:!!selectedLifeSession?.active, speak:profile.autopilot.speak===true,
     outputAvailable:profile.output.mode==='studio'||bots.some(bot=>bot.id===profile.id&&botEnabled(bot)),
-    modelConfigured:typeof profile.model.model==='string'&&!!profile.model.model.trim(),
-    blocked:autopilotBlocker, schedule:speechSchedules[profile.id],
+    modelConfigured:['claude-code','codex'].includes(profile.model.provider)||typeof profile.model.model==='string'&&!!profile.model.model.trim(),
+    blocked:autopilotBlocker, schedule:nativeSchedule(selectedLifeSession),
   }));
+  const lifeBlocked = $derived(!!autopilotBlocker||!lifeRuntime||nativeOperatorPending);
+  async function reportLife(activity=false) {
+    if(!native||!lifeMounted||!lifeUi)return;
+    const observedActivity=activity||lifeActivity,revision=operatorRevision;lifeActivity=false;
+    try{await lifeUi.report(lifeBlocked,observedActivity);if(observedActivity&&revision===operatorRevision)nativeOperatorPending=false;}
+    catch(error){lifeActivity||=observedActivity;lifeError=prettyError(error);}
+  }
+  $effect(()=>{const blocked=lifeBlocked;if(lifeMounted&&native&&lifeConnected)void lifeUi.report(blocked,false).catch(error=>lifeError=prettyError(error));});
+  $effect(()=>{const botId=profile.id;if(lifeMounted&&native)void refreshLifeBot(botId);});
   const updateBusyReason = $derived(
     $systemPermission ? $t('Schließe zuerst die Berechtigungsabfrage.') :
     busy || speaking || speechPreparing || emoteSoundPlaying || externalEmotePlaying ? $t("Beende zuerst laufende Antworten, Sprachausgaben und Emote-Sounds.") :
     microphone || microphoneStarting || transcribing || wakeActive ? $t("Beende zuerst die Mikrofonaufnahme und das Zuhören mit Aktivierungsphrase (Stop).") :
-    Object.keys(autopilots).length ? $t("Pausiere zuerst alle Autopiloten.") :
+    Object.keys(autopilots).length||lifeRuntime?.sessions.some(session=>session.active) ? $t("Pausiere zuerst alle Autopiloten.") :
     running ? $t("Pausiere zuerst die automatischen Chat-Antworten.") :
     hasUnsavedChanges || usageBudgetDirty || message.trim() || Object.values(secretInputs).some(value=>!!value.trim()) ? $t("Speichere deine Änderungen und sende oder leere Entwürfe vor der Installation.") :
     saving || switchingBot || creatingBot || autopilotPending || extensionEditing || botDialog ? $t("Schließe zuerst laufende Bearbeitungen und Speichervorgänge.") : ''
@@ -445,6 +520,7 @@
     const visibleReplies=new Set(history.filter(item=>item.role==='assistant').map(item=>item.id));
     if(profile.id!==state.profile.id){subtitleLifetime?.cancel();clearEmotes();hadSubtitle=false;}
     if(initialAutopilotRevision===autopilotEventRevision&&initialStartRevision===autopilotStartRevision)loadAutopilots(state.autopilot||[]);
+    if(state.lifeRuntime)acceptLifeRuntime(state.lifeRuntime);
     profile=state.profile;profile.autopilot={...cloneDefaults().autopilot,...profile.autopilot};profile.stt.language??='de';profile.stt.localBackend??='whispercpp';profile.model.command??='';profile.model.reasoningEffort??='default';profile.model.responseStyle??='default';profile.model.maxToolRounds??=4;profile.model.visionEnabled??=true;
     profile.screenContext={enabled:profile.screenContext?.enabled===true,displayId:typeof profile.screenContext?.displayId==='string'?profile.screenContext.displayId:''};
     profile.hindsight={enabled:false,baseUrl:'http://127.0.0.1:8888',bankId:'',apiKeyId:`${profile.id}-hindsight`,autoRecall:true,autoRetain:true,...profile.hindsight};
@@ -460,6 +536,7 @@
     const initialAutopilotRevision=autopilotEventRevision;const initialStartRevision=autopilotStartRevision;
     const state=await call('get_app_state');
     if(initialAutopilotRevision===autopilotEventRevision&&initialStartRevision===autopilotStartRevision)loadAutopilots(state.autopilot||[]);
+    if(state.lifeRuntime)acceptLifeRuntime(state.lifeRuntime);
     library=state.library||{mcpServers:[],skills:state.skills||[]};bots=state.bots||bots;secrets=state.secretIds||secrets;
     if(state.profile.id===profile.id){
       profile.mcpServers=state.profile.mcpServers||[];profile.skillsEnabled=state.profile.skillsEnabled||[];
@@ -575,7 +652,7 @@
     // so closing recovery cannot produce a new denial dialog on the next tick.
     const affected = Object.keys(autopilots).filter(id => id === botId || (id === profile.id ? profile : bots.find(bot => bot.id === id)?.profile)?.screenContext?.enabled);
     const next = { ...autopilots };
-    for (const id of affected) { autopilotScheduler.stop(id); delete next[id]; }
+    for (const id of affected) { delete next[id]; }
     autopilots = next;
     systemPermission.recover('screen', error);
     await Promise.all(affected.map(async id => {
@@ -607,61 +684,14 @@
     if (!await ensureScreenFor(participants, true, crewCurrent) || !crewCurrent()) return;
     if(await persist(true)&&crewCurrent()){running=true;log(translate("Cohost gestartet."));}
   }
-  async function stopAll(){systemPermission.cancel();chatScheduler.cancel();++autopilotStartRevision;autopilots={};autopilotPreview=undefined;autopilotScheduler.stop();externalEmotes?.clear();turnEpoch++;wakeStopSignal++;subtitleLifetime?.cancel();running=false;busy=false;speechPreparing=false;partial='';queue=[];clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}microphoneStream?.getTracks().forEach(t=>t.stop());microphone=false;transcribing=false;player?.stop();clearEmotes();finishPlayback();answeringSpeechId='';answeringBotId='';answeringAutopilot=false;speaking=false;level=0;try{await call('stop_generation');}catch(e){if(native)notify(prettyError(e),true);}log(translate("Sprache und ausstehende Antworten gestoppt."));}
-  async function runMessage(text:string,source='operator',user='Streamer',botId=profile.id,replyRouteId?:string,interactive=true,onAccepted?:()=>void,autopilotClaim?:AutopilotClaim,chatClaim?:ChatClaim) {
-    const autonomous=source==='autopilot';
-    const sessionSeed=autonomous?autopilots[botId]?.seed:undefined;
-    const currentAutopilot=()=>!autonomous||(
-      !!autopilotClaim&&autopilotClaim.botId===botId&&autopilotScheduler.isCurrentClaim(autopilotClaim)
-      &&!!sessionSeed&&autopilots[botId]?.active===true&&autopilots[botId]?.seed===sessionSeed
-    );
-    if((!autonomous&&!text.trim())||busy||updateInstalling||microphoneStarting||systemPermission.active)return;
-    // A manual selection/operator send takes priority over automatic preflight.
-    // Once playback owns busy, its existing serial presentation guards apply.
-    const manualClaim=!autonomous&&!chatClaim?chatScheduler.beginManual(botId):undefined;
-    if(!autonomous&&!chatClaim&&!manualClaim)return;
-    try {
-    const currentManual=()=>!manualClaim||chatScheduler.isCurrentManual(manualClaim);
-    const currentChat=()=>{
-      if(!chatClaim)return true;
-      const candidate=chatParticipants(bots,profile).find(bot=>bot.botId===botId);
-      return running&&chatScheduler.isCurrentClaim(chatClaim)&&!!candidate
-        &&queue.some(entry=>entry===chatClaim.message)&&chatPriority(candidate,chatClaim.message,Date.now())!==undefined;
-    };
-    if(!currentChat()||!currentManual())return;
-    if(!autonomous)autopilotScheduler.activity();
-    const selected=botId===profile.id;
-    const botConfig=selected?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===botId)?.profile);
-    if(!botConfig){notify(translate("Bot wurde nicht gefunden."),true);return;}
-    if(!botConfig.model.model&&!['claude-code','codex'].includes(botConfig.model.provider)){
-      if(selected)navigate('models');notify(translate('Wähle zuerst ein Dialogmodell für {name}.',{name:botConfig.name}));return;
-    }
-    const permissionCurrent = permissionLease();
-    // Saving a selected CLI profile only normalizes its blank default model;
-    // every other configuration change invalidates preflight before dispatch.
-    const contextOf=(config:any)=>JSON.stringify(config&&['claude-code','codex'].includes(config.model?.provider)&&!config.model?.model?.trim()?{...config,model:{...config.model,model:'default'}}:config);
-    const botContext = contextOf(botConfig);
-    const sameBotConfig=()=>botContext===contextOf(botId===profile.id?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===botId)?.profile));
-    const current = () => currentAutopilot() && currentChat() && currentManual() && permissionCurrent() && sameBotConfig();
-    if (!await ensureScreenFor([botConfig], interactive && !autonomous, current) || !current()) return;
-    const requestId=crypto.randomUUID();
-    const epoch=++turnEpoch;clearEmotes();automaticEmoteRevision=emoteRevision;emoteOutput={botId,audio:botConfig.output.mode==='studio'};busy=true;answeringBotId=botId;answeringSpeechId=requestId;answeringAutopilot=autonomous;speechPreparing=false;partial='';
-    try {
-      if(selected&&!autonomous&&(!await saveCurrentBot()||epoch!==turnEpoch))return;
-      if(botConfig.output.mode==='overlay'&&!bots.find(bot=>bot.id===botId)?.live)await call('open_overlay',{botId});
-      if(epoch!==turnEpoch||!currentAutopilot()||!currentChat()||!currentManual()||!sameBotConfig())return;
-      onAccepted?.();
-      if(selected&&!autonomous)history=[...history,{id:crypto.randomUUID(),role:'user',text,source,user,createdAt:new Date().toISOString()}];
-      const reply=autonomous?await call('send_autopilot',{botId,requestId}):chatClaim?await call('send_automatic_message',{text,source,user,botId,requestId,replyRouteId}):await call('send_message',{text,source,user,skillIds:[],botId,requestId,replyRouteId});
-      if(epoch!==turnEpoch)return;
-      if(autonomous){
-        const next={...silentAutopilots};
-        if(reply.skipped){next[botId]=autopilots[botId]?.seed||'';log(translate('{name}: Letzter Sprechversuch ohne Beitrag.',{name:botConfig.name}));}
-        else delete next[botId];
-        silentAutopilots=next;
-      }
-      if(reply.skipped)return;
-      if(!matchesPlayback(reply,{id:answeringSpeechId,botId:answeringBotId}))throw new Error('Antwort gehört nicht zur aktuellen Anfrage.');
+  async function stopAll(){lifeAdmissions.cancel();systemPermission.cancel();chatScheduler.cancel();++autopilotStartRevision;autopilots={};autopilotPreview=undefined;nativeLifeTurn=undefined;nativeReplyId='';lifeStopping=true;lifeRuntime=undefined;externalEmotes?.clear();turnEpoch++;wakeStopSignal++;subtitleLifetime?.cancel();running=false;busy=false;speechPreparing=false;partial='';queue=[];clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}microphoneStream?.getTracks().forEach(t=>t.stop());microphone=false;transcribing=false;player?.stop();clearEmotes();finishPlayback();answeringSpeechId='';answeringBotId='';answeringAutopilot=false;speaking=false;level=0;try{await call('stop_generation');lifeStopping=false;await refreshLifeRuntime();}catch(e){if(native)notify(prettyError(e),true);}finally{lifeStopping=false;}log(translate("Sprache und ausstehende Antworten gestoppt."));}
+  async function playReply(reply:any,botConfig:any,epoch:number,source:string) {
+    const botId=botConfig.id;
+    const nativeTurn=nativeLifeTurn?.turnId===reply.id?nativeLifeTurn:undefined;
+    const beforeStart=nativeTurn?async()=>{
+      acceptLifeRuntime(await call('get_life_runtime'));
+      if(epoch!==turnEpoch||nativeOperatorPending||!currentLifeTurn(nativeTurn,lifeRuntime))throw new DOMException('Die native Ausgabe wurde abgebrochen.','AbortError');
+    }:undefined;
       const voice=reply.voice;
       if(!voice)throw new Error('Stimme des Wiedergabeauftrags fehlt.');
       if(reply.id&&!presentedReplies.has(reply.id))undisplayedReplies.add(reply.id);
@@ -683,11 +713,94 @@
         try{
           if(botConfig.output.mode==='studio'&&automaticEmoteRevision===emoteRevision)await emoteAudio.prepare(admittedEmotes(reply.emotes||[]),soundId=>call('get_emote_sound',{soundId,botId}));
           if(epoch!==turnEpoch)return;
-          if(voice.enabled)await player.speak(voice.provider==='elevenlabs'?(reply.speechText||reply.text):reply.text,voice,async()=>call('get_speech_audio',{id:reply.id,botId}),begin);
-          else begin();
+          if(voice.enabled)await player.speak(voice.provider==='elevenlabs'?(reply.speechText||reply.text):reply.text,voice,async()=>call('get_speech_audio',{id:reply.id,botId}),begin,beforeStart);
+          else{await beforeStart?.();if(epoch===turnEpoch)begin();}
+          if(nativeTurn&&epoch===turnEpoch)nativePlaybackCompleted=reply.id;
         }catch(e){audioError=prettyError(e);throw e;}
         finally{if(epoch===turnEpoch){if(audioError){clearEmotes();subtitleLifetime?.cancel(reply.id);}else subtitleLifetime?.finish(reply.id);await report(false,audioError);}}
       }else if(reply.id)await waitForPlayback(reply.id,botId);
+  }
+  async function lifeTurn(value:unknown) {
+    let event:LifeTurn;
+    try{event=parseLifeTurn(value);}catch(error){lifeError=prettyError(error);return;}
+    if(event.kind==='finished'){
+      lifeAdmissions.finish(event);
+      if(sameLifeTurn(nativeLifeTurn,event))invalidateNativePlayback(undefined,true,true);
+      return;
+    }
+    if(event.kind==='started'){
+      if(sameLifeTurn(nativeLifeTurn,event))return;
+      await lifeAdmissions.start(event,async current=>{
+        const epoch=turnEpoch,revision=operatorRevision;
+        try{acceptLifeRuntime(await call('get_life_runtime'));}catch(error){lifeError=prettyError(error);return false;}
+        if(!current()||!appAlive||epoch!==turnEpoch||revision!==operatorRevision||nativeOperatorPending||!currentLifeTurn(event,lifeRuntime)||autopilotBlocker)return false;
+        const config=event.botId===profile.id?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===event.botId)?.profile);
+        if(!config)return false;
+        invalidateNativePlayback(undefined,false,true);nativeLifeTurn=event;nativeLifeOutput=config.output.mode;nativeReplyId='';nativePlaybackCompleted='';++turnEpoch;
+        clearEmotes();automaticEmoteRevision=emoteRevision;emoteOutput={botId:event.botId,audio:config.output.mode==='studio'};
+        busy=true;answeringBotId=event.botId;answeringSpeechId=event.turnId;answeringAutopilot=true;speechPreparing=false;partial='';
+        return true;
+      });
+      return;
+    }
+    if(!await lifeAdmissions.ready(event))return;
+    if(!sameLifeTurn(nativeLifeTurn,event)||!currentLifeTurn(event,lifeRuntime)||!event.reply||nativeReplyId===event.turnId)return;
+    nativeReplyId=event.turnId;
+    const epoch=turnEpoch,botId=event.botId;
+    const config=botId===profile.id?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===botId)?.profile);
+    if(!config)return;
+    try{
+      if(event.reply.skipped){silentAutopilots={...silentAutopilots,[botId]:autopilots[botId]?.seed||event.sessionId};log(translate('{name}: Letzter Sprechversuch ohne Beitrag.',{name:config.name}));return;}
+      const silent={...silentAutopilots};delete silent[botId];silentAutopilots=silent;
+      await playReply(event.reply,config,epoch,'autopilot');
+    }catch(error){if(epoch===turnEpoch){notify(`${config.name}: ${prettyError(error)}`,true);log(prettyError(error),'error');}}
+    finally{if(epoch===turnEpoch){busy=false;answeringAutopilot=false;speechPreparing=false;partial='';answeringBotId='';answeringSpeechId='';}}
+  }
+  async function runMessage(text:string,source='operator',user='Streamer',botId=profile.id,replyRouteId?:string,interactive=true,onAccepted?:()=>void,chatClaim?:ChatClaim) {
+    // Native Life owns every spontaneous provider dispatch. This function is
+    // solely for explicit operator requests and the fair automatic chat queue.
+    if(source==='autopilot'||!text.trim()||busy||updateInstalling||microphoneStarting||systemPermission.active)return;
+    // A manual selection/operator send takes priority over automatic preflight.
+    // Once playback owns busy, its existing serial presentation guards apply.
+    const manualClaim=!chatClaim?chatScheduler.beginManual(botId):undefined;
+    if(!chatClaim&&!manualClaim)return;
+    try {
+    const currentManual=()=>!manualClaim||chatScheduler.isCurrentManual(manualClaim);
+    const currentChat=()=>{
+      if(!chatClaim)return true;
+      const candidate=chatParticipants(bots,profile).find(bot=>bot.botId===botId);
+      return running&&chatScheduler.isCurrentClaim(chatClaim)&&!!candidate
+        &&queue.some(entry=>entry===chatClaim.message)&&chatPriority(candidate,chatClaim.message,Date.now())!==undefined;
+    };
+    if(!currentChat()||!currentManual())return;
+    await ensureOperatorBarrier();
+    const selected=botId===profile.id;
+    const botConfig=selected?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===botId)?.profile);
+    if(!botConfig){notify(translate("Bot wurde nicht gefunden."),true);return;}
+    if(!botConfig.model.model&&!['claude-code','codex'].includes(botConfig.model.provider)){
+      if(selected)navigate('models');notify(translate('Wähle zuerst ein Dialogmodell für {name}.',{name:botConfig.name}));return;
+    }
+    const permissionCurrent = permissionLease();
+    // Saving a selected CLI profile only normalizes its blank default model;
+    // every other configuration change invalidates preflight before dispatch.
+    const contextOf=(config:any)=>JSON.stringify(config&&['claude-code','codex'].includes(config.model?.provider)&&!config.model?.model?.trim()?{...config,model:{...config.model,model:'default'}}:config);
+    const botContext = contextOf(botConfig);
+    const sameBotConfig=()=>botContext===contextOf(botId===profile.id?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===botId)?.profile));
+    const current = () => currentChat() && currentManual() && permissionCurrent() && sameBotConfig();
+    if (!await ensureScreenFor([botConfig], interactive, current) || !current()) return;
+    const requestId=crypto.randomUUID();
+    const epoch=++turnEpoch;clearEmotes();automaticEmoteRevision=emoteRevision;emoteOutput={botId,audio:botConfig.output.mode==='studio'};busy=true;answeringBotId=botId;answeringSpeechId=requestId;answeringAutopilot=false;speechPreparing=false;partial='';
+    try {
+      if(selected&&(!await saveCurrentBot()||epoch!==turnEpoch))return;
+      if(botConfig.output.mode==='overlay'&&!bots.find(bot=>bot.id===botId)?.live)await call('open_overlay',{botId});
+      if(epoch!==turnEpoch||!currentChat()||!currentManual()||!sameBotConfig())return;
+      onAccepted?.();
+      if(selected)history=[...history,{id:crypto.randomUUID(),role:'user',text,source,user,createdAt:new Date().toISOString()}];
+      const reply=chatClaim?await call('send_automatic_message',{text,source,user,botId,requestId,replyRouteId}):await call('send_message',{text,source,user,skillIds:[],botId,requestId,replyRouteId});
+      if(epoch!==turnEpoch)return;
+      if(reply.skipped)return;
+      if(!matchesPlayback(reply,{id:answeringSpeechId,botId:answeringBotId}))throw new Error('Antwort gehört nicht zur aktuellen Anfrage.');
+      await playReply(reply,botConfig,epoch,source);
     }catch(e){if(epoch===turnEpoch){
       let permissionBlocked=false;
       if(botConfig.screenContext?.enabled){
@@ -699,7 +812,7 @@
       log(`${botConfig.name}: ${prettyError(e)}`,'error');
     }}
     finally{if(epoch===turnEpoch){busy=false;answeringAutopilot=false;speechPreparing=false;partial='';answeringBotId='';answeringSpeechId='';}}
-    } finally { if(manualClaim)chatScheduler.finishManual(manualClaim); }
+    } catch(error){notify(prettyError(error),true);} finally { if(manualClaim)chatScheduler.finishManual(manualClaim); }
   }
   async function sendOwn(){if(microphoneStarting||updateInstalling||systemPermission.active)return;unlockEmoteAudio();const text=message;await runMessage(text,'operator','Streamer',profile.id,undefined,true,()=>{if(message===text)message='';});}
   async function answerQueued(item:any,botId=profile.id,interactive=true,chatClaim?:ChatClaim){
@@ -707,7 +820,7 @@
     if(busy||microphone||microphoneStarting||transcribing)return;
     await runMessage(item.text,item.platform,item.user,botId,item.replyRouteId,interactive,()=>{
       queue=queue.map(entry=>entry.queueId===item.queueId?{...entry,answeredBy:[...new Set([...(entry.answeredBy||[]),botId])]}:entry);
-    },undefined,chatClaim);
+    },chatClaim);
   }
   async function platformAction(platform:string){
     try{if(connection[platform]==='connected'||connection[platform]==='connecting'){await call('disconnect_platform',{platform});connection[platform]='disconnected';}
@@ -779,7 +892,7 @@
     updateInstalling=installing;
     if(!installing)return;
     systemPermission.cancel();chatScheduler.cancel();
-    ++autopilotStartRevision;autopilots={};autopilotPreview=undefined;autopilotScheduler.stop();
+    ++autopilotStartRevision;autopilots={};autopilotPreview=undefined;
     ++turnEpoch;++wakeStopSignal;microphoneSession.cancel();clearEmotes();player?.stop();
     clearTimeout(recordingTimer);if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}
     microphoneStream?.getTracks().forEach(track=>track.stop());microphone=false;
@@ -829,14 +942,22 @@
   onMount(()=>{
     subtitleLifetime=new SubtitleLifetime(text=>subtitleText=text);
     player=new SpeechPlayer(v=>level=v,v=>speaking=v);
-    externalEmotes=new ExternalEmotePlayback(value=>externalEmotePlaying=value,value=>externalEmoteBlocking=value);
+    externalEmotes=new ExternalEmotePlayback(value=>externalEmotePlaying=value,value=>externalEmoteBlocking=value,()=>externalEmoteRevision++);
     emoteAudio=new EmoteAudioPlayer(text=>notify(text,true),value=>{effectSoundPlaying=value;updateSoundPlaying();});
     emoteSequence=new EmoteSequence(applyEmote);
     const cleanup:(()=>void)[]=[];let disposed=false;
     window.addEventListener('focus',refreshOutputDisplays);cleanup.push(()=>window.removeEventListener('focus',refreshOutputDisplays));
-    function subscribe(name:string,handler:(event:any)=>void){onEvent(name,handler).then(f=>{if(disposed)f();else cleanup.push(f);}).catch(e=>log(prettyError(e),'error'));}
+    function subscribe(name:string,handler:(event:any)=>void,required=false){return onEvent(name,handler).then(f=>{if(disposed)f();else cleanup.push(f);}).catch(e=>{log(prettyError(e),'error');if(required)throw e;});}
     const voices=()=>{systemVoices=window.speechSynthesis?.getVoices()||[]};voices();window.speechSynthesis?.addEventListener('voiceschanged',voices);
     if(native){refresh().catch(e=>notify(prettyError(e),true));void refreshOutputDisplays();}
+    const lifeListeners=Promise.all([subscribe('cohost://life-runtime',acceptLifeRuntime,true),subscribe('cohost://life-turn',value=>{void lifeTurn(value).catch(error=>lifeError=prettyError(error));},true)]);
+    lifeUi=new LifeUI(call,available=>{if(appAlive)lifeConnected=available;});
+    cleanup.push(registerOperatorDialogBarrier(ensureOperatorBarrier));
+    if(native)void lifeListeners.then(()=>lifeUi.connect()).then(async()=>{if(disposed)return;lifeMounted=true;await refreshLifeRuntime();await reportLife();}).catch(error=>{if(!disposed){lifeMounted=true;lifeError=prettyError(error);}});
+    let lastActivity=0;
+    const activity=(event:Event)=>{if(!event.isTrusted)return;++operatorRevision;nativeOperatorPending=true;invalidateNativePlayback();lifeActivity=true;const now=Date.now();if(now-lastActivity>=500){lastActivity=now;void reportLife(true);}};
+    for(const name of ['pointerdown','keydown','input']){window.addEventListener(name,activity,{capture:true});cleanup.push(()=>window.removeEventListener(name,activity,{capture:true}));}
+    const heartbeat=setInterval(()=>{void reportLife();},2000);cleanup.push(()=>clearInterval(heartbeat));
     subscribe('cohost://autopilot',acceptAutopilot);
     subscribe('cohost://chat',m=>{queue=appendChatMessage(queue,{...m,queueId:JSON.stringify([m.platform,m.replyRouteId,m.id]),answeredBy:[]});});
     subscribe('cohost://connection',e=>{connection[e.platform]=e.status;connectionOwner[e.platform]=['connected','connecting'].includes(e.status)?e.ownerName||'':'';connectionMessages[e.platform]=e.message||'';log(`${e.platform==='twitch'?'Twitch':'YouTube'}: ${e.message||translate(({connected:'Verbunden',connecting:'Verbindet …',disconnected:'Nicht verbunden',error:'Verbindungsfehler'} as Record<string,string>)[e.status]||e.status)}`,e.status==='error'?'error':'info');});
@@ -846,6 +967,7 @@
       const active=matchesPlayback(e,{id:answeringSpeechId,botId:answeringBotId});
       if(active&&profile.output.mode!=='studio'&&(!e.output||e.output===profile.output.mode))speaking=!!e.speaking;
       if(!e.speaking){
+        if(active&&answeringAutopilot&&!e.error)nativePlaybackCompleted=e.id;
         if(e.botId===profile.id){if(e.error)subtitleLifetime?.cancel(e.id);else if(e.id)subtitleLifetime?.finish(e.id);}
         if(e.id)finishPlayback(e.id);
         if(e.error){
@@ -858,7 +980,9 @@
     subscribe('cohost://overlay',e=>{
       if(e.kind==='cancel-speech'){
         if(typeof e.id!=='string'||!e.id)return;
-        cancelPlaybackTurn(e,{id:answeringSpeechId,botId:answeringBotId,autopilot:answeringAutopilot},botId=>autopilotScheduler.finish(botId),()=>{
+        const nativeTurn=nativeLifeTurn;
+        if(nativeTurn&&nativeTurn.turnId===e.id&&nativeTurn.botId===e.botId)lifeAdmissions.finish(nativeTurn);
+        cancelPlaybackTurn(e,{id:answeringSpeechId,botId:answeringBotId,autopilot:answeringAutopilot},()=>{nativeLifeTurn=undefined;},()=>{
           ++turnEpoch;running=false;chatScheduler.cancel();player?.stop();clearEmotes();subtitleLifetime?.cancel(e.id);
           busy=false;speechPreparing=false;answeringBotId='';answeringSpeechId='';answeringAutopilot=false;speaking=false;level=0;
         });
@@ -866,9 +990,10 @@
       }
       if(e.kind==='profile'&&e.profile?.id){bots=bots.map(bot=>bot.id===e.profile.id?{...bot,name:e.profile.name,profile:{...bot.profile,name:e.profile.name,tagline:e.profile.tagline,avatar:{...bot.profile.avatar,...e.profile.avatar},output:{...bot.profile.output,...e.profile.output},emotes:e.profile.emotes,motions:e.profile.motions}}:bot);}
       if(e.kind==='stop'){
+        lifeAdmissions.cancel(e.botId);
         if(e.botId&&e.botId!==profile.id&&e.botId!==answeringBotId)return;
         if(!e.botId||!answeringBotId||e.botId===answeringBotId){
-          ++turnEpoch;chatScheduler.cancel(e.botId);autopilotScheduler.stop(e.botId);player?.stop();finishPlayback();busy=false;speechPreparing=false;answeringBotId='';answeringSpeechId='';answeringAutopilot=false;speaking=false;level=0;
+          ++turnEpoch;chatScheduler.cancel(e.botId);player?.stop();finishPlayback();busy=false;speechPreparing=false;answeringBotId='';answeringSpeechId='';answeringAutopilot=false;speaking=false;level=0;
         }
         if(!e.botId||e.botId===profile.id){subtitleLifetime?.cancel();clearEmotes();}
         return;
@@ -881,15 +1006,6 @@
     subscribe('cohost://emote',e=>{if(e.botId&&e.botId!==profile.id)return;void showManualEmote(e);});
     const timer=setInterval(()=>{
       if(autopilotPreview&&Date.now()-autopilotPreview.startedAt>30000)autopilotPreview=undefined;
-      const autonomousBots=Object.values(autopilots).filter(runtime=>runtime.active).map(runtime=>{
-        const config=runtime.botId===profile.id?profile:bots.find(bot=>bot.id===runtime.botId)?.profile;
-        const output=runtime.botId===profile.id&&config?.output?.mode==='studio'||bots.some(bot=>bot.id===runtime.botId&&botEnabled(bot));
-        return {botId:runtime.botId,seed:runtime.seed,config:config?.autopilot||cloneDefaults().autopilot,eligible:!!config&&!!output&&!!config.model?.model};
-      });
-      autopilotScheduler.sync(autonomousBots);
-      const autoBlocked=!!autopilotBlocker;
-      if(autoBlocked)autopilotScheduler.next(true);
-      refreshSpeechSchedules();
       queue=queue.filter(q=>Date.now()-new Date(q.createdAt).getTime()<Math.max(profile.chat.expirySeconds,...bots.map(bot=>bot.profile?.chat?.expirySeconds||0))*1000);
       if(systemPermission.active||updateInstalling||busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing||chatScheduler.pending)return;
       // Chat keeps the full audio guard. Autonomous preparation may interrupt
@@ -898,11 +1014,9 @@
         const next=chatScheduler.nextClaim(chatParticipants(bots,profile),queue);
         if(next){void chatScheduler.runClaim(next,()=>answerQueued(next.message,next.botId,false,next)).catch(error=>notify(prettyError(error),true));return;}
       }
-      if(autoBlocked)return;
-      const spontaneous=autopilotScheduler.nextClaim();
-      if(spontaneous){refreshSpeechSchedules();void autopilotScheduler.runClaim(spontaneous,()=>runMessage('', 'autopilot', 'Autopilot', spontaneous.botId,undefined,false,undefined,spontaneous));}
+
     },1000);
-    return()=>{appAlive=false;systemPermission.cancel();chatScheduler.cancel();disposed=true;autopilotScheduler.stop();turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
+    return()=>{appAlive=false;lifeAdmissions.cancel();lifeMounted=false;lifeUi.dispose();systemPermission.cancel();chatScheduler.cancel();disposed=true;turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
   });
 </script>
 
@@ -945,7 +1059,8 @@
 
       {:else if page==='autopilot'}
         <section class="settings-panel"><OutputPreviewControls {profile} displays={outputDisplays} refreshDisplays={refreshOutputDisplays} monitor={true} disabled={saving||switchingBot||creatingBot||updateInstalling} preview={previewOutput}/></section>
-        <AutopilotPanel bind:config={profile.autopilot} botName={profile.name} active={!!selectedAutopilot?.active} speechStatus={autopilotSpeechStatus} lastAttemptSilent={!!selectedAutopilot?.active&&silentAutopilots[profile.id]===selectedAutopilot.seed} disabled={busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing||updateInstalling} pending={autopilotPending} previewing={autopilotPreview?.botId===profile.id} onStart={()=>toggleAutopilot(true)} onStop={()=>toggleAutopilot(false)} onPreview={previewAutopilot}/>
+        <LifeRuntimePanel botId={profile.id} botName={profile.name} session={selectedLifeSession} system={lifeRuntime?.system} bot={lifeBots[profile.id]} connected={lifeConnected} error={lifeError} pending={autopilotPending} disabled={busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing||updateInstalling} speechStatus={autopilotSpeechStatus} lastAttemptSilent={!!selectedAutopilot?.active&&silentAutopilots[profile.id]===selectedAutopilot.seed} previewing={autopilotPreview?.botId===profile.id} onPreview={previewAutopilot} onStart={(mode,initialize)=>void toggleLife(mode,true,initialize)} onStop={()=>void toggleLife(selectedLifeSession?.mode??'ambient',false)} onRefresh={()=>void refreshLifeRuntime()} onReconnect={()=>void reconnectLifeUI()}/>
+        <AutopilotPanel showControls={false} bind:config={profile.autopilot} botName={profile.name} active={!!selectedAutopilot?.active} speechStatus={autopilotSpeechStatus} lastAttemptSilent={!!selectedAutopilot?.active&&silentAutopilots[profile.id]===selectedAutopilot.seed} disabled={busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing||updateInstalling} pending={autopilotPending} previewing={autopilotPreview?.botId===profile.id} onStart={()=>toggleAutopilot(true)} onStop={()=>toggleAutopilot(false)} onPreview={previewAutopilot}/>
         <UsageBudgetPanel {bots} disabled={updateInstalling||saving||switchingBot||creatingBot} onDirtyChange={value=>usageBudgetDirty=value}/>
         {#key profile.id}<ScreenContextPanel botId={profile.id} {permissionContext} prepareSelection={prepareScreenSource} onError={message=>notify(message,true)} bind:config={profile.screenContext} visionEnabled={profile.model.visionEnabled} disabled={updateInstalling}/>{/key}
         {#if motionRuntime}<section class="autopilot-stage"><Avatar bind:this={liveAvatar} {profile} {speaking} {level} {emotion} autopilot={motionRuntime} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath,overlayUrl)} onModelLoaded={info=>renderedModel=info}/><span>{autopilotPreview ? $t('Stumme Bewegungsvorschau · 30 Sekunden') : $t('Autopilot · {name}',{name:profile.name})}</span></section>{/if}

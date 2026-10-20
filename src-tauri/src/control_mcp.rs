@@ -375,7 +375,7 @@ mod tests {
     #[tokio::test]
     async fn control_clients_cannot_start_unmetered_dialogs_or_relabel_their_origin() {
         let control=ControlMcp::default();
-        for name in ["send_message","send_automatic_message","send_autopilot","synthesize_speech","get_usage_budget","set_usage_limits","cohost_send_message"] {
+        for name in ["send_message","send_automatic_message","send_autopilot","synthesize_speech","get_usage_budget","set_usage_limits","cohost_send_message","set_life_mode","get_life_runtime","get_life_bot","connect_life_ui","report_life_ui","disconnect_life_ui"] {
             let headers=headers(&control,MODERN,"tools/call",Some(name));
             let body=request("tools/call",json!({"name":name,"arguments":{"text":"start","source":"operator","origin":"manual","autonomous":false}}),true);
             let (status,reply)=inspect(serve(&control,PORT,&headers,body.to_string().as_bytes(),|_|async{panic!("control request bypassed native dispatch admission");#[allow(unreachable_code)] Ok(Value::Null)}).await).await;

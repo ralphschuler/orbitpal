@@ -17,7 +17,7 @@
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
 
   type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
-  type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void>; controller: AbortController; presentation?: PresentationTicket; visualEndAt: number };
+  type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void>; controller: AbortController; presentation?: PresentationTicket; visualEndAt: number; emoteRevision: number };
   let avatar = $state<{preparePresentation:(signal:AbortSignal)=>Promise<()=>void>;canPresent:(event:EmotePayload)=>boolean;present:(event:EmotePayload)=>boolean}>();
   const admittedEmotes=(events:EmotePayload[]=[])=>events.filter(event=>avatar?.canPresent(event));
   let profile = $state<any>(cloneDefaults());
@@ -133,6 +133,7 @@
     const reports = soundPlaybackReports.update(
       foregroundSoundPlaying(effectSoundPlaying, modelSoundPlaying, modelSoundActivity),
       modelSoundPlaying && modelSoundActivity === 'ambient',
+      current?.started && !current.finished && current.emoteRevision === emoteRevision ? current.event.id : undefined,
     );
     for (const report of reports) {
       const payload = {botId: targetBot, output: native ? 'overlay' : 'obs', ...report};
@@ -220,7 +221,7 @@
   async function speak(event: SpeechEvent) {
     if (disposed) return;
     cancelCurrent();
-    const job: PlaybackJob = { event, started: false, finished: false, reporting: Promise.resolve(), controller: new AbortController(), visualEndAt: 0 };
+    const job: PlaybackJob = { event, started: false, finished: false, reporting: Promise.resolve(), controller: new AbortController(), visualEndAt: 0, emoteRevision };
     current = job;
     const plannedEmoteRevision = emoteRevision;
     failure = '';

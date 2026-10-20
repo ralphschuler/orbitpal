@@ -37,6 +37,9 @@ fn advance(runtime:&mut Runtime){
     // belongs only to the running process, never to an imported profile.
     runtime.revision=runtime.revision.saturating_add(1).min(9_007_199_254_740_991);
 }
+#[derive(Clone,Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct SpeechBudget{pub attempts:usize,pub limit:usize,pub budget_limited:bool,pub remaining_seconds:u64}
 struct Session { runtime:Runtime, config:Config, started:Instant, attempts:VecDeque<Instant>, cancel:Arc<AtomicBool> }
 #[derive(Default)]
 pub struct AutopilotHub { sessions:Mutex<HashMap<String,Session>> }
@@ -47,6 +50,8 @@ impl AutopilotHub {
     pub fn runtime(&self,bot_id:&str,config:&Config)->Runtime {
         self.sessions.lock().ok().and_then(|sessions|sessions.get(bot_id).map(|session|session.runtime.clone())).unwrap_or_else(||Runtime{bot_id:bot_id.into(),active:false,wander:config.wander,gestures:config.gestures,started_at:0,seed:String::new(),revision:0})
     }
+    pub fn speech_budget(&self,bot_id:&str)->Result<SpeechBudget,String>{self.speech_budget_at(bot_id,Instant::now())}
+    fn speech_budget_at(&self,bot_id:&str,now:Instant)->Result<SpeechBudget,String>{let sessions=self.sessions.lock().map_err(|_|"Autopilot-Status nicht verfügbar")?;let session=sessions.get(bot_id).ok_or("Autopilot-Sitzung wurde beendet")?;let recent=session.attempts.iter().filter(|attempt|now.saturating_duration_since(**attempt)<Duration::from_secs(3600)).copied().collect::<Vec<_>>();let budget_limited=recent.len()>=session.config.max_turns_per_hour;let hour_wait=if budget_limited{Duration::from_secs(3600).saturating_sub(now.saturating_duration_since(recent[recent.len()-session.config.max_turns_per_hour]))}else{Duration::ZERO};let previous=recent.last().copied().unwrap_or(session.started).max(session.started);let spacing=Duration::from_secs(session.config.min_seconds).saturating_sub(now.saturating_duration_since(previous));let millis=hour_wait.max(spacing).as_millis();Ok(SpeechBudget{attempts:recent.len(),limit:session.config.max_turns_per_hour,budget_limited,remaining_seconds:millis.div_ceil(1000).min(u64::MAX as u128)as u64})}
     pub fn all(&self)->Result<Vec<Runtime>,String>{let sessions=self.sessions.lock().map_err(|_|"Autopilot-Status nicht verfügbar")?;Ok(sessions.values().map(|session|session.runtime.clone()).collect())}
     pub fn any_active(&self)->bool{self.sessions.lock().map(|sessions|sessions.values().any(|session|session.runtime.active)).unwrap_or(true)}
     fn set_at(&self,bot_id:&str,active:bool,config:Config,now:Instant)->Result<Runtime,String>{
@@ -65,6 +70,7 @@ impl AutopilotHub {
         Ok(session.runtime.clone())
     }
     pub fn set(&self,bot_id:&str,active:bool,config:Config)->Result<Runtime,String>{self.set_at(bot_id,active,config,Instant::now())}
+    pub fn refresh_runtime(&self,bot_id:&str)->Result<Runtime,String>{let mut sessions=self.sessions.lock().map_err(|_|"Autopilot-Status nicht verfügbar")?;let session=sessions.get_mut(bot_id).ok_or("Autopilot-Sitzung wurde beendet")?;advance(&mut session.runtime);Ok(session.runtime.clone())}
     pub fn invalidate(&self,bot_id:&str)->Result<(),String>{
         if let Some(session)=self.sessions.lock().map_err(|_|"Autopilot-Status nicht verfügbar")?.get_mut(bot_id){session.cancel.store(true,Ordering::SeqCst);session.cancel=Arc::new(AtomicBool::new(false));}
         Ok(())
@@ -110,23 +116,19 @@ impl AutopilotHub {
     }
 }
 pub fn publish(app:&tauri::AppHandle,runtime:Runtime){
+    let runtime=app.state::<crate::AppState>().life_runtime.present(runtime);
     crate::overlay_presentation::sync_or_report(app,&runtime.bot_id);
     let _=app.emit("cohost://autopilot",&runtime);
     let mut value=serde_json::to_value(runtime).unwrap_or_else(|_|json!({}));value["kind"]=json!("autopilot");app.state::<crate::AppState>().overlay.publish(app,value);
 }
 fn main_only(label:&str)->Result<(),String>{if label=="main"{Ok(())}else{Err("Autopilot wird ausschließlich vom Streamer im Studio gesteuert".into())}}
 #[tauri::command]
-pub fn set_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,active:bool)->Result<Runtime,String>{
-    main_only(window.label())?;let state=app.state::<crate::AppState>();
-    let profile=state.store.bot_profile(&bot_id)?;let config=config(&profile)?;
-    if active&&config.speak&&profile["model"]["model"].as_str().unwrap_or_default().trim().is_empty(){return Err("Bitte zuerst ein Sprachmodell für diesen Bot auswählen".into());}
-    let _idle=if active{state.updater.ensure_idle()?;Some(state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort oder das Update vor dem Autopilot-Start beenden")?)}else{None};
-    let runtime=state.autopilot.set(&bot_id,active,config)?;
-    if !active&&state.overlay.has_autopilot_speech(&bot_id){state.overlay.publish(&app,json!({"kind":"stop","botId":bot_id}));}
-    publish(&app,runtime.clone());Ok(runtime)
+pub async fn set_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,active:bool)->Result<Runtime,String>{
+    main_only(window.label())?;crate::life_runtime::set_mode(&app,&bot_id,crate::life_runtime::core::Mode::Ambient,active,false).await?;
+    let state=app.state::<crate::AppState>();let profile=state.store.bot_profile(&bot_id)?;Ok(state.life_runtime.present(state.autopilot.runtime(&bot_id,&config(&profile)?)))
 }
 #[tauri::command]
-pub async fn send_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,request_id:Option<String>)->Result<Value,String>{main_only(window.label())?;crate::agent::send_autopilot(app,bot_id,request_id).await}
+pub async fn send_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,request_id:Option<String>)->Result<Value,String>{main_only(window.label())?;let _=(app,bot_id,request_id);Err("Spontane Beiträge werden von der nativen Laufzeit geplant.".into())}
 
 #[cfg(test)]
 mod tests{
@@ -136,6 +138,14 @@ mod tests{
         for bad in [json!({"active":true}),json!({"enabled":true}),json!({"minSeconds":14}),json!({"maxSeconds":59}),json!({"maxTurnsPerHour":121})]{assert!(config(&json!({"autopilot":bad})).is_err(),"{bad}");}
         assert!(config(&json!({"autopilot":{"instructions":"x".repeat(4001)}})).is_err());
         assert_eq!(config(&json!({"autopilot":{"screenContext":true,"screenToolArguments":"old legacy data"}})).unwrap(),Config::default());
+    }
+    #[test]fn speech_projection_uses_actual_rolling_attempts_and_spacing_without_mutation(){
+        let hub=AutopilotHub::default();let start=Instant::now();let config=Config{min_seconds:15,max_seconds:30,max_turns_per_hour:2,..Config::default()};
+        hub.set_at("nova",true,config.clone(),start).unwrap();let initial=hub.speech_budget_at("nova",start).unwrap();assert_eq!((initial.attempts,initial.limit,initial.remaining_seconds),(0,2,15));assert!(!initial.budget_limited);
+        hub.admit_at("nova",&config,start+Duration::from_secs(15)).unwrap();hub.admit_at("nova",&config,start+Duration::from_secs(30)).unwrap();
+        let full=hub.speech_budget_at("nova",start+Duration::from_secs(45)).unwrap();assert_eq!((full.attempts,full.limit,full.remaining_seconds),(2,2,3570));assert!(full.budget_limited);
+        let expired=hub.speech_budget_at("nova",start+Duration::from_secs(3615)).unwrap();assert_eq!((expired.attempts,expired.remaining_seconds),(1,0));assert!(!expired.budget_limited);
+        assert_eq!(hub.speech_budget_at("nova",start+Duration::from_secs(45)).unwrap().attempts,2,"read-only projection does not erase actual attempts");
     }
     #[test]fn admission_enforces_start_spacing_hour_cap_and_keeps_failed_attempts(){
         let hub=AutopilotHub::default();let start=Instant::now();let config=Config{min_seconds:15,max_seconds:30,max_turns_per_hour:2,..Config::default()};

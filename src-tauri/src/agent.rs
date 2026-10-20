@@ -26,13 +26,13 @@ async fn send_with_origin(app:tauri::AppHandle,text:String,source:String,user:St
     if text.len()>20_000{return Err("Nachricht ist zu lang (maximal 20.000 Bytes)".into());}
     if !public_source(&source){return Err("Ungültige Nachrichtenquelle".into());}
     let viewer=!["operator","microphone"].contains(&source.as_str());
-    let state=app.state::<crate::AppState>();
+    let state=app.state::<crate::AppState>();state.life_runtime.activity();
     state.updater.ensure_idle()?;
     let _turn=state.generation.try_lock().map_err(|_|"Der Co-Host verarbeitet bereits eine Nachricht. Bitte warten oder abbrechen.".to_owned())?;
     let id=reply_id(&state,request_id.as_deref())?;
     let cancel=Arc::new(AtomicBool::new(false));
     *state.cancel.lock().map_err(|e|e.to_string())?=Some(cancel.clone());
-    let result=run(&app,&id,&text,&source,&user,viewer,&selected,cancel.clone(),bot_id.as_deref(),None,reply_route_id.as_deref(),origin).await;
+    let result=run(&app,&id,&text,&source,&user,viewer,&selected,cancel.clone(),bot_id.as_deref(),None,reply_route_id.as_deref(),None,origin).await;
     *state.cancel.lock().map_err(|e|e.to_string())?=None;
     match &result {
         Err(e)=>{event(&app,&id,"error",e);let _=app.emit("cohost://agent",json!({"kind":"status","turnId":id,"status":"idle"}));},
@@ -40,34 +40,40 @@ async fn send_with_origin(app:tauri::AppHandle,text:String,source:String,user:St
     }
     result
 }
-pub async fn send_autopilot(app:tauri::AppHandle,bot_id:String,request_id:Option<String>)->Result<Value,String>{
+pub async fn send_runtime_autopilot(app:tauri::AppHandle,claim:crate::life_runtime::core::Claim)->Result<Value,String>{
+    let bot_id=claim.bot_id.clone();let request_id=Some(claim.turn_id.clone());
     let state=app.state::<crate::AppState>();state.updater.ensure_idle()?;
     let _turn=state.generation.try_lock().map_err(|_|"Der Co-Host verarbeitet bereits eine Nachricht oder ein Update".to_owned())?;
     // A queued or playing answer must finish before autonomous speech can begin.
     if state.overlay.has_any_pending_speech(){return Err("Bitte die vorbereitete oder laufende Sprachausgabe vor dem nächsten Autopilot-Beitrag beenden".into());}
+    state.life_runtime.check_cloud(&app,&claim).await?;
     let profile=state.store.bot_profile(&bot_id)?;
-    if profile["model"]["model"].as_str().unwrap_or_default().trim().is_empty(){return Err("Bitte zuerst ein Sprachmodell für diesen Bot auswählen".into());}
+    if !crate::providers::dialog_model_ready(&profile["model"]){return Err("Bitte zuerst ein Sprachmodell für diesen Bot auswählen".into());}
     let id=reply_id(&state,request_id.as_deref())?;
     let ticket=state.autopilot.admit(&bot_id,&crate::autopilot::config(&profile)?)?;
+    state.life_runtime.bind(&claim,ticket.cancel.clone())?;
     let cancel=ticket.cancel.clone();*state.cancel.lock().map_err(|error|error.to_string())?=Some(cancel.clone());
-    let result=run(&app,&id,"Gelegenheit für einen kurzen eigenen Beitrag. Prüfe, ob du jetzt etwas Sinnvolles beitragen möchtest.","autopilot","Autopilot",false,&[],cancel,Some(&bot_id),Some(&ticket),None,crate::usage_budget::Origin::Autopilot).await;
+    let result=run(&app,&id,"Gelegenheit für einen kurzen eigenen Beitrag. Prüfe, ob du jetzt etwas Sinnvolles beitragen möchtest.","autopilot","Autopilot",false,&[],cancel,Some(&bot_id),Some(&ticket),None,Some(&claim),crate::usage_budget::Origin::Autopilot).await;
     *state.cancel.lock().map_err(|error|error.to_string())?=None;
     if let Err(error)=&result{event(&app,&id,"error",error);}
     let _=app.emit("cohost://agent",json!({"kind":"status","turnId":id,"status":"idle"}));result
 }
-async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewer:bool,selected:&[String],cancel:Arc<AtomicBool>,bot_id:Option<&str>,autopilot:Option<&crate::autopilot::Ticket>,reply_route_id:Option<&str>,origin:crate::usage_budget::Origin)->Result<Value,String> {
+async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewer:bool,selected:&[String],cancel:Arc<AtomicBool>,bot_id:Option<&str>,autopilot:Option<&crate::autopilot::Ticket>,reply_route_id:Option<&str>,runtime_claim:Option<&crate::life_runtime::core::Claim>,origin:crate::usage_budget::Origin)->Result<Value,String> {
     let state=app.state::<crate::AppState>();
+    if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;}
     let active=state.store.profile()?;
     let store=state.store.scoped(bot_id.unwrap_or(active["id"].as_str().unwrap_or("nova")))?;
     let profile=store.profile()?;
     if origin==crate::usage_budget::Origin::AutomaticChat&&!automatic_chat_enabled(&profile){return Err("Die automatische Chatantwort ist für diesen Bot nicht aktiviert.".into());}
     let usage=crate::usage_budget::Context::new(profile["id"].as_str().ok_or("Bot-ID fehlt")?,origin);
     crate::providers::preflight_budget(&store,&usage,&profile["model"])?;
+    let authority=crate::life_runtime::cloud::CloudAuthority::native(app,&usage,cancel.clone(),runtime_claim.cloned());
+    authority.admit().await?.check()?;
     let chat_route=if matches!(source,"twitch"|"youtube") {Some(state.chat.resolve_route(source,reply_route_id,&profile).await?)} else {None};
     let screen_ticket=state.screen_context.ticket(profile["id"].as_str().ok_or("Bot-ID fehlt")?,cancel.clone())?;
     let docs=store.documents()?;
     let model=&profile["model"];
-    if model["model"].as_str().unwrap_or_default().trim().is_empty(){return Err("Bitte zuerst ein Sprachmodell in den Einstellungen auswählen.".into());}
+    if !crate::providers::dialog_model_ready(model){return Err("Bitte zuerst ein Sprachmodell in den Einstellungen auswählen.".into());}
     let key=store.key_for_purpose(model,crate::credential_policy::Purpose::Dialog)?;
     let all_skills=store.skills()?;
     let enabled:HashSet<String>=profile["skillsEnabled"].as_array().map(|a|a.iter().filter_map(|s|s.as_str().map(str::to_owned)).collect()).unwrap_or_default();
@@ -106,7 +112,7 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
         _=>(),
     }
     if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
-    let recalled=crate::memory::recall_metered(&store,&profile,text,&usage,cancel.clone()).await;
+    let recalled=crate::memory::recall_guarded(&store,&profile,text,&usage,cancel.clone(),&authority).await;
     if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
     match recalled{
         Ok(context) if !context.is_empty()=>messages.push(json!({"role":"system","content":context})),
@@ -181,11 +187,15 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
         // Screens are request-local: every normal/autonomous/tool-follow-up
         // call gets fresh pixels, without retaining old frames in messages.
         if crate::screen_context::config(&profile)?.enabled{event(app,id,"status","Aktuellen Bildschirm für die Anfrage aufnehmen");}
+        if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;}
+        authority.admit().await?.check()?;
         let request=state.screen_context.prepare_request(&screen_ticket,&profile,&store,&messages).await?;
         state.screen_context.check(&screen_ticket)?;
         crate::screen_context::current_grant(&profile,&store.profile()?)?;
+        if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;}
         if origin==crate::usage_budget::Origin::AutomaticChat&&!automatic_chat_enabled(&store.profile()?){return Err("Die automatische Chatantwort ist für diesen Bot nicht aktiviert.".into());}
-        let completion=crate::providers::complete(model,request,offered,key.clone(),app.clone(),id.to_owned(),cancel.clone(),(&store,&usage)).await?;
+        let completion=crate::providers::complete(model,request,offered,key.clone(),app.clone(),id.to_owned(),cancel.clone(),(&store,&usage),&authority).await?;
+        if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;}
         state.screen_context.check(&screen_ticket)?;
         crate::screen_context::current_grant(&profile,&store.profile()?)?;
         if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
@@ -270,10 +280,12 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
         crate::screen_context::current_grant(&profile,&store.profile()?)?;
         // The in-memory job is deliberately absent from history until actual
         // presentation. Failed synthesis, Stop and restart leave no unheard reply.
-        state.overlay.say_profile(app,&profile,id,&text,&speech_text,&emotion,source,user,user_text,&queued_emotes,cancel.clone(),chat_route.clone(),origin)?;
+        state.overlay.say_profile(app,&profile,id,&text,&speech_text,&emotion,source,user,user_text,&queued_emotes,cancel.clone(),chat_route.clone(),runtime_claim.cloned(),origin)?;
         Ok(json!({"id":id,"text":text,"speechText":speech_text,"voice":crate::overlay::public_voice(&profile["voice"]),"emotion":emotion,"emotes":queued_emotes,"source":source,"user":user,"botId":profile["id"]}))
     };
-    if let Some(ticket)=autopilot{state.autopilot.commit(profile["id"].as_str().ok_or("Bot-ID fehlt")?,ticket,commit)}else{commit()}
+    authority.admit().await?.check()?;
+    let commit_autopilot=||{if let Some(ticket)=autopilot{state.autopilot.commit(profile["id"].as_str().ok_or("Bot-ID fehlt")?,ticket,commit)}else{commit()}};
+    if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;state.life_runtime.commit(claim,commit_autopilot)}else{commit_autopilot()}
 }
 // Only the explicit control signal is a successful quiet turn. Empty model
 // output, including an emotion without speech, must reach the errors above.
