@@ -5,10 +5,10 @@ membership, canonical positions, safe regions, rest/meeting/play anchors and
 exclusive fixed slots. It does not inspect the desktop or call capture,
 permissions, network, Tauri, storage or rendering APIs.
 
-This documents the pure foundation for issue #70. Native WorldHub, Store,
-operator IPC and UI adapters are separate integration responsibilities. The
-standalone fixture imports the actual pure sources without those adapters.
-No running character acquires authority from these types alone.
+The native WorldHub, optional SQLite Store adapter and main-window operator
+commands integrate this foundation with the existing LifeRuntime. The pure
+standalone fixture remains separate from those adapters. No running character
+acquires authority from serialized state or membership alone.
 
 ## Stage identity and existing Life state
 
@@ -36,8 +36,8 @@ session stamp and an optional already-validated LifeState. A not-initialized act
 can have public placement without being implicitly initialized. Its native
 session operation is distinct from a Life action and cannot grant a Life effect.
 
-The future native adapter must validate that a session stamp is current under
-Core before calling this module. These types are internal contracts, not a
+The native adapter derives session stamps from current Core while holding its
+lock before calling this module. These types are internal contracts, not a
 replacement for native authorization. No serialized renderer/model/MCP input
 can be treated as a `MemberHandle`, `SlotLease`, session stamp or runtime epoch.
 Source-world replacement, including uninitialized to initialized Life, requires
@@ -72,8 +72,8 @@ removing a slot invalidates its leases; unchanged slots retain theirs. Native
 monitor/DPI topology changes must call `invalidate_geometry` before accepting
 arrival on a new mapping. That invalidates all previous mapped places while
 retaining actor membership. Stop/session replacement calls `unbind_session`.
-The future native integration must also invoke these boundaries for action
-cancel/finish, output loss, shutdown and membership removal.
+The native integration invokes these boundaries for action observation, Stop,
+output loss, profile/asset changes, shutdown and membership removal.
 
 `validate_reservation` only confirms a place and returns its canonical target.
 It does not start or complete a Life action. A future executor must additionally
@@ -127,13 +127,79 @@ and lease capabilities, expiry/serial internals, RNG, needs, reward policy,
 history, private instructions and credentials. Nonparticipants are absent.
 Public snapshots have no authority-restoring deserializer.
 
-Native persistence belongs to a separate optional versioned subsystem. It must
-save only validated WorldConfig under an atomic CAS, keep
-ordinary profile/manual repair usable on unsupported/corrupt world data and never
-reset existing per-bot Life storage. Ordinary bot export/copy/import must not
-inherit global membership, runtime state or reservations. Rehydration requires
-existing actor IDs and fresh native source-world/session checks. World sync
-must not grant screen access or start recording.
+Native persistence uses the separate optional versioned `shared_world_config`
+SQLite singleton. It saves only validated WorldConfig and private monitor binding
+under an IMMEDIATE transaction/CAS. Unsupported/corrupt data leaves ordinary
+profile/manual repair and per-bot Life storage usable, without resetting the row.
+Ordinary bot export/copy/import does not inherit global membership or runtime
+capabilities. Import also reserves IDs referenced by orphaned saved membership;
+an unreadable optional World layout conservatively allocates a fresh imported
+bot ID rather than reviving an unknown member. Rehydration requires existing
+actor IDs and fresh native source-world/session checks. World sync grants no
+screen access and never starts recording.
+
+## Native integration and operator contract
+
+One AppState-owned WorldHub holds shared semantic positions, session-bound
+membership and fixed-slot leases. The lock order is Core → WorldHub → Store.
+Native GUI/monitor queries and event emission occur outside those locks.
+`reserve_current` derives actual current Core/output eligibility again before
+admission, then verifies any Life ActionId against the currently persisted
+nonterminal action. A retained renderer/session string cannot reserve a slot.
+Output eligibility transitions advance the native session revision, cancel old
+membership/leases and require a fresh binding; they do not rewrite Life history.
+
+The main operator window alone can invoke `get_world_settings`,
+`get_world_state`, `save_world_config` and `place_world_actor`. Control-MCP has no
+such tools. Read-only status polling is exempt from operator-activity cancellation;
+save/place remain explicit operator activity. Saving configuration or positioning
+an actor neither starts Life/Ambient nor initializes an actor or grants capture.
+
+Settings version 1 has `instanceId`, `availability`, fixed `reason` and an optional
+`record:{config,outputBinding}`. Availability is `ready`, `not_initialized` or
+`unavailable`. A valid typed record is returned with `unknown_actor` only so the
+operator can remove missing members explicitly. Corrupt/unsupported records have
+no editable replacement payload and are never silently reset. Initial save sends
+`expectedRevision:null` with draft revision 0 and confirms revision 1. Later CAS
+requires both expected/draft revisions to match and increments the confirmed
+revision. An existing StageId cannot be replaced. Private `monitorId` is null or
+bounded to 512 UTF-8 bytes without control characters.
+
+Placement sends `expectedRevision`, actor ID and canonical integer x/y. It
+read-through validates current persisted configuration first, changes only the
+ephemeral semantic position/sequence and releases that actor's leases. It does
+not increment config revision, grant membership or acknowledge physical arrival.
+Restart restores safe semantic placements with zero leases/active sessions.
+
+A public envelope carries a fresh observation `instanceId`, availability/reason
+and the shared WorldSnapshot. The instance changes on native restart, external
+config reload and reconstruction after repair, so a reset sequence cannot alias
+an older observation. This UUID is distinct from private runtime/member/lease
+capabilities. Only explicit participants receive the common projection; native
+World events target their exact `avatar-<botId>` window, and OBS/SSE independently
+filters bot scope. Removed participants get a null clearing event. The main
+operator receives the separate `cohost://world-state` aggregate. Current Life
+lineage/world/action IDs are public domain identities; private monitor names,
+native session IDs, credentials, RNG and capability nonces stay out of projection.
+
+## Monitor observation and rendering boundary
+
+The native host enumerates only its own main window's available monitors on the
+GUI thread before locking Core/WorldHub. Samples are bounded, generation-ordered
+and fresh for at most five seconds. Private monitor choice uses a deterministic
+validated fallback. Topology/DPI loss or change revokes old geometry reservations;
+a late older sample cannot restore them. Mirrored displays with an aliased
+origin/name but conflicting geometry are excluded; identical duplicates are
+coalesced so enumeration order cannot change the selected arena. This enumerates output topology only,
+without reading other apps, screens, screenshots or session/permission data.
+
+Output events may describe a validated local logical `arena` size, together with
+`presentationAvailable:false`. The pure coordinate conversion helpers are not a
+renderer placement acknowledgement. Actual viewport/mesh measurement, world
+motion consumption, clipping and physical arrival belong to issue #72. There is
+no placeholder figure footprint, automatic fullscreen expansion of fixed Life
+avatars or claimed completed animation/movement. Existing #69 output behavior
+continues until that measured output contract is available.
 
 ## Validation status
 
@@ -146,6 +212,20 @@ privacy, negative origins, DPI conversion and deterministic monitor fallback.
 The standalone actual-source fixture passed all 40 tests (21 world cases and 19
 imported Life-domain tests), offline with one build job and no OS calls. Source
 hashes were captured before the run and verified unchanged afterward. This
-establishes the pure module's behavior only. Store/Hub/API integration,
-four-locale UI, exact combined frontend/native checks and supported OS
-presentation acceptance remain required before closing issue #70.
+establishes the pure module's behavior only. The additional production Store/Hub regressions cover CAS, live corruption,
+restart/repair epochs, scope/import isolation and Core/output fences. Their final
+whole-crate execution and the composed four-locale UI/native gates are recorded
+only after completion. Native topology GUI observations and future measured
+rendering/physical presentation acceptance remain separate controlled OS/#72
+gates; no user desktop/session/capture actions were exercised by these fixtures.
+
+The bounded native-adapter fixture passed 11/11 executable scenarios, locked and
+offline with one build job. It imports the exact production WorldHub state,
+WorldStore SQL, LifeStore SQL, Core, domain and coordinate sources. Its minimal
+outer Store shell supplies only a private SQLite connection and profile-ID table;
+it does not replace SQL/Hub/Core behavior. Cases cover two persisted lineages,
+shared scope/privacy/restart, external CAS rollback/reload, live corruption,
+Core Stop/output loss, topology/alias fencing, exclusive-slot race, repair epoch
+and orphan-ID reservation. Source hashes were unchanged after execution. The
+full production Store constructors/import and native IPC/monitor/emission paths
+still require the composed whole-crate gate; no host monitor query was executed.

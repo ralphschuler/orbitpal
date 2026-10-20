@@ -80,6 +80,8 @@ pub fn operator_command(command: &str) -> bool {
     !matches!(
         command,
         "get_app_state"
+            | "get_world_state"
+            | "get_world_settings"
             | "get_life_runtime"
             | "get_life_bot"
             | "connect_life_ui"
@@ -145,6 +147,71 @@ impl Default for LifeRuntime {
     }
 }
 impl LifeRuntime {
+    /// The closure must be synchronous and never invoke GUI getters/emit or
+    /// await. This is the sole bridge that derives native current sessions.
+    pub(crate) fn with_world<T>(
+        &self,
+        app: &tauri::AppHandle,
+        operation: impl FnOnce(
+            &crate::world_hub::WorldHub,
+            &Store,
+            Vec<crate::world_hub::NativeActor>,
+            u64,
+        ) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let core = self.core.lock().map_err(|_| UNAVAILABLE)?;
+        let state = app.state::<crate::AppState>();
+        let actors = crate::world_hub::current_actors(&core);
+        operation(&state.world, &state.store, actors, self.now())
+    }
+    /// Place reservations are native-only capabilities. Future executors use
+    /// these Core-held seams; renderer/model IDs never select a session/action.
+    pub(crate) fn reserve_world_slot(
+        &self,
+        app: &tauri::AppHandle,
+        bot: &str,
+        slot: &crate::world_state::SlotId,
+        ttl: u64,
+        work: crate::world_state::WorkIdentity,
+    ) -> Result<crate::world_state::SlotLease, String> {
+        let core = self.core.lock().map_err(|_| UNAVAILABLE)?;
+        let state = app.state::<crate::AppState>();
+        state
+            .world
+            .reserve_current(&core, &state.store, bot, work, slot, ttl, self.now())
+    }
+
+    pub(crate) fn renew_world_slot(
+        &self,
+        app: &tauri::AppHandle,
+        bot: &str,
+        lease: &crate::world_state::SlotLease,
+        ttl: u64,
+    ) -> Result<(), String> {
+        self.with_world(app, |world, store, sessions, now| {
+            world.synchronize(store, &sessions, None, now)?;
+            let session = sessions
+                .iter()
+                .find(|session| session.stamp.actor_id().as_str() == bot)
+                .ok_or(UNAVAILABLE)?;
+            world.renew(&session.stamp, lease, ttl, now)
+        })
+    }
+    pub(crate) fn release_world_slot(
+        &self,
+        app: &tauri::AppHandle,
+        bot: &str,
+        lease: &crate::world_state::SlotLease,
+    ) -> Result<bool, String> {
+        self.with_world(app, |world, store, sessions, now| {
+            world.synchronize(store, &sessions, None, now)?;
+            let session = sessions
+                .iter()
+                .find(|session| session.stamp.actor_id().as_str() == bot)
+                .ok_or(UNAVAILABLE)?;
+            world.release(&session.stamp, lease, now)
+        })
+    }
     pub fn now(&self) -> u64 {
         self.started
             .elapsed()
@@ -209,10 +276,12 @@ impl LifeRuntime {
         }
         runtime
     }
-    pub fn invalidate_bot(&self, bot: &str) {
+    pub fn invalidate_bot(&self, app: &tauri::AppHandle, bot: &str) {
         if let Ok(mut core) = self.core.lock() {
             core.invalidate_bot(bot, self.now());
             core.operator_activity(self.now());
+            let state = app.state::<crate::AppState>();
+            state.world.revoke_actor(&state.store, bot);
         }
     }
     pub fn current(&self, claim: &Claim) -> bool {
@@ -269,6 +338,8 @@ impl LifeRuntime {
         let mut core = self.core.lock().map_err(|_| UNAVAILABLE)?;
         core.invalidate_bot(bot, self.now());
         core.operator_activity(self.now());
+        let state = app.state::<crate::AppState>();
+        state.world.revoke_actor(&state.store, bot);
         let result = app
             .state::<crate::AppState>()
             .autopilot
@@ -313,11 +384,13 @@ impl LifeRuntime {
                 publications.push(runtime);
             }
             cancel_saved_action(&state.store, &bot, session.state.as_ref());
+            state.world.revoke_actor(&state.store, &bot);
         }
         if let Some(bot) = bot {
             let _ = state.autopilot.invalidate(bot);
         } else {
             publications.extend(state.autopilot.stop_all());
+            state.world.stop_all();
         }
         drop(core);
         for runtime in publications {
@@ -371,7 +444,7 @@ impl LifeRuntime {
                 if state.life_runtime.stopping.load(Ordering::SeqCst) {
                     break;
                 }
-                if !state.life_runtime.any_active() {
+                if !state.life_runtime.any_active() && !state.world.configured() {
                     continue;
                 }
                 state.life_runtime.step(&handle).await;
@@ -384,6 +457,11 @@ impl LifeRuntime {
         };
         let system = monitor.refresh().await;
         let state = app.state::<crate::AppState>();
+        let topology = if state.world.configured() {
+            Some(state.world.sample_topology(app).await)
+        } else {
+            None
+        };
         let now = self.now();
         let is_visible = visible(app);
         if let Ok(mut core) = self.core.lock() {
@@ -414,6 +492,13 @@ impl LifeRuntime {
             .collect::<Vec<_>>();
         if let Ok(mut core) = self.core.lock() {
             for (bot, id, revision, available) in routes {
+                if core.sessions.get(&bot).is_some_and(|session| {
+                    session.session_id == id
+                        && session.revision == revision
+                        && session.output != available
+                }) {
+                    state.world.revoke_actor(&state.store, &bot);
+                }
                 core.set_output_available(&bot, &id, revision, available, now);
             }
         }
@@ -544,6 +629,11 @@ impl LifeRuntime {
                     });
                 }
             }
+        }
+        if let Ok(()) = self.with_world(app, |world, store, sessions, now| {
+            world.synchronize(store, &sessions, topology, now)
+        }) {
+            crate::world_hub::publish(app);
         }
         publish(app);
     }
@@ -851,6 +941,7 @@ async fn finish_start(
         return state.life_runtime.snapshot_for(&state.autopilot);
     }
     if let Some(previous) = core.take_session(bot, state.life_runtime.now()) {
+        state.world.revoke_actor(&state.store, bot);
         state.autopilot.set(bot, false, config.clone())?;
         cancel_saved_action_checked(&state.store, bot, previous.state.as_ref())?;
     }

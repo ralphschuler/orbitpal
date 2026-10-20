@@ -563,6 +563,7 @@ impl Core {
             self.cancel_pending();
         }
         if let Some(session) = self.sessions.get_mut(bot) {
+            session.revision = session.revision.saturating_add(1).min(MAX_COUNTER);
             session.output = output;
             session.due = due(session, now);
         }
@@ -1208,7 +1209,13 @@ mod tests {
         assert!(current.cancel.load(Ordering::SeqCst));
         assert!(core.pending().is_none());
         assert!(core.sessions["other"].output);
-        core.set_output_available("nova", &current.session_id, current.revision, true, 15_002);
+        core.set_output_available(
+            "nova",
+            &current.session_id,
+            core.sessions["nova"].revision,
+            true,
+            15_002,
+        );
         assert_eq!(core.sessions["nova"].due, 30_002);
         // Claim admission itself began a global quiet period at15000.
         let other = claim(&mut core, 30_000);
@@ -1229,7 +1236,7 @@ mod tests {
         assert!(!core.sessions["nova"].output);
         core.set_output_available("nova", &old_id, old_revision, true, 3);
         assert!(!core.sessions["nova"].output);
-        core.set_output_available("nova", &new_id, new_revision, true, 4);
+        core.set_output_available("nova", &new_id, core.sessions["nova"].revision, true, 4);
         assert!(core.sessions["nova"].output);
     }
 }

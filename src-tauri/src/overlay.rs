@@ -105,7 +105,10 @@ impl OverlayHub {
             self.invalidate_speech(event["botId"].as_str());
         }
         // An unscoped stop is intentionally broadcast to every character.
-        let _=self.sender.send(event.clone());let _=app.emit("cohost://overlay",event);
+        let _=self.sender.send(event.clone());
+        if event["kind"]=="world-state" {
+            if let Some(window)=crate::world_hub::output_window(&event){let _=app.emit_to(window,"cohost://overlay",event);}
+        }else{let _=app.emit("cohost://overlay",event);}
     }
     pub fn invalidate_speech(&self,bot_id:Option<&str>) {
         if let Ok(mut entries)=self.speech.lock(){
@@ -328,7 +331,8 @@ async fn events(State(app):State<tauri::AppHandle>,Query(q):Query<Access>)->Resp
         Ok(profile)=>json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile),"presentation":state.presentation.snapshot(&profile),"autopilotRuntime":state.life_runtime.present(state.autopilot.runtime(&bot_id,&crate::autopilot::config(&profile).unwrap_or_default()))}),
         Err(_)=>return StatusCode::NOT_FOUND.into_response(),
     };
-    let first=stream::once(async move{Ok::<Event,Infallible>(Event::default().data(initial.to_string()))});
+    let world=state.store.bot_profile(&bot_id).ok().and_then(|profile|state.world.output_event(&bot_id,&profile)).unwrap_or_else(||json!({"kind":"world-state","botId":bot_id,"world":null,"arena":null}));
+    let first=stream::iter([initial,world].into_iter().map(|event|Ok::<Event,Infallible>(Event::default().data(event.to_string()))));
     let next=tokio_stream::wrappers::BroadcastStream::new(receiver).filter_map(move|result|{
         let bot_id=bot_id.clone();async move{result.ok().filter(|event|belongs(event,&bot_id)).map(|event|Ok::<Event,Infallible>(Event::default().data(event.to_string())))}
     });
