@@ -10,31 +10,32 @@
   let { botId,botName,disabled=false,onQuietRest }:Props=$props();
   const uid=$props.id();
   let snapshot=$state<LifeActionsSnapshot>(),pending=$state(false),starting=$state(false),unconfirmed=$state(false),error=$state('');
-  let alive=false,operation=0,lastBot='',epochHint:string|undefined;
+  let alive=false,operation=0,lastBot='',viewEpoch=0;
   const canStart=$derived(native&&!disabled&&!pending&&!starting&&!unconfirmed&&snapshot?.availability==='ready'&&(!snapshot.runtime||['completed','cancelled','failed'].includes(snapshot.runtime.status)));
   const seconds=$derived(snapshot?.runtime?formatNumber(snapshot.runtime.activeMilliseconds/1000,$locale,{maximumFractionDigits:3}):'');
   function accept(next:LifeActionsSnapshot,fromEvent=false){
     if(next.botId!==botId)return;
-    if(fromEvent&&snapshot&&next.instanceId!==snapshot.instanceId){epochHint=next.instanceId;unconfirmed=true;if(!pending&&!starting)void refresh();return;}
-    if(!fromEvent&&epochHint&&next.instanceId!==epochHint){unconfirmed=true;return;}
+    // An event may be delayed from an old native instance. It can revoke
+    // freshness, but only a read begun after that event establishes an epoch.
+    if(fromEvent&&(!snapshot||next.instanceId!==snapshot.instanceId)){++viewEpoch;unconfirmed=true;if(!pending&&!starting)void refresh();return;}
     if(snapshot?.instanceId===next.instanceId&&next.sequence<snapshot.sequence)return;
-    snapshot=next;epochHint=next.instanceId;unconfirmed=false;error='';
+    snapshot=next;unconfirmed=false;error='';
   }
   async function refresh(){
     if(!native||pending||starting)return;
-    const target=botId,ticket=++operation;pending=true;
-    try{const next=parseLifeActions(await call('get_life_actions',{botId:target}),target);if(alive&&target===botId&&ticket===operation)accept(next);}
+    const target=botId,ticket=++operation,epoch=viewEpoch;pending=true;
+    try{const next=parseLifeActions(await call('get_life_actions',{botId:target}),target);if(alive&&target===botId&&ticket===operation&&epoch===viewEpoch)accept(next);}
     catch(cause){if(alive&&target===botId&&ticket===operation){error=prettyError(cause);unconfirmed=true;}}
-    finally{if(alive&&ticket===operation)pending=false;}
+    finally{if(alive&&ticket===operation){pending=false;if(epoch!==viewEpoch)void refresh();}}
   }
   async function start(){
     if(!canStart)return;
-    const target=botId,ticket=++operation;starting=true;error='';
-    try{const next=await onQuietRest();if(alive&&target===botId&&ticket===operation&&next)accept(next);}
+    const target=botId,ticket=++operation,epoch=viewEpoch;starting=true;error='';
+    try{const next=await onQuietRest();if(alive&&target===botId&&ticket===operation&&epoch===viewEpoch&&next)accept(next);}
     catch(cause){if(alive&&target===botId&&ticket===operation){error=prettyError(cause);unconfirmed=true;}}
-    finally{if(alive&&ticket===operation)starting=false;}
+    finally{if(alive&&ticket===operation){starting=false;if(epoch!==viewEpoch)void refresh();}}
   }
-  $effect(()=>{const target=botId;untrack(()=>{if(!alive||target===lastBot)return;lastBot=target;++operation;snapshot=undefined;epochHint=undefined;pending=false;starting=false;unconfirmed=false;error='';void refresh();});});
+  $effect(()=>{const target=botId;untrack(()=>{if(!alive||target===lastBot)return;lastBot=target;++operation;++viewEpoch;snapshot=undefined;pending=false;starting=false;unconfirmed=false;error='';void refresh();});});
   onMount(()=>{
     alive=true;lastBot=botId;
     const listener=onEvent('cohost://life-actions',value=>{if(!alive||!value||typeof value!=='object'||(value as Record<string,unknown>).botId!==botId)return;try{accept(parseLifeActions(value,botId),true);}catch(cause){error=prettyError(cause);unconfirmed=true;}}).catch(cause=>{if(alive){error=prettyError(cause);unconfirmed=true;}return()=>{};});
