@@ -12,7 +12,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "check:legacy": "svelte-check --tsconfig ./tsconfig.json",
-    "test:avatar-decoders": "node scripts/prepare-avatar-wasm.mjs && node --test scripts/avatar-wasm-memory-tests.mjs scripts/avatar-draco-budget-tests.mjs && node scripts/prepare-avatar-draco.mjs && node scripts/prepare-avatar-decoders.mjs && node scripts/avatar-decoder-browser-tests.mjs"
+    "test:avatar-decoders": "node scripts/prepare-avatar-wasm.mjs && node --test scripts/avatar-wasm-memory-tests.mjs scripts/avatar-draco-budget-tests.mjs scripts/chrome-devtools-tests.mjs && node scripts/prepare-avatar-draco.mjs && node scripts/prepare-avatar-decoders.mjs && node scripts/avatar-decoder-browser-tests.mjs"
   },
   "dependencies": {
     "@fontsource-variable/manrope": "^5.3.0",
