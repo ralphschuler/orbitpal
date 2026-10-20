@@ -45,18 +45,28 @@ pub(crate) struct Session {
 struct Slot<'a> {
     session: &'a Session,
     id: String,
-    lane: Arc<Mutex<()>>,
+    lane: Option<Arc<Mutex<()>>>,
     epoch: u64,
+}
+
+impl Slot<'_> {
+    fn lane(&self) -> &Mutex<()> {
+        self.lane.as_deref().expect("live slot retains its lane")
+    }
 }
 
 impl Drop for Slot<'_> {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.session.state.lock() {
-            if Arc::strong_count(&self.lane) == 1
-                && state.active.get(&self.id).is_some_and(|slot| slot.ptr_eq(&Arc::downgrade(&self.lane))) {
-                state.active.remove(&self.id);
-            }
+        let Some(lane) = self.lane.take() else { return; };
+        let Ok(mut state) = self.session.state.lock() else { return; };
+        if Arc::strong_count(&lane) == 1
+            && state.active.get(&self.id).is_some_and(|slot| slot.ptr_eq(&Arc::downgrade(&lane))) {
+            state.active.remove(&self.id);
         }
+        // Serialize the final strong release with slot()'s Weak upgrade and
+        // other Slot drops. Leaving this to field/local teardown after the
+        // state guard unlocks lets two final drops both observe count == 2.
+        drop(lane);
     }
 }
 
@@ -121,7 +131,7 @@ impl Session {
             let lane = Arc::new(Mutex::new(()));
             state.active.insert(id.to_owned(), Arc::downgrade(&lane)); lane
         };
-        Ok(Slot { session: self, id: id.to_owned(), lane, epoch: state.epoch })
+        Ok(Slot { session: self, id: id.to_owned(), lane: Some(lane), epoch: state.epoch })
     }
 
     fn validate(state: &State, epoch: u64) -> Result<(), String> {
@@ -147,7 +157,7 @@ impl Session {
             Self::remove_locked(&mut state, id); return Ok(None);
         }
         let slot = self.slot(id, true)?;
-        let _operation = slot.lane.lock().map_err(|_| UNAVAILABLE.to_owned())?;
+        let _operation = slot.lane().lock().map_err(|_| UNAVAILABLE.to_owned())?;
         { let state = self.state.lock().map_err(|_| UNAVAILABLE.to_owned())?; Self::validate(&state, slot.epoch)?; }
         if !registered()? {
             let mut state = self.state.lock().map_err(|_| UNAVAILABLE.to_owned())?;
@@ -177,7 +187,7 @@ impl Session {
     /// Never seed a cache from a write: only a successful authorized read does so.
     pub fn mutate<T>(&self, id: &str, mutation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let slot = self.slot(id, false)?;
-        let _operation = slot.lane.lock().map_err(|_| UNAVAILABLE.to_owned())?;
+        let _operation = slot.lane().lock().map_err(|_| UNAVAILABLE.to_owned())?;
         { let mut state = self.state.lock().map_err(|_| UNAVAILABLE.to_owned())?; Self::remove_locked(&mut state, id); }
         let result = mutation();
         { let mut state = self.state.lock().map_err(|_| UNAVAILABLE.to_owned())?; Self::remove_locked(&mut state, id); }
@@ -237,6 +247,41 @@ mod tests {
         release.send(()).unwrap(); assert_eq!(leader.join().unwrap().as_deref(), Some("one-value"));
         for waiter in waiters { assert_eq!(waiter.join().unwrap().as_deref(), Some("one-value")); }
         assert_eq!(reads.load(Ordering::SeqCst), 1);
+        assert!(session.state.lock().unwrap().active.is_empty());
+    }
+
+    #[test]
+    fn simultaneous_slot_teardown_cleans_without_a_later_lookup_and_preserves_live_users() {
+        let session = Session::new(true, true);
+        // No read/slot call after the joins may prune a leftover dead Weak.
+        for _ in 0..16 {
+            thread::scope(|scope| {
+                let barrier = Arc::new(Barrier::new(3));
+                for _ in 0..2 {
+                    let slot = session.slot("same", false).unwrap();
+                    let barrier = barrier.clone();
+                    scope.spawn(move || { barrier.wait(); drop(slot); });
+                }
+                barrier.wait();
+            });
+            assert!(session.state.lock().unwrap().active.is_empty());
+        }
+        let survivor = session.slot("same", false).unwrap();
+        thread::scope(|scope| {
+            let barrier = Arc::new(Barrier::new(3));
+            for _ in 0..2 {
+                let slot = session.slot("same", false).unwrap();
+                let barrier = barrier.clone();
+                scope.spawn(move || { barrier.wait(); drop(slot); });
+            }
+            barrier.wait();
+        });
+        assert_eq!(session.state.lock().unwrap().active.get("same").unwrap().strong_count(), 1);
+        let successor = session.slot("same", false).unwrap();
+        assert!(std::ptr::eq(survivor.lane(), successor.lane()));
+        drop(survivor);
+        assert_eq!(session.state.lock().unwrap().active.get("same").unwrap().strong_count(), 1);
+        drop(successor);
         assert!(session.state.lock().unwrap().active.is_empty());
     }
 
