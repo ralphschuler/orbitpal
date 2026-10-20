@@ -297,6 +297,7 @@ impl Core {
         bot: &str,
         profile: serde_json::Value,
         proof: &super::action_state::UiProof,
+        output_generation: u64,
         raw: u64,
     ) {
         let now = self.clock(raw);
@@ -332,6 +333,7 @@ impl Core {
                 reported_at,
                 issued_at: now,
                 own_ui_generation: self.ui.generation,
+                output_generation,
             },
         );
     }

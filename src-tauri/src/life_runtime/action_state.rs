@@ -31,6 +31,7 @@ pub(crate) struct RestIntent {
     pub reported_at: u64,
     pub issued_at: u64,
     pub own_ui_generation: u64,
+    pub output_generation: u64,
 }
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct LocalFence {

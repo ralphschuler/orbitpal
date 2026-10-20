@@ -42,6 +42,7 @@ pub(crate) fn prepare_operator<R: tauri::Runtime>(
     invoke: &tauri::ipc::Invoke<R>,
 ) {
     state.life_runtime.outputs.bot(None);
+    let output_generation = state.life_runtime.outputs.ticket();
     let mut core = state
         .life_runtime
         .core
@@ -74,7 +75,15 @@ pub(crate) fn prepare_operator<R: tauri::Runtime>(
     if let Some((bot, proof)) = proof {
         if let Ok(profile) = state.store.profile() {
             if profile["id"] == bot {
-                core.prepare_rest_intent(&bot, profile, &proof, state.life_runtime.now());
+                if let Some(generation) = output_generation {
+                    core.prepare_rest_intent(
+                        &bot,
+                        profile,
+                        &proof,
+                        generation,
+                        state.life_runtime.now(),
+                    );
+                }
                 return;
             }
         }
@@ -141,11 +150,7 @@ pub async fn start_life_rest(
     let system = monitor.refresh().await;
     let topology = state.world.sample_topology(&app).await;
     let profile = state.store.bot_profile(&bot_id)?;
-    let output_ticket = state
-        .life_runtime
-        .outputs
-        .ticket()
-        .ok_or(action_host::UNAVAILABLE)?;
+    let output_ticket = intent.output_generation;
     let output = rest_output(&app, &profile);
     let visible = super::visible(&app);
     state.updater.ensure_idle()?;
@@ -162,11 +167,13 @@ pub async fn start_life_rest(
     } else {
         "main".into()
     };
-    if !state
-        .life_runtime
-        .outputs
-        .watch(output_ticket, &bot_id, &label, &cancel)
-        || monitor.gate.watch(&cancel).is_none()
+    if !state.life_runtime.outputs.watch(
+        output_ticket,
+        &bot_id,
+        &label,
+        &cancel,
+        (&intent.connection, intent.report_sequence),
+    ) || monitor.gate.watch(&cancel).is_none()
     {
         return Err(action_host::UNAVAILABLE.into());
     }

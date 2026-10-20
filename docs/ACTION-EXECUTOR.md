@@ -217,7 +217,7 @@ not assert a repository-wide run. Full production Store/Tauri compilation, the
 composed four-locale UI gates and real #72 output acceptance remain distinct
 required checks.
 
-The bounded native-host fixture subsequently passed **17/17** scenarios, using
+The bounded native-host fixture subsequently passed **18/18** scenarios, using
 production Core/action-host/Life-SQL/World-SQL bodies and the same regression
 source with a minimal outer Store shell. It verifies the 64 failed-store
 retirement case followed by a healthy actor, rejected old completion permit,
@@ -227,7 +227,11 @@ and output revocation during both Plan and Complete admission. A bounded
 non-Core registry cancels exact native jobs synchronously on known native window
 close/destroy, main hide/show, Stop and operator/UI interruption before those
 paths wait for Core. GUI sampling is fenced by a registration generation; stale
-window observations cannot grant a replacement job. A cancellation-only native
+window observations cannot grant a replacement job. The output generation is
+retained from intent preparation, before asynchronous probes, so an intervening
+window/Stop/connection revocation cannot be hidden by sampling a newer ticket.
+Registration requires the same native connection and no blocked/activity report
+after the intent proof; later clear heartbeats remain valid. A cancellation-only native
 UI nonce/sequence mirror prevents old reporters, stale blocked reports or old
 disconnects from revoking a new job; current real blockers still latch before
 Core acquisition. No native-window control

@@ -253,7 +253,7 @@ pub(crate) fn run(case: &str) {
                 sequence: 1,
             };
             f.core
-                .prepare_rest_intent("nova", profile.clone(), &proof, 0);
+                .prepare_rest_intent("nova", profile.clone(), &proof, 0, 0);
             let intent = f.core.rest_intent("nova", &proof).unwrap();
             let fence = f.core.consume_rest_intent(&intent, &profile, 1).unwrap();
             assert!(f.core.local_current("nova", &fence, 1));
@@ -264,7 +264,7 @@ pub(crate) fn run(case: &str) {
                 sequence: 2,
             };
             f.core
-                .prepare_rest_intent("nova", profile.clone(), &proof, 2);
+                .prepare_rest_intent("nova", profile.clone(), &proof, 0, 2);
             let old = f.core.rest_intent("nova", &proof).unwrap();
             assert!(f.core.report_ui("studio", 3, true, true, true, 3));
             assert!(f.core.consume_rest_intent(&old, &profile, 3).is_none());
@@ -332,8 +332,16 @@ pub(crate) fn run(case: &str) {
             let fence = f.core.local_fence("nova", 0).unwrap();
             let path = f.root.join("cohost.sqlite3");
             let output = crate::life_runtime::action_output::OutputGate::default();
+            output.ui_connect("studio");
+            output.ui_report("studio", 1, false);
             let cancel = Arc::new(AtomicBool::new(false));
-            assert!(output.watch(output.ticket().unwrap(), "nova", "main", &cancel));
+            assert!(output.watch(
+                output.ticket().unwrap(),
+                "nova",
+                "main",
+                &cancel,
+                ("studio", 1)
+            ));
             let gate = std::sync::Barrier::new(2);
             let at = &f.now;
             let core = &mut f.core;
@@ -669,7 +677,15 @@ pub(crate) fn run(case: &str) {
             }
             let job = f.core.actions.as_ref().unwrap().jobs["nova"].clone();
             let output = crate::life_runtime::action_output::OutputGate::default();
-            assert!(output.watch(output.ticket().unwrap(), "nova", "main", &job.cancel));
+            output.ui_connect("studio");
+            output.ui_report("studio", 1, false);
+            assert!(output.watch(
+                output.ticket().unwrap(),
+                "nova",
+                "main",
+                &job.cancel,
+                ("studio", 1)
+            ));
             f.now.store(10000, Ordering::SeqCst);
             assert!(f.core.report_ui("studio", 10002, false, false, true, 10000));
             f.ticket += 1;
@@ -710,16 +726,18 @@ pub(crate) fn run(case: &str) {
         }
         "output_registry" => {
             let gate = crate::life_runtime::action_output::OutputGate::default();
+            gate.ui_connect("studio");
+            gate.ui_report("studio", 1, false);
             let ticket = gate.ticket().unwrap();
             let a = Arc::new(AtomicBool::new(false));
             let b = Arc::new(AtomicBool::new(false));
-            assert!(gate.watch(ticket, "a", "avatar-a", &a));
-            assert!(gate.watch(ticket, "b", "avatar-b", &b));
+            assert!(gate.watch(ticket, "a", "avatar-a", &a, ("studio", 1)));
+            assert!(gate.watch(ticket, "b", "avatar-b", &b, ("studio", 1)));
             gate.window("avatar-a");
             assert!(a.load(Ordering::SeqCst));
             assert!(!b.load(Ordering::SeqCst));
             let stale = Arc::new(AtomicBool::new(false));
-            assert!(!gate.watch(ticket, "new", "avatar-new", &stale));
+            assert!(!gate.watch(ticket, "new", "avatar-new", &stale, ("studio", 1)));
             assert!(stale.load(Ordering::SeqCst));
             gate.bot(Some("b"));
             assert!(b.load(Ordering::SeqCst));
@@ -727,21 +745,22 @@ pub(crate) fn run(case: &str) {
             let mut flags = Vec::new();
             for i in 0..64 {
                 let c = Arc::new(AtomicBool::new(false));
-                assert!(gate.watch(ticket, &format!("bot-{i}"), "main", &c));
+                assert!(gate.watch(ticket, &format!("bot-{i}"), "main", &c, ("studio", 1)));
                 for _ in 0..3 {
-                    assert!(gate.watch(ticket, &format!("bot-{i}"), "main", &c));
+                    assert!(gate.watch(ticket, &format!("bot-{i}"), "main", &c, ("studio", 1)));
                 }
                 flags.push(c);
             }
             let extra = Arc::new(AtomicBool::new(false));
-            assert!(!gate.watch(ticket, "overflow", "main", &extra));
+            assert!(!gate.watch(ticket, "overflow", "main", &extra, ("studio", 1)));
             gate.window("main");
             assert!(flags.iter().all(|c| c.load(Ordering::SeqCst)));
             assert!(gate.watch(
                 gate.ticket().unwrap(),
                 "recovered",
                 "main",
-                &Arc::new(AtomicBool::new(false))
+                &Arc::new(AtomicBool::new(false)),
+                ("studio", 1)
             ));
         }
         "output_ui_identity" => {
@@ -749,18 +768,64 @@ pub(crate) fn run(case: &str) {
             gate.ui_connect("old");
             gate.ui_report("old", 1, false);
             let a = Arc::new(AtomicBool::new(false));
-            assert!(gate.watch(gate.ticket().unwrap(), "nova", "main", &a));
+            assert!(gate.watch(gate.ticket().unwrap(), "nova", "main", &a, ("old", 1)));
             gate.ui_connect("new");
             assert!(a.load(Ordering::SeqCst));
             gate.ui_report("new", 1, false);
             let b = Arc::new(AtomicBool::new(false));
-            assert!(gate.watch(gate.ticket().unwrap(), "nova", "main", &b));
+            assert!(gate.watch(gate.ticket().unwrap(), "nova", "main", &b, ("new", 1)));
             gate.ui_disconnect("old");
             gate.ui_report("old", 999, true);
             gate.ui_report("new", 1, true);
             assert!(!b.load(Ordering::SeqCst));
             gate.ui_report("new", 2, true);
             assert!(b.load(Ordering::SeqCst));
+        }
+        "output_intent_interleaving" => {
+            let mut f = Fixture::new(&["nova"]);
+            let gate = crate::life_runtime::action_output::OutputGate::default();
+            gate.ui_connect("studio");
+            gate.ui_report("studio", 1, true);
+            gate.bot(None);
+            let intent_generation = gate.ticket().unwrap();
+            let proof = UiProof {
+                connection_id: "studio".into(),
+                sequence: 1,
+            };
+            let profile = f.store.bot_profile("nova").unwrap();
+            f.core
+                .prepare_rest_intent("nova", profile.clone(), &proof, intent_generation, 0);
+            let intent = f.core.rest_intent("nova", &proof).unwrap();
+            // Core A intentionally remains locked/unchanged while native connect B is published.
+            gate.ui_connect("new");
+            gate.ui_report("new", 1, false);
+            let cancel = Arc::new(AtomicBool::new(false));
+            assert!(!gate.watch(
+                gate.ticket().unwrap(),
+                "nova",
+                "main",
+                &cancel,
+                (&intent.connection, intent.report_sequence)
+            ));
+            assert!(cancel.load(Ordering::SeqCst));
+            assert!(f
+                .store
+                .load_life("nova")
+                .unwrap()
+                .unwrap()
+                .state()
+                .current_action()
+                .is_none());
+            gate.ui_connect("studio");
+            gate.ui_report("studio", 1, true);
+            let ticket = gate.ticket().unwrap();
+            gate.ui_report("studio", 2, false);
+            let clear = Arc::new(AtomicBool::new(false));
+            assert!(gate.watch(ticket, "nova", "main", &clear, ("studio", 1)));
+            gate.ui_report("studio", 3, true);
+            let late = Arc::new(AtomicBool::new(false));
+            assert!(!gate.watch(gate.ticket().unwrap(), "nova", "main", &late, ("studio", 1)));
+            assert!(late.load(Ordering::SeqCst));
         }
         _ => panic!("unknown action scenario"),
     }
@@ -837,4 +902,9 @@ fn output_registry_is_bounded_identity_scoped_and_stale_registration_fails() {
 #[test]
 fn old_ui_identity_or_sequence_cannot_revoke_new_output_job() {
     run("output_ui_identity")
+}
+
+#[test]
+fn pending_core_intent_cannot_register_after_new_ui_or_later_block() {
+    run("output_intent_interleaving")
 }

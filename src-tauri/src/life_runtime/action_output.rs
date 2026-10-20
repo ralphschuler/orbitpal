@@ -17,7 +17,7 @@ struct Watch {
 struct State {
     generation: u64,
     watches: BTreeMap<usize, Watch>,
-    ui: Option<(String, u64)>,
+    ui: Option<(String, u64, u64)>,
 }
 #[derive(Default)]
 pub(crate) struct OutputGate {
@@ -33,6 +33,7 @@ impl OutputGate {
         bot: &str,
         window: &str,
         cancel: &Arc<AtomicBool>,
+        ui: (&str, u64),
     ) -> bool {
         let Ok(mut s) = self.state.lock() else {
             cancel.store(true, Ordering::SeqCst);
@@ -44,7 +45,12 @@ impl OutputGate {
                 .is_some_and(|c| !c.load(Ordering::SeqCst))
         });
         let id = Arc::as_ptr(cancel) as usize;
-        if s.generation != ticket
+        if s.ui
+            .as_ref()
+            .is_none_or(|(connection, sequence, last_revoke)| {
+                connection != ui.0 || ui.1 == 0 || *sequence < ui.1 || *last_revoke > ui.1
+            })
+            || s.generation != ticket
             || ticket >= crate::life_domain::MAX_COUNTER
             || bot.is_empty()
             || bot.len() > 96
@@ -96,12 +102,12 @@ impl OutputGate {
         }
         if let Ok(mut s) = self.state.lock() {
             Self::revoke_locked(&mut s, |_| true);
-            s.ui = Some((id.into(), 0));
+            s.ui = Some((id.into(), 0, 0));
         }
     }
     pub(crate) fn ui_disconnect(&self, id: &str) {
         if let Ok(mut s) = self.state.lock() {
-            if s.ui.as_ref().is_some_and(|(current, _)| current == id) {
+            if s.ui.as_ref().is_some_and(|(current, _, _)| current == id) {
                 Self::revoke_locked(&mut s, |_| true);
                 s.ui = None;
             }
@@ -111,7 +117,7 @@ impl OutputGate {
     /// accept a Core report, clear a block or grant output/session authority.
     pub(crate) fn ui_report(&self, id: &str, sequence: u64, block_or_activity: bool) {
         if let Ok(mut s) = self.state.lock() {
-            let Some((current, prior)) = &mut s.ui else {
+            let Some((current, prior, last_revoke)) = &mut s.ui else {
                 return;
             };
             if current != id || sequence <= *prior || sequence > crate::life_domain::MAX_COUNTER {
@@ -119,6 +125,7 @@ impl OutputGate {
             }
             *prior = sequence;
             if block_or_activity {
+                *last_revoke = sequence;
                 Self::revoke_locked(&mut s, |_| true);
             }
         }
