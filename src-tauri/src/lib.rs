@@ -29,6 +29,7 @@ mod motions;
 mod avatar_audio;
 mod gltf_import;
 mod autopilot;
+pub mod life_domain;
 mod screen_capture;
 mod screen_context;
 mod screen_portal;
