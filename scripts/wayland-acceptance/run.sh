@@ -23,7 +23,7 @@ cleanup() {
   diagnostic="$RUNNER_TEMP/wayland-acceptance-$desktop"
   mkdir -p "$diagnostic"
   # Exact text-only files; never recursively collect a home, screenshot or frame.
-  for name in compositor pipewire wireplumber portal portal-backend session chooser-tree portal-interfaces kde-cache versions; do
+  for name in compositor pipewire wireplumber portal portal-backend session desktop chooser-tree portal-interfaces kde-cache versions; do
     if sudo test -f "$root/$name.txt"; then sudo head -c 65536 "$root/$name.txt" >"$diagnostic/$name.txt"; fi
   done
   printf '%s\n' "$result" >"$diagnostic/exit-code.txt"
