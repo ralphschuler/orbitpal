@@ -183,3 +183,18 @@ pub(crate) fn action_fixture_topology(ticket: u64) -> state::TopologySample {
         fingerprint: vec![],
     }
 }
+
+/// A controlled display observation for actual Slot reservations. The older
+/// Point-only fixture intentionally has no display; that cannot grant a Slot.
+/// This helper performs no monitor/GUI query and confers no Native Scene proof.
+#[cfg(test)]
+pub(crate) fn action_slot_fixture_topology(ticket: u64) -> state::TopologySample {
+    state::TopologySample {
+        ticket,
+        observed: std::time::Instant::now(),
+        displays: vec![DisplaySample {
+            geometry: OutputGeometry::new("slot-fixture-monitor", 0, 0, 1600, 1200, 2.0).unwrap(),
+        }],
+        fingerprint: vec![("slot-fixture-monitor".into(), 0, 0, 1600, 1200, 2.0_f64.to_bits())],
+    }
+}

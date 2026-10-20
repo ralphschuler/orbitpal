@@ -5,6 +5,14 @@ use crate::world_state::{Anchor, AnchorId, AnchorKind, Slot, SlotId, WorkIdentit
 
 fn slot_id() -> SlotId { SlotId::new("meeting-place").unwrap() }
 
+fn slot_context(f: &mut Fixture) -> ActionContext {
+    f.ticket += 1;
+    let at = f.now.load(Ordering::SeqCst);
+    f.world.synchronize(&f.store, &world_hub::current_actors(&f.core),
+        Some(crate::world_hub::action_slot_fixture_topology(f.ticket)), at).unwrap();
+    f.world.action_context(&f.store, &world_hub::current_actors(&f.core), "nova", at).unwrap()
+}
+
 struct SlotFixture(VisualFixture);
 impl SlotFixture {
     fn new() -> Self {
@@ -20,20 +28,26 @@ impl SlotFixture {
                 v.target(),
                 vec![Slot::new(slot_id(), v.target())],
             ).unwrap()],
-        ).unwrap();
+        ).unwrap().with_revision(record.config.revision()).unwrap();
         v.f.ticket += 1;
-        v.f.world.save(
+        let confirmed = v.f.world.save(
             &v.f.store,
             Some(record.config.revision()),
             &config,
             &record.output_binding,
             &world_hub::current_actors(&v.f.core),
-            crate::world_hub::action_fixture_topology(v.f.ticket),
+            crate::world_hub::action_slot_fixture_topology(v.f.ticket),
             0,
         ).unwrap();
+        let saved = v.f.store.load_world_config().unwrap().unwrap();
+        assert_eq!(saved.config.revision(), record.config.revision() + 1);
+        // Read the public settings projection instead of reaching into a
+        // private WorldSettings field from this independent fixture module.
+        assert_eq!(serde_json::to_value(&confirmed).unwrap()["record"],
+            serde_json::to_value(&saved).unwrap());
         // A config change revokes the previous registration. Obtain a real new
         // challenge and accept its actual matching synthetic measurement.
-        v.source.context = v.f.context("nova");
+        v.source.context = slot_context(&mut v.f);
         let request = RegisterWorldActor {
             version: 1,
             mount_id: "slot-backend-studio".into(),
@@ -57,8 +71,12 @@ impl SlotFixture {
     fn admit(&mut self) -> Result<(), String> {
         let v = &mut self.0;
         let profile = v.f.store.bot_profile("nova").unwrap();
-        let context = v.f.context("nova");
+        let context = slot_context(&mut v.f);
         let fence = v.f.core.local_fence("nova", v.f.now.load(Ordering::SeqCst)).unwrap();
+        // A same-geometry fresh observation must not invalidate the real
+        // measured binding or silently fall back to the old empty topology.
+        assert_eq!(context.topology_revision, v.source.context.topology_revision);
+        assert!(v.f.world.native_output_geometry(&v.f.store, &context).is_ok());
         crate::life_runtime::action_host::admit_studio_slot_fixture(
             &mut v.f.core, &v.f.store, &v.f.world, "nova", &profile,
             fence, context, v.output.clone(), slot_id(), Arc::new(AtomicBool::new(false)),
@@ -105,7 +123,7 @@ fn slot_offer_requires_real_plan_start_and_stationary_arrival_then_releases_exac
 #[test]
 fn occupied_slot_cancels_the_real_new_plan_without_offer_or_unrelated_lease_release() {
     let mut s = SlotFixture::new();
-    let context = s.0.f.context("nova");
+    let context = slot_context(&mut s.0.f);
     let independent = s.0.f.world.reserve(&context.session, WorkIdentity::operation("independent-work").unwrap(), &slot_id(), 1000, 0).unwrap();
     let before = s.0.f.store.load_life("nova").unwrap().unwrap();
     assert!(s.admit().is_err());
@@ -126,8 +144,13 @@ fn executor_install_failure_releases_acquired_slot_and_checked_cancels_the_real_
     // Output/World observations are still current at zero; no action is busy
     // or executor poison present before Plan and real slot acquisition.
     s.0.f.core.actions.as_mut().unwrap().executor.advance(crate::life_domain::MAX_COUNTER).unwrap();
+    let actor = ActorId::new("nova").unwrap();
+    assert!(s.0.f.core.actions.as_ref().unwrap().executor.can_admit(&actor));
     let before = s.0.f.store.load_life("nova").unwrap().unwrap();
     assert!(s.admit().is_err());
+    // Only reaching install_plan's real deadline overflow poisons admission.
+    // A preceding reserve failure would leave this executor admissible.
+    assert!(!s.0.f.core.actions.as_ref().unwrap().executor.can_admit(&actor));
     let actual = s.0.f.store.load_life("nova").unwrap().unwrap();
     assert_eq!(actual.state().current_action().unwrap().phase(), ActionPhase::Cancelled);
     assert_eq!(actual.state().revision(), before.state().revision() + 2);

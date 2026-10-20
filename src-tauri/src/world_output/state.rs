@@ -366,7 +366,10 @@ impl Registry {
             || now - received > FRAME_MS
             || !report.valid()
             || report.enclosure_kind != pending.challenge.enclosure_kind
-            || pending.challenge.expected_reference_local.is_some_and(|reference| reference != report.reference_local)
+            // The host-prescribed first reference must match before binding.
+            // Renewals reach the frozen binding comparison below, which also
+            // revokes an existing binding when its reference changes.
+            || (entry.binding.is_none() && pending.challenge.expected_reference_local.is_some_and(|reference| reference != report.reference_local))
             || !entry.source.same_binding(source)
             || entry.cancel.load(Ordering::SeqCst)
             || now < pending.issued

@@ -520,5 +520,11 @@ fn studio_unregister_keeps_exact_scope_revokes_and_removes_before_fresh_successo
     assert_ne!(next.render_session_id, request.render_session_id);
     assert!(!registry.unregister(&request, "studio"));
     assert!(!next_cancel.load(Ordering::SeqCst));
-    assert!(matches!(registry.status("nova", 11).unwrap().readiness, Readiness::AwaitingMeasurement { .. }));
+    assert!(matches!(next.readiness, Readiness::AwaitingMeasurement { .. }));
+    // Status never issues a measurement challenge. The new registration reply
+    // above carries it; until its actual measurement, status stays unavailable.
+    let status = registry.status("nova", 11).unwrap();
+    assert_eq!(status.render_session_id, next.render_session_id);
+    assert_eq!(status.binding_sequence, next.binding_sequence);
+    assert!(matches!(status.readiness, Readiness::Unavailable { reason: RenderReason::Expired }));
 }

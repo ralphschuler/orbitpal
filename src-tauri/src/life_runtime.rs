@@ -126,6 +126,10 @@ pub fn operator_command(command: &str) -> bool {
             | "disconnect_life_ui"
             | "report_life_ui"
             | "set_life_mode"
+            // Async scene rollback may target an obsolete session. Its exact
+            // handler cancels only a matching session/lease; pre-handler global
+            // activity would revoke a successor before that check can run.
+            | "stop_life_session_exact"
             | "set_autopilot"
             | "send_automatic_message"
             | "get_speech_audio"
@@ -1332,6 +1336,7 @@ mod host_tests {
             "report_life_ui",
             "get_life_runtime",
             "get_usage_budget",
+            "stop_life_session_exact",
         ] {
             assert!(!operator_command(command), "{command}");
         }
