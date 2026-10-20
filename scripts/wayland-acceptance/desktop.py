@@ -6,11 +6,15 @@ The runner provisions a fresh account/private bus before this process exists.
 """
 import faulthandler
 import json
+import math
 import os
 from pathlib import Path
+import re
+import stat
 import subprocess
 import sys
 import time
+import uuid
 
 import gi
 gi.require_foreign("cairo")
@@ -192,12 +196,115 @@ def select_single_monitor(dialog, attempt=None):
         action(candidate)
         return False, True  # Accepted action is not an observed selection.
     if attempt == "pointer":
-        pointer_click(candidate)
+        pointer_click(candidate, dialog)
         return False, True
     return False, False
 
 
-def pointer_click(node):
+
+def translated_pointer(target, window, snapshot, nonce, pid, now_ms):
+    """Fail closed unless fresh compositor metadata matches this Qt window."""
+    def rect(value):
+        if not isinstance(value, dict) or not all(key in value for key in ("x", "y", "width", "height")):
+            raise RuntimeError("Missing synthetic window geometry")
+        result = tuple(value[key] for key in ("x", "y", "width", "height"))
+        if any(isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item) for item in result):
+            raise RuntimeError("Invalid synthetic window geometry")
+        if result[2] <= 0 or result[3] <= 0:
+            raise RuntimeError("Empty synthetic window geometry")
+        return result
+    if not isinstance(snapshot, dict) or type(pid) is not int or not 0 < pid < 2**31:
+        raise RuntimeError("Invalid synthetic chooser process")
+    timestamp = snapshot.get("timestamp")
+    if snapshot.get("nonce") != nonce or isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp) or not 0 <= now_ms - timestamp <= 5000:
+        raise RuntimeError("Stale synthetic compositor geometry")
+    matches = snapshot.get("matches", [])
+    if snapshot.get("count") != 1 or not isinstance(matches, list) or len(matches) != 1 or not isinstance(matches[0], dict) or matches[0].get("pid") != pid:
+        raise RuntimeError("Synthetic chooser geometry is ambiguous")
+    bx, by, bw, bh = rect(matches[0]["buffer"])
+    rx, ry, rw, rh = rect(window)
+    tx, ty, tw, th = rect(target)
+    if (bw, bh) != (rw, rh) or tx < rx or ty < ry or tx + tw > rx + rw or ty + th > ry + rh:
+        raise RuntimeError("Qt and compositor window bounds do not match")
+    if bx < 0 or by < 0 or bx + bw > 1280 or by + bh > 720:
+        raise RuntimeError("Synthetic chooser is outside the private output")
+    x, y = bx + tx - rx + tw / 2, by + ty - ry + th / 2
+    if not (0 <= x < 1280 and 0 <= y < 720):
+        raise RuntimeError("Synthetic pointer destination is outside the output")
+    return x, y
+
+
+def kwin_geometry(pid):
+    """Read-only KWin5 snapshot; never move a window or alter a portal grant."""
+    runtime = ROOT / "runtime"
+    bus = f"unix:path={runtime}/session-bus"
+    address = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    if DESKTOP != "kde" or os.geteuid() == 0 or ROOT.resolve() != ROOT or not ROOT.name.startswith("orbitpal-wayland."):
+        raise RuntimeError("Refusing compositor metadata outside the private case")
+    for directory in (ROOT, runtime):
+        metadata = directory.lstat()
+        if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise RuntimeError("Compositor metadata requires private owned directories")
+    if os.environ.get("XDG_RUNTIME_DIR") != str(runtime) or not re.fullmatch(re.escape(bus) + r"(?:,guid=[0-9a-f]{32})?", address):
+        raise RuntimeError("Compositor metadata requires the private session bus")
+    if type(pid) is not int or not 0 < pid < 2**31:
+        raise RuntimeError("Invalid real chooser process ID")
+    nonce = uuid.uuid4().hex
+    plugin = "orbitpal-geometry-" + nonce
+    script = CONTROL / (plugin + ".js")
+    prefix = "ORBITPAL_KWIN_GEOMETRY:" + nonce + ":"
+    # These are the actual5.27 JS properties. clientGeometry is not exposed.
+    code = """(function () {
+        var windows = workspace.clientList(), matches = [], titles = [];
+        for (var i = 0; i < windows.length && i < 64; i++) {
+            var title = String(windows[i].caption);
+            if (titles.length < 8) titles.push(title.substring(0, 120));
+            if (windows[i].pid === PID) {
+                var b = windows[i].bufferGeometry;
+                matches.push({pid: windows[i].pid, caption: title.substring(0, 120), buffer: {x:b.x, y:b.y, width:b.width, height:b.height}});
+            }
+        }
+        console.warn(PREFIX + JSON.stringify({nonce: NONCE, timestamp: Date.now(), count: matches.length, matches: matches.slice(0, 2), titles: titles}));
+    })();""".replace("PREFIX", json.dumps(prefix)).replace("NONCE", json.dumps(nonce)).replace("PID", str(pid))
+    deadline = time.monotonic() + 3
+    loaded = False
+    def call(path, method, *arguments, cleanup=False):
+        remaining = 1 if cleanup else min(1, deadline - time.monotonic())
+        if remaining <= 0:
+            raise RuntimeError("Synthetic compositor metadata deadline exceeded")
+        return subprocess.run(["gdbus", "call", "--session", "--dest", "org.kde.KWin", "--object-path", path,
+                               "--method", method, *arguments], capture_output=True, text=True, timeout=remaining, check=True).stdout.strip()
+    try:
+        with script.open("x", encoding="utf-8") as stream:
+            stream.write(code)
+        result = call("/Scripting", "org.kde.kwin.Scripting.loadScript", str(script), plugin)
+        match = re.fullmatch(r"\((\d+),\)", result)
+        if not match:
+            raise RuntimeError("KWin did not load the read-only metadata script")
+        loaded = True
+        call("/" + match.group(1), "org.kde.kwin.Script.run")
+        log = ROOT / "compositor.txt"
+        metadata = log.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
+            raise RuntimeError("Invalid private compositor metadata log")
+        with log.open("rb") as stream:
+            stream.seek(max(0, metadata.st_size - 65536))
+            lines = stream.read(65536).decode("utf-8", errors="replace").splitlines()
+        replies = [line.partition(prefix)[2] for line in lines if prefix in line and len(line) <= 4096]
+        if len(replies) != 1:
+            raise RuntimeError("Missing or ambiguous fresh compositor metadata")
+        snapshot = json.loads(replies[0])
+        TRACE.log("pointer.compositor.geometry", snapshot=json.dumps(snapshot)[:120])
+        return snapshot, nonce
+    finally:
+        try:
+            if loaded:
+                call("/Scripting", "org.kde.kwin.Scripting.unloadScript", plugin, cleanup=True)
+        finally:
+            script.unlink(missing_ok=True)
+
+
+def pointer_click(node, dialog):
     # Qt5's accessibility bridge can accept an action without changing the UI.
     # Only use this fallback after an observed no-op, at fresh real UI bounds.
     # It is genuine input to the private compositor, never a portal response.
@@ -207,10 +314,15 @@ def pointer_click(node):
     try:
         TRACE.log("pointer.geometry.begin")
         bounds = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
-        x, y = bounds.x + bounds.width / 2, bounds.y + bounds.height / 2
-        TRACE.log("pointer.geometry.end", x=x, y=y, width=bounds.width, height=bounds.height)
-        if bounds.width <= 0 or bounds.height <= 0 or not (0 <= x < 1280 and 0 <= y < 720):
+        window = dialog.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+        if dialog.name != TITLES["kde"] or not visible(dialog):
             return False
+        pid = dialog.get_process_id()
+        snapshot, nonce = kwin_geometry(pid)
+        fields = lambda rect: {key: getattr(rect, key) for key in ("x", "y", "width", "height")}
+        TRACE.log("pointer.geometry.observed", qtRoot=str(fields(window)), target=str(fields(bounds)))
+        x, y = translated_pointer(fields(bounds), fields(window), snapshot, nonce, pid, time.time() * 1000)
+        TRACE.log("pointer.geometry.end", x=x, y=y, qtRoot=str(fields(window)), target=str(fields(bounds)))
         TRACE.log("pointer.invoke.begin")
         completed = subprocess.run([str(helper), str(x), str(y)], capture_output=True, timeout=6, check=False)
         TRACE.log("pointer.invoke.end", code=completed.returncode)
@@ -219,7 +331,8 @@ def pointer_click(node):
             raise RuntimeError("Private compositor pointer input was rejected")
         print("Genuine KDE chooser pointer click", flush=True)
         return True
-    except (RuntimeError, AttributeError, NotImplementedError, subprocess.TimeoutExpired):
+    except (RuntimeError, AttributeError, KeyError, ValueError, OSError, NotImplementedError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+        TRACE.log("pointer.rejected", reason=f"{type(error).__name__}: {error}")
         return False
 
 
@@ -334,7 +447,7 @@ class Desktop:
                                 # subsequent poll: the accepted press did not
                                 # dismiss it. One genuine pointer retry only.
                                 self.consent_pointer_attempted = True
-                                pointer_click(target)
+                                pointer_click(target, dialog)
                 if self.pending and time.monotonic() >= self.deadline:
                     TRACE.log("timeout.tree.begin")
                     (ROOT / "chooser-tree.txt").write_text(text_tree(), encoding="utf-8")
