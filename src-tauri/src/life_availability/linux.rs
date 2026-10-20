@@ -533,7 +533,18 @@ mod tests {
         assert!(observe(&control, Some(Ok(lost)), OWNER, PATH).reconnect);
         assert_eq!(control.gate.snapshot().reason, Reason::MonitorDisconnected);
         finish_peer(server).await;
-        assert!(query(&control, &mut session).await.1);
+        // Peer close and this endpoint's EOF notification are asynchronous.
+        // zbus can fail a pending RPC before publishing its closed status;
+        // await that observable precondition rather than racing the socket
+        // reader against a new query and assuming its reconnect branch wins.
+        tokio::time::timeout(Duration::from_secs(1), connection.closed())
+            .await
+            .unwrap();
+        let (observation, reconnect, _) = query(&control, &mut session).await;
+        assert!(reconnect);
+        assert_eq!(observation, disconnected());
+        assert_eq!(control.gate.snapshot().state, Availability::Unknown);
+        assert_eq!(control.gate.snapshot().reason, Reason::MonitorDisconnected);
         let _ = connection.close().await;
     }
     #[tokio::test]

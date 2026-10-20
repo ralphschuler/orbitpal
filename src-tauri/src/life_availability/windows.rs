@@ -219,6 +219,32 @@ mod tests {
     use std::mem::offset_of;
     use windows_sys::Win32::System::RemoteDesktop::WTSINFOEX_LEVEL1_W;
 
+    #[test]
+    fn unit_test_executable_embeds_common_controls_v6_activation() {
+        // Inspect only this synthetic test executable's own resource, without
+        // opening a window or reading an actual user/session configuration.
+        use windows_sys::Win32::System::LibraryLoader::{
+            FindResourceW, LoadResource, LockResource, SizeofResource,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::RT_MANIFEST;
+        unsafe {
+            let module = GetModuleHandleW(null());
+            assert!(!module.is_null());
+            let resource = FindResourceW(module, 1usize as *const u16, RT_MANIFEST);
+            assert!(!resource.is_null(), "unit-test executable manifest missing");
+            let length = SizeofResource(module, resource) as usize;
+            assert!((1..=65_536).contains(&length));
+            let loaded = LoadResource(module, resource);
+            assert!(!loaded.is_null());
+            let pointer = LockResource(loaded);
+            assert!(!pointer.is_null());
+            let bytes = std::slice::from_raw_parts(pointer.cast::<u8>(), length);
+            let manifest = std::str::from_utf8(bytes).expect("manifest must be UTF-8");
+            assert!(manifest.contains("Microsoft.Windows.Common-Controls"));
+            assert!(manifest.contains("6.0.0.0"));
+        }
+    }
+
     fn fixture(level: u32, session: u32, connection: i32, flags: i32) -> Vec<u8> {
         let mut bytes = vec![0; size_of::<WTSINFOEXW>()];
         let data = offset_of!(WTSINFOEXW, Data);
