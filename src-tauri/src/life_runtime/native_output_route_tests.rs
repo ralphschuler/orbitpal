@@ -447,3 +447,67 @@ fn poisoned_native_lifecycle_stays_unavailable_and_conservatively_cancels_output
     assert!(runtime.native_routes.state.is_poisoned());
     assert!(matches!(runtime.native_routes.witness("a", "avatar-a", &signals, 1), Err(RouteError::Unavailable)));
 }
+
+fn layout_handoff(routes:&NativeOutputRoutes,bot:&str,signals:&Arc<WindowSignals>,now:u64)->(LayoutRoute,Arc<AtomicBool>){
+    let ui=routes.layout_ui().unwrap();let ticket=begin(routes,bot,signals,now);let cancel=Arc::new(AtomicBool::new(false));
+    routes.retain_preparation(&ticket,signals,&cancel,&ui,now).unwrap();let route=routes.handoff_preparation(&ticket,signals,&cancel,&ui,now).unwrap();
+    assert!(ticket.cancel.load(Ordering::SeqCst));assert!(!cancel.load(Ordering::SeqCst));(route,cancel)
+}
+fn layout_ui(routes:&NativeOutputRoutes){routes.ui_connect("studio");routes.ui_report("studio",1,false);}
+
+#[test]
+fn layout_handoff_revoke_has_no_unregistered_cancellation_interval(){
+    for stop_before in [true,false]{let routes=NativeOutputRoutes::default();let signals=tracked(&routes,"a");layout_ui(&routes);let ui=routes.layout_ui().unwrap();let ticket=begin(&routes,"a",&signals,0);let cancel=Arc::new(AtomicBool::new(false));
+        if stop_before{routes.revoke(Some("a"));assert!(routes.handoff_preparation(&ticket,&signals,&cancel,&ui,0).is_err());}
+        else{routes.retain_preparation(&ticket,&signals,&cancel,&ui,0).unwrap();let route=routes.handoff_preparation(&ticket,&signals,&cancel,&ui,0).unwrap();routes.revoke(Some("a"));assert!(cancel.load(Ordering::SeqCst));assert!(!routes.layout_current(&route,0));routes.release_layout(&route);}
+    }
+}
+#[test]
+fn expected_geometry_never_publishes_between_raw_invalidation_and_classification(){
+    let routes=NativeOutputRoutes::default();let outputs=super::super::action_output::OutputGate::default();let signals=tracked(&routes,"a");layout_ui(&routes);let (route,cancel)=layout_handoff(&routes,"a",&signals,0);
+    let fact=routes.begin_geometry("a",&signals,&outputs).unwrap();assert!(!routes.layout_current(&route,0));assert!(!cancel.load(Ordering::SeqCst));
+    routes.finish_geometry(fact,true);assert!(routes.layout_current(&route,0));
+    let fact=routes.begin_geometry("a",&signals,&outputs).unwrap();routes.revoke(Some("a"));routes.finish_geometry(fact,true);assert!(cancel.load(Ordering::SeqCst));assert!(!routes.layout_current(&route,0));routes.release_layout(&route);
+}
+#[test]
+fn cancelled_expired_replaced_layout_slots_stay_charged_until_exact_release(){
+    let routes=NativeOutputRoutes::default();layout_ui(&routes);let mut held=Vec::new();
+    for i in 0..8{let bot=format!("a{i}");let signals=tracked(&routes,&bot);let (route,_)=layout_handoff(&routes,&bot,&signals,0);held.push((signals,route));}
+    routes.revoke(None);let extra=tracked(&routes,"extra");let witness=routes.witness("extra","avatar-extra",&extra,1).unwrap();assert!(matches!(routes.begin_preparation(witness,1),Err(RouteError::Capacity)));
+    routes.release_layout(&held[0].1);let ticket=begin(&routes,"extra",&extra,1);assert!(routes.take_preparation(&ticket,2).is_ok());
+    routes.release_layout(&held[0].1);assert_eq!(routes.state.lock().unwrap().layouts.len(),7);
+    for (_,route) in held.iter().skip(1){routes.release_layout(route);}
+}
+#[test]
+fn stale_ui_reports_and_cleanup_cannot_revoke_current_layout_successor(){
+    let routes=NativeOutputRoutes::default();let signals=tracked(&routes,"a");layout_ui(&routes);let (old,old_cancel)=layout_handoff(&routes,"a",&signals,0);
+    routes.ui_connect("next");routes.ui_report("next",1,false);assert!(old_cancel.load(Ordering::SeqCst));routes.release_layout(&old);
+    let (current,cancel)=layout_handoff(&routes,"a",&signals,1);routes.ui_disconnect("studio");routes.ui_report("studio",999,true);routes.ui_report("next",1,true);routes.release_layout(&old);assert!(!cancel.load(Ordering::SeqCst));assert!(routes.layout_current(&current,1));
+    routes.ui_report("next",2,true);assert!(cancel.load(Ordering::SeqCst));routes.release_layout(&current);
+}
+#[test]
+fn layout_expiry_is_original_inclusive_and_cannot_be_renewed_by_observation(){
+    let routes=NativeOutputRoutes::default();let signals=tracked(&routes,"a");layout_ui(&routes);let (route,cancel)=layout_handoff(&routes,"a",&signals,10);
+    assert!(routes.layout_current(&route,5010));assert!(!routes.layout_current(&route,5011));assert!(cancel.load(Ordering::SeqCst));assert!(!routes.layout_current(&route,10));routes.release_layout(&route);
+}
+#[test]
+fn layout_replacement_and_old_geometry_finish_never_touch_new_instance(){
+    let routes=NativeOutputRoutes::default();let signals=tracked(&routes,"a");layout_ui(&routes);let outputs=super::super::action_output::OutputGate::default();let (old,cancel)=layout_handoff(&routes,"a",&signals,0);let old_fact=routes.begin_geometry("a",&signals,&outputs).unwrap();
+    let next=Arc::new(WindowSignals::default());routes.track_window("a","avatar-a",&next,1).unwrap();assert!(cancel.load(Ordering::SeqCst));let (current,current_cancel)=layout_handoff(&routes,"a",&next,1);routes.finish_geometry(old_fact,true);routes.release_layout(&old);assert!(!current_cancel.load(Ordering::SeqCst));assert!(routes.layout_current(&current,1));routes.release_layout(&current);
+}
+#[test]
+fn inactive_cleanup_is_charged_before_hub_reservation_even_when_pending_is_reaped(){
+    for competing in [false,true]{let routes=NativeOutputRoutes::default();layout_ui(&routes);let ui=routes.layout_ui().unwrap();let mut held=Vec::new();
+        for i in 0..8{let bot=format!("a{i}");let signals=tracked(&routes,&bot);let ticket=begin(&routes,&bot,&signals,0);let cancel=Arc::new(AtomicBool::new(false));let route=routes.retain_preparation(&ticket,&signals,&cancel,&ui,0).unwrap();held.push((signals,ticket,route,cancel));}
+        let extra=tracked(&routes,"extra");
+        // No Hub owner is necessary for charging. A canceled/dropped old
+        // Pending can be reaped concurrently with a new admission, but its
+        // registered inactive cleanup ID still occupies the same one slot.
+        held[0].1.cancel.store(true,Ordering::SeqCst);
+        if competing{let reaped_signals=held[0].0.clone();std::thread::scope(|scope|{let (barrier_a,barrier_b)=(Arc::new(std::sync::Barrier::new(2)),Arc::new(std::sync::Barrier::new(2)));let a=barrier_a.clone();let b=barrier_b.clone();let routes=&routes;let reaper=scope.spawn(move||{a.wait();let _=routes.witness("a0","avatar-a0",&reaped_signals,1);b.wait();});barrier_a.wait();let witness=routes.witness("extra","avatar-extra",&extra,1).unwrap();assert!(matches!(routes.begin_preparation(witness,1),Err(RouteError::Capacity)));barrier_b.wait();reaper.join().unwrap();});}
+        else{let witness=routes.witness("extra","avatar-extra",&extra,1).unwrap();assert!(matches!(routes.begin_preparation(witness,1),Err(RouteError::Capacity)));}
+        assert!(routes.handoff_preparation(&held[0].1,&held[0].0,&held[0].3,&ui,1).is_err());
+        routes.release_layout(&held[0].2);let ticket=begin(&routes,"extra",&extra,1);routes.cancel_preparation(&ticket);
+        for (_,_,route,_) in &held{routes.release_layout(route);}
+    }
+}

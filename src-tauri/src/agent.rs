@@ -42,7 +42,7 @@ async fn send_with_origin(app:tauri::AppHandle,text:String,source:String,user:St
 }
 pub async fn send_runtime_autopilot(app:tauri::AppHandle,claim:crate::life_runtime::core::Claim)->Result<Value,String>{
     let bot_id=claim.bot_id.clone();let request_id=Some(claim.turn_id.clone());
-    let state=app.state::<crate::AppState>();state.updater.ensure_idle()?;
+    let state=app.state::<crate::AppState>();state.updater.ensure_idle()?;state.presentation.admit_dialog()?;
     let _turn=state.generation.try_lock().map_err(|_|"Der Co-Host verarbeitet bereits eine Nachricht oder ein Update".to_owned())?;
     // A queued or playing answer must finish before autonomous speech can begin.
     if state.overlay.has_any_pending_speech(){return Err("Bitte die vorbereitete oder laufende Sprachausgabe vor dem nächsten Autopilot-Beitrag beenden".into());}
@@ -60,6 +60,7 @@ pub async fn send_runtime_autopilot(app:tauri::AppHandle,claim:crate::life_runti
 }
 async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewer:bool,selected:&[String],cancel:Arc<AtomicBool>,bot_id:Option<&str>,autopilot:Option<&crate::autopilot::Ticket>,reply_route_id:Option<&str>,runtime_claim:Option<&crate::life_runtime::core::Claim>,origin:crate::usage_budget::Origin)->Result<Value,String> {
     let state=app.state::<crate::AppState>();
+    state.presentation.admit_dialog()?;
     if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;}
     let active=state.store.profile()?;
     let store=state.store.scoped(bot_id.unwrap_or(active["id"].as_str().unwrap_or("nova")))?;
@@ -196,6 +197,7 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
         crate::screen_context::current_grant(&profile,&store.profile()?)?;
         if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;}
         if origin==crate::usage_budget::Origin::AutomaticChat&&!automatic_chat_enabled(&store.profile()?){return Err("Die automatische Chatantwort ist für diesen Bot nicht aktiviert.".into());}
+        state.presentation.admit_dialog()?;
         let completion=crate::providers::complete(model,request,offered,key.clone(),app.clone(),id.to_owned(),cancel.clone(),(&store,&usage),&authority).await?;
         if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;}
         state.screen_context.check(&screen_ticket)?;
@@ -278,6 +280,7 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
     // its actual start (or the explicit text-only fallback).
     let commit=||{
         if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
+        state.presentation.admit_dialog()?;
         state.screen_context.check(&screen_ticket)?;
         crate::screen_context::current_grant(&profile,&store.profile()?)?;
         // The in-memory job is deliberately absent from history until actual

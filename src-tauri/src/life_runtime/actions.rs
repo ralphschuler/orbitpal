@@ -19,6 +19,7 @@ fn main_only(label: &str) -> Result<(), String> {
 /// A config-enabled OBS link is not a connected output. #72 will add real
 /// registration; this nonvisual path currently supports only actual native UI.
 fn rest_output(app: &tauri::AppHandle, profile: &Value) -> bool {
+    if profile["id"].as_str().is_some_and(|id|app.state::<crate::AppState>().presentation.native_guarded(id)){return false;}
     if let Some(available) = profile["id"].as_str().and_then(|id| app.state::<crate::AppState>().life_runtime.session_outputs.available(id)) {
         return available;
     }
@@ -44,6 +45,7 @@ pub(crate) fn prepare_operator<R: tauri::Runtime>(
     state: &crate::AppState,
     invoke: &tauri::ipc::Invoke<R>,
 ) {
+    if let tauri::ipc::InvokeBody::Json(value)=invoke.message.payload(){if let Some(bot)=value["botId"].as_str().filter(|bot|crate::storage::valid_id(bot)){state.life_runtime.native_routes.revoke(Some(bot));}}
     state.life_runtime.outputs.bot(None);
     let output_generation = state.life_runtime.outputs.ticket();
     let mut core = state
@@ -357,6 +359,10 @@ impl LifeRuntime {
         origin: Origin,
     ) -> Result<(), String> {
         let state = app.state::<crate::AppState>();
+        // Revocation is a latch, not completed restoration. A manual request
+        // gets the existing busy error until exact cleanup actually releases.
+        if !origin.autonomous(){self.native_routes.revoke(None);}
+        state.presentation.admit_dialog()?;
         let mut core = self.core.lock().map_err(|_| action_host::UNAVAILABLE)?;
         if origin.autonomous() && core.local_actions_busy() {
             return Err(
