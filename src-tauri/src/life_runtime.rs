@@ -3,6 +3,9 @@
 mod action_host;
 #[path = "life_runtime/action_output.rs"]
 mod action_output;
+#[path = "life_runtime/native_output_route.rs"]
+mod native_output_route;
+pub(crate) use native_output_route::NativeWindowChange;
 #[path = "life_runtime/action_state.rs"]
 pub(crate) mod action_state;
 #[path = "life_runtime/actions.rs"]
@@ -150,6 +153,7 @@ pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
 
 pub struct LifeRuntime {
     outputs: action_output::OutputGate,
+    native_routes: native_output_route::NativeOutputRoutes,
     core: Mutex<Core>,
     monitor: OnceLock<NativeMonitor>,
     started: Instant,
@@ -160,6 +164,7 @@ impl Default for LifeRuntime {
     fn default() -> Self {
         Self {
             outputs: action_output::OutputGate::default(),
+            native_routes: native_output_route::NativeOutputRoutes::default(),
             core: Mutex::new(Core::new(SystemSnapshot {
                 state: Availability::Unknown,
                 reason: SystemReason::Initializing,
@@ -278,6 +283,7 @@ impl LifeRuntime {
         }
     }
     pub fn operator_activity(&self) {
+        self.native_routes.revoke(None);
         self.outputs.bot(None);
         if let Ok(mut core) = self.core.lock() {
             core.operator_activity(self.now());
@@ -305,6 +311,7 @@ impl LifeRuntime {
         runtime
     }
     pub fn invalidate_bot(&self, app: &tauri::AppHandle, bot: &str) {
+        self.native_routes.revoke(Some(bot));
         self.outputs.geometry(Some(bot));
         if let Ok(mut core) = self.core.lock() {
             core.invalidate_bot(bot, self.now());
@@ -364,6 +371,7 @@ impl LifeRuntime {
         bot: &str,
         write: impl FnOnce() -> Result<Value, String>,
     ) -> Result<(Value, Option<crate::autopilot::Runtime>), String> {
+        self.native_routes.revoke(Some(bot));
         self.outputs.geometry(Some(bot));
         let mut core = self.core.lock().map_err(|_| UNAVAILABLE)?;
         core.invalidate_bot(bot, self.now());
@@ -388,6 +396,7 @@ impl LifeRuntime {
         result
     }
     pub fn stop(&self, app: &tauri::AppHandle, bot: Option<&str>) {
+        self.native_routes.revoke(bot);
         self.outputs.geometry(bot);
         let state = app.state::<crate::AppState>();
         // Runtime -> AutopilotHub -> Store is the admitted mutation/commit order.
@@ -438,12 +447,37 @@ impl LifeRuntime {
     }
 
     pub(crate) fn invalidate_world_presentation(&self, bot: Option<&str>) {
+        self.native_routes.revoke(bot);
         self.outputs.geometry(bot);
     }
+    /// Only the actual native constructor supplies this Arc. Tracking never
+    /// enables World registration; an unprepared window remains unsupported.
+    pub(crate) fn native_output_window_registered(
+        &self,
+        bot: &str,
+        label: &str,
+        signals: &Arc<crate::window_signals::WindowSignals>,
+    ) -> bool {
+        self.native_routes.track_window(bot, label, signals, self.now()).is_ok()
+    }
+    /// Short cancellation latch, called before native callbacks can wait for
+    /// Core, persistence, presentation transitions or any GUI getter.
+    pub(crate) fn native_output_window_changed(
+        &self,
+        bot: &str,
+        signals: &Arc<crate::window_signals::WindowSignals>,
+        change: NativeWindowChange,
+    ) -> bool {
+        self.native_routes.window_changed(bot, signals, change)
+    }
     pub fn output_window_lost(&self, label: &str) {
+        if label == "main" {
+            self.native_routes.revoke(None);
+        }
         self.outputs.window(label);
     }
     pub fn hide_main(&self, window: &tauri::WebviewWindow) {
+        self.native_routes.revoke(None);
         self.outputs.window("main");
         let barrier = self
             .core
@@ -456,6 +490,7 @@ impl LifeRuntime {
         }
     }
     pub fn shown(&self) {
+        self.native_routes.revoke(None);
         self.outputs.window("main");
         if let Ok(mut core) = self.core.lock() {
             core.shown(self.now());
