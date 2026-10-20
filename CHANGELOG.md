@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Distribute automatic chat turns fairly across eligible bots within each priority class, even while the queue keeps filling. Preserve direct-address and manual priority, reserve asynchronous preflight, and invalidate exact claims on Stop without replaying late work.
+- Name the Autopilot hourly limit as contribution attempts in all four interface languages. Explain text-only, silent and failed attempts and distinguish the per-bot rolling limit from provider requests or monetary limits; preserve the existing counter and stored configuration.
+
 ## 0.11.1 — 2026-10-20
 
 - Fix desktop Autopilot facing for vertical and diagonal paths with an elevated orthographic view and upright turns. Keep the full projected turning hull inside safe bounds and retain offscreen excursions, visible returns and live figure sizing.

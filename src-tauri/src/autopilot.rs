@@ -149,6 +149,47 @@ mod tests{
         assert!(hub.admit_at("nova",&config,start+Duration::from_secs(66)).is_err());
         assert!(hub.admit_at("nova",&config,start+Duration::from_secs(3615)).is_ok());
     }
+    // Native budget-composition fixture, not a Tauri agent/provider integration
+    // test. Production admits once in agent::send_autopilot before run's tool
+    // loop; these local completions model two tool rounds and one final reply.
+    #[test]fn one_admission_covers_multiple_mock_model_and_tool_rounds(){
+        let hub=AutopilotHub::default();let start=Instant::now();
+        let config=Config{min_seconds:15,max_seconds:30,max_turns_per_hour:1,..Config::default()};
+        for (bot,final_text) in [("text-only","A local fixture contribution."),("silent","[silent]")] {
+            hub.set_at(bot,true,config.clone(),start).unwrap();
+            let ticket=hub.admit_at(bot,&config,start+Duration::from_secs(15)).unwrap();
+            let rounds=[
+                crate::providers::Completion{text:String::new(),tool_calls:vec![json!({"id":"knowledge","function":{"name":"search_knowledge","arguments":"{\"query\":\"fixture\"}"}})]},
+                crate::providers::Completion{text:String::new(),tool_calls:vec![json!({"id":"skill","function":{"name":"load_skill","arguments":"{\"id\":\"fixture\"}"}})]},
+                crate::providers::Completion{text:final_text.into(),tool_calls:Vec::new()},
+            ];
+            let mut model_requests=0;let mut observations=Vec::new();let mut output=None;
+            for completion in rounds {
+                assert!(!ticket.cancel.load(Ordering::SeqCst));model_requests+=1;
+                if completion.tool_calls.is_empty(){output=Some(completion.text);break;}
+                for call in completion.tool_calls {
+                    // Local tool results only: no model, voice, credentials,
+                    // filesystem, network or native application is accessed.
+                    let result=match call["function"]["name"].as_str().unwrap(){
+                        "search_knowledge"=>json!({"matches":[]}),
+                        "load_skill"=>json!({"id":"fixture","content":"Local fixture"}),
+                        name=>panic!("Unexpected fixture tool: {name}"),
+                    };
+                    observations.push(json!({"role":"tool","tool_call_id":call["id"],"content":result}));
+                }
+            }
+            let committed=hub.commit(bot,&ticket,||Ok(output.unwrap())).unwrap();
+            assert_eq!(committed,final_text);assert_eq!(model_requests,3);assert_eq!(observations.len(),2);
+            assert_eq!(observations[0]["tool_call_id"],"knowledge");assert_eq!(observations[1]["tool_call_id"],"skill");
+            assert_eq!(hub.sessions.lock().unwrap()[bot].attempts.len(),1);
+            assert!(hub.admit_at(bot,&config,start+Duration::from_secs(30)).err().unwrap().contains("Sprechlimit"));
+            hub.set_at(bot,false,config.clone(),start+Duration::from_secs(31)).unwrap();
+            hub.set_at(bot,true,config.clone(),start+Duration::from_secs(32)).unwrap();
+            assert!(hub.admit_at(bot,&config,start+Duration::from_secs(47)).is_err());
+            assert!(hub.admit_at(bot,&config,start+Duration::from_secs(3615)).is_ok());
+            assert_eq!(hub.sessions.lock().unwrap()[bot].attempts.len(),1);
+        }
+    }
     #[test]fn stop_refresh_and_other_bot_sessions_cannot_revive_late_results(){
         let hub=AutopilotHub::default();let now=Instant::now();let config=Config::default();
         let started=hub.set_at("nova",true,config.clone(),now).unwrap();assert!(!started.seed.is_empty());assert!(started.started_at>0);
