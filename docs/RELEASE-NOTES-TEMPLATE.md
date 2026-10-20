@@ -1,5 +1,6 @@
 ## New in 0.12.0
 
+- Launch the Linux session monitor through Tauri's owned runtime so synchronous application setup does not require an entered Tokio context.
 - Manage named API connections centrally across all characters, including shared defaults and exact service/destination bindings. Characters retain their own models, voices, memory banks and permissions. Keys remain in the OS credential store; imported profiles do not inherit local connections.
 - Optionally reuse successfully retrieved macOS keys for the current app session, with explicit Lock controls and invalidation on changes. This is off by default and does not bypass Keychain authorization or guarantee that permission prompts disappear.
 - Add explicitly started native Ambient/Life sessions, durable per-bot Life state, an activity display and a shared stage editor in German, English, French and Spanish. Saved settings never activate autonomy.
