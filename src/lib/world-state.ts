@@ -57,5 +57,16 @@ export function draftWorld(draft:WorldDraft):WorldRecord{const position=(p:Point
 export function worldDraftChanged(draft:WorldDraft,record:WorldRecord|null):boolean{if(!record)return true;return JSON.stringify(draft)!==JSON.stringify(worldDraft(record));}
 export function newWorldDraft(stageId:string):WorldDraft{return worldDraft({config:{schemaVersion:1,stageId:id(stageId),revision:0,members:[],safeRegion:{min:{x:50000,y:50000},max:{x:950000,y:950000}},anchors:[]},outputBinding:{monitorId:null}});}
 export type WorldInvoke=(command:string,args?:Record<string,unknown>)=>Promise<unknown>;
-export async function saveWorld(invoke:WorldInvoke,draft:WorldDraft,expectedRevision:number|null):Promise<WorldSettings>{const record=draftWorld(draft);if(expectedRevision!==null)number(expectedRevision);if(record.config.revision!==(expectedRevision??0))throw invalidWorld();return parseWorldSettings(await invoke('save_world_config',{expectedRevision,...record}));}
-export async function placeWorld(invoke:WorldInvoke,revision:number,actorId:string,position:PointDraft):Promise<WorldState>{return parseWorldState(await invoke('place_world_actor',{expectedRevision:number(revision),actorId:id(actorId),position:{x:percentToCanonical(position.x),y:percentToCanonical(position.y)}}));}
+export async function saveWorld(invoke:WorldInvoke,draft:WorldDraft,expectedRevision:number|null):Promise<WorldSettings>{
+  const record=draftWorld(draft);if(expectedRevision!==null)number(expectedRevision,0,Number.MAX_SAFE_INTEGER-1);if(record.config.revision!==(expectedRevision??0))throw invalidWorld();
+  const next=parseWorldSettings(await invoke('save_world_config',{expectedRevision,...record}));
+  if(next.availability!=='ready'||!next.record||next.record.config.stageId!==record.config.stageId||next.record.config.revision!==(expectedRevision??0)+1)throw invalidWorld();
+  return next;
+}
+export async function placeWorld(invoke:WorldInvoke,revision:number,actorId:string,position:PointDraft):Promise<WorldState>{
+  const point={x:percentToCanonical(position.x),y:percentToCanonical(position.y)},owner=id(actorId),expectedRevision=number(revision);
+  const next=parseWorldState(await invoke('place_world_actor',{expectedRevision,actorId:owner,position:point}));
+  const confirmed=next.snapshot?.actors.find(actor=>actor.actorId===owner);
+  if(next.availability!=='ready'||next.snapshot?.configRevision!==expectedRevision||!confirmed||confirmed.position.x!==point.x||confirmed.position.y!==point.y)throw invalidWorld();
+  return next;
+}

@@ -41,11 +41,13 @@ describe('Shared World editor boundary',()=>{
     expect(()=>parseWorldState({...raw,snapshot:{...raw.snapshot,actors:[...raw.snapshot.actors,raw.snapshot.actors[0]]}})).toThrow();
   });
   it('saves only config/CAS/private binding and places only a checked canonical point, with zero activation/grants',async()=>{
-    const invoke=vi.fn(async(command:string)=>command==='save_world_config'?settings():snapshot());
+    const invoke=vi.fn(async(command:string)=>{if(command==='save_world_config'){const value=settings();value.record.config.revision=2;return value;}const value=snapshot();value.snapshot.actors[0].position={x:250000,y:750000};return value;});
     const draft=worldDraft(parseWorldSettings(settings()).record!);await saveWorld(invoke,draft,1);expect(invoke).toHaveBeenCalledWith('save_world_config',{expectedRevision:1,...draftWorld(draft)});
     await placeWorld(invoke,1,'_nova',{x:'25',y:'75'});expect(invoke).toHaveBeenCalledWith('place_world_actor',{expectedRevision:1,actorId:'_nova',position:{x:250000,y:750000}});
     expect(invoke.mock.calls.map(call=>call[0])).toEqual(['save_world_config','place_world_actor']);
     await expect(saveWorld(invoke,draft,0)).rejects.toThrow();await expect(placeWorld(invoke,1,'../bot',{x:'50',y:'50'})).rejects.toThrow();expect(invoke).toHaveBeenCalledTimes(2);
+    for(const reply of [settings(),{...settings(),record:null,availability:'unavailable',reason:'database'}])await expect(saveWorld(async()=>reply,draft,1)).rejects.toThrow();
+    await expect(placeWorld(async()=>snapshot(),1,'_nova',{x:'25',y:'75'})).rejects.toThrow();
   });
 });
 

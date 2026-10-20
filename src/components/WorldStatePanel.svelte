@@ -10,7 +10,7 @@
   let { bots, displays=[], visible, disabled=false, onDirtyChange, onBusyChange, confirmDiscard }:Props=$props();
   const uid=$props.id();
   let settings=$state<WorldSettings>();
-  let state=$state<WorldState>();
+  let confirmedState=$state<WorldState>();
   let baseline=$state<WorldRecord|null>(null);
   let draft=$state<WorldDraft>();
   let writing=$state(false);
@@ -20,7 +20,7 @@
   let alive=false,operation=0;
   const configDirty=$derived(!!draft&&worldDraftChanged(draft,baseline));
   const dirty=$derived(configDirty||placementEdited);
-  const snapshot=$derived(state?.snapshot);
+  const snapshot=$derived(confirmedState?.snapshot);
   const parsedDraft=$derived.by(()=>{try{return draft?draftWorld(draft):undefined;}catch{return undefined;}});
   const name=(id:string)=>bots.find(bot=>bot.id===id)?.name??id;
   const number=(value:number)=>formatNumber(value,$locale);
@@ -34,8 +34,8 @@
     const next=parseWorldState(value);
     if(!settings||next.instanceId!==settings.instanceId){unconfirmed=true;return;}
     if(next.snapshot&&(!settings.record||next.snapshot.stageId!==settings.record.config.stageId||next.snapshot.configRevision!==settings.record.config.revision)){unconfirmed=true;return;}
-    if(state?.instanceId===next.instanceId&&state.snapshot&&next.snapshot&&next.snapshot.sequence<state.snapshot.sequence)return;
-    state=next;unconfirmed=false;
+    if(confirmedState?.instanceId===next.instanceId&&confirmedState.snapshot&&next.snapshot&&next.snapshot.sequence<confirmedState.snapshot.sequence)return;
+    confirmedState=next;unconfirmed=false;
     if(actor&&!next.snapshot?.actors.some(item=>item.actorId===actor))selectActor('');
     else if(actor&&!placementEdited)selectActor(actor);
   }
@@ -55,12 +55,12 @@
   function discard(){if(!dirty||pending)return;confirmDiscard(()=>{draft=settings?.record?worldDraft(settings.record):undefined;baseline=settings?.record??null;placementEdited=false;selectActor(actor);message='';error='';});}
   async function save(){
     if(!draft||!configDirty||pending||disabled||!settings||settings.availability==='unavailable'&&!settings.record)return;let nextDraft:WorldDraft;
-    try{draftWorld(draft);nextDraft=structuredClone($state.snapshot(draft));}catch(cause){error=prettyError(cause);return;}
+    try{draftWorld(draft);nextDraft=structuredClone($confirmedState.snapshot(draft));}catch(cause){error=prettyError(cause);return;}
     const ticket=++operation;pending=true;writing=true;message='';
     try{
       const next=await saveWorld(call,nextDraft,baseline?.config.revision??null);
       if(!alive||ticket!==operation)return;
-      settings=next;baseline=next.record;draft=next.record?worldDraft(next.record):undefined;state=undefined;unconfirmed=true;error='';message='Bühnenkonfiguration gespeichert. Es wurde kein Modus gestartet.';
+      settings=next;baseline=next.record;draft=next.record?worldDraft(next.record):undefined;confirmedState=undefined;unconfirmed=true;error='';message='Bühnenkonfiguration gespeichert. Es wurde kein Modus gestartet.';
       acceptPublic(await call('get_world_state'));
     }catch(cause){if(alive&&ticket===operation){error=prettyError(cause);unconfirmed=true;}}
     finally{if(alive&&ticket===operation){pending=false;writing=false;}}
@@ -71,7 +71,7 @@
   async function place(){
     if(!snapshot||!actor||!placementEdited||configDirty||unconfirmed||pending||disabled)return;
     const ticket=++operation;pending=true;writing=true;message='';
-    try{const next=await placeWorld(call,snapshot.configRevision,actor,$state.snapshot(position));if(!alive||ticket!==operation)return;acceptPublic(next);placementEdited=false;selectActor(actor);error='';message='Position nativ bestätigt. Die Figur wurde nicht automatisch bewegt.';}
+    try{const next=await placeWorld(call,snapshot.configRevision,actor,$confirmedState.snapshot(position));if(!alive||ticket!==operation)return;acceptPublic(next);placementEdited=false;selectActor(actor);error='';message='Position nativ bestätigt. Die Figur wurde nicht automatisch bewegt.';}
     catch(cause){if(alive&&ticket===operation){error=prettyError(cause);unconfirmed=true;}}
     finally{if(alive&&ticket===operation){pending=false;writing=false;}}
   }
@@ -87,6 +87,7 @@
   {#if !native}<p role="status">{$t('Die gemeinsame Bühne wird in der Desktop-App verwaltet.')}</p>{:else if !settings}<p role="status">{$t(pending?'Bühnenstatus wird geladen …':'Bühnenstatus nicht bestätigt. Bitte aktualisieren.')}</p>{/if}
   {#if error}<p class="world-error" role="alert">{error}</p>{/if}
   {#if settings?.reason}<p class="world-warning" role="status">{$t(worldReasons[settings.reason])}</p>{/if}
+  {#if confirmedState?.reason&&confirmedState.reason!==settings?.reason}<p class="world-warning" role="status">{$t(worldReasons[confirmedState.reason])}</p>{/if}
   {#if unconfirmed}<p class="world-warning" role="status">{$t('Der angezeigte Bühnenstand ist nicht aktuell bestätigt. Entwürfe bleiben erhalten; Positionen und Belegungen gelten nicht als aktuelle Zusage.')}</p>{/if}
   {#if settings?.availability==='not_initialized'&&!draft}<div class="empty-world"><Users size={24}/><p>{$t('Noch keine gemeinsame Bühne gespeichert. Erst ein bewusster Entwurf und Speichern legen sie an.')}</p><button class="button secondary" onclick={prepare} disabled={pending||disabled}>{$t('Bühne vorbereiten')}</button></div>{/if}
   {#if settings?.availability==='unavailable'&&!settings.record}<p class="field-note">{$t('Die gespeicherten Daten werden unverändert aufbewahrt. Es wird keine Ersatzbühne angelegt und nichts automatisch zurückgesetzt.')}</p>{/if}
@@ -98,7 +99,7 @@
         <div class="world-grid"><div>
           <h3>{$t('Teilnehmer')} <HelpTip text={$t('Nur hier ausgewählte Bots gehören zur gemeinsamen Bühne. Ihre eigenen Life-Verläufe bleiben getrennt. Kopierte und importierte Bots treten nicht automatisch bei.')}/></h3>
           <div class="world-members">{#each bots as bot(bot.id)}<label><input type="checkbox" checked={draft.members.includes(bot.id)} disabled={!draft.members.includes(bot.id)&&draft.members.length>=64} onchange={event=>member(bot.id,event.currentTarget.checked)}/><span>{bot.name}</span></label>{/each}{#each missing as id(id)}<label class="world-warning"><input type="checkbox" checked onchange={event=>member(id,event.currentTarget.checked)}/><span>{$t('Nicht mehr verfügbar: {id}',{id})}</span></label>{/each}</div>
-          <h3>{$t('Zielmonitor')}</h3><label class="sr-only" for={`${uid}-monitor`}>{$t('Zielmonitor der gemeinsamen Bühne')}</label><select id={`${uid}-monitor`} bind:value={draft.monitorId}><option value="">{$t('Sicherer Ersatzmonitor · automatisch geprüft')}</option>{#if draft.monitorId&&!displays.some(display=>display.id===draft.monitorId)}<option value={draft.monitorId}>{$t('Gespeicherter Monitor · derzeit nicht verfügbar')}</option>{/if}{#each displays as display(display.id)}<option value={display.id}>{display.name}</option>{/each}</select><p class="field-note">{$t('Die Monitorauswahl bleibt lokal. Entfernte oder ungültige Monitore verwenden nativ einen sicheren Ersatzbereich. Es werden keine Fenster oder Bildschirminhalte erkannt.')}</p>
+          <h3>{$t('Zielmonitor')}</h3><label class="sr-only" for={`${uid}-monitor`}>{$t('Zielmonitor der gemeinsamen Bühne')}</label><select id={`${uid}-monitor`} bind:value={draft.monitorId}><option value="">{$t('Sicherer Ersatzmonitor · automatisch geprüft')}</option>{#if draft.monitorId&&!displays.some(display=>display.id===draft?.monitorId)}<option value={draft.monitorId}>{$t('Gespeicherter Monitor · derzeit nicht verfügbar')}</option>{/if}{#each displays as display(display.id)}<option value={display.id}>{display.name}</option>{/each}</select><p class="field-note">{$t('Die Monitorauswahl bleibt lokal. Entfernte oder ungültige Monitore verwenden nativ einen sicheren Ersatzbereich. Es werden keine Fenster oder Bildschirminhalte erkannt.')}</p>
           <h3>{$t('Bewegungsbereich')} <HelpTip text={$t('Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Der native Ausgang berücksichtigt Monitorursprung, Skalierung und Figurengröße.')}/></h3>
           <div class="coordinate-grid">{#each [['min','x','Linker Rand'],['min','y','Oberer Rand'],['max','x','Rechter Rand'],['max','y','Unterer Rand']] as [edge,axis,label]}<label>{$t(label)} (%)<input type="text" inputmode="decimal" maxlength="9" bind:value={draft.safeRegion[edge as 'min'|'max'][axis as 'x'|'y']} required/></label>{/each}</div>
         </div><div class="preview-column"><h3>{$t('2D-Entwurfsvorschau')}</h3><div class="world-preview" role="img" aria-label={$t('Vorschau des geplanten Bewegungsbereichs mit Ankern und festen Plätzen. Keine laufende Bewegung.')}>{#if parsedDraft}<div class="safe-region" style:left={`${parsedDraft.config.safeRegion.min.x/10000}%`} style:top={`${parsedDraft.config.safeRegion.min.y/10000}%`} style:width={`${(parsedDraft.config.safeRegion.max.x-parsedDraft.config.safeRegion.min.x)/10000}%`} style:height={`${(parsedDraft.config.safeRegion.max.y-parsedDraft.config.safeRegion.min.y)/10000}%`}></div>{#each parsedDraft.config.anchors as anchor,index(anchor.id)}<span class="anchor-marker" style:left={`${anchor.position.x/10000}%`} style:top={`${anchor.position.y/10000}%`} title={`${$t(anchorKinds[anchor.kind])} ${index+1}`}>{index+1}</span>{#each anchor.slots as slot(slot.id)}<span class="slot-marker" style:left={`${slot.position.x/10000}%`} style:top={`${slot.position.y/10000}%`}></span>{/each}{/each}{:else}<p>{$t('Für die Vorschau gültige Prozentangaben und einen geordneten Bewegungsbereich eingeben.')}</p>{/if}</div><p class="field-note">{$t('Nummern markieren Anker, kleine Punkte deren exklusive feste Plätze. Alle Angaben lassen sich per Tastatur bearbeiten.')}</p></div></div>
