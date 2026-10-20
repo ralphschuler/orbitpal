@@ -156,20 +156,11 @@ impl NativeOutputRoutes {
             }
         }
     }
-    /// Called only by the real native overlay constructor. Repeating the SAME
-    /// Arc is idempotent; replacing it cancels the retired instance first.
-    pub(super) fn track_window(
-        &self,
+    fn track_window_locked(
+        state: &mut State,
         bot: &str,
-        label: &str,
         signals: &Arc<WindowSignals>,
-        now: u64,
     ) -> Result<(), RouteError> {
-        if !crate::storage::valid_id(bot) || label != format!("avatar-{bot}") {
-            return Err(RouteError::InvalidScope);
-        }
-        let mut state = self.lock()?;
-        state.reap(now);
         if state.serial >= MAX_COUNTER {
             // Use the same terminal cancellation path as every other counter
             // admission, including a ticket minted at the final counter.
@@ -196,6 +187,52 @@ impl NativeOutputRoutes {
             },
         );
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn track_window(
+        &self,
+        bot: &str,
+        label: &str,
+        signals: &Arc<WindowSignals>,
+        now: u64,
+    ) -> Result<(), RouteError> {
+        if !crate::storage::valid_id(bot) || label != format!("avatar-{bot}") {
+            return Err(RouteError::InvalidScope);
+        }
+        let mut state = self.lock()?;
+        state.reap(now);
+        Self::track_window_locked(&mut state, bot, signals)
+    }
+
+    /// Real constructor boundary: revoke old legacy output jobs BEFORE exposing
+    /// a new incarnation under the same route guard. Missing also revokes, even
+    /// when reap just removed a dead Weak; failed tracking is not retirement.
+    pub(super) fn track_window_with_output(
+        &self,
+        bot: &str,
+        label: &str,
+        signals: &Arc<WindowSignals>,
+        now: u64,
+        outputs: &super::action_output::OutputGate,
+    ) -> Result<(), RouteError> {
+        if !crate::storage::valid_id(bot) || label != format!("avatar-{bot}") {
+            return Err(RouteError::InvalidScope);
+        }
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poison) => {
+                let mut state = poison.into_inner();
+                for window in state.windows.values_mut() { window.cancel(); }
+                outputs.window(label);
+                return Err(RouteError::Unavailable);
+            }
+        };
+        state.reap(now);
+        let identical = state.serial < MAX_COUNTER
+            && state.windows.get(bot).is_some_and(|w| w.same_instance(signals));
+        if !identical { outputs.window(label); }
+        Self::track_window_locked(&mut state, bot, signals)
     }
 
     /// The future native transport must derive bot/label/signals itself. No IPC
@@ -300,15 +337,12 @@ impl NativeOutputRoutes {
         }
     }
 
-    /// Cancellation happens BEFORE any GUI/Store/Core wait. A retired native
-    /// callback cannot revoke the replacement sharing the same public label.
-    pub(super) fn window_changed(
-        &self,
+    fn change_window_locked(
+        state: &mut State,
         bot: &str,
         signals: &Arc<WindowSignals>,
         change: NativeWindowChange,
     ) -> bool {
-        let Ok(mut state) = self.lock() else { return false; };
         if !state.windows.get(bot).is_some_and(|w| w.same_instance(signals)) {
             return false;
         }
@@ -322,6 +356,55 @@ impl NativeOutputRoutes {
             window.cancel = Arc::new(AtomicBool::new(false));
         }
         true
+    }
+
+    #[cfg(test)]
+    fn window_changed(
+        &self,
+        bot: &str,
+        signals: &Arc<WindowSignals>,
+        change: NativeWindowChange,
+    ) -> bool {
+        let Ok(mut state) = self.lock() else { return false; };
+        Self::change_window_locked(&mut state, bot, signals, change)
+    }
+
+    /// One pre-Core native event boundary. Hold NativeOutputRoutes -> OutputGate
+    /// through both identity classification and legacy loss cancellation, so a
+    /// constructor cannot publish a successor between the check and revocation.
+    /// Neither registry calls GUI/Core/Store, emits events or invokes caller code.
+    pub(super) fn window_changed_with_output(
+        &self,
+        bot: &str,
+        signals: &Arc<WindowSignals>,
+        change: NativeWindowChange,
+        outputs: &super::action_output::OutputGate,
+    ) -> bool {
+        if !crate::storage::valid_id(bot) { return false; }
+        let lost = matches!(change, NativeWindowChange::Closing | NativeWindowChange::Destroyed);
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(poison) => {
+                // Poison cannot prove which incarnation is current. Preserve
+                // conservative legacy cancellation, without recovering grants.
+                let mut state = poison.into_inner();
+                for window in state.windows.values_mut() { window.cancel(); }
+                if lost { outputs.window(&format!("avatar-{bot}")); }
+                return false;
+            }
+        };
+        if state.windows.get(bot).is_some_and(|w| !w.same_instance(signals)) {
+            // Only a healthy, known different Arc proves the callback retired.
+            // Do not even advance OutputGate's global admission generation.
+            return false;
+        }
+        let current = Self::change_window_locked(&mut state, bot, signals, change);
+        // Missing can follow Close or failed constructor tracking. It is not
+        // proof of retirement. Revoke under THIS guard too, preventing a late
+        // Missing Destroyed from interposing between successor track and loss.
+        if lost { outputs.window(&format!("avatar-{bot}")); }
+        drop(state);
+        current
     }
 
     /// Operator/Stop/profile invalidation has native scope, independent of a

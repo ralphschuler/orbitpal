@@ -502,7 +502,6 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
             _=>None,
         };
         if let Some(change)=route_change{handle.state::<crate::AppState>().life_runtime.native_output_window_changed(&bot_id,&signals,change);}
-        if matches!(event,tauri::WindowEvent::Destroyed|tauri::WindowEvent::CloseRequested{..}){handle.state::<crate::AppState>().life_runtime.output_window_lost(&format!("avatar-{bot_id}"));}
         match event {
             tauri::WindowEvent::Moved(position)=>signals.observe_move(position.x,position.y),
             tauri::WindowEvent::Resized(size)=>signals.observe_resize(size.width,size.height),
