@@ -88,6 +88,8 @@ pub fn operator_command(command: &str) -> bool {
     !matches!(
         command,
         "get_app_state"
+            | "get_api_connections"
+            | "get_api_binding"
             | "get_world_state"
             | "get_world_settings"
             | "get_life_runtime"

@@ -17,8 +17,10 @@ pub(crate) mod life_store;
 pub(crate) mod world_store;
 #[path="action_store.rs"]
 pub(crate) mod action_store;
+#[path="api_connection_store.rs"]
+pub(crate) mod api_connection_store;
 
-pub struct Store { pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>, credential_session:Arc<crate::credential_session::Session>, life_recovery:Arc<Mutex<life_store::RecoveryStatus>>,usage_error:Option<crate::usage_budget::Denial>,world_error:Option<world_store::WorldStoreError> }
+pub struct Store { api_management:Arc<Mutex<()>>,api_error:Option<api_connection_store::Error>, pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>, credential_session:Arc<crate::credential_session::Session>, life_recovery:Arc<Mutex<life_store::RecoveryStatus>>,usage_error:Option<crate::usage_budget::Denial>,world_error:Option<world_store::WorldStoreError> }
 pub fn valid_id(id: &str) -> bool { !id.is_empty() && id.len() <= 96 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') }
 fn error(e: impl std::fmt::Display) -> String { e.to_string() }
 
@@ -38,7 +40,7 @@ impl Store {
         let reuse_credentials=db.query_row("SELECT CASE WHEN typeof(value)='text' AND length(CAST(value AS BLOB))=4 THEN value='true' ELSE 0 END FROM settings WHERE key='macos_credential_session_reuse'",[],|row|row.get::<_,bool>(0)).unwrap_or(false);
         let credential_session=Arc::new(crate::credential_session::Session::new(cfg!(any(target_os="macos",test)),reuse_credentials));
         let life_status=life_store::RecoveryStatus::new(life_store::initialize(&mut db).err());
-        let store = Self {root,db:Mutex::new(db),fixed_profile:None,credential_session,life_recovery:Arc::new(Mutex::new(life_status)),usage_error,world_error};
+        let mut store = Self {api_management:Arc::new(Mutex::new(())),api_error:None,root,db:Mutex::new(db),fixed_profile:None,credential_session,life_recovery:Arc::new(Mutex::new(life_status)),usage_error,world_error};
         let profile = store.profile()?;
         store.ensure_profile(&profile)?;
         // The previous single-profile settings row remains authoritative during
@@ -52,6 +54,7 @@ impl Store {
         }
         store.migrate_extensions()?;
         store.recover_life_after_restart(life_now_ms);
+        store.api_error=store.migrate_api_connections().err();
         Ok(store)
     }
     pub fn profile(&self) -> Result<Value,String> {
@@ -84,7 +87,7 @@ impl Store {
         self.bot_profile(id)?;
         let connection=Connection::open(self.root.join("cohost.sqlite3")).map_err(error)?;
         connection.busy_timeout(std::time::Duration::from_secs(3)).map_err(error)?;
-        Ok(Self{root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned()),credential_session:self.credential_session.clone(),life_recovery:self.life_recovery.clone(),usage_error:self.usage_error,world_error:self.world_error})
+        Ok(Self{api_management:self.api_management.clone(),api_error:self.api_error,root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned()),credential_session:self.credential_session.clone(),life_recovery:self.life_recovery.clone(),usage_error:self.usage_error,world_error:self.world_error})
     }
     fn extensions_migrated(&self)->Result<bool,String>{
         self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key='extension_library_v1')",[],|row|row.get(0)).map_err(error)
@@ -243,14 +246,15 @@ impl Store {
         profile["hindsight"]["bankId"]=json!("");
         if !copy_current{
             profile["mcpServers"]=json!([]);profile["skillsEnabled"]=json!([]);
-            profile["model"]["apiKeyId"]=json!(format!("{id}-llm"));
-            profile["voice"]["apiKeyId"]=json!(format!("{id}-tts"));
-            profile["stt"]["apiKeyId"]=json!(format!("{id}-stt"));
-            profile["hindsight"]["apiKeyId"]=json!(format!("{id}-hindsight"));
+            profile["model"]["apiKeyId"]=json!("");
+            profile["voice"]["apiKeyId"]=json!("");
+            profile["stt"]["apiKeyId"]=json!("");
+            profile["hindsight"]["apiKeyId"]=json!("");
             profile["chat"]["twitch"]["secretId"]=json!(format!("{id}-twitch"));
-            profile["chat"]["youtube"]["apiKeyId"]=json!(format!("{id}-youtube"));
+            profile["chat"]["youtube"]["apiKeyId"]=json!("");
             profile["chat"]["youtube"]["sendSecretId"]=json!(format!("{id}-youtube-write"));
         }
+        self.assign_api_defaults(&mut profile,copy_current);
         validate_profile(&profile)?;
         self.ensure_profile(&profile)?;
         let directory=self.profile_dir(&profile)?;
@@ -443,7 +447,7 @@ impl Store {
     pub(crate) fn lock_credential_session(&self)->Result<crate::credential_session::Snapshot,String>{self.credential_session.lock()}
     pub fn key_for(&self,config:&Value) -> Result<Option<String>,String> {self.key_for_purpose(config,crate::credential_policy::Purpose::Http)}
     pub(crate) fn key_for_purpose(&self,config:&Value,purpose:crate::credential_policy::Purpose) -> Result<Option<String>,String> {
-        crate::credential_policy::resolve_for(config,purpose,|id|self.secret(id))
+        match purpose {crate::credential_policy::Purpose::Http=>crate::credential_policy::resolve_for(config,purpose,|id|self.secret(id)),crate::credential_policy::Purpose::Dialog=>self.api_key_for(config,crate::api_connections::Purpose::Dialog),crate::credential_policy::Purpose::ModelCatalogue=>self.api_key_for(config,crate::api_connections::Purpose::ModelCatalogue),crate::credential_policy::Purpose::Speech=>self.api_key_for(config,crate::api_connections::Purpose::Speech)}
     }
     pub fn import_avatar(&self,source:&Path) -> Result<String,String> {
         let ext=source.extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -455,6 +459,7 @@ impl Store {
     }
     pub fn export(&self,destination:&Path) -> Result<(),String> {
         let mut profile=export_sanitize(sanitize(self.profile()?));
+        api_connection_store::strip_exported_api_refs(&mut profile);
         life_store::strip_profile_payload(&mut profile);
         let motion_directory=self.profile_dir(&profile)?;crate::motions::refresh(&mut profile,&motion_directory)?;
         let mut avatar:Option<Value>=None;
@@ -514,6 +519,7 @@ impl Store {
         let native_collision={let db=self.db.lock().map_err(error)?;life_store::profile_id_has_life(&db,&id)||world_store::profile_id_reserved(&db,&id)};
         if exists || native_collision || self.profile_dir(&profile)?.symlink_metadata().is_ok(){profile["id"]=json!(new_bot_id(profile["name"].as_str().unwrap_or("Bot")));}
         reset_imported_authority(&mut profile,&self.secret_ids()?)?;
+        api_connection_store::strip_exported_api_refs(&mut profile);
         profile["output"]["streamingEnabled"]=json!(false);profile["output"]["mode"]=json!("studio");
         if profile["hindsight"].is_object(){profile["hindsight"]["enabled"]=json!(false);profile["hindsight"]["bankId"]=json!("");}
         profile["allowSkillScripts"]=json!(false);
@@ -791,6 +797,7 @@ fn reset_imported_authority(profile:&mut Value,existing_ids:&[String])->Result<(
         for reference in references{ensure_reference(section,reference,&mut used);}
         section.insert("sendReplies".into(),json!(false));
     }
+    api_connection_store::strip_exported_api_refs(profile);
     Ok(())
 }
 
@@ -1103,6 +1110,51 @@ mod extension_tests{
         assert_eq!(crate::skill_library::SkillLibrary::new(&target.0).unwrap().read("shared").unwrap()["content"],"Existing unrelated skill content");assert_eq!(destination.bot_profile("nova").unwrap()["skillsEnabled"],json!(["shared"]));assert!(!destination.library_mcp().unwrap().is_empty());
     }
     #[test]
+    fn global_api_defaults_apply_only_to_explicit_new_bots_and_copies_preserve_auth_choices(){
+        use crate::api_connections::{AuthStyle,Binding,Purpose,Service};
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
+        store.db.lock().unwrap().execute("INSERT INTO secret_ids VALUES('global-metadata-only')",[]).unwrap();
+        let result=store.create_api_connection(0,api_connection_store::NewConnection{label:"Shared local account".into(),service:Service::Compatible,destination:"http://localhost:11434/v1".into(),auth_style:AuthStyle::Bearer,existing_secret_id:Some("global-metadata-only".into())}).unwrap();
+        let id=result["connectionId"].as_str().unwrap();let binding=Binding::request(&store.profile().unwrap()["model"],Purpose::Dialog).unwrap().unwrap();
+        let snapshot=store.default_api_connection(1,binding,Some(id)).unwrap();let alias=snapshot["defaults"][0]["id"].as_str().unwrap();
+        for choice in ["", "api-removed-account", "api-wrong-scope-account", id, alias]{
+            store.select_bot("nova").unwrap();let mut original=store.profile().unwrap();original["model"]["apiKeyId"]=json!(choice);original["hindsight"]["bankId"]=json!("private-original-bank");store.save_profile(original).unwrap();
+            let copy=store.create_bot("API copy",true).unwrap();assert_eq!(copy["model"]["apiKeyId"],choice);assert_eq!(copy["hindsight"]["bankId"],"");
+        }
+        let fresh=store.create_bot("New global account user",false).unwrap();assert_eq!(fresh["model"]["apiKeyId"],alias);assert_eq!(fresh["mcpServers"],json!([]));assert_eq!(fresh["screenContext"]["enabled"],false);
+        assert_eq!(store.secret_ids().unwrap(),vec!["global-metadata-only".to_string()]);
+        // A scoped character can read managed references but cannot edit app-wide connections.
+        assert!(store.scoped("nova").unwrap().remove_api_connection(2,id).is_err());
+    }
+    #[test]
+    fn global_api_secret_writes_use_mock_native_storage_and_preserve_shared_and_generic_refs(){
+        use crate::api_connections::{AuthStyle,Purpose,Service};
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();let created=store.create_api_connection(0,api_connection_store::NewConnection{label:"Independent API account".into(),service:Service::Openai,destination:"https://api.openai.com/v1".into(),auth_style:AuthStyle::Bearer,existing_secret_id:None}).unwrap();let id=created["connectionId"].as_str().unwrap();
+        assert_eq!(created["snapshot"]["connections"][0]["keyStatus"],"missing");
+        let saved=store.set_api_connection_secret(1,id,"first-synthetic-global-key").unwrap();assert_eq!(saved["revision"],2);assert_eq!(saved["connections"][0]["keyStatus"],"registered");
+        let config=json!({"provider":"openai","apiKeyId":id});store.configure_credential_session(true).unwrap();assert_eq!(store.api_key_for(&config,Purpose::Dialog).unwrap().as_deref(),Some("first-synthetic-global-key"));
+        store.set_api_connection_secret(2,id,"second-synthetic-global-key").unwrap();assert_eq!(store.api_key_for(&config,Purpose::Transcription).unwrap().as_deref(),Some("second-synthetic-global-key"));
+        let raw_id=store.secret_ids().unwrap().remove(0);let entry=crate::credentials::entry(&raw_id).unwrap();let backend=entry.as_any().downcast_ref::<keyring_core::mock::Cred>().unwrap();backend.set_error(keyring_core::Error::NoStorageAccess(Box::new(std::io::Error::other("not-a-user-diagnostic"))));
+        let error=store.set_api_connection_secret(3,id,"never-echo-this-synthetic-value").unwrap_err();assert_eq!(error,"Der API-Schlüssel konnte nicht im sicheren Systemspeicher gespeichert werden.");assert_eq!(store.api_snapshot()["revision"],3);
+        store.remove_api_connection(3,id).unwrap();assert!(store.api_key_for(&config,Purpose::Dialog).is_err());assert_eq!(store.key_for(&json!({"apiKeyId":raw_id})).unwrap().as_deref(),Some("second-synthetic-global-key"));
+    }
+    #[test]
+    fn global_api_exports_and_untrusted_imports_cannot_transfer_named_or_default_grants(){
+        use crate::api_connections::{AuthStyle,Binding,Purpose,Service};
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();store.db.lock().unwrap().execute("INSERT INTO secret_ids VALUES('existing-global-key')",[]).unwrap();
+        let result=store.create_api_connection(0,api_connection_store::NewConnection{label:"Existing local account".into(),service:Service::Compatible,destination:"http://localhost:11434/v1".into(),auth_style:AuthStyle::Bearer,existing_secret_id:Some("existing-global-key".into())}).unwrap();
+        let id=result["connectionId"].as_str().unwrap();let binding=Binding::request(&store.profile().unwrap()["model"],Purpose::Dialog).unwrap().unwrap();let snapshot=store.default_api_connection(1,binding,Some(id)).unwrap();let alias=snapshot["defaults"][0]["id"].as_str().unwrap();
+        let mut original=store.profile().unwrap();for section in ["model","voice","stt","hindsight"]{original[section]["apiKeyId"]=json!(alias);}original["chat"]["youtube"]["apiKeyId"]=json!(id);store.save_profile(original.clone()).unwrap();
+        let package=fixture.0.join("global-export.json");store.export(&package).unwrap();let bundle:Value=serde_json::from_slice(&fs::read(&package).unwrap()).unwrap();
+        for section in ["model","voice","stt","hindsight"]{assert_eq!(bundle["profile"][section]["apiKeyId"],"");}
+        assert_eq!(bundle["profile"]["chat"]["youtube"]["apiKeyId"],"");assert!(!bundle.to_string().contains(alias));assert!(!bundle.to_string().contains(id));assert!(!bundle.to_string().contains("existing-global-key"));
+        for choice in [id,alias]{
+            let mut hostile=bundle.clone();hostile["profile"]=original.clone();hostile["profile"]["id"]=json!("untrusted-global-profile");hostile["profile"]["model"]["apiKeyId"]=json!(choice);fs::write(&package,hostile.to_string()).unwrap();
+            let imported=store.import(&package).unwrap();for section in ["model","voice","stt","hindsight"]{assert_eq!(imported[section]["apiKeyId"],"");}assert_eq!(imported["chat"]["youtube"]["apiKeyId"],"");
+            assert_eq!(store.api_binding(&imported["model"],Purpose::Dialog)["status"],"unbound");assert_eq!(store.api_snapshot(),snapshot);assert_eq!(store.secret_ids().unwrap(),vec!["existing-global-key".to_string()]);
+        }
+    }
+    #[test]
     fn imported_references_are_unbound_independent_and_leave_existing_library_untouched(){
         let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
         // Only dummy identifiers enter SQLite; this test never reads or writes
@@ -1120,8 +1172,9 @@ mod extension_tests{
         let mut imported_server=existing_server.clone();imported_server["enabled"]=json!(true);imported_server["allowedTools"]=json!(["*"]);portable["mcpServers"]=json!([imported_server]);
         let source=fixture.0.join("imported.json");fs::write(&source,json!({"profile":portable}).to_string()).unwrap();
         let imported=store.import(&source).unwrap();let mut references=std::collections::BTreeSet::new();
-        for section in ["model","voice","stt","hindsight"]{let id=imported[section]["apiKeyId"].as_str().unwrap();assert!(valid_id(id));assert!(references.insert(id.to_owned()));}
-        for (platform,key) in [("twitch","secretId"),("youtube","apiKeyId"),("youtube","sendSecretId")]{let id=imported["chat"][platform][key].as_str().unwrap();assert!(valid_id(id));assert!(references.insert(id.to_owned()));}
+        for section in ["model","voice","stt","hindsight"]{assert_eq!(imported[section]["apiKeyId"],"");}
+        assert_eq!(imported["chat"]["youtube"]["apiKeyId"],"");
+        for (platform,key) in [("twitch","secretId"),("youtube","sendSecretId")]{let id=imported["chat"][platform][key].as_str().unwrap();assert!(valid_id(id));assert!(references.insert(id.to_owned()));}
         let imported_server=&imported["mcpServers"][0];assert_ne!(imported_server["id"],existing_server["id"]);assert_eq!(imported_server["enabled"],false);
         let id=imported_server["apiKeyId"].as_str().unwrap();assert!(valid_id(id));assert!(references.insert(id.to_owned()));
         let env=imported_server["env"]["API_TOKEN"].as_str().unwrap();let id=env.strip_prefix("${secret:").and_then(|value|value.strip_suffix('}')).unwrap();assert!(valid_id(id));assert!(references.insert(id.to_owned()));
@@ -1130,14 +1183,14 @@ mod extension_tests{
         assert_eq!(imported["chat"]["twitch"]["sendReplies"],false);assert_eq!(imported["chat"]["youtube"]["sendReplies"],false);
         assert_eq!(store.bot_profile("nova").unwrap()["model"]["apiKeyId"],original["model"]["apiKeyId"]);
         assert_eq!(store.library_mcp().unwrap().into_iter().find(|entry|entry["id"]==existing_server["id"]).unwrap(),existing_server);
-        let second=store.import(&source).unwrap();assert_ne!(second["model"]["apiKeyId"],imported["model"]["apiKeyId"]);
+        let second=store.import(&source).unwrap();assert_eq!(second["model"]["apiKeyId"],"");assert_ne!(second["chat"]["youtube"]["sendSecretId"],imported["chat"]["youtube"]["sendSecretId"]);
     }
     #[test]
-    fn imported_missing_references_get_fresh_ids_and_invalid_chat_sections_are_rejected(){
+    fn imported_managed_references_stay_unbound_and_oauth_ids_are_fresh(){
         let mut profile:Value=serde_json::from_str(DEFAULT_PROFILE).unwrap();
         for section in ["model","voice","stt","hindsight"]{profile[section].as_object_mut().unwrap().remove("apiKeyId");}
         profile["chat"]=json!({});reset_imported_authority(&mut profile,&[]).unwrap();
-        for section in ["model","voice","stt","hindsight"]{assert!(valid_id(profile[section]["apiKeyId"].as_str().unwrap()));}
+        for section in ["model","voice","stt","hindsight"]{assert_eq!(profile[section]["apiKeyId"],"");}
         assert!(valid_id(profile["chat"]["youtube"]["sendSecretId"].as_str().unwrap()));
         profile["chat"]["twitch"]=json!("invalid");assert!(reset_imported_authority(&mut profile,&[]).is_err());
     }
@@ -1238,7 +1291,7 @@ mod import_transaction_tests{
         for (path,bytes) in [("knowledge/facts.txt",b"Knowledge facts".as_slice()),("voice/reference.txt",b"Voice reference".as_slice()),("sounds/resource.bin",b"Sound resource".as_slice())]{assert_eq!(fs::read(root.join(path)).unwrap(),bytes);}
         assert_eq!(fs::read(target.0.join("avatars").join(imported["avatar"]["assetPath"].as_str().unwrap())).unwrap(),glb());
         let skill=imported["skillsEnabled"][0].as_str().unwrap();assert_ne!(skill,"imported-skill");let library=crate::skill_library::SkillLibrary::new(&target.0).unwrap();assert_eq!(library.read("imported-skill").unwrap()["content"],"Existing unrelated instructions");assert_eq!(library.read_resource(skill,"references/facts.txt").unwrap(),"Skill resource");
-        assert_eq!(imported["mcpServers"][0]["enabled"],false);assert_eq!(imported["allowSkillScripts"],false);assert_eq!(imported["screenContext"]["enabled"],false);assert_ne!(imported["model"]["apiKeyId"],original["model"]["apiKeyId"]);
+        assert_eq!(imported["mcpServers"][0]["enabled"],false);assert_eq!(imported["allowSkillScripts"],false);assert_eq!(imported["screenContext"]["enabled"],false);assert_eq!(imported["model"]["apiKeyId"],"");
         let second=store.import(&source(&input,&bundle)).unwrap();assert_ne!(second["id"],imported["id"]);assert_eq!(second["skillsEnabled"],imported["skillsEnabled"]);assert_eq!(library.list().unwrap().len(),3);
         assert!(!fs::read_dir(&target.0).unwrap().any(|entry|entry.unwrap().file_name().to_string_lossy().starts_with(".profile-import-")));
     }

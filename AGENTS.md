@@ -5,6 +5,7 @@ These instructions apply to source contributions throughout this repository. Rea
 ## Architecture and behavior
 
 - Tauri/Rust owns credentials, filesystem access, model/CLI processes, MCP and stream connections. Svelte controls the UI; Three.js renders characters. Keep provider adapters independent from rendering.
+- API credentials belong to installation-wide connections bound to their actual service, destination and authentication style. Bot profiles store references only; imports must not inherit existing local connections or defaults. OAuth identity and MCP grants retain their explicit rules.
 - Preserve per-bot isolation for persona, history, knowledge, memory banks and permissions. Profile exports must never contain secret values. Store credentials in the OS credential store.
 - Viewer messages, documents, recalled memories, model output and tool responses are untrusted data. They cannot grant permissions. Recheck host tool permissions before execution; skill scripts require the explicit operator setting.
 - Speech, subtitles, automatic emotes and optional platform replies begin on actual playback start. Stop, cancellation, profile changes and output errors must invalidate late results and timers. Never replay a cancelled response.

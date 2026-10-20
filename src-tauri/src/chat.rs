@@ -20,7 +20,7 @@ fn connection(app: &tauri::AppHandle, platform: &str, status: &str, message: &st
     let _ = app.emit("cohost://connection", json!({"platform":platform,"status":status,"message":message,"ownerBotId":owner["ownerBotId"],"ownerName":owner["ownerName"]}));
 }
 fn client() -> Result<Client, String> {
-    Client::builder().connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(35)).build().map_err(|_| "HTTP-Client konnte nicht erstellt werden.".into())
+    Client::builder().redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(15)).timeout(Duration::from_secs(35)).build().map_err(|_| "HTTP-Client konnte nicht erstellt werden.".into())
 }
 fn cancelled(cancel: &AtomicBool) -> bool { cancel.load(Ordering::Relaxed) }
 async fn sleep(cancel: &AtomicBool, duration: Duration) -> bool {
@@ -343,12 +343,21 @@ fn youtube_video(input: &str) -> Result<String, String> {
     candidate.filter(|id| id.len() == 11 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')).ok_or_else(|| "Die URL enthält keine gültige YouTube-Video-ID.".into())
 }
 
+// Read-key destinations are fixed host code, separate from OAuth reply identity.
+fn youtube_video_request(http:&Client,video:&str,key:&str)->reqwest::RequestBuilder{
+    http.get("https://www.googleapis.com/youtube/v3/videos").query(&[("part","liveStreamingDetails"),("id",video),("key",key.trim())])
+}
+fn youtube_messages_request(http:&Client,live_chat_id:&str,page:&str,key:&str)->reqwest::RequestBuilder{
+    let request=http.get("https://www.googleapis.com/youtube/v3/liveChat/messages").query(&[("liveChatId",live_chat_id),("part","snippet,authorDetails"),("maxResults","200"),("key",key.trim())]);
+    if page.is_empty(){request}else{request.query(&[("pageToken",page)])}
+}
+
 async fn youtube(config: Value, key: String, app: tauri::AppHandle, cancel: Arc<AtomicBool>, context: Arc<Mutex<ConnectionContext>>) -> Result<(), String> {
     let http = client()?;
     let mut live_chat_id = text(&config, "liveChatId").to_string();
     if live_chat_id.is_empty() {
         let video = youtube_video(text(&config, "videoId"))?;
-        let response = http.get("https://www.googleapis.com/youtube/v3/videos").query(&[("part","liveStreamingDetails"),("id",&video),("key",key.trim())]).send().await.map_err(|_| "YouTube-Video konnte nicht aufgelöst werden.".to_string())?;
+        let response = youtube_video_request(&http,&video,&key).send().await.map_err(|_| "YouTube-Video konnte nicht aufgelöst werden.".to_string())?;
         let data = json_response(response, "YouTube-Video").await?;
         live_chat_id = data["items"].as_array().and_then(|items| items.first()).and_then(|item| item["liveStreamingDetails"]["activeLiveChatId"].as_str()).unwrap_or("").to_string();
         if live_chat_id.is_empty() { return Err("Dieses YouTube-Video hat keinen aktiven öffentlichen Live-Chat.".into()); }
@@ -367,8 +376,7 @@ async fn youtube(config: Value, key: String, app: tauri::AppHandle, cancel: Arc<
     let mut failures = 0u32;
     let mut connected = false;
     while !cancelled(&cancel) {
-        let mut request = http.get("https://www.googleapis.com/youtube/v3/liveChat/messages").query(&[("liveChatId",live_chat_id.as_str()),("part","snippet,authorDetails"),("maxResults","200"),("key",key.trim())]);
-        if !page.is_empty() { request = request.query(&[("pageToken",page.as_str())]); }
+        let request=youtube_messages_request(&http,&live_chat_id,&page,&key);
         let response = match request.send().await {
             Ok(response) if response.status().is_success() => response,
             Ok(response) if matches!(response.status().as_u16(), 401 | 403 | 404) => { return json_response(response, "YouTube Live-Chat").await.map(|_| ()); }
@@ -443,6 +451,27 @@ mod route_request_tests {
                 assert!(context.prepare_reply(&route,&changed,&owner,"Must never reach channel-b").is_err());
             }
         }
+    }
+    #[test]
+    fn managed_youtube_read_key_uses_only_the_fixed_data_api_not_oauth(){
+        use crate::{api_connections::{AuthStyle,Purpose,Service},storage::{Store,api_connection_store::NewConnection}};
+        let root=std::env::temp_dir().join(format!("orbitpal-youtube-global-{}",uuid::Uuid::new_v4()));let store=Store::new(root.clone()).unwrap();
+        // cfg(test) uses the thread-local in-memory credential backend.
+        store.set_secret("synthetic-youtube-item","synthetic-youtube-marker").unwrap();
+        let created=store.create_api_connection(0,NewConnection{label:"YouTube read fixture".into(),service:Service::YoutubeData,destination:"https://www.googleapis.com/youtube/v3".into(),auth_style:AuthStyle::YoutubeApiKey,existing_secret_id:Some("synthetic-youtube-item".into())}).unwrap();
+        let config=json!({"apiKeyId":created["connectionId"]});let key=store.api_key_for(&config,Purpose::YoutubeData).unwrap().unwrap();
+        for request in [youtube_video_request(&client().unwrap(),"fixture-video",&key),youtube_messages_request(&client().unwrap(),"fixture-chat","next-page",&key)]{
+            let request=request.build().unwrap();assert_eq!(request.url().scheme(),"https");assert_eq!(request.url().host_str(),Some("www.googleapis.com"));assert!(request.url().path().starts_with("/youtube/v3/"));
+            assert_eq!(request.url().query_pairs().filter(|(k,_)|k=="key").map(|(k,v)|(k.into_owned(),v.into_owned())).collect::<Vec<_>>(),vec![("key".to_string(),"synthetic-youtube-marker".to_string())]);assert!(request.headers().get("authorization").is_none());
+        }
+        drop(store);std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn platform_http_client_does_not_forward_a_key_query_on_redirect(){
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let sink=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let source=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let url=format!("http://{}/read?key=synthetic-query-marker",source.local_addr().unwrap());let target=sink.local_addr().unwrap();
+        let server=tokio::spawn(async move{let(mut socket,_)=source.accept().await.unwrap();let mut request=vec![];loop{let mut chunk=[0;1024];let n=socket.read(&mut chunk).await.unwrap();assert_ne!(n,0);request.extend_from_slice(&chunk[..n]);assert!(request.len()<8192);if request.windows(4).any(|w|w==b"\r\n\r\n"){break;}}assert!(String::from_utf8(request).unwrap().starts_with("GET /read?key=synthetic-query-marker HTTP/1.1"));socket.write_all(format!("HTTP/1.1 302 Found\r\nLocation: http://{target}/leak\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();});
+        let response=tokio::time::timeout(Duration::from_secs(3),client().unwrap().get(url).send()).await.unwrap().unwrap();assert_eq!(response.status().as_u16(),302);server.await.unwrap();assert!(tokio::time::timeout(Duration::from_millis(100),sink.accept()).await.is_err());
     }
     #[test]
     fn incoming_events_cannot_claim_another_channel_or_a_revoked_session() {
