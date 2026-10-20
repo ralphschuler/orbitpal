@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add durable installation-wide UTC budgets for autonomous dialog dispatches, speech characters, Hindsight requests and image transfers, with per-bot breakdowns and controls in all four interface languages. Preserve charges across restarts, cancellation and settings changes; unavailable accounting blocks autonomous work while manual use and Stop remain available.
+- Distinguish direct HTTP counting from opaque coding-CLI jobs. Offer conservative hard token limits only for audited official OpenAI snapshots, reject unsupported or unknown same-day history, and show missing receipts honestly. Explicit settings repair retains recorded usage; no invoice or monetary limit is claimed.
+
 - Avoid unused macOS Keychain reads for Codex/Claude Code dialog and model-list operations and browser/system speech, while preserving configured HTTP authentication. Explain per-item persistent authorization beside credential fields in all four interface languages.
 - Persist bot-bound life snapshots and bounded event histories atomically in SQLite with version validation and revision conflicts. Cancel interrupted actions on restart, bound offline clock progression, isolate corrupt life data from profiles and other bots, and prevent profile packages from inheriting local life identities.
 

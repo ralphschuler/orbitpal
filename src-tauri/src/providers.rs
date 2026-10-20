@@ -6,13 +6,14 @@ use serde_json::{json, Value};
 use std::{collections::BTreeMap, future::Future, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tauri::Emitter;
 
+const USAGE_TRAILER_GRACE:Duration=Duration::from_secs(2);
 const MAX_RESPONSE: usize = 2 * 1024 * 1024;
 const MAX_AUDIO: usize = 25 * 1024 * 1024;
 
 pub struct Completion { pub text: String, pub tool_calls: Vec<Value> }
 
 fn client() -> Result<Client, String> {
-    Client::builder().connect_timeout(Duration::from_secs(15))
+    Client::builder().retry(reqwest::retry::never()).redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180)).build().map_err(|_| "HTTP-Client konnte nicht erstellt werden.".into())
 }
 fn field<'a>(v: &'a Value, key: &str, fallback: &'a str) -> &'a str {
@@ -168,6 +169,7 @@ fn completion_body(config:&Value,messages:Vec<Value>,tools:Vec<Value>)->Result<(
         // OpenAI's current parameter also supports reasoning tokens; max_tokens rejects o-series models.
         body.as_object_mut().unwrap().remove("max_tokens");
         body["max_completion_tokens"] = json!(max_tokens);
+        body["stream_options"] = json!({"include_usage":true});
         if model.starts_with("gpt-5") || model.starts_with("o1") || model.starts_with("o3") || model.starts_with("o4") {
             body.as_object_mut().unwrap().remove("temperature");
         }
@@ -182,7 +184,32 @@ fn completion_body(config:&Value,messages:Vec<Value>,tools:Vec<Value>)->Result<(
     }
     Ok((body,anthropic,has_images))
 }
-pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>) -> Result<Completion, String> {
+/// Deliberately coarse, documented whole-context reservation for exact pinned
+/// snapshots on the official TLS endpoint. Unknown models, aliases, proxies and
+/// coding CLI internals have no claimed hard bound. Includes images/framing;
+/// adding the enforced output cap again errs conservatively.
+fn token_upper(config:&Value)->Option<u64>{
+    if matches!(field(config,"provider","compatible"),"codex"|"claude-code"|"anthropic"){return None;}
+    let url=Url::parse(&endpoint(config,"chat/completions").ok()?).ok()?;
+    if url.scheme()!="https"||url.host_str()!=Some("api.openai.com")||url.port_or_known_default()!=Some(443)||url.path()!="/v1/chat/completions"||!url.username().is_empty()||url.password().is_some()||url.query().is_some()||url.fragment().is_some(){return None;}
+    let context=match field(config,"model",""){"gpt-4o-mini-2024-07-18"|"gpt-4o-2024-08-06"=>128_000,_=>return None};
+    Some(context+config["maxTokens"].as_u64().unwrap_or(512).clamp(32,8192))
+}
+pub(crate) fn preflight_budget(store:&crate::storage::Store,context:&crate::usage_budget::Context,config:&Value)->Result<(),String>{store.preflight_usage(context,!matches!(field(config,"provider","compatible"),"codex"|"claude-code"),token_upper(config))}
+fn dialog_cost(config:&Value,messages:&[Value])->Result<crate::usage_budget::Cost,String>{
+    validate_vision_messages(config,messages)?;let mut count=0;let mut bytes=0;
+    for block in messages.iter().flat_map(|m|m["content"].as_array().into_iter().flatten()).filter(|b|b["type"]=="image_url"){
+        let image=crate::vision::parse_data_uri(block["image_url"]["url"].as_str().ok_or("Bild-Daten-URL fehlt")?)?;count+=1;bytes+=image.bytes as u64;
+    }
+    Ok(if matches!(field(config,"provider","compatible"),"codex"|"claude-code"){crate::usage_budget::Cost::cli_dialog(count,bytes)}else{crate::usage_budget::Cost::dialog(count,bytes,token_upper(config))})
+}
+pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>, usage:(&crate::storage::Store,&crate::usage_budget::Context)) -> Result<Completion, String> {
+    if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen.".into());}
+    let cost=dialog_cost(config,&messages)?;
+    let operation=async {let mut observed=None;let result=complete_inner(config,messages,tools,api_key,app,turn_id,cancel,&mut observed).await;(result,observed)};
+    let (store,context)=usage;store.metered_usage(context,cost,operation).await
+}
+async fn complete_inner(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>, observed:&mut Option<u64>) -> Result<Completion, String> {
     if matches!(field(config,"provider","compatible"), "claude-code" | "codex") {
         return crate::cli_provider::complete(config,messages,tools,api_key,app,turn_id,cancel).await;
     }
@@ -193,25 +220,48 @@ pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, a
     let response = cancellable(&cancel, authorize(request, &api_key, anthropic).send()).await?.map_err(|_| "Dialoganbieter ist nicht erreichbar oder hat das Zeitlimit überschritten.".to_string())?;
     if has_images&&matches!(response.status().as_u16(),400|415|422){return Err(format!("Bildanfrage wurde vom Dialoganbieter abgelehnt (HTTP {}). Das ausgewählte Modell und der Endpoint müssen Vision und die übergebenen Bildformate unterstützen; es wird keine reine Textanalyse als Bildanalyse ausgegeben.",response.status().as_u16()));}
     let response = checked(response, "Dialogmodell").await?;
+    completion_stream(response.bytes_stream(),&cancel,anthropic,body["stream_options"]["include_usage"].as_bool()==Some(true),USAGE_TRAILER_GRACE,observed,|text|emit_delta(&app,&turn_id,text)).await
+}
+
+/// Stream parser independent of AppHandle. A completed choice must not wait
+/// indefinitely for optional usage metadata or invalidate a complete response
+/// when the receipt connection subsequently fails. The charge stays unknown.
+fn terminal_reason(value:&Value)->bool{matches!(value.as_str(),Some("stop"|"length"|"tool_calls"|"content_filter"|"function_call"))}
+async fn completion_stream<S,B,E>(stream:S,cancel:&AtomicBool,anthropic:bool,expect_usage:bool,grace:Duration,observed:&mut Option<u64>,mut emit:impl FnMut(&str))->Result<Completion,String>
+where S:futures_util::Stream<Item=Result<B,E>>,B:AsRef<[u8]> {
     let mut completion = Completion { text: String::new(), tool_calls: Vec::new() };
     let mut calls: BTreeMap<usize, Value> = BTreeMap::new();
-    let mut stream = response.bytes_stream();
+    futures_util::pin_mut!(stream);
     let mut buffer: Vec<u8> = Vec::new();
     let mut total = 0usize;
     let mut finished = false;
-    while let Some(chunk) = cancellable(&cancel, stream.next()).await? {
-        let chunk = chunk.map_err(|_| "Verbindung zum Dialogmodell wurde unterbrochen.".to_string())?;
+    let mut choice_finished = false;
+    let mut usage_deadline=None;
+    loop {
+        let next=if let Some(deadline)=usage_deadline{match cancellable(cancel,tokio::time::timeout_at(deadline,stream.next())).await?{Ok(next)=>next,Err(_)=>break}}else{cancellable(cancel,stream.next()).await?};
+        let Some(chunk)=next else{break;};
+        let chunk=match chunk{Ok(chunk)=>chunk,Err(_) if choice_finished=>break,Err(_)=>return Err("Verbindung zum Dialogmodell wurde unterbrochen.".into())};
+        let chunk=chunk.as_ref();
         total += chunk.len();
-        if total > MAX_RESPONSE { return Err("Dialogantwort überschreitet die Größenbegrenzung.".into()); }
-        buffer.extend_from_slice(&chunk);
+        if total > MAX_RESPONSE {if choice_finished{break;}return Err("Dialogantwort überschreitet die Größenbegrenzung.".into());}
+        buffer.extend_from_slice(chunk);
         // SSE is framed as lines. Parse only complete UTF-8 lines, even when network chunks split characters.
         while let Some(end) = buffer.iter().position(|b| *b == b'\n') {
             let line: Vec<u8> = buffer.drain(..=end).collect();
-            let line = std::str::from_utf8(&line).map_err(|_| "Anbieter lieferte ungültiges UTF-8.".to_string())?.trim();
+            let line=match std::str::from_utf8(&line){Ok(line)=>line.trim(),Err(_) if choice_finished=>{finished=true;break;},Err(_)=>return Err("Anbieter lieferte ungültiges UTF-8.".into())};
             let Some(data) = line.strip_prefix("data:").map(str::trim) else { continue; };
             if data.is_empty() { continue; }
             if data == "[DONE]" { finished = true; break; }
-            let event: Value = serde_json::from_str(data).map_err(|_| "Ungültige Streaming-Antwort des Dialoganbieters.".to_string())?;
+            let event:Value=match serde_json::from_str(data){Ok(event)=>event,Err(_) if choice_finished=>{finished=true;break;},Err(_)=>return Err("Ungültige Streaming-Antwort des Dialoganbieters.".into())};
+            // Partial/running usage must never refund a possibly-sent upper.
+            // A receipt is final only with/after a terminal choice, either on
+            // that choice or in the standard empty-choices usage trailer.
+            let terminal=choice_finished||event["choices"].as_array().and_then(|c|c.first()).is_some_and(|c|terminal_reason(&c["finish_reason"]));
+            let receipt_shape=event["choices"].as_array().is_some_and(|c|c.is_empty()||c.first().is_some_and(|c|terminal_reason(&c["finish_reason"])));
+            if !anthropic&&terminal&&receipt_shape { if let Some(usage)=validated_usage(&event["usage"]){*observed=Some(usage);if choice_finished{finished=true;}} }
+            // The terminal choice is immutable. During the receipt grace we
+            // accept only final usage, never extra text/tools or new errors.
+            if choice_finished{if finished{break;}continue;}
             if anthropic {
                 match event["type"].as_str().unwrap_or("") {
                     "content_block_start" => {
@@ -219,12 +269,12 @@ pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, a
                         if block["type"] == "tool_use" {
                             calls.insert(event["index"].as_u64().unwrap_or(0) as usize, json!({"id":block["id"],"type":"function","function":{"name":block["name"],"arguments":""}}));
                         } else if let Some(text) = block["text"].as_str().filter(|s| !s.is_empty()) {
-                            completion.text.push_str(text); emit_delta(&app, &turn_id, text);
+                            completion.text.push_str(text); emit(text);
                         }
                     }
                     "content_block_delta" => {
                         let delta = &event["delta"];
-                        if let Some(text) = delta["text"].as_str() { completion.text.push_str(text); emit_delta(&app, &turn_id, text); }
+                        if let Some(text) = delta["text"].as_str() { completion.text.push_str(text); emit(text); }
                         if let Some(fragment) = delta["partial_json"].as_str() {
                             if let Some(call) = calls.get_mut(&(event["index"].as_u64().unwrap_or(0) as usize)) {
                                 let args = call["function"]["arguments"].as_str().unwrap_or("").to_string() + fragment;
@@ -239,9 +289,14 @@ pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, a
             } else {
                 if event.get("error").is_some() { return Err("Dialoganbieter meldet einen Streaming-Fehler.".into()); }
                 if let Some(choice) = event["choices"].as_array().and_then(|choices| choices.first()) {
-                    if !choice["finish_reason"].is_null() { finished = true; }
+                    // Official usage arrives in a separate empty-choices event
+                    // before DONE. Continue bounded reading beyond finish_reason.
+                    if terminal_reason(&choice["finish_reason"]) {
+                        choice_finished = true;
+                        if !expect_usage||observed.is_some(){finished=true;}else if usage_deadline.is_none(){usage_deadline=Some(tokio::time::Instant::now()+grace);}
+                    }
                     let delta = &choice["delta"];
-                    if let Some(text) = delta["content"].as_str() { completion.text.push_str(text); emit_delta(&app, &turn_id, text); }
+                    if let Some(text) = delta["content"].as_str() { completion.text.push_str(text); emit(text); }
                     if let Some(fragments) = delta["tool_calls"].as_array() {
                         for fragment in fragments {
                             let index = fragment["index"].as_u64().unwrap_or(0) as usize;
@@ -258,12 +313,13 @@ pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, a
                     }
                 }
             }
+            if finished{break;}
         }
         if finished { break; }
-        if buffer.len() > 256 * 1024 { return Err("Streaming-Ereignis ist zu groß.".into()); }
+        if buffer.len() > 256 * 1024 {if choice_finished{break;}return Err("Streaming-Ereignis ist zu groß.".into());}
     }
     if cancel.load(Ordering::Relaxed) { return Err("Antwort abgebrochen.".into()); }
-    if !finished { return Err("Dialogantwort wurde vor dem Abschluss unterbrochen.".into()); }
+    if !finished&&!choice_finished { return Err("Dialogantwort wurde vor dem Abschluss unterbrochen.".into()); }
     for mut call in calls.into_values() {
         if call["id"].as_str().unwrap_or("").is_empty() { call["id"] = json!(uuid::Uuid::new_v4().to_string()); }
         if call["function"]["arguments"] == "" { call["function"]["arguments"] = json!("{}"); }
@@ -314,6 +370,131 @@ pub async fn synthesize(config: &Value, text: &str, api_key: Option<String>) -> 
     Ok(json!({"audioBase64":STANDARD.encode(audio),"mimeType":if mime == "application/octet-stream" { "audio/mpeg" } else { &mime }}))
 }
 
+pub async fn synthesize_metered(config:&Value,text:&str,api_key:Option<String>,store:&crate::storage::Store,context:&crate::usage_budget::Context,cancel:Arc<AtomicBool>)->Result<Value,String>{
+    if cancel.load(Ordering::Relaxed){return Err("Sprachausgabe wurde abgebrochen".into());}
+    if text.trim().is_empty()||text.len()>20_000{return Err("Sprachtext ist leer oder zu lang (maximal 20.000 Bytes).".into());}
+    // Count the exact sent Unicode characters, including provider audio tags.
+    store.metered_usage(context,crate::usage_budget::Cost::tts(text.chars().count() as u64),async{(cancellable(&cancel,synthesize(config,text,api_key)).await.and_then(|result|result),None)}).await
+}
+
+fn validated_usage(value:&Value)->Option<u64>{
+    let input=value["prompt_tokens"].as_u64()?;let output=value["completion_tokens"].as_u64()?;let total=value["total_tokens"].as_u64()?;
+    (input.checked_add(output)==Some(total)&&total<=1_000_000_000).then_some(total)
+}
+
 pub async fn transcribe(config: &Value, audio_base64: &str, mime_type: &str, api_key: Option<String>) -> Result<String, String> {
     crate::transcription::transcribe(config,audio_base64,mime_type,api_key).await
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use crate::{storage::Store,usage_budget::{Context,Origin,Limits}};
+    #[test]
+    fn hard_token_bounds_require_exact_snapshots_and_official_tls_destination(){
+        for model in ["gpt-4o-mini-2024-07-18","gpt-4o-2024-08-06"]{
+            let config=json!({"provider":"openai","model":model,"maxTokens":512});assert_eq!(token_upper(&config),Some(128_512));
+            let(body,_,_)=completion_body(&config,vec![json!({"role":"user","content":"fixture"})],vec![]).unwrap();assert_eq!(body["max_completion_tokens"],512);assert_eq!(body["stream_options"]["include_usage"],true);
+            for base in ["http://api.openai.com/v1","https://api.openai.com:444/v1","https://api.openai.com/v2","https://proxy.invalid/v1","https://api.openai.com.attacker.invalid/v1","https://user:secret@api.openai.com/v1","https://api.openai.com/v1?proxy=true"]{
+                let mut config=config.clone();config["baseUrl"]=json!(base);assert_eq!(token_upper(&config),None,"{base}");
+            }
+        }
+        for provider in ["codex","claude-code","anthropic"]{assert_eq!(token_upper(&json!({"provider":provider,"model":"gpt-4o-2024-08-06"})),None);}
+        for model in ["default","gpt-4o","gpt-4o-mini","gpt-5","unknown-2026-01-01"]{assert_eq!(token_upper(&json!({"provider":"openai","model":model})),None);}
+        assert_eq!(token_upper(&json!({"provider":"compatible","model":"gpt-4o-2024-08-06","maxTokens":999_999})),Some(136_192));
+    }
+    #[test]
+    fn receipts_require_integer_consistent_bounded_usage_and_images_are_recounted_per_round(){
+        assert_eq!(validated_usage(&json!({"prompt_tokens":12,"completion_tokens":3,"total_tokens":15})),Some(15));
+        for invalid in [json!({}),json!({"prompt_tokens":-1,"completion_tokens":3,"total_tokens":2}),json!({"prompt_tokens":1,"completion_tokens":3,"total_tokens":2}),json!({"prompt_tokens":1.5,"completion_tokens":3,"total_tokens":4.5}),json!({"prompt_tokens":1_000_000_000,"completion_tokens":1,"total_tokens":1_000_000_001})]{assert_eq!(validated_usage(&invalid),None);}
+        let messages=vec![json!({"role":"user","content":[{"type":"image_url","image_url":{"url":FIXTURE_IMAGE}}]})];
+        let config=json!({"provider":"openai","model":"gpt-4o-2024-08-06","visionEnabled":true});
+        let first=dialog_cost(&config,&messages).unwrap();let second=dialog_cost(&config,&messages).unwrap();assert_eq!(first.images+second.images,2);assert_eq!(first.image_bytes,crate::vision::parse_data_uri(FIXTURE_IMAGE).unwrap().bytes as u64);assert!(first.direct_request);
+        let cli=dialog_cost(&json!({"provider":"codex","model":"default","visionEnabled":true}),&messages).unwrap();assert!(!cli.direct_request);assert_eq!(cli.token_upper,None);assert_eq!(cli.images,1);
+    }
+    #[tokio::test]
+    async fn actual_local_tts_adapter_counts_exact_spoken_tags_and_blocks_second_http_send(){
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        let root=std::env::temp_dir().join(format!("orbitpal-tts-budget-{}",uuid::Uuid::new_v4()));
+        let store=Store::new(root.clone()).unwrap();let spoken="[whispering] ä🪐";let count=spoken.chars().count() as u64;
+        store.set_usage_limits(&Limits{daily_tts_characters:count,..Limits::default()}).unwrap();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let base=format!("http://{}/v1",listener.local_addr().unwrap());
+        let server=tokio::spawn(async move{
+            let(mut stream,_)=tokio::time::timeout(Duration::from_secs(3),listener.accept()).await.unwrap().unwrap();let mut bytes=Vec::new();let mut buffer=[0u8;2048];
+            let(header_end,len)=loop{let n=stream.read(&mut buffer).await.unwrap();assert_ne!(n,0);bytes.extend_from_slice(&buffer[..n]);assert!(bytes.len()<8192);if let Some(end)=bytes.windows(4).position(|w|w==b"\r\n\r\n"){let header=String::from_utf8_lossy(&bytes[..end]);let len=header.lines().find_map(|line|{let(k,v)=line.split_once(':')?;k.eq_ignore_ascii_case("content-length").then(||v.trim().parse::<usize>().unwrap())}).unwrap();break(end+4,len);}};
+            while bytes.len()<header_end+len{let n=stream.read(&mut buffer).await.unwrap();assert_ne!(n,0);bytes.extend_from_slice(&buffer[..n]);}
+            let request:Value=serde_json::from_slice(&bytes[header_end..header_end+len]).unwrap();assert_eq!(request["input"],"[whispering] ä🪐");
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: 3\r\nConnection: close\r\n\r\nID3").await.unwrap();listener
+        });
+        let config=json!({"provider":"compatible","baseUrl":base,"model":"fixture-tts","voiceId":"fixture"});let ctx=Context::new("nova",Origin::Autopilot);let cancel=Arc::new(AtomicBool::new(false));
+        assert_eq!(synthesize_metered(&config,spoken,None,&store,&ctx,cancel.clone()).await.unwrap()["mimeType"],"audio/mpeg");let listener=server.await.unwrap();
+        assert!(synthesize_metered(&config,"x",None,&store,&ctx,cancel).await.is_err());assert!(tokio::time::timeout(Duration::from_millis(30),listener.accept()).await.is_err());
+        let total=store.usage_snapshot().unwrap().total;assert_eq!(total.tts_requests,1);assert_eq!(total.tts_characters,count);drop(store);std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod usage_stream_tests {
+    use super::*;
+    fn chunks(parts:&[&str])->impl futures_util::Stream<Item=Result<Vec<u8>,()>>{futures_util::stream::iter(parts.iter().map(|s|Ok(s.as_bytes().to_vec())).collect::<Vec<_>>())}
+    const FINAL:&str="data: {\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":\"stop\"}]}\n\n";
+    #[tokio::test]
+    async fn actual_stream_parser_reads_final_usage_after_finish_without_waiting_for_done(){
+        let mut observed=None;let mut deltas=String::new();
+        let stream=chunks(&[FINAL,"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":3,\"total_tokens\":15}}\n\n"]).chain(futures_util::stream::pending());
+        let reply=tokio::time::timeout(Duration::from_secs(1),completion_stream(stream,&AtomicBool::new(false),false,true,Duration::from_millis(20),&mut observed,|s|deltas.push_str(s))).await.unwrap().unwrap();
+        assert_eq!(reply.text,"hello");assert_eq!(deltas,"hello");assert_eq!(observed,Some(15));
+    }
+    #[tokio::test]
+    async fn absent_or_hanging_usage_trailer_never_stalls_a_completed_answer(){
+        for expect in [false,true]{
+            let mut observed=None;let stream=chunks(&[FINAL]).chain(futures_util::stream::pending());
+            let reply=tokio::time::timeout(Duration::from_secs(1),completion_stream(stream,&AtomicBool::new(false),false,expect,Duration::from_millis(20),&mut observed,|_|{})).await.unwrap().unwrap();assert_eq!(reply.text,"hello");assert_eq!(observed,None);
+        }
+    }
+    #[tokio::test]
+    async fn interruption_before_finish_is_error_but_after_finish_keeps_the_answer_and_unknown_receipt(){
+        for finished in [false,true]{
+            let first=if finished{FINAL}else{"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n"};
+            let stream=chunks(&[first]).chain(futures_util::stream::iter([Err(())]));let mut observed=None;
+            let reply=completion_stream(stream,&AtomicBool::new(false),false,true,Duration::from_millis(20),&mut observed,|_|{}).await;
+            assert_eq!(reply.is_ok(),finished);assert_eq!(observed,None);if finished{assert_eq!(reply.unwrap().text,"hello");}
+        }
+    }
+    #[tokio::test]
+    async fn running_usage_before_a_terminal_choice_is_not_a_final_receipt(){
+        let early="data: {\"choices\":[{\"delta\":{\"content\":\"\"},\"finish_reason\":null}],\"usage\":{\"prompt_tokens\":0,\"completion_tokens\":0,\"total_tokens\":0}}\n\n";
+        let mut observed=None;let stream=chunks(&[early,FINAL]).chain(futures_util::stream::pending());
+        let reply=completion_stream(stream,&AtomicBool::new(false),false,true,Duration::from_millis(20),&mut observed,|_|{}).await.unwrap();assert_eq!(reply.text,"hello");assert_eq!(observed,None);
+    }
+
+    #[tokio::test]
+    async fn optional_receipt_wait_never_accepts_more_text_or_tools_after_finish(){
+        let extra="data: {\"choices\":[{\"delta\":{\"content\":\"late text\",\"tool_calls\":[{\"index\":0,\"id\":\"late\",\"function\":{\"name\":\"unexpected\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n";
+        let mut observed=None;let stream=chunks(&[FINAL,extra,"data: [DONE]\n\n"]);
+        let reply=completion_stream(stream,&AtomicBool::new(false),false,true,Duration::from_millis(20),&mut observed,|_|{}).await.unwrap();assert_eq!(reply.text,"hello");assert!(reply.tool_calls.is_empty());assert_eq!(observed,None);
+    }
+
+    #[tokio::test]
+    async fn oversized_or_unterminated_optional_trailer_preserves_complete_answer_without_a_refund(){
+        for tail in [vec![b'x';MAX_RESPONSE+1],vec![b'x';256*1024+1]]{
+            let stream=futures_util::stream::iter([Ok::<_,()>(FINAL.as_bytes().to_vec()),Ok(tail)]);let mut observed=None;
+            let reply=completion_stream(stream,&AtomicBool::new(false),false,true,Duration::from_millis(20),&mut observed,|_|{}).await.unwrap();assert_eq!(reply.text,"hello");assert!(reply.tool_calls.is_empty());assert_eq!(observed,None);
+        }
+        // Limits still reject an oversized response before any genuine terminal choice.
+        let stream=futures_util::stream::iter([Ok::<_,()>(vec![b'x';MAX_RESPONSE+1])]);let mut observed=None;
+        assert!(completion_stream(stream,&AtomicBool::new(false),false,true,Duration::from_millis(20),&mut observed,|_|{}).await.is_err());assert_eq!(observed,None);
+    }
+    #[tokio::test]
+    async fn only_documented_terminal_reason_strings_can_authorize_final_usage(){
+        for reason in [json!(false),json!(1),json!({}),json!([]),json!(null),json!(""),json!("unknown")]{
+            let event=json!({"choices":[{"delta":{"content":"hello"},"finish_reason":reason}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}});let wire=format!("data: {event}\n\ndata: [DONE]\n\n");let mut observed=None;
+            let reply=completion_stream(chunks(&[&wire]),&AtomicBool::new(false),false,true,Duration::from_millis(20),&mut observed,|_|{}).await.unwrap();assert_eq!(reply.text,"hello");assert_eq!(observed,None,"{reason}");
+        }
+        for reason in ["stop","length","tool_calls","content_filter","function_call"]{
+            let event=json!({"choices":[{"delta":{"content":"hello"},"finish_reason":reason}],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}});let wire=format!("data: {event}\n\n");let mut observed=None;
+            let stream=chunks(&[&wire]).chain(futures_util::stream::pending());let reply=tokio::time::timeout(Duration::from_secs(1),completion_stream(stream,&AtomicBool::new(false),false,true,Duration::from_millis(20),&mut observed,|_|{})).await.unwrap().unwrap();assert_eq!(reply.text,"hello");assert_eq!(observed,Some(15),"{reason}");
+        }
+    }
+
 }
