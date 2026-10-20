@@ -375,7 +375,7 @@
   const autopilotSpeechStatus = $derived(speechStatus({
     active:!!selectedLifeSession?.active, speak:profile.autopilot.speak===true,
     outputAvailable:profile.output.mode==='studio'||bots.some(bot=>bot.id===profile.id&&botEnabled(bot)),
-    modelConfigured:cliProvider||typeof profile.model.model==='string'&&!!profile.model.model.trim(),
+    modelConfigured:['claude-code','codex'].includes(profile.model.provider)||typeof profile.model.model==='string'&&!!profile.model.model.trim(),
     blocked:autopilotBlocker, schedule:nativeSchedule(selectedLifeSession),
   }));
   const lifeBlocked = $derived(!!autopilotBlocker||!lifeRuntime||nativeOperatorPending);
