@@ -50,7 +50,7 @@ Type=Application
 Name=OrbitPal synthetic chooser input
 Exec="$root/pointer"
 NoDisplay=true
-X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input;
+X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input
 EOF
 fi
 sudo tee "$root/bus.conf" >/dev/null <<EOF
