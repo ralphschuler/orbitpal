@@ -71,6 +71,25 @@ describe('Translation coverage',()=>{
       expect(keys.has('glTF-Import: '+text),text).toBe(true);
     }
   });
+  it('fully localizes every safe native credential diagnostic without translating arbitrary payloads',()=>{
+    const source=readFileSync(new URL('../../src-tauri/src/credentials.rs',import.meta.url),'utf8');
+    const reasons=source.match(/let reason = match error \{([\s\S]*?)\n\s*\};/)?.[1];
+    expect(reasons,'native safe_error reason match').toBeDefined();
+    const diagnostics=[...reasons!.matchAll(/=>\s*"((?:[^"\\]|\\.)*)"/g)].map(match=>
+      'Sicherer Schlüsselspeicher: '+JSON.parse('"'+match[1]+'"'));
+    expect(diagnostics.length).toBeGreaterThanOrEqual(8);
+    for(const key of diagnostics)for(const language of ['en','fr','es'] as const){
+      const catalogue=catalogues.find(catalogue=>Object.hasOwn(catalogue[language],key));
+      expect(catalogue,`${language}: ${key}`).toBeDefined();
+      const translated=translate(key,{},language);
+      expect(translated).toBe(catalogue![language][key]);
+      expect(translated).not.toContain(key.slice('Sicherer Schlüsselspeicher: '.length));
+    }
+    const payload='Ungültiges Datenformat: <viewer>{name}</viewer>';
+    for(const language of ['en','fr','es'] as const){
+      expect(translate('Sicherer Schlüsselspeicher: '+payload,{},language)).toContain(payload);
+    }
+  });
   it('covers literal translation calls across every Svelte view',()=>{
     const keys=new Set(catalogues.flatMap(catalogue=>Object.keys(catalogue.en)));
     const directory=new URL('../components/',import.meta.url);

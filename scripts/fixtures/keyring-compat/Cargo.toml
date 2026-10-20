@@ -1,0 +1,25 @@
+[package]
+name = "orbitpal-keyring-compat-fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# This is intentionally a separate lockfile: keyring 3 is a migration reference,
+# never a production dependency or a shipped executable.
+[dependencies]
+keyring-core = "=1.0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+legacy-keyring = { package = "keyring", version = "=3.6.3", features = ["apple-native"] }
+apple-native-keyring-store = { version = "=1.0.2", features = ["keychain"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+legacy-keyring = { package = "keyring", version = "=3.6.3", features = ["windows-native"] }
+windows-native-keyring-store = "=1.1.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+legacy-keyring = { package = "keyring", version = "=3.6.3", features = ["sync-secret-service", "crypto-rust"] }
+dbus-secret-service-keyring-store = { version = "=1.0.1", features = ["crypto-rust"] }
+
+[workspace]
