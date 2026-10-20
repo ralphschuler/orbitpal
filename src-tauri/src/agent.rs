@@ -64,6 +64,8 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
     let active=state.store.profile()?;
     let store=state.store.scoped(bot_id.unwrap_or(active["id"].as_str().unwrap_or("nova")))?;
     let profile=store.profile()?;
+    let presentation_route=state.life_runtime.session_outputs.resolve(profile["id"].as_str().ok_or("Bot-ID fehlt")?)?;
+    if let Some(route)=&presentation_route{state.life_runtime.session_outputs.bind_job(route,&cancel)?;}
     if origin==crate::usage_budget::Origin::AutomaticChat&&!automatic_chat_enabled(&profile){return Err("Die automatische Chatantwort ist für diesen Bot nicht aktiviert.".into());}
     let usage=crate::usage_budget::Context::new(profile["id"].as_str().ok_or("Bot-ID fehlt")?,origin);
     crate::providers::preflight_budget(&store,&usage,&profile["model"])?;
@@ -280,8 +282,8 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
         crate::screen_context::current_grant(&profile,&store.profile()?)?;
         // The in-memory job is deliberately absent from history until actual
         // presentation. Failed synthesis, Stop and restart leave no unheard reply.
-        state.overlay.say_profile(app,&profile,id,&text,&speech_text,&emotion,source,user,user_text,&queued_emotes,cancel.clone(),chat_route.clone(),runtime_claim.cloned(),origin)?;
-        Ok(json!({"id":id,"text":text,"speechText":speech_text,"voice":crate::overlay::public_voice(&profile["voice"]),"emotion":emotion,"emotes":queued_emotes,"source":source,"user":user,"botId":profile["id"]}))
+        let (presentation_output,presentation_route_id)=state.overlay.say_profile(app,&profile,id,&text,&speech_text,&emotion,source,user,user_text,&queued_emotes,cancel.clone(),chat_route.clone(),runtime_claim.cloned(),origin,presentation_route.clone())?;
+        Ok(json!({"id":id,"text":text,"speechText":speech_text,"voice":crate::overlay::public_voice(&profile["voice"]),"emotion":emotion,"emotes":queued_emotes,"source":source,"user":user,"botId":profile["id"],"presentationOutput":presentation_output,"presentationRouteId":presentation_route_id}))
     };
     authority.admit().await?.check()?;
     let commit_autopilot=||{if let Some(ticket)=autopilot{state.autopilot.commit(profile["id"].as_str().ok_or("Bot-ID fehlt")?,ticket,commit)}else{commit()}};

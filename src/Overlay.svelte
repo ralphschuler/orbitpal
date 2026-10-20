@@ -1,4 +1,5 @@
 <script lang="ts">
+  import {LifeOutputVersions,type LifeOutput} from './lib/life-output';
   import { t } from './lib/i18n';
   import { onMount, tick } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -16,11 +17,15 @@
   import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
 
-  type SpeechEvent = { kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
+  type SpeechEvent = { presentationOutput?:'studio'|'overlay'|'obs';presentationRouteId?:string|null;kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
   type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void>; controller: AbortController; presentation?: PresentationTicket; visualEndAt: number; emoteRevision: number };
   let avatar = $state<{preparePresentation:(signal:AbortSignal)=>Promise<()=>void>;canPresent:(event:EmotePayload)=>boolean;present:(event:EmotePayload)=>boolean}>();
   const admittedEmotes=(events:EmotePayload[]=[])=>events.filter(event=>avatar?.canPresent(event));
   let profile = $state<any>(cloneDefaults());
+  let lifeOutput=$state<LifeOutput>();
+  const lifeOutputVersions=new LifeOutputVersions();
+  function acceptLifeOutput(value:unknown){try{const next=lifeOutputVersions.accept(value,botId);if(next){if(lifeOutput?.routeId&&(lifeOutput.routeId!==next.routeId||next.state!=='visible'))cancelCurrent();lifeOutput=next;}}catch{connectionFailure='Die Desktop-Ausgabe konnte nicht bestätigt werden.';}}
+  const outputEnabled=$derived(lifeOutput&&lifeOutput.state!=='inactive'?native&&lifeOutput.state==='visible':profile.output.mode===(native?'overlay':'obs'));
   let presentation=$state<PresentationSnapshot>();
   const presentationVersions=new PresentationVersions();
   function acceptPresentation(value:unknown){if(presentationVersions.accept(value,botId))presentation=value;}
@@ -79,7 +84,7 @@
       action: event.action, nonce: event.nonce ?? `${Date.now()}-${Math.random()}`,
       duration: (event.duration ?? 2.5) * 1000, intensity: event.intensity ?? 1,
     };
-    if(profile.output.mode===(native?'overlay':'obs'))emoteAudio?.play(event);});
+    if(outputEnabled)emoteAudio?.play(event);});
   }
 
   async function resolveSound(soundId: string) {
@@ -108,7 +113,7 @@
       await ready;
       if (disposed || revision !== emoteRevision || controller.signal.aborted) return;
       if(!avatar?.canPresent(event))return;
-      if(profile.output.mode===(native?'overlay':'obs'))await emoteAudio?.prepare([event], resolveSound);
+      if(outputEnabled)await emoteAudio?.prepare([event], resolveSound);
       if (disposed || revision !== emoteRevision || controller.signal.aborted) return;
       presentation = presentationLeases.request(prepareFigure, controller.signal);
       await presentation.ready;
@@ -218,8 +223,14 @@
     level = 0;
   }
 
+  function speechRouteCurrent(event:SpeechEvent):boolean {
+    if(event.presentationRouteId!==undefined&&event.presentationRouteId!==null)return native&&event.presentationOutput==='overlay'&&typeof event.presentationRouteId==='string'&&!!event.presentationRouteId&&lifeOutput?.state==='visible'&&lifeOutput.routeId===event.presentationRouteId;
+    if(lifeOutput&&lifeOutput.state!=='inactive')return false;
+    if(event.presentationOutput!==undefined&&event.presentationOutput!==(native?'overlay':'obs'))return false;
+    return profile.output.mode===(native?'overlay':'obs');
+  }
   async function speak(event: SpeechEvent) {
-    if (disposed) return;
+    if (disposed || !speechRouteCurrent(event)) return;
     cancelCurrent();
     const job: PlaybackJob = { event, started: false, finished: false, reporting: Promise.resolve(), controller: new AbortController(), visualEndAt: 0, emoteRevision };
     current = job;
@@ -229,13 +240,13 @@
     activationNeeded = false;
     let playbackError: string | undefined;
     const beforeStart = async () => {
-      if (disposed || current !== job || job.finished || job.controller.signal.aborted) throw new DOMException('Die Figurenpräsentation wurde abgebrochen.', 'AbortError');
+      if (disposed || current !== job || job.finished || job.controller.signal.aborted || !speechRouteCurrent(event)) throw new DOMException('Die Figurenpräsentation wurde abgebrochen.', 'AbortError');
       job.presentation ??= presentationLeases.request(prepareFigure, job.controller.signal);
       await job.presentation.ready;
-      if (disposed || current !== job || job.finished || job.controller.signal.aborted) throw new DOMException('Die Figurenpräsentation wurde abgebrochen.', 'AbortError');
+      if (disposed || current !== job || job.finished || job.controller.signal.aborted || !speechRouteCurrent(event)) throw new DOMException('Die Figurenpräsentation wurde abgebrochen.', 'AbortError');
     };
     const onStart = () => {
-      if (disposed || current !== job || job.finished || job.started) return;
+      if (disposed || current !== job || job.finished || job.started || !speechRouteCurrent(event)) return;
       job.started = true;
       emotion = event.emotion || 'neutral';
       subtitles.start(event.id, event.text);
@@ -251,7 +262,7 @@
       if (disposed || current !== job || job.finished) return;
       if (!event.voice) throw new Error('Stimme des Wiedergabeauftrags fehlt.');
       const voice = { ...event.voice };
-      if(plannedEmoteRevision===emoteRevision&&profile.output.mode===(native?'overlay':'obs'))await emoteAudio.prepare(admittedEmotes(Array.isArray(event.emotes) ? event.emotes : []), resolveSound);
+      if(plannedEmoteRevision===emoteRevision&&outputEnabled)await emoteAudio.prepare(admittedEmotes(Array.isArray(event.emotes) ? event.emotes : []), resolveSound);
       if (disposed || current !== job || job.finished) return;
       if (voice.enabled === false) { await beforeStart(); onStart(); return; }
       const speechText = voice.provider === 'elevenlabs' ? event.speechText || event.text : event.text;
@@ -285,11 +296,13 @@
     const targetBot = event.botId || event.profile?.id;
     const globalStop = event.kind === 'stop' && !targetBot;
     if (!globalStop && (!targetBot || (botId && targetBot !== botId))) return;
+    if(event.kind==='life-output'){acceptLifeOutput(event.lifeOutput??event);return;}
     if(event.kind==='presentation'){acceptPresentation(event);return;}
     if (event.kind === 'profile') {
       cancelCurrent();
       botId ||= event.profile.id;
       acceptPresentation(event.presentation);
+      if(event.lifeOutput)acceptLifeOutput(event.lifeOutput);
       ++profileRevision; ++emoteRevision; emoteSequence.stop();emoteAudio?.stop(); profile = event.profile;
       ++runtimeRevision; if(event.autopilotRuntime||event.profile?.autopilotRuntime)acceptAutopilot(event.autopilotRuntime||event.profile.autopilotRuntime);
       // Pin legacy OBS links without a bot parameter after their initial profile arrives.
@@ -304,7 +317,7 @@
     if (event.kind === 'cancel-speech') { if (current?.event.id === event.id) cancelCurrent(); return; }
     if (event.kind === 'stop') { ++runtimeRevision; autopilot = undefined; cancelCurrent(); failure = ''; failureDetail = ''; return; }
     if (event.kind === 'error') { subtitles.cancel(); connectionFailure = event.text || 'Die Verbindung zur App ist nicht verfügbar.'; return; }
-    if (event.kind !== 'speech' || !event.id || receivedIds.has(event.id)) return;
+    if (event.kind !== 'speech' || !event.id || receivedIds.has(event.id) || !speechRouteCurrent(event)) return;
     receivedIds.add(event.id);
     if (receivedIds.size > 128) receivedIds.delete(receivedIds.values().next().value!);
     void speak(event);
@@ -339,17 +352,17 @@
     if (native) {
       const initialRevision = profileRevision;
       const initialRuntimeRevision = runtimeRevision;
-      ready = call('get_app_state', { botId: botId || undefined }).then((state) => {
+      const subscribe=(name:string,handler:(event:any)=>void)=>onEvent(name,handler).then(stop=>{if(disposed)stop();else cleanup.push(stop);});
+      const listeners=Promise.all([subscribe('cohost://life-output',acceptLifeOutput),subscribe('cohost://overlay',receive)]);
+      ready = listeners.then(()=>call('get_app_state', { botId: botId || undefined })).then((state) => {
         if (disposed) return;
         botId ||= state.profile.id;
         if (profileRevision === initialRevision) profile = state.profile;
         acceptPresentation(state.presentation);
+        if(state.lifeOutput)acceptLifeOutput(state.lifeOutput);
         if (runtimeRevision === initialRuntimeRevision) { const runtime=(state.autopilot || []).find((entry:any) => entry.botId === botId); if(runtime)acceptAutopilot(runtime); }
         const url = new URL(state.overlayUrl); url.searchParams.set('bot', botId); overlayUrl = url.toString();
       }).catch(() => { if (!disposed) connectionFailure = 'Charakterprofil konnte nicht geladen werden.'; });
-      onEvent('cohost://overlay', receive).then((unlisten) => {
-        if (disposed) unlisten(); else cleanup.push(unlisten);
-      }).catch(() => { if (!disposed) connectionFailure = 'Die Verbindung zur App konnte nicht hergestellt werden.'; });
     } else {
       const url = new URL('/events', overlayUrl);
       url.search = new URL(overlayUrl).search;
@@ -370,7 +383,7 @@
 </script>
 
 <div class="overlay-scene">
-  <Avatar bind:this={avatar} audioEnabled={profile.output.mode===(native?'overlay':'obs')} audioStop={modelAudioStop} onAudioPlaying={modelAudioPlaying} profile={renderProfile} {speaking} {level} {emotion} {autopilot} {desktop} onDesktopAnchor={value=>anchor=value} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  <Avatar bind:this={avatar} audioEnabled={outputEnabled} audioStop={modelAudioStop} onAudioPlaying={modelAudioPlaying} profile={renderProfile} {speaking} {level} {emotion} {autopilot} {desktop} onDesktopAnchor={value=>anchor=value} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
   {#if native && !desktop?.active && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>

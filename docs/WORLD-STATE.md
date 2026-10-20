@@ -155,6 +155,15 @@ such tools. Read-only status polling is exempt from operator-activity cancellati
 save/place remain explicit operator activity. Saving configuration or positioning
 an actor neither starts Life/Ambient nor initializes an actor or grants capture.
 
+The visual layout editor keeps a separate draft for configuration and actor
+placements. Pointer and keyboard editing write the same validated canonical
+values internally; there are no exposed coordinate forms. A full save confirms
+configuration first and then each remaining actor placement at that exact stage
+revision. Partial errors retain unsaved actor edits. Saving alone starts no mode;
+the separate explicit Save-and-Start command starts the persisted participants
+only after all these writes finish. The native host, not the draft, owns output
+and runtime status.
+
 Settings version 1 has `instanceId`, `availability`, fixed `reason` and an optional
 `record:{config,outputBinding}`. Availability is `ready`, `not_initialized` or
 `unavailable`. A valid typed record is returned with `unknown_actor` only so the

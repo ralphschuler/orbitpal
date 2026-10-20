@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet, VecDeque}, sync::{Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tauri::Emitter;
 use tokio::{net::TcpStream, sync::Mutex, task::JoinHandle};
-use tokio_tungstenite::{connect_async, tungstenite::Message, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{connect_async_tls_with_config, tungstenite::Message, Connector, MaybeTlsStream, WebSocketStream};
 
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub use crate::chat_route::ChatRoute;
@@ -185,7 +185,13 @@ async fn twitch(config: Value, secret: String, app: tauri::AppHandle, cancel: Ar
 async fn socket(url: &str) -> Result<Socket, String> {
     let parsed = Url::parse(url).map_err(|_| "Ungültige Twitch-WebSocket-URL.".to_string())?;
     if parsed.scheme() != "wss" || parsed.host_str() != Some("eventsub.wss.twitch.tv") { return Err("DAUERHAFT:Unerwarteter Twitch-WebSocket-Endpunkt.".into()); }
-    tokio::time::timeout(Duration::from_secs(20), connect_async(url)).await.map_err(|_| "Twitch-WebSocket Zeitlimit.".to_string())?.map(|pair| pair.0).map_err(|_| "Twitch-WebSocket nicht erreichbar.".to_string())
+    // Match tokio-tungstenite's previous Mozilla-root configuration, loading
+    // patched roots directly instead of its legacy 0.26 re-export dependency.
+    // Rustls retains normal certificate-chain and hostname verification.
+    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+    let connect = connect_async_tls_with_config(url, None, false, Some(Connector::Rustls(Arc::new(config))));
+    tokio::time::timeout(Duration::from_secs(20), connect).await.map_err(|_| "Twitch-WebSocket Zeitlimit.".to_string())?.map(|pair| pair.0).map_err(|_| "Twitch-WebSocket nicht erreichbar.".to_string())
 }
 async fn welcome(socket: &mut Socket) -> Result<Value, String> {
     loop {

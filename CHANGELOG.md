@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Replace Life's coordinate forms with a visual desktop layout editor: drag characters, places and movement-area handles, or use arrow keys, Shift, Delete and Escape. Preserve draft protection and checked partial saves in German, English, French and Spanish.
+- Add an explicit Save-and-Start flow for the saved participants, show actual desktop character windows, and initialize missing Life state on that deliberate first start. Keep profile output choices and permissions unchanged; Stop invalidates pending starts and late playback.
+- Route Life speech through its exact session desktop output and mute the Studio model-audio mirror. Keep real playback gates for speech, subtitles and emotes. Ordinary Life windows do not yet execute native World movement; #72 remains open.
+- Choose Studio World walking destinations visually instead of entering X/Y values, including keyboard targeting and accessible destination announcements.
+- Update Rustls certificate verification and Mozilla trust roots for RUSTSEC-2026-0381/0382/0383. Keep Twitch's existing trust-store and hostname-verification behavior with an explicit connector, avoiding the upstream legacy root wrapper.
+
 ## 0.12.0 — 2026-10-20
 
 - Start the Linux session monitor on Tauri's owned async runtime from synchronous application setup. Do not require a thread-local Tokio runtime during cold start; preserve observation, Stop and cancellation behavior.

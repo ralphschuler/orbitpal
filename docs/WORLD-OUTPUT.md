@@ -2,7 +2,7 @@
 
 The Studio now mounts an explicitly opened 3D World view, its Avatar adapter and
 the native registration/receipt bridge. For the selected bot, the operator can
-request one `MoveTo` target through the existing one-use native intent path.
+choose one `MoveTo` target directly in the preview (pointer or arrow keys) through the existing one-use native intent path. Targets are quantized inward to the measured safe region; no coordinate fields are required.
 Life must already be active, the bot must explicitly belong to the shared stage
 and use Studio output, and its current renderer must register and report a
 successful exposed frame before movement is available. Opening or registering
@@ -11,7 +11,7 @@ mirror views; they receive no action authority.
 
 This first integration supports selected-bot Studio MoveTo only. Native overlay
 and OBS execution, nonselected/multi-actor action ownership and other visual Life
-activities remain unsupported. Issue #72 stays open for that full scope and its
+activities remain unsupported. Explicit Life start now opens ordinary session-owned desktop windows, including speech, but does not give those windows World rendering or arrival authority. Issue #72 stays open for that full scope and its
 platform/output acceptance. The existing explicit quiet-rest path is unchanged.
 
 ## Ownership and protocol

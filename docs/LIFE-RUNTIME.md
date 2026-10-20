@@ -13,6 +13,43 @@ quiet deadlines and pending turns are never restored after app restart. A bot
 without a dialog model can run local Life. Ambient speech requires a model; CLI
 providers may use their supported default model.
 
+## Starting from the desktop layout
+
+In Autopilot, choose characters in the visual editor and drag their handles to
+arrange the layout. Add rest, meeting or play places from the tray and resize the
+movement area with its corner handles. Arrow keys move the selected handle;
+Shift uses larger steps. Escape cancels an unfinished drag, and Delete removes
+an eligible selected item. No coordinate entry is required.
+
+**Save** keeps the layout without activating it. **Save and start Life** awaits
+the configuration compare-and-swap, its readback and all pending actor placements
+before asking the native host to start the saved participants. The first explicit
+start creates a missing local Life state without an additional internal-state
+checkbox. Failed saves keep the remaining edits. Stop is available during start.
+
+Starting reconciles actual native character windows. The display route belongs
+to the current session; it does not change the profile's saved output mode or
+streaming flag. New session-created windows use the selected monitor and saved
+relative placement, clamped to its real bounds. Existing independently opened
+windows retain their placement. This is initial window placement, not a World
+MoveTo or arrival acknowledgement. Life remains stationary outside explicitly
+supported World actions; Ambient retains its roaming behaviour.
+
+Session-created constructors retain temporary placement/close provenance until
+they are recreated. If one is explicitly retained for ordinary overlay output,
+normal saved-bounds and close-mode tracking resumes with its next ordinary
+constructor. Independently opened ordinary windows keep their normal tracking.
+
+The host publishes ordered opening, visible, unavailable and inactive output
+states. Visible means that the native window is visible; the existing renderer
+presentation gate still decides when actual speech, subtitles and emotes begin.
+Replies carry the resolved output and exact session route. Late jobs cannot use a
+stopped or successor route, and Studio's model-audio mirror stays muted while the
+desktop owns playback. A missing window gives an actionable start error.
+
+A layout grants no screen capture, tools, skills or provider permission. Existing
+per-bot grants, quiet periods and shared budgets still apply.
+
 ## Ownership, scheduling and cancellation
 
 The native runtime keeps one active mode per bot and one spontaneous turn across

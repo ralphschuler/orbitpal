@@ -6,6 +6,8 @@ mod action_output;
 #[path = "life_runtime/native_output_route.rs"]
 mod native_output_route;
 pub(crate) use native_output_route::NativeWindowChange;
+#[path = "life_runtime/session_output.rs"]
+pub(crate) mod session_output;
 #[path = "life_runtime/action_state.rs"]
 pub(crate) mod action_state;
 #[path = "life_runtime/actions.rs"]
@@ -57,6 +59,9 @@ fn has_model(profile: &Value) -> bool {
     crate::providers::dialog_model_ready(&profile["model"])
 }
 fn output_available(app: &tauri::AppHandle, profile: &Value) -> bool {
+    if let Some(available) = profile["id"].as_str().and_then(|id| app.state::<crate::AppState>().life_runtime.session_outputs.available(id)) {
+        return available;
+    }
     match profile["output"]["mode"].as_str().unwrap_or("studio") {
         "studio" => {
             app.get_webview_window("main").is_some()
@@ -154,6 +159,7 @@ pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
 pub struct LifeRuntime {
     outputs: action_output::OutputGate,
     native_routes: native_output_route::NativeOutputRoutes,
+    pub(crate) session_outputs: session_output::SessionOutputs,
     core: Mutex<Core>,
     monitor: OnceLock<NativeMonitor>,
     started: Instant,
@@ -165,6 +171,7 @@ impl Default for LifeRuntime {
         Self {
             outputs: action_output::OutputGate::default(),
             native_routes: native_output_route::NativeOutputRoutes::default(),
+            session_outputs: session_output::SessionOutputs::default(),
             core: Mutex::new(Core::new(SystemSnapshot {
                 state: Availability::Unknown,
                 reason: SystemReason::Initializing,
@@ -179,6 +186,9 @@ impl Default for LifeRuntime {
     }
 }
 impl LifeRuntime {
+    pub fn session_output(&self, bot: &str) -> Result<session_output::Projection, String> {
+        self.session_outputs.snapshot(bot)
+    }
     /// The closure must be synchronous and never invoke GUI getters/emit or
     /// await. This is the sole bridge that derives native current sessions.
     pub(crate) fn with_world<T>(
@@ -396,6 +406,7 @@ impl LifeRuntime {
         result
     }
     pub fn stop(&self, app: &tauri::AppHandle, bot: Option<&str>) {
+        self.session_outputs.cancel(app, bot);
         self.native_routes.revoke(bot);
         self.outputs.geometry(bot);
         let state = app.state::<crate::AppState>();
@@ -405,6 +416,7 @@ impl LifeRuntime {
             .core
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
+        let late_output_leases = self.session_outputs.cancel_routes(bot);
         let removed = if let Some(bot) = bot {
             core.stop(bot, self.now())
                 .map(|session| vec![(bot.to_owned(), session)])
@@ -440,10 +452,46 @@ impl LifeRuntime {
             wall_ms,
         );
         drop(core);
+        self.session_outputs.finish_cancel(app, late_output_leases);
         for runtime in publications {
             crate::autopilot::publish(app, runtime);
         }
         actions::publish(app);
+    }
+    /// A failed scene start owns only sessions it actually created. Never stop
+    /// an independently replaced/previously running session during rollback.
+    pub(crate) fn rollback_scene_session(&self, app: &tauri::AppHandle, bot: &str, expected: &str, lease: &session_output::Lease) {
+        let state = app.state::<crate::AppState>();
+        let Ok(mut core) = self.core.lock() else { lease.revoke(); return; };
+        let (matched, runtime) = session_output::rollback_core(&mut core, &state.store, &state.world, &state.autopilot, bot, expected, &self.session_outputs, lease, self.now());
+        drop(core);
+        if !matched { return; }
+        self.session_outputs.cancel_exact(app, lease);
+        if let Some(runtime) = runtime { crate::autopilot::publish(app, runtime); }
+        actions::publish(app);
+    }
+    pub(crate) fn cancel_unclaimed_scene_route(&self, app: &tauri::AppHandle, lease: &session_output::Lease) {
+        let Ok(core) = self.core.lock() else { return; };
+        let revoked = session_output::revoke_unclaimed_route(&core, &self.session_outputs, lease);
+        drop(core);
+        if revoked { self.session_outputs.cancel_exact(app, lease); }
+    }
+    pub(crate) fn stop_exact_session(&self, app: &tauri::AppHandle, bot: &str, session: &str, revision: u64) -> bool {
+        let state = app.state::<crate::AppState>();
+        let Ok(mut core) = self.core.lock() else { return false; };
+        let Some(removed) = core.stop_exact(bot, session, Some(revision), self.now()) else { return false; };
+        let lease = self.session_outputs.lease_for_stop(bot);
+        if let Some(lease) = &lease { lease.revoke(); }
+        let config = state.store.bot_profile(bot).ok().and_then(|profile| crate::autopilot::config(&profile).ok()).unwrap_or_default();
+        let runtime = state.autopilot.set(bot, false, config).ok();
+        cancel_saved_action(&state.store, bot, removed.state.as_ref());
+        state.world.revoke_actor(&state.store, bot);
+        let _ = action_host::poll(&mut core, &state.store, &state.world, || self.now(), wall_ms);
+        drop(core);
+        if let Some(lease) = &lease { self.session_outputs.cancel_exact(app, lease); }
+        if let Some(runtime) = runtime { crate::autopilot::publish(app, runtime); }
+        actions::publish(app);
+        true
     }
 
     pub(crate) fn invalidate_world_presentation(&self, bot: Option<&str>) {
@@ -928,14 +976,26 @@ pub async fn set_mode(
     active: bool,
     initialize: bool,
 ) -> Result<RuntimeSnapshot, String> {
+    set_mode_with_cancel(app, bot, mode, active, initialize, None).await.map(|outcome|outcome.runtime)
+}
+pub(crate) struct ModeOutcome { pub(crate) runtime:RuntimeSnapshot, pub(crate) output:Option<session_output::Lease> }
+pub(crate) async fn set_mode_with_cancel(
+    app: &tauri::AppHandle, bot: &str, mode: Mode, active: bool, initialize: bool,
+    start_cancel: Option<Arc<AtomicBool>>,
+) -> Result<ModeOutcome, String> {
     let state = app.state::<crate::AppState>();
     if !active {
         state
             .overlay
             .publish(app, json!({"kind":"stop","botId":bot}));
         publish(app);
-        return state.life_runtime.snapshot_for(&state.autopilot);
+        return state.life_runtime.snapshot_for(&state.autopilot).map(|runtime|ModeOutcome{runtime,output:None});
     }
+    if start_cancel.as_ref().is_some_and(|cancel| cancel.load(Ordering::SeqCst)) {
+        return Err("Der Start von Life wurde abgebrochen.".into());
+    }
+    if mode == Mode::Ambient { state.life_runtime.session_outputs.cancel(app, Some(bot)); }
+    let start_fence = state.life_runtime.session_outputs.start_fence(bot)?;
     state.life_runtime.operator_activity();
     state.updater.ensure_idle()?;
     let _idle = state.generation.try_lock().map_err(|_| {
@@ -954,19 +1014,40 @@ pub async fn set_mode(
         );
     }
     let intent = uuid::Uuid::new_v4().to_string();
-    state
-        .life_runtime
-        .core
-        .lock()
-        .map_err(|_| UNAVAILABLE)?
-        .begin_start(bot, intent.clone())
-        .map_err(str::to_owned)?;
+    {
+        let mut core = state.life_runtime.core.lock().map_err(|_| UNAVAILABLE)?;
+        if start_cancel.as_ref().is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+            || !state.life_runtime.session_outputs.start_current(bot, &start_fence) {
+            return Err("Der Start von Life wurde abgebrochen.".into());
+        }
+        core.begin_start(bot, intent.clone()).map_err(str::to_owned)?;
+    }
     let _intent_guard = StartIntentGuard {
         runtime: &state.life_runtime,
         bot: bot.to_owned(),
         intent: intent.clone(),
     };
-    finish_start(app, bot, mode, initialize, &intent, &profile).await
+    let mut output_guard = None;
+    let mut fresh_output = false;
+    let output_lease = if mode == Mode::Life {
+        let (lease, fresh) = state.life_runtime.session_outputs.begin_for_start(bot, &start_fence)?;
+        fresh_output=fresh;
+        output_guard = Some(session_output::StartGuard::new(app, lease.clone(), fresh));
+        state.life_runtime.session_outputs.publish(app, bot);
+        if fresh { session_output::open(app, lease.clone()).await?; }
+        Some(lease)
+    } else {
+        None
+    };
+    let mut actual_output=output_lease.clone();
+    let mut created_session=None;
+    let result = finish_start(app, bot, mode, initialize, &intent, &profile, start_cancel.as_ref(), output_lease.as_ref(), &start_fence, !fresh_output, &mut actual_output, &mut created_session).await;
+    if result.is_ok() { if let Some(guard) = &mut output_guard { guard.complete(); } }
+    if result.is_err(){
+        if let(Some(session),Some(lease))=(&created_session,&actual_output){state.life_runtime.rollback_scene_session(app,bot,session,lease);}
+        if let Some(lease)=&actual_output{if fresh_output||output_lease.as_ref().is_some_and(|old|old.id!=lease.id){state.life_runtime.session_outputs.cancel_exact(app,lease);}}
+    }
+    result.map(|runtime|ModeOutcome{runtime,output:actual_output})
 }
 fn confirmed_start_state(
     store: &Store,
@@ -1000,6 +1081,12 @@ async fn finish_start(
     initialize: bool,
     intent: &str,
     expected_profile: &Value,
+    start_cancel: Option<&Arc<AtomicBool>>,
+    output_lease: Option<&session_output::Lease>,
+    start_fence: &session_output::StartFence,
+    rotate_output: bool,
+    actual_output: &mut Option<session_output::Lease>,
+    created_session: &mut Option<String>,
 ) -> Result<RuntimeSnapshot, String> {
     let state = app.state::<crate::AppState>();
     if let Some(monitor) = state.life_runtime.monitor.get() {
@@ -1012,7 +1099,11 @@ async fn finish_start(
             .observe_system(system, state.life_runtime.now());
     }
     let mut core = state.life_runtime.core.lock().map_err(|_| UNAVAILABLE)?;
-    if !core.start_current(bot, intent) {
+    if !core.start_current(bot, intent)
+        || start_cancel.is_some_and(|cancel| cancel.load(Ordering::SeqCst))
+        || !state.life_runtime.session_outputs.start_current(bot, start_fence)
+        || output_lease.is_some_and(|lease| !lease.current() || state.life_runtime.session_outputs.available(bot) != Some(true))
+    {
         return Err("Der Start von Life wurde abgebrochen.".into());
     }
     let profile = state.store.bot_profile(bot)?;
@@ -1026,7 +1117,11 @@ async fn finish_start(
     if core.sessions.get(bot).is_some_and(|session| {
         session.mode == mode && session.config == speech_config(&config) && !session.storage_failed
     }) {
+        core.renew_start_authority(bot).map_err(str::to_owned)?;
+        if let Some(lease)=output_lease{*actual_output=Some(state.life_runtime.session_outputs.adopt(lease,rotate_output)?);}
         drop(core);
+        state.life_runtime.session_outputs.publish(app,bot);
+        publish(app);
         return state.life_runtime.snapshot_for(&state.autopilot);
     }
     if let Some(previous) = core.take_session(bot, state.life_runtime.now()) {
@@ -1053,6 +1148,7 @@ async fn finish_start(
         state.life_runtime.now(),
     )
     .map_err(str::to_owned)?;
+    *created_session=Some(session.to_string());
     if let Err(error) = state.autopilot.set(bot, true, config) {
         core.stop(bot, state.life_runtime.now());
         return Err(error);
@@ -1064,7 +1160,9 @@ async fn finish_start(
             return Err(error);
         }
     };
+    if let Some(lease)=output_lease{*actual_output=Some(state.life_runtime.session_outputs.adopt(lease,rotate_output)?);}
     drop(core);
+    state.life_runtime.session_outputs.publish(app,bot);
     crate::autopilot::publish(app, runtime);
     publish(app);
     state.life_runtime.snapshot_for(&state.autopilot)

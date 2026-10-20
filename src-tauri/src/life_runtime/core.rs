@@ -490,6 +490,9 @@ impl Core {
     pub fn start_current(&self, bot: &str, intent: &str) -> bool {
         !self.shutdown && self.starts.get(bot).is_some_and(|value| value == intent)
     }
+    pub(crate) fn has_pending_start(&self, bot: &str) -> bool {
+        self.starts.contains_key(bot)
+    }
     pub fn cancel_start(&mut self, bot: &str, intent: &str) {
         if self.start_current(bot, intent) {
             self.starts.remove(bot);
@@ -609,6 +612,19 @@ impl Core {
             self.changed();
         }
         removed
+    }
+    /// Late frontend cleanup owns one completed start, never a pending/newer
+    /// replacement. The comparison and removal share the Core guard.
+    pub(crate) fn stop_exact(&mut self, bot: &str, session: &str, revision: Option<u64>, raw: u64) -> Option<Session> {
+        if self.starts.contains_key(bot)
+            || self.sessions.get(bot).is_none_or(|current| current.session_id != session || revision.is_some_and(|revision| current.revision != revision))
+        { return None; }
+        self.stop(bot, raw)
+    }
+    pub(crate) fn renew_start_authority(&mut self, bot: &str) -> Result<(), &'static str> {
+        let session=self.sessions.get_mut(bot).ok_or("Der Zustand der Life-Laufzeit ist nicht verfügbar.")?;
+        session.revision=session.revision.checked_add(1).filter(|revision|*revision<=MAX_COUNTER).ok_or("Der Zustand der Life-Laufzeit ist nicht verfügbar.")?;
+        self.changed();Ok(())
     }
     pub fn stop_all(&mut self, raw: u64) -> Vec<(String, Session)> {
         self.clock(raw);
@@ -1142,6 +1158,18 @@ mod tests {
     }
     fn runtime() -> Core {
         Core::new(system(Availability::AwakeUnlocked, 1))
+    }
+    #[test]
+    fn exact_late_start_cleanup_does_not_cancel_a_pending_successor_or_other_session() {
+        let mut core=runtime();start(&mut core,"nova",Mode::Life,false);start(&mut core,"other",Mode::Life,false);
+        let session=core.sessions["nova"].session_id.clone();let revision=core.sessions["nova"].revision;
+        core.begin_start("nova","successor".into()).unwrap();
+        assert!(core.stop_exact("nova",&session,Some(revision),1).is_none());
+        assert!(core.start_current("nova","successor"));assert!(core.sessions.contains_key("other"));
+        core.cancel_start("nova","successor");
+        assert!(core.stop_exact("nova",&session,Some(revision+1),2).is_none());
+        assert!(core.stop_exact("nova",&session,Some(revision),3).is_some());
+        assert!(core.sessions.contains_key("other"));assert!(!core.sessions.contains_key("nova"));
     }
     fn config() -> SpeechConfig {
         SpeechConfig {

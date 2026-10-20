@@ -42,20 +42,22 @@ struct SpeechEntry {
     started:bool, finished:bool, cancel:Arc<AtomicBool>,
     runtime_claim:Option<crate::life_runtime::core::Claim>,
     usage_origin:crate::usage_budget::Origin,
+    session_output:Option<crate::life_runtime::session_output::Lease>,
 }
 impl SpeechEntry{
+    fn cancelled(&self)->bool{self.cancel.load(Ordering::SeqCst)||self.session_output.as_ref().is_some_and(|route|!route.current())}
     fn requires_playback_watchdog(&self)->bool{matches!(self.output.as_str(),"overlay"|"obs")||self.runtime_claim.is_some()||self.usage_origin.autonomous()}
     fn claim_matches(&self,claim:&crate::life_runtime::core::Claim)->bool{self.id==claim.turn_id&&self.bot_id==claim.bot_id&&self.runtime_claim.as_ref().is_some_and(|current|current.session_id==claim.session_id&&current.revision==claim.revision&&Arc::ptr_eq(&current.cancel,&claim.cancel))}
     fn native_parent(&self,bot_id:&str,output:&str,speech_id:&str)->Option<crate::life_runtime::core::Claim>{
         let parsed=uuid::Uuid::parse_str(speech_id).ok()?;
-        if parsed.to_string()!=speech_id||self.id!=speech_id||self.bot_id!=bot_id||self.output!=output||self.finished||self.cancel.load(Ordering::SeqCst){return None;}
+        if parsed.to_string()!=speech_id||self.id!=speech_id||self.bot_id!=bot_id||self.output!=output||self.finished||self.cancelled(){return None;}
         self.runtime_claim.as_ref().filter(|claim|claim.bot_id==bot_id&&claim.turn_id==speech_id&&!claim.cancel.load(Ordering::SeqCst)).cloned()
     }
     fn synthesis_text(&self)->&str{if self.voice["provider"]=="elevenlabs"{&self.speech_text}else{&self.text}}
-    fn speech_event(&self)->Value{json!({"kind":"speech","botId":self.bot_id,"id":self.id,"text":self.text,"speechText":self.speech_text,"voice":public_voice(&self.voice),"emotion":self.emotion,"source":self.source,"user":self.user,"emotes":self.emotes})}
+    fn speech_event(&self)->Value{json!({"kind":"speech","botId":self.bot_id,"id":self.id,"text":self.text,"speechText":self.speech_text,"voice":public_voice(&self.voice),"emotion":self.emotion,"source":self.source,"user":self.user,"emotes":self.emotes,"presentationOutput":self.output,"presentationRouteId":self.session_output.as_ref().map(|route|route.id.as_str())})}
     fn presentation_event(&self)->Value{json!({"kind":"started","id":self.id,"botId":self.bot_id,"text":self.text,"emotion":self.emotion,"emotes":self.emotes,"source":self.source,"user":self.user})}
     fn start(&mut self,persist:impl FnOnce(&Self)->Result<(),String>)->Result<bool,String>{
-        if self.cancel.load(Ordering::Relaxed)||self.finished{return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
+        if self.cancelled()||self.finished{return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
         if self.started{return Ok(false);}
         persist(self)?;self.started=true;Ok(true)
     }
@@ -97,7 +99,7 @@ impl OverlayHub {
                 if let Ok(profile)=app.state::<crate::AppState>().store.profile(){event["botId"]=profile["id"].clone();}
             }
         }
-        if event["kind"]=="profile"{if let Some(profile)=event.get("profile"){event["presentation"]=app.state::<crate::AppState>().presentation.snapshot(profile);}if let Some(bot_id)=event["botId"].as_str(){let state=app.state::<crate::AppState>();let config=state.store.bot_profile(bot_id).ok().and_then(|profile|crate::autopilot::config(&profile).ok()).unwrap_or_default();event["autopilotRuntime"]=json!(state.life_runtime.present(state.autopilot.runtime(bot_id,&config)));}}
+        if event["kind"]=="profile"{if let Some(profile)=event.get("profile"){event["presentation"]=app.state::<crate::AppState>().presentation.snapshot(profile);}if let Some(bot_id)=event["botId"].as_str(){let state=app.state::<crate::AppState>();let config=state.store.bot_profile(bot_id).ok().and_then(|profile|crate::autopilot::config(&profile).ok()).unwrap_or_default();let output=state.life_runtime.session_output(bot_id).ok();event["autopilotRuntime"]=json!(state.life_runtime.present(state.autopilot.runtime(bot_id,&config)));event["lifeOutput"]=json!(output);}}
         if event["kind"]=="stop" {
             // Tray, Studio, Control-MCP and the global overlay stop all reach
             // this boundary. No background session survives an emergency stop.
@@ -139,12 +141,19 @@ impl OverlayHub {
     pub fn has_autopilot_speech(&self,bot_id:&str)->bool{
         self.speech.lock().map(|entries|entries.iter().any(|entry|entry.bot_id==bot_id&&entry.source=="autopilot"&&!entry.finished)).unwrap_or(true)
     }
-    pub fn say_profile(&self,app:&tauri::AppHandle,profile:&Value,id:&str,text:&str,speech_text:&str,emotion:&str,source:&str,user:&str,user_text:&str,emotes:&[Value],cancel:Arc<AtomicBool>,chat_route:Option<crate::chat::ChatRoute>,runtime_claim:Option<crate::life_runtime::core::Claim>,usage_origin:crate::usage_budget::Origin)->Result<(),String> {
+    pub(crate) fn say_profile(&self,app:&tauri::AppHandle,profile:&Value,id:&str,text:&str,speech_text:&str,emotion:&str,source:&str,user:&str,user_text:&str,emotes:&[Value],cancel:Arc<AtomicBool>,chat_route:Option<crate::chat::ChatRoute>,runtime_claim:Option<crate::life_runtime::core::Claim>,usage_origin:crate::usage_budget::Origin,session_output:Option<crate::life_runtime::session_output::Lease>)->Result<(String,Option<String>),String> {
         let bot_id=profile["id"].as_str().ok_or("Bot-ID fehlt")?;
+        if let Some(route)=&session_output{
+            let current=app.state::<crate::AppState>().life_runtime.session_outputs.resolve(bot_id)?;
+            if !route.current()||current.as_ref().is_none_or(|current|current.id!=route.id){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
+        }
         let mut speech=self.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
         if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
         if speech.len()>=64{return Err("Zu viele ausstehende Sprachausgaben. Bitte Wiedergaben beenden oder stoppen.".into());}
-        let entry=SpeechEntry{id:id.into(),bot_id:bot_id.into(),text:text.into(),speech_text:speech_text.into(),voice:profile["voice"].clone(),emotion:emotion.into(),source:source.into(),user:user.into(),user_text:user_text.into(),hindsight:profile["hindsight"].clone(),assistant_name:profile["name"].as_str().unwrap_or("Cohost").into(),emotes:emotes.to_vec(),output:profile["output"]["mode"].as_str().unwrap_or("studio").into(),started:false,finished:false,cancel,chat_route,runtime_claim,usage_origin};
+        let output=if session_output.is_some(){"overlay"}else{profile["output"]["mode"].as_str().unwrap_or("studio")}.to_owned();
+        let route_id=session_output.as_ref().map(|route|route.id.clone());
+        let entry=SpeechEntry{id:id.into(),bot_id:bot_id.into(),text:text.into(),speech_text:speech_text.into(),voice:profile["voice"].clone(),emotion:emotion.into(),source:source.into(),user:user.into(),user_text:user_text.into(),hindsight:profile["hindsight"].clone(),assistant_name:profile["name"].as_str().unwrap_or("Cohost").into(),emotes:emotes.to_vec(),output:output.clone(),started:false,finished:false,cancel,chat_route,runtime_claim,usage_origin,session_output};
+        if entry.cancelled(){return Err("Antwort abgebrochen".into());}
         let event=entry.speech_event();let timer_cancel=entry.cancel.clone();let watchdog=entry.requires_playback_watchdog();speech.push_back(entry);
         drop(speech);
         // A disconnected Studio/OBS client cannot keep the host busy forever.
@@ -154,12 +163,12 @@ impl OverlayHub {
             tauri::async_runtime::spawn(async move{tokio::time::sleep(PLAYBACK_TIMEOUT).await;let _=cancel_playback_if(&handle,&job_id,&target,Some(&timer_cancel),Some("Keine Abschlussmeldung der Sprachausgabe. Automatische Antworten pausiert."));});
         }
         // Route by the answered bot, independently of the selected editor.
-        match profile["output"]["mode"].as_str().unwrap_or("studio"){
-            "overlay"=>{let _=app.emit("cohost://overlay",event);},
+        match output.as_str(){
+            "overlay"=>{let _=app.emit_to(format!("avatar-{bot_id}"),"cohost://overlay",event);},
             "obs"=>{let _=self.sender.send(event);},
             _=>(),
         }
-        Ok(())
+        Ok((output,route_id))
     }
 }
 pub fn public_voice(voice:&Value)->Value{
@@ -209,6 +218,9 @@ async fn emote_playback(State(app):State<tauri::AppHandle>,Query(q):Query<Access
     match report_emote_playback(&app,&bot_id,"obs",id,playing,activity,body["speechId"].as_str()){Ok(result)=>Json(result).into_response(),Err(_)=>(StatusCode::CONFLICT,"Emote-Audiostatus ist für diesen Bot oder Ausgabemodus nicht gültig.").into_response()}
 }
 fn emote_playback_event(profile:&Value,output:&str,id:&str,playing:bool,activity:Option<&str>)->Result<Value,String>{
+    emote_playback_for_route(profile,output,id,playing,activity,false)
+}
+fn emote_playback_for_route(profile:&Value,output:&str,id:&str,playing:bool,activity:Option<&str>,native_session:bool)->Result<Value,String>{
     let activity=activity.unwrap_or("foreground");
     if !matches!(activity,"foreground"|"ambient"){return Err("Ungültige Emote-Audioaktivität".into());}
     let bot_id=profile["id"].as_str().filter(|id|crate::storage::valid_id(id)).ok_or("Bot-ID fehlt oder ist ungültig")?;
@@ -217,12 +229,12 @@ fn emote_playback_event(profile:&Value,output:&str,id:&str,playing:bool,activity
     if parsed.to_string()!=id{return Err("Emote-Audiostatus benötigt eine kanonische UUID".into());}
     // Ends are accepted after reconfiguration, so an old output can release
     // its wakeword block even when the operator has already selected a new one.
-    if playing&&profile["output"]["mode"].as_str()!=Some(output){return Err("Diese Emote-Audioausgabe ist für den Bot nicht mehr ausgewählt".into());}
+    if playing&&profile["output"]["mode"].as_str()!=Some(output)&&!(native_session&&output=="overlay"){return Err("Diese Emote-Audioausgabe ist für den Bot nicht mehr ausgewählt".into());}
     Ok(json!({"botId":bot_id,"output":output,"id":id,"playing":playing,"activity":activity}))
 }
 pub fn report_emote_playback(app:&tauri::AppHandle,bot_id:&str,output:&str,id:&str,playing:bool,activity:Option<&str>,speech_id:Option<&str>)->Result<Value,String>{
     let profile=app.state::<crate::AppState>().store.bot_profile(bot_id)?;
-    let mut event=emote_playback_event(&profile,output,id,playing,activity)?;
+    let mut event=emote_playback_for_route(&profile,output,id,playing,activity,app.state::<crate::AppState>().life_runtime.session_outputs.available(bot_id)==Some(true))?;
     let state=app.state::<crate::AppState>();
     // Drop the queue lock before Core (the commit lock order is Core -> queue).
     let parent=speech_id.and_then(|parent|state.overlay.speech.lock().ok()?.iter().find_map(|entry|entry.native_parent(bot_id,output,parent)));
@@ -247,7 +259,12 @@ pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,e
             if let Ok(profile)=state.store.bot_profile(bot_id){entry.emotes=crate::emote_capabilities::pending(&state.store.root,&profile,&entry.emotes);}else{entry.emotes.clear();}
         }
         if !entry.start(|entry|{
-            state.store.scoped(&entry.bot_id)?.add_message_with_id(&entry.id,"assistant",&entry.text,&entry.source,&entry.assistant_name).map(|_|())
+            let store=state.store.scoped(&entry.bot_id)?;
+            if entry.session_output.is_some(){
+                store.add_message_with_id_checked(&entry.id,"assistant",&entry.text,&entry.source,&entry.assistant_name,||!entry.cancelled()).map(|_|())
+            }else{
+                store.add_message_with_id(&entry.id,"assistant",&entry.text,&entry.source,&entry.assistant_name).map(|_|())
+            }
         })?{return Ok(json!({"accepted":true,"started":false}));}
         // History persistence, acknowledgement and invalidation share this
         // lock. Stop cannot publish or persist a late start, and retries commit once.
@@ -320,7 +337,10 @@ pub fn prepare_emote_profile(root:&std::path::Path,profile:&Value,id:&str,viewer
     Ok(json!({"botId":profile["id"],"id":id,"action":action,"avatarBinding":avatar_binding,"emoteBinding":crate::emote_capabilities::emote_binding(emote),"nonce":uuid::Uuid::new_v4().to_string(),"duration":duration,"intensity":emote["intensity"].as_f64().unwrap_or(1.0).clamp(0.0,2.0),"sound":sound,"soundVolume":emote["soundVolume"].as_f64().unwrap_or(0.7).clamp(0.0,1.0)}))
 }
 pub fn trigger_emote_profile(app:&tauri::AppHandle,profile:&Value,id:&str,viewer:bool)->Result<Value,String>{
-    let payload=prepare_emote_profile(&app.state::<crate::AppState>().store.root,profile,id,viewer)?;
+    let mut payload=prepare_emote_profile(&app.state::<crate::AppState>().store.root,profile,id,viewer)?;
+    let route=app.state::<crate::AppState>().life_runtime.session_outputs.resolve(profile["id"].as_str().ok_or("Bot-ID fehlt")?)?;
+    payload["presentationOutput"]=json!(if route.is_some(){"overlay"}else{profile["output"]["mode"].as_str().unwrap_or("studio")});
+    payload["presentationRouteId"]=json!(route.as_ref().map(|route|route.id.as_str()));
     let _=app.emit("cohost://emote",payload.clone());let mut event=payload.clone();event["kind"]=json!("emote");app.state::<crate::AppState>().overlay.publish(app,event);Ok(payload)
 }
 async fn events(State(app):State<tauri::AppHandle>,Query(q):Query<Access>)->Response {
@@ -328,7 +348,7 @@ async fn events(State(app):State<tauri::AppHandle>,Query(q):Query<Access>)->Resp
     let Ok(bot_id)=requested_bot(&app,&q)else{return StatusCode::NOT_FOUND.into_response();};
     let state=app.state::<crate::AppState>();let receiver=state.overlay.sender.subscribe();
     let initial=match state.store.scoped(&bot_id).and_then(|store|store.profile()){
-        Ok(profile)=>json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile),"presentation":state.presentation.snapshot(&profile),"autopilotRuntime":state.life_runtime.present(state.autopilot.runtime(&bot_id,&crate::autopilot::config(&profile).unwrap_or_default()))}),
+        Ok(profile)=>json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile),"presentation":state.presentation.snapshot(&profile),"autopilotRuntime":state.life_runtime.present(state.autopilot.runtime(&bot_id,&crate::autopilot::config(&profile).unwrap_or_default())),"lifeOutput":state.life_runtime.session_output(&bot_id).ok()}),
         Err(_)=>return StatusCode::NOT_FOUND.into_response(),
     };
     let world=state.store.bot_profile(&bot_id).ok().and_then(|profile|state.world.output_event(&bot_id,&profile)).unwrap_or_else(||json!({"kind":"world-state","botId":bot_id,"world":null,"arena":null}));
@@ -364,24 +384,24 @@ async fn emote_sound(State(app):State<tauri::AppHandle>,Path(id):Path<String>,Qu
 pub async fn speech_audio(app:&tauri::AppHandle,id:&str,bot_id:&str)->Result<Value,String>{
     let state=app.state::<crate::AppState>();
     let entry=state.overlay.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?.iter().find(|entry|entry.id==id&&entry.bot_id==bot_id).cloned().ok_or("Sprachausgabe ist nicht mehr gültig")?;
-    if entry.cancel.load(Ordering::Relaxed)||entry.finished{return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
+    if entry.cancelled()||entry.finished{return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
     // Deduplicate synthesis without holding the cache lock across network I/O.
     // Stop/completion can immediately release this bot's buffers.
     let _synthesis=tokio::select!{
         lock=state.overlay.synthesis.lock()=>lock,
-        _=async{while !entry.cancel.load(Ordering::Relaxed){tokio::time::sleep(Duration::from_millis(75)).await;}}=>return Err("Sprachausgabe wurde abgebrochen".into()),
+        _=async{while !entry.cancelled(){tokio::time::sleep(Duration::from_millis(75)).await;}}=>return Err("Sprachausgabe wurde abgebrochen".into()),
     };
-    let still_pending=||state.overlay.speech.lock().map(|entries|entries.iter().any(|current|current.id==id&&current.bot_id==bot_id&&!current.finished&&!current.cancel.load(Ordering::Relaxed))).unwrap_or(false);
-    if entry.cancel.load(Ordering::Relaxed)||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
+    let still_pending=||state.overlay.speech.lock().map(|entries|entries.iter().any(|current|current.id==id&&current.bot_id==bot_id&&!current.finished&&!current.cancelled())).unwrap_or(false);
+    if entry.cancelled()||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
     if let Some(audio)=state.overlay.audio.lock().map_err(|_|"Audio-Cache nicht verfügbar")?.get(id){return Ok(audio);}
     let usage=crate::usage_budget::Context::new(&entry.bot_id,entry.usage_origin);
     state.store.preflight_usage_cost(&usage,crate::usage_budget::Cost::tts(entry.synthesis_text().chars().count() as u64))?;
     let key=state.store.key_for_purpose(&entry.voice,crate::credential_policy::Purpose::Speech)?;
-    if entry.cancel.load(Ordering::Relaxed)||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
+    if entry.cancelled()||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
     let authority=crate::life_runtime::cloud::CloudAuthority::native(app,&usage,entry.cancel.clone(),entry.runtime_claim.clone());
     let audio=crate::providers::synthesize_guarded(&entry.voice,entry.synthesis_text(),key,&state.store,&usage,entry.cancel.clone(),&authority).await?;
     let entries=state.overlay.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
-    if entry.cancel.load(Ordering::Relaxed)||!entries.iter().any(|current|current.id==id&&current.bot_id==bot_id&&!current.finished&&!current.cancel.load(Ordering::Relaxed)){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
+    if entry.cancelled()||!entries.iter().any(|current|current.id==id&&current.bot_id==bot_id&&!current.finished&&!current.cancelled()){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
     let protected=entries.iter().filter(|entry|entry.started&&!entry.finished).map(|entry|entry.id.clone()).collect();
     state.overlay.audio.lock().map_err(|_|"Audio-Cache nicht verfügbar")?.insert(id,audio.clone(),&protected,AUDIO_CACHE_BYTES)?;Ok(audio)
 }
@@ -471,13 +491,40 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
         profile=store.patch_output(json!({"mode":"overlay","streamingEnabled":true}))?;
         state.overlay.publish(app,json!({"kind":"stop","botId":bot_id}));state.overlay.publish(app,json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile)}));
     }
+    open_window(app,bot_id,profile,None)
+}
+/// Explicit Life owns only a runtime route. Never patch saved output settings.
+pub(crate) fn open_session_for_bot(app:&tauri::AppHandle,lease:&crate::life_runtime::session_output::Lease)->Result<(),String>{
+    if !lease.current(){return Err("Der Start von Life wurde abgebrochen.".into());}
+    let profile=app.state::<crate::AppState>().store.bot_profile(&lease.bot)?;
+    open_window(app,&lease.bot,profile,Some(lease))
+}
+struct NewWindowGuard {window:tauri::WebviewWindow,handed:bool}
+impl Drop for NewWindowGuard{fn drop(&mut self){if !self.handed{let _=self.window.close();}}}
+fn open_window(app:&tauri::AppHandle,bot_id:&str,profile:Value,session:Option<&crate::life_runtime::session_output::Lease>)->Result<(),String>{
+    let state=app.state::<crate::AppState>();let store=state.store.scoped(bot_id)?;
     let label=format!("avatar-{bot_id}");
-    if let Some(window)=app.get_webview_window(&label){crate::overlay_presentation::sync(app,bot_id)?;window.show().map_err(|error|error.to_string())?;window.set_focus().map_err(|error|error.to_string())?;let _=app.emit("cohost://overlay-state",json!({"botId":bot_id,"active":true}));return Ok(());}
+    if let Some(window)=app.get_webview_window(&label){
+        if let Some(lease)=session{
+            let signals=state.presentation.window_signals(bot_id).ok_or("Das Figurenfenster ist nicht bestätigt.")?;
+            let was_visible=window.is_visible().map_err(|_|"Das Figurenfenster ist nicht bestätigt.")?;
+            if !state.life_runtime.session_outputs.attach(lease,window.clone(),signals,false,was_visible){return Err("Der Start von Life wurde abgebrochen.".into());}
+        }
+        crate::overlay_presentation::sync(app,bot_id)?;window.show().map_err(|error|error.to_string())?;
+        window.set_focus().map_err(|error|error.to_string())?;
+        if session.is_some_and(|lease|!lease.current()){return Err("Der Start von Life wurde abgebrochen.".into());}
+        if window.is_visible().ok()!=Some(true){return Err("Das Figurenfenster ist nicht sichtbar.".into());}
+        let _=app.emit("cohost://overlay-state",json!({"botId":bot_id,"active":true}));return Ok(());
+    }
     if let Some(legacy)=app.get_webview_window("avatar"){let _=legacy.close();}
     let window=tauri::WebviewWindowBuilder::new(app,&label,tauri::WebviewUrl::App(format!("index.html?overlay=1&bot={bot_id}").into()))
         .title(format!("OrbitPal · {}",profile["name"].as_str().unwrap_or("Charakter"))).inner_size(520.,720.).transparent(true).decorations(false).shadow(false).resizable(true).visible(false)
         .always_on_top(profile["output"]["alwaysOnTop"].as_bool().unwrap_or(false)).build().map_err(|error|error.to_string())?;
+    let mut constructor_guard=NewWindowGuard{window:window.clone(),handed:false};
     let signals=Arc::new(crate::window_signals::WindowSignals::default());
+    if let Some(lease)=session{
+        if !state.life_runtime.session_outputs.attach(lease,window.clone(),signals.clone(),true,false){let _=window.close();return Err("Der Start von Life wurde abgebrochen.".into());}
+    }
     let mut initial_bounds=None;
     if let Some(bounds)=store.window_bounds()?{
         let x=bounds["x"].as_i64().unwrap_or(0).clamp(-65535,65535)as i32;let y=bounds["y"].as_i64().unwrap_or(0).clamp(-65535,65535)as i32;
@@ -490,7 +537,7 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
     // This tracks native instance identity only; no World layout/readiness or
     // rendering permission follows from opening the ordinary overlay.
     let _=state.life_runtime.native_output_window_registered(bot_id,&label,&signals);
-    window.set_ignore_cursor_events(profile["output"]["clickThrough"].as_bool().unwrap_or(false)).map_err(|error|error.to_string())?;window.show().map_err(|error|error.to_string())?;
+    let session_owned_constructor=session.is_some();
     let handle=app.clone();let bot_id=bot_id.to_owned();let measured=window.clone();let revision=Arc::new(std::sync::atomic::AtomicU64::new(0));
     window.on_window_event(move|event|{
         use crate::life_runtime::NativeWindowChange;
@@ -510,7 +557,7 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
 
         if matches!(event,tauri::WindowEvent::Moved(_)|tauri::WindowEvent::Resized(_)|tauri::WindowEvent::CloseRequested{..}){
             revision.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
-            if handle.state::<crate::AppState>().presentation.current_window(&bot_id,&signals)&&!handle.state::<crate::AppState>().presentation.suppress_bounds(&bot_id){if let(Ok(position),Ok(size))=(measured.outer_position(),measured.inner_size()){
+            if !session_owned_constructor&&handle.state::<crate::AppState>().presentation.current_window(&bot_id,&signals)&&!handle.state::<crate::AppState>().presentation.suppress_bounds(&bot_id){if let(Ok(position),Ok(size))=(measured.outer_position(),measured.inner_size()){
                 let bounds=json!({"x":position.x,"y":position.y,"width":size.width,"height":size.height});let ticket=revision.fetch_add(1,std::sync::atomic::Ordering::Relaxed)+1;
                 if matches!(event,tauri::WindowEvent::CloseRequested{..}){if let Ok(store)=handle.state::<crate::AppState>().store.scoped(&bot_id){let _=store.save_window_bounds(&bounds);}}
                 else{let pending=revision.clone();let app=handle.clone();let bot=bot_id.clone();let current=measured.clone();let instance=signals.clone();tauri::async_runtime::spawn(async move{
@@ -528,6 +575,7 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
         }
         if let tauri::WindowEvent::ScaleFactorChanged{..}=event{crate::overlay_presentation::sync_or_report(&handle,&bot_id);}
         if let tauri::WindowEvent::Destroyed=event{
+            handle.state::<crate::AppState>().life_runtime.session_outputs.destroyed(&handle,&bot_id,&signals);
             // Setters can dispatch Destroyed inline on Main. Defer cleanup,
             // never wait for the transition's Hub mutex from that callback.
             let app=handle.clone();let bot=bot_id.clone();let instance=signals.clone();
@@ -548,14 +596,21 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
                         }
                         return;
                     }
-                    if let Ok(store)=state.store.scoped(&bot){if let Ok(profile)=store.profile(){if profile["output"]["mode"]=="overlay"{
+                    if !session_owned_constructor{if let Ok(store)=state.store.scoped(&bot){if let Ok(profile)=store.profile(){if profile["output"]["mode"]=="overlay"{
                         if let Ok(profile)=store.patch_output(json!({"streamingEnabled":false,"mode":"studio"})){state.overlay.publish(&main,json!({"kind":"stop","botId":bot}));state.overlay.publish(&main,json!({"kind":"profile","botId":bot,"profile":public_profile(&profile)}));}
-                    }}}
+                    }}}}
                     let _=main.emit("cohost://overlay-state",json!({"botId":bot,"active":false}));let _=main.emit("cohost://playback",json!({"botId":bot,"speaking":false,"output":"overlay"}));
                 });
             });
         }
     });
+    constructor_guard.handed=true;
+    if session.is_some(){crate::life_runtime::session_output::initial_window_position(app,&window,profile["id"].as_str().ok_or("Bot-ID fehlt")?)?;}
+    window.set_ignore_cursor_events(profile["output"]["clickThrough"].as_bool().unwrap_or(false)).map_err(|error|error.to_string())?;
+    window.show().map_err(|error|error.to_string())?;
+    if session.is_some(){window.set_focus().map_err(|error|error.to_string())?;}
+    if session.is_some_and(|lease|!lease.current()){return Err("Der Start von Life wurde abgebrochen.".into());}
+    if window.is_visible().ok()!=Some(true){return Err("Das Figurenfenster ist nicht sichtbar.".into());}
     crate::overlay_presentation::sync(app,profile["id"].as_str().ok_or("Bot-ID fehlt")?)?;
     let _=app.emit("cohost://overlay-state",json!({"botId":profile["id"],"active":true}));Ok(())
 }
@@ -592,7 +647,19 @@ mod tests{
         assert_eq!(authorize_asset(classify_asset("../secret.vrm"),||panic!("Malformed paths must fail before authorization")),Err(StatusCode::NOT_FOUND));
     }
     fn speech(provider:&str)->SpeechEntry{
-        SpeechEntry{id:"speech-fixture".into(),bot_id:"nova".into(),text:"Hallo zusammen!".into(),speech_text:"[crying] Hallo [shouts] zusammen!".into(),voice:json!({"provider":provider}),emotion:"neutral".into(),source:"twitch".into(),user:"viewer".into(),emotes:Vec::new(),output:"studio".into(),user_text:"Grüße den Chat".into(),hindsight:json!({"private_config_marker":"not an event field"}),assistant_name:"Nova".into(),chat_route:None,runtime_claim:None,usage_origin:crate::usage_budget::Origin::Manual,started:false,finished:false,cancel:Arc::new(AtomicBool::new(false))}
+        SpeechEntry{id:"speech-fixture".into(),bot_id:"nova".into(),text:"Hallo zusammen!".into(),speech_text:"[crying] Hallo [shouts] zusammen!".into(),voice:json!({"provider":provider}),emotion:"neutral".into(),source:"twitch".into(),user:"viewer".into(),emotes:Vec::new(),output:"studio".into(),user_text:"Grüße den Chat".into(),hindsight:json!({"private_config_marker":"not an event field"}),assistant_name:"Nova".into(),chat_route:None,runtime_claim:None,usage_origin:crate::usage_budget::Origin::Manual,session_output:None,started:false,finished:false,cancel:Arc::new(AtomicBool::new(false))}
+    }
+    #[test]
+    fn session_speech_event_is_route_bound_and_late_system_start_is_rejected() {
+        let outputs=crate::life_runtime::session_output::SessionOutputs::default();
+        let (route,_)=outputs.begin("nova").unwrap();
+        let mut entry=speech("system");entry.output="overlay".into();entry.session_output=Some(route.clone());
+        let event=entry.speech_event();
+        assert_eq!(event["presentationOutput"],"overlay");
+        assert_eq!(event["presentationRouteId"],route.id);
+        route.revoke();
+        assert!(entry.start(|_|panic!("a stopped route cannot commit history")).is_err());
+        assert!(!entry.started);
     }
     #[test]
     fn elevenlabs_keeps_audio_tags_in_synthesis_only(){
