@@ -1,13 +1,13 @@
-OrbitPal 0.10.1
+OrbitPal 0.11.0
 
-Die Wayland-Quellenauswahl speichert zuerst die aktuellen Bot- und Modelleinstellungen. Veraltete Ergebnisse werden verworfen und schließen nur ihre eigene Freigabesitzung. Nach der Auswahl die neue Quelle noch einmal speichern.
+Die Oberfläche ist übersichtlicher: einheitliche dunkle Farben, lesbare Bedienelemente, eine zentrale Speicheranzeige und die Chat-Eingabe direkt unter der Figur. Bot-Auswahl und Crew sind kompakter; kleinere Fenster behalten beschriftete Navigation.
 
-Bestehende Zugangsdaten behalten ihre IDs und Speicherzuordnungen. Die neuen nativen Adapter zeigen übersetzte Fehlerkategorien, ohne geheime Werte oder rohe Backend-Meldungen offenzulegen.
+Skills und MCP unterscheiden deutlich zwischen gemeinsamer Installation und den Freigaben des ausgewählten Bots. Technische Details lassen sich aufklappen; Berechtigungen, Cloud-Übertragung, Kosten und Fehler bleiben sichtbar. Deutsch, Englisch, Französisch und Spanisch bleiben erhalten.
 
-Wayland bleibt experimentell. Ein separater GNOME-Test konnte frische synthetische Bilder aufnehmen; die KDE-Abnahme ist durch eine Einschränkung des Test-Compositors blockiert. Der unfertige Desktop-Test bleibt separat in Entwurfs-PR #56.
+Geänderte Bibliotheksentwürfe werden vor dem Verwerfen geschützt. Wissen und Verlauf werden erst nach Bestätigung gelöscht. Laufende Speichervorgänge bleiben an ihren Editor gebunden. Escape, Dialogfokus und Bot-Menü sind korrigiert.
 
-Das Update erfolgt erst nach ausdrücklicher Bestätigung. Linux-AppImages unterstützen das App-Update; DEB-Pakete werden manuell aktualisiert. Profile, Bot-Freigaben und die Updater-Vertrauensbasis bleiben erhalten.
+Das Update startet erst nach ausdrücklicher Bestätigung. Linux-AppImages unterstützen das App-Update; DEB-Pakete werden manuell aktualisiert. Bestehende Profile, Bot-Freigaben, Zugangsdaten-IDs und die Updater-Vertrauensbasis bleiben kompatibel.
 
-macOS verwendet dieselbe dauerhafte selbstsignierte Identität wie 0.10.0 und ist nicht von Apple notarisiert. Windows-Installer haben keine Authenticode-Signatur. Der Erhalt von Mikrofon-/Bildschirmrechten über installierte Updates ist noch nicht praktisch bestätigt.
+macOS verwendet dieselbe dauerhafte selbstsignierte Identität und ist nicht von Apple notarisiert. Windows-Installer haben keine Authenticode-Signatur. Der Erhalt von Mikrofon-/Bildschirmrechten über installierte Updates ist weiterhin nicht praktisch bestätigt; bei alten ad-hoc signierten Versionen bis 0.9.0 können neue Freigaben nötig sein.
 
-Offen bleiben Signierungs-/Installationsabnahme (#17), weitere Rust-Abhängigkeitsmigrationen (#19) und die vollständige Wayland-Abnahme (#26).
+Die UI-Prüfungen verwenden erfundene Browser-Testdaten. Offen bleiben Signierungs-/Installationsabnahme (#17), Rust-Abhängigkeitsmigrationen (#19) und die vollständige Wayland-Abnahme (#26). Wayland bleibt experimentell.
