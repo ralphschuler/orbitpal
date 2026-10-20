@@ -21,6 +21,9 @@ mod platform;
 mod platform;
 #[path = "life_availability/sampling.rs"]
 mod sampling;
+#[cfg(any(target_os = "linux", test))]
+#[path = "life_availability/task.rs"]
+mod task;
 #[cfg(any(target_os = "windows", test))]
 #[path = "life_availability/windows_state.rs"]
 mod windows_state;
