@@ -2,8 +2,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { AvatarStage, createRobot, type AvatarOptions } from './avatar';
-import { desktopFraming, measureDesktopModel } from './desktop-framing';
+import { configureDesktopCamera, desktopFraming, measureDesktopModel } from './desktop-framing';
 import { desktopSafeBounds } from './desktop-motion';
+import { DistanceWalkClock, proceduralCycleDistance } from './avatar-locomotion';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
@@ -39,9 +40,9 @@ function stageFixture(root?:THREE.Group,width=1920,height=1080,pixelRatio=1) {
   const target=new THREE.Vector3();
   const controls={target,enabled:false,update:()=>{camera.lookAt(target);camera.updateMatrixWorld();}};
   const options:AvatarOptions={profile:{avatar:{scale:1,camera:'portrait',accent:'#80b8e8'}},transparent:true,speaking:false,level:0,emotion:'neutral',autopilot:{active:true,wander:true,gestures:false,startedAt:1000,seed:'projection-fixture'}};
-  const point={x:width/2,y:height/2,walking:false,facing:1};
+  const point={x:width/2,y:height/2,walking:false,facing:1,travel:{x:0,y:0},presentationReady:true};
   const stage=Object.create(AvatarStage.prototype) as any;
-  Object.assign(stage,{options,robot,imported,travel,camera,controls,ground:new THREE.Group(),desktopCamera:new THREE.OrthographicCamera(-1,1,1,-1,.05,100),host:{clientWidth:width,clientHeight:height},desktopModelBounds:bounds,desktopMotion:{reset:vi.fn(),sample:vi.fn(()=>point)},asset:root?'fixture.glb':'',walkingClip:root?new THREE.AnimationClip('Walk',1,[]):undefined,contentWidth:bounds.size.x,contentHeight:bounds.size.y,contentDepth:bounds.size.z,cameraMode:'',ambientSession:'',ambientGesture:'',ambientActions:[],walkStrength:0,modelForwardYaw:0,setWalking:vi.fn()});
+  Object.assign(stage,{options,robot,imported,travel,camera,controls,ground:new THREE.Group(),desktopCamera:new THREE.OrthographicCamera(-1,1,1,-1,.05,100),host:{clientWidth:width,clientHeight:height},desktopModelBounds:bounds,desktopMotion:{reset:vi.fn(),sample:vi.fn(()=>point)},asset:root?'fixture.glb':'',walkingClip:root?new THREE.AnimationClip('Walk',1,[]):undefined,contentWidth:bounds.size.x,contentHeight:bounds.size.y,contentDepth:bounds.size.z,cameraMode:'',ambientSession:'',ambientGesture:'',ambientActions:[],walkStrength:0,walkClock:new DistanceWalkClock(),walkingCycleDistance:proceduralCycleDistance(bounds.size.y),modelForwardYaw:0,setWalking:vi.fn()});
   stage.update(options);
   const desktopOptions=(scale=1):AvatarOptions=>({...options,profile:{avatar:{...options.profile.avatar,scale}},desktop:{active:true,referencePhysicalHeight:720}});
   return {stage,robot,model,bounds,options,desktopOptions,point,camera,controls,width,height};
@@ -54,12 +55,13 @@ describe('Actual desktop camera projection',()=>{
       for(const [width,height] of [[1920,1080],[1080,1920],[320,240]]) for(const pixelRatio of [1,1.5,2]) for(const requestedScale of [.3,1,2.5]) {
         const frame=desktopFraming({width,height,pixelRatio,referencePhysicalHeight:2000,scale:requestedScale,contentWidth:size.x,contentHeight:size.y,contentDepth:size.z,fov:32,normalDistance:Math.hypot(.35,.48,5.4)});
         const camera=new THREE.OrthographicCamera(-frame.worldWidth/2,frame.worldWidth/2,frame.worldHeight/2,-frame.worldHeight/2,.05,100);
-        camera.position.z=20; camera.lookAt(0,0,0); camera.updateMatrixWorld();
+        configureDesktopCamera(camera);
+        const right=new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion),up=new THREE.Vector3(0,1,0).applyQuaternion(camera.quaternion);
         const safe=desktopSafeBounds({width,height},frame.figure,24);
         expect(safe.valid).toBe(true);
         for(const x of [safe.left,safe.right]) for(const y of [safe.top,safe.bottom]) for(const yaw of [0,.63,Math.PI/2,Math.PI]) {
           const turn=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),yaw);
-          const translation=new THREE.Vector3((x-width/2)/frame.units,(height/2-y)/frame.units,0).sub(center.clone().multiplyScalar(frame.scale).applyQuaternion(turn));
+          const translation=right.clone().multiplyScalar((x-width/2)/frame.units).addScaledVector(up,(height/2-y)/frame.units).sub(center.clone().multiplyScalar(frame.scale).applyQuaternion(turn));
           const matrix=new THREE.Matrix4().compose(translation,turn,new THREE.Vector3().setScalar(frame.scale));
           const projectedCenter=css(center.clone().applyMatrix4(matrix),camera,width,height);
           expect(projectedCenter.x).toBeCloseTo(x,8); expect(projectedCenter.y).toBeCloseTo(y,8);
@@ -170,7 +172,7 @@ describe('Actual desktop camera projection',()=>{
     point.x=safe.left; point.y=safe.top;
     stage.updateAutopilot(0,false);
     stage.humanoidPose=new Map(); stage.time=Math.PI/2;
-    stage.emote={action:'celebrate',start:0,duration:3,intensity:1};
+    stage.emote={action:'celebrate',start:0,duration:3,intensity:2};
     stage.animateEmote(false);
     const top=()=>{
       const box=new THREE.Box3().setFromObject(model);

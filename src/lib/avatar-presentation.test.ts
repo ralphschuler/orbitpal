@@ -1,3 +1,4 @@
+import { DistanceWalkClock } from './avatar-locomotion';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AvatarPresentationGate } from './avatar-presentation';
 
@@ -88,7 +89,7 @@ function desktopStage() {
   const options = { profile, transparent: true, speaking: false, level: 0, emotion: 'neutral', desktop: { active: true, referencePhysicalHeight: 720 }, autopilot: { active: true, wander: true, gestures: false, startedAt: 1_000, seed: 'presentation-fixture' } };
   const gate = new AvatarPresentationGate();
   const stage = Object.create(AvatarStage.prototype) as any;
-  Object.assign(stage, { options, robot, imported, travel, camera, controls: { target, update() { camera.lookAt(target); camera.updateMatrixWorld(); } }, ground: new THREE.Group(), desktopCamera: new THREE.OrthographicCamera(-1, 1, 1, -1, .05, 100), host: { clientWidth: 1200, clientHeight: 800 }, desktopModelBounds: measureDesktopModel(robot.root), desktopMotion: new DesktopMotionController(), asset: '', cameraMode: '', ambientSession: '', ambientGesture: '', ambientActions: [], walkStrength: 0, modelForwardYaw: 0, walking: false, presentation: gate, presentationContext: '', assetState: 'ready' });
+  Object.assign(stage, { options, robot, imported, travel, camera, controls: { target, update() { camera.lookAt(target); camera.updateMatrixWorld(); } }, ground: new THREE.Group(), desktopCamera: new THREE.OrthographicCamera(-1, 1, 1, -1, .05, 100), host: { clientWidth: 1200, clientHeight: 800 }, desktopModelBounds: measureDesktopModel(robot.root), desktopMotion: new DesktopMotionController(), asset: '', cameraMode: '', ambientSession: '', ambientGesture: '', ambientActions: [], walkStrength: 0, walkClock: new DistanceWalkClock(), walkingCycleDistance: 1, modelForwardYaw: 0, walking: false, presentation: gate, presentationContext: '', assetState: 'ready' });
   stage.update(options); stage.updateAutopilot(0, false);
   return { stage, gate, options, advance() { now += 50; stage.updateAutopilot(.05, false); } };
 }
