@@ -405,7 +405,10 @@ impl Store {
         crate::credentials::delete(id)?;
         self.db.lock().map_err(error)?.execute("DELETE FROM secret_ids WHERE id=?1",[id]).map_err(error)?; Ok(())
     }
-    pub fn key_for(&self,config:&Value) -> Result<Option<String>,String> {self.secret(config["apiKeyId"].as_str().or_else(||config["secretId"].as_str()).unwrap_or_default())}
+    pub fn key_for(&self,config:&Value) -> Result<Option<String>,String> {self.key_for_purpose(config,crate::credential_policy::Purpose::Http)}
+    pub(crate) fn key_for_purpose(&self,config:&Value,purpose:crate::credential_policy::Purpose) -> Result<Option<String>,String> {
+        crate::credential_policy::resolve_for(config,purpose,|id|self.secret(id))
+    }
     pub fn import_avatar(&self,source:&Path) -> Result<String,String> {
         let ext=source.extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
         if !["vrm","glb","gltf"].contains(&ext.as_str()) {return Err("Bitte eine VRM-, GLB- oder glTF-2.0-Datei auswählen".into());}
@@ -848,6 +851,33 @@ mod extension_tests{
     struct Fixture(PathBuf);
     impl Fixture{fn new()->Self{let root=std::env::temp_dir().join(format!("cohost-library-{}",uuid::Uuid::new_v4()));fs::create_dir_all(&root).unwrap();Self(root)}}
     impl Drop for Fixture{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
+    #[test]
+    fn purpose_specific_store_resolution_skips_only_unused_credentials() {
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
+        let id=format!("purpose-fixture-{}",uuid::Uuid::new_v4());
+        store.set_secret(&id,"synthetic-http-token").unwrap();
+        for (purpose,provider) in [
+            (crate::credential_policy::Purpose::Dialog,"codex"),
+            (crate::credential_policy::Purpose::Dialog,"claude-code"),
+            (crate::credential_policy::Purpose::ModelCatalogue,"codex"),
+            (crate::credential_policy::Purpose::ModelCatalogue,"claude-code"),
+            (crate::credential_policy::Purpose::Speech,"system"),
+        ] {
+            let config=json!({"provider":provider,"apiKeyId":id});
+            let entry=crate::credentials::entry(&id).unwrap();
+            let mock=entry.as_any().downcast_ref::<keyring_core::mock::Cred>().unwrap();
+            mock.set_error(keyring_core::Error::NoStorageAccess(Box::new(std::io::Error::other("synthetic-denial"))));
+            assert_eq!(store.key_for_purpose(&config,purpose).unwrap(),None);
+            // The error is consumed by a read. Its survival proves the used
+            // Store path did not even touch this registered credential.
+            assert!(store.key_for(&config).is_err());
+            assert_eq!(store.key_for(&config).unwrap().as_deref(),Some("synthetic-http-token"));
+        }
+        let scoped=store.scoped("nova").unwrap();
+        for provider in ["whisper-local","compatible","ollama","lmstudio"] {
+            assert_eq!(scoped.key_for(&json!({"provider":provider,"baseUrl":"http://127.0.0.1:8080","apiKeyId":id})).unwrap().as_deref(),Some("synthetic-http-token"));
+        }
+    }
     fn legacy(id:&str,server_id:&str,enabled:bool)->Value{
         let mut profile:Value=serde_json::from_str(DEFAULT_PROFILE).unwrap();profile["id"]=json!(id);profile["name"]=json!(id);profile["skillsEnabled"]=json!(["shared"]);
         profile["mcpServers"]=json!([{"id":server_id,"name":id,"transport":"stdio","command":"node","args":["fixture.js"],"enabled":enabled,"allowedTools":if enabled{json!(["read"])}else{json!(["*"])},"viewerAllowedTools":[]}]);profile

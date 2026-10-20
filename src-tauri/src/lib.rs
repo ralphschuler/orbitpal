@@ -1,5 +1,6 @@
 mod storage;
 mod credentials;
+mod credential_policy;
 mod providers;
 mod transcription;
 mod cli_provider;
@@ -187,7 +188,7 @@ fn set_secret(state:State<'_,AppState>,id:String,value:String)->Result<(),String
 #[tauri::command]
 fn delete_secret(state:State<'_,AppState>,id:String)->Result<(),String>{state.store.delete_secret(&id)}
 #[tauri::command]
-async fn list_models(state:State<'_,AppState>,config:Value)->Result<Vec<String>,String>{let key=state.store.key_for(&config)?;providers::models(&config,key).await}
+async fn list_models(state:State<'_,AppState>,config:Value)->Result<Vec<String>,String>{let key=state.store.key_for_purpose(&config,credential_policy::Purpose::ModelCatalogue)?;providers::models(&config,key).await}
 #[tauri::command]
 async fn check_cli_provider(config:Value)->Result<Value,String>{cli_provider::status(&config).await}
 #[tauri::command]
@@ -261,7 +262,7 @@ async fn synthesize_speech(state:State<'_,AppState>,text:String,bot_id:Option<St
     state.updater.ensure_idle()?;
     if text.len()>20_000{return Err("Sprachtext ist zu lang".into());}
     let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;let store=scoped.as_ref().unwrap_or(&state.store);
-    let profile=store.profile()?;let config=&profile["voice"];providers::synthesize(config,&text,store.key_for(config)?).await
+    let profile=store.profile()?;let config=&profile["voice"];providers::synthesize(config,&text,store.key_for_purpose(config,credential_policy::Purpose::Speech)?).await
 }
 #[tauri::command]
 async fn transcribe_audio(state:State<'_,AppState>,audio_base64:String,mime_type:String,bot_id:Option<String>)->Result<String,String>{
