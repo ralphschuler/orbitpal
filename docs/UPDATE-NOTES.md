@@ -1,13 +1,11 @@
-OrbitPal 0.11.1
+OrbitPal 0.12.0
 
-Der Desktop-Autopilot richtet die Figur jetzt auch beim Laufen nach oben, unten und diagonal nach ihrem tatsächlichen Weg aus. Eine leicht erhöhte Ansicht macht die Schritte in die Tiefe sichtbar; der Körper bleibt aufrecht. Ausflüge aus dem Bild, die Rückkehr vor Sprache oder Emotes, Ruheposen und die live einstellbare Figurgröße bleiben erhalten.
+API-Verbindungen werden jetzt zentral für die gesamte Installation verwaltet. Mehrere Figuren können dieselbe Verbindung für Dialog, Stimme, Spracherkennung oder Hindsight verwenden. Die Schlüssel bleiben im Betriebssystem-Schlüsselspeicher; Figuren behalten ihre eigenen Modelle, Stimmen, Erinnerungen und Freigaben. Importierte Profile übernehmen keine vorhandenen Zugangsdaten.
 
-Das Schritttempo folgt der zurückgelegten Strecke und der Figurgröße, auch beim Beschleunigen, Bremsen und am Bildschirmrand. Pausen spulen die Laufanimation nicht mehr weiter. Vorhandene Laufclips werden automatisch vermessen; bei ungewöhnlichen Modellen bleibt die Schrittlänge eine Näherung.
+Auf macOS lassen sich bereits erfolgreich gelesene Schlüssel optional bis zum Ende der App-Sitzung wiederverwenden. Diese Option ist standardmäßig ausgeschaltet und kann ausdrücklich gesperrt werden. Sie ersetzt keine Berechtigung des macOS-Schlüsselbunds und verspricht keine vollständige Beseitigung seiner Rückfragen.
 
-Leere oder ausschließlich aus Emotions-Tags bestehende Autopilot-Antworten werden als Fehler gemeldet. Das Modell darf ausdrücklich schweigen; dabei entstehen wie bisher keine zusätzlichen automatischen Sprechversuche.
+Die neue native Life-Laufzeit, ein gemeinsamer Bühneneditor und eine optionale 3D-World-Ansicht ergänzen den Studio-Modus. Nach ausdrücklichem Start einer Life-Sitzung kann die ausgewählte Studio-Figur zu einem vorgegebenen Ziel laufen. Weitere Teilnehmer werden zunächst als Spiegelansichten dargestellt. Gemeinsame Szenen mit mehreren handelnden Figuren sowie native World-Overlays und OBS bleiben in Arbeit.
 
-Das Update startet erst nach ausdrücklicher Bestätigung. Linux-AppImages unterstützen das App-Update; DEB-Pakete werden manuell aktualisiert. Bestehende Profile, Bot-Freigaben, Zugangsdaten-IDs und die Updater-Vertrauensbasis bleiben kompatibel.
+Installationsweite Limits begrenzen autonome Anbieteranfragen, Sprachzeichen, Erinnerungsanfragen und Bildübertragungen. Der Verbrauch bleibt über Neustarts erhalten. Dazu kommen fair verteilte automatische Chatantworten und eine ausdrücklich gestartete stille Ruheaktion. Gespeicherte Einstellungen starten keinen autonomen Modus.
 
-macOS verwendet dieselbe dauerhafte selbstsignierte Identität und ist nicht von Apple notarisiert. Windows-Installer haben keine Authenticode-Signatur. Der Erhalt von Mikrofon-/Bildschirmrechten über installierte Updates ist weiterhin nicht praktisch bestätigt; bei alten ad-hoc signierten Versionen bis 0.9.0 können neue Freigaben nötig sein.
-
-Die Darstellung wurde mit lokalen Charakter-Testdaten geprüft. Echte Desktopfenster, Betriebssystemrechte, reale Audiowiedergabe und Anbieter wurden dabei nicht verwendet. Offen bleiben Signierungs-/Installationsabnahme (#17), Rust-Abhängigkeitsmigrationen (#19) und die vollständige Wayland-Abnahme (#26). Wayland bleibt experimentell.
+Das Update startet erst nach ausdrücklicher Bestätigung. AppImages unterstützen das App-Update; DEB-Pakete werden manuell aktualisiert. macOS verwendet dieselbe dauerhafte selbstsignierte Identität und ist nicht von Apple notarisiert. Windows-Installer haben keine Authenticode-Signatur. Der Erhalt von Mikrofon- und Bildschirmrechten über ein installiertes Update ist weiterhin nicht praktisch bestätigt. Wayland bleibt experimentell; die vollständige Abnahme ist offen.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.0 — 2026-10-20
+
 - Add an optional Studio 3D World view in all four interface languages, with up to eight participants and one shared object layer. In an explicitly started Life session, the selected Studio character can execute one operator-requested MoveTo; other participants are mirrors. Native overlay/OBS and broader visual activities remain open under #72.
 - Connect native-issued render challenges and ordered delivery/start/completion receipts to actual renderer frames. Preserve checked Life/World/SQLite admission, frozen reference anchors, Stop and stale-result cancellation. A private native-window registry remains preparatory and grants no native rendering capability.
 - Use an explicit host-pinned enclosure contract with bounded rigid-source preparation and current conservative draw bounds. Keep exact geometry helpers, deformation fallback, work limits and the five-second deadline. Validate actual Metal rendering, eight directions, distance-based gait, ACK holds and context/resize/Stop barriers with local fixtures; synthetic host acknowledgements establish no native-window/OBS acceptance or performance benchmark.
