@@ -12,15 +12,16 @@
     disabled?: boolean;
     pending?: boolean;
     previewing?: boolean;
+    showControls?: boolean;
     onStart: () => void;
     onStop: () => void;
     onPreview: () => void;
   }
-  let { config = $bindable(), botName, active, speechStatus, lastAttemptSilent = false, disabled = false, pending = false, previewing = false, onStart, onStop, onPreview }: Props = $props();
+  let { config = $bindable(), botName, active, speechStatus, lastAttemptSilent = false, disabled = false, pending = false, previewing = false, showControls = true, onStart, onStop, onPreview }: Props = $props();
   const uid = $props.id();
 </script>
 
-<section class="settings-panel autopilot-intro" aria-label={$t('Autopilot steuern')}>
+{#if showControls}<section class="settings-panel autopilot-intro" aria-label={$t('Autopilot steuern')}>
   <div class="autopilot-heading">
     <div>
       <h2>{$t('Autopilot steuern')}</h2>
@@ -57,7 +58,7 @@
     </div>
   {/if}
   <p class="session-note">{$t('Start gilt nur für diese App-Sitzung. „Stop“ oder Escape beendet alle Autopiloten und laufenden Ausgaben. Die Bewegungsvorschau ist stumm und verwendet keine KI.')}</p>
-</section>
+</section>{/if}
 
 <div class="settings-grid autopilot-settings">
   <section class="settings-panel activity-settings">
