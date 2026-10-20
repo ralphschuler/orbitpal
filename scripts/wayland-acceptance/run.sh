@@ -33,7 +33,7 @@ cleanup() {
     if sudo test -f "$root/$name.txt" && ! sudo test -L "$root/$name.txt"; then sudo head -c 65536 "$root/$name.txt" >"$diagnostic/$name.txt"; fi
   done
   if [[ "$mode" == app ]]; then
-    for name in app-controller app-result app-binary; do
+    for name in app-controller app-result app-binary app-exit app-runtime; do
       if sudo test -f "$root/$name.txt" && ! sudo test -L "$root/$name.txt"; then sudo head -c 65536 "$root/$name.txt" >"$diagnostic/$name.txt"; fi
     done
   fi

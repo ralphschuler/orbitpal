@@ -3,6 +3,7 @@
 import ast
 import base64
 import io
+import importlib.util
 import json
 from pathlib import Path
 import socket
@@ -19,6 +20,9 @@ import provider
 
 DIRECTORY = Path(__file__).resolve().parent
 NONCE = "a0b1c2d3e4f56789"
+_RUNTIME_SPEC = importlib.util.spec_from_file_location("app_runtime_diagnostic", DIRECTORY / "app-runtime-diagnostic.py")
+runtime = importlib.util.module_from_spec(_RUNTIME_SPEC)
+_RUNTIME_SPEC.loader.exec_module(runtime)
 
 
 def jpeg(color="red", size=(1280, 800)):
@@ -494,6 +498,309 @@ class DiagnosticTests(unittest.TestCase):
         with patch.dict(app.sys.modules, {"pyatspi": SimpleNamespace()}), patch.object(app.Path, "read_text", return_value="42\n"), patch.object(app.Path, "resolve", return_value=Path("/foreign/binary")), patch.object(app, "process_parent", return_value=1), patch.object(app.sys, "stdout", io.StringIO()):
             with self.assertRaisesRegex(provider.Refusal, "^unexpected_app_executable$"):
                 app.Studio(Path("/disposable"))
+
+
+class DiagnosticClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, value):
+        self.now += value
+
+
+class DiagnosticChild:
+    """No OS process: model the exact signed Popen result and signal races."""
+    def __init__(self, clock, returncode=None, exit_at=None, ignore_term=False, ignore_kill=False):
+        self.clock = clock
+        self.returncode = returncode
+        self.exit_at = exit_at
+        self.ignore_term, self.ignore_kill = ignore_term, ignore_kill
+        self.terms = self.kills = self.waits = 0
+
+    def poll(self):
+        if self.returncode is None and self.exit_at is not None and self.clock() >= self.exit_at:
+            self.returncode = 23
+        return self.returncode
+
+    def terminate(self):
+        self.terms += 1
+        if self.returncode is not None:
+            raise ProcessLookupError("PRIVATE_PROCESS_VALUE")
+        if not self.ignore_term:
+            self.returncode = -15
+
+    def kill(self):
+        self.kills += 1
+        if self.returncode is not None:
+            raise ProcessLookupError("PRIVATE_PROCESS_VALUE")
+        if not self.ignore_kill:
+            self.returncode = -9
+
+    def wait(self, timeout):
+        self.waits += 1
+        if self.returncode is None:
+            raise TimeoutError("PRIVATE_WAIT_VALUE")
+        return self.returncode
+
+
+class RuntimeDiagnosticTests(unittest.TestCase):
+    def test_fixed_categories_count_messages_without_retaining_payloads(self):
+        filtered = runtime.RuntimeFilter()
+        private = b"/PRIVATE_PATH KEY=PRIVATE_SECRET data:image/jpeg;base64,PRIVATE_FRAME"
+        raw = (b"thread 'main' panicked at " + private + b"\n"
+               b"(app:42): Gtk-WARNING **: cannot open display: " + private + b"\n"
+               b"bwrap: Creating new namespace failed: Operation not permitted " + private + b"\n"
+               b"WebKit sandbox failed " + private + b"\n"
+               b"app: error while loading shared libraries: " + private + b"\n"
+               b"Could not create EGL display: no supported platform available. Aborting... " + private + b"\n"
+               b"memory allocation of 12345 bytes failed\n" + private + b"\n")
+        for offset in range(0, len(raw), 19):
+            filtered.feed(raw[offset:offset + 19])
+        filtered.finish(True)
+        summary = filtered.summary("eof")
+        self.assertEqual(summary["observations"], dict.fromkeys(runtime.CATEGORIES, 1))
+        self.assertEqual(summary["unclassifiedLines"], 1)
+        self.assertEqual(summary["linesObserved"], 8)
+        self.assertEqual(summary["bytesObserved"], len(raw))
+        self.assertEqual(filtered.pending, b"")
+        encoded = json.dumps(summary)
+        for forbidden in ("PRIVATE", "base64", "/", "KEY=", "panicked at"):
+            self.assertNotIn(forbidden, encoded)
+
+    def test_final_unterminated_line_is_classified_only_on_actual_eof(self):
+        for eof, expected in ((True, 1), (False, 0)):
+            filtered = runtime.RuntimeFilter()
+            filtered.feed(b"memory allocation of 128 bytes failed")
+            filtered.finish(eof)
+            filtered.finish(eof)
+            self.assertEqual(filtered.counts["allocation_failure_message"], expected)
+            self.assertEqual(filtered.lines, expected)
+            self.assertEqual(filtered.pending, b"")
+
+    def test_long_binary_lines_and_base64_are_discarded_in_bounded_memory(self):
+        filtered = runtime.RuntimeFilter()
+        filtered.feed(b"thread 'main' panicked at " + b"S" * (runtime.MAX_LINE + 1))
+        self.assertLessEqual(len(filtered.pending), runtime.MAX_LINE)
+        self.assertTrue(filtered.overlong)
+        filtered.feed(b"data:image/jpeg;base64,PRIVATE\x00\xff\nunknown\r\n")
+        filtered.finish(True)
+        summary = filtered.summary("eof")
+        self.assertEqual(summary["overlongLines"], 1)
+        self.assertEqual(summary["unclassifiedLines"], 1)
+        self.assertEqual(sum(summary["observations"].values()), 0)
+        self.assertNotIn("PRIVATE", json.dumps(summary))
+
+    def test_byte_and_line_caps_are_sticky_and_cannot_scan_trailing_messages(self):
+        with patch.object(runtime, "MAX_BYTES", 12):
+            filtered = runtime.RuntimeFilter()
+            filtered.feed(b"x" * 100_000 + b"\nthread 'main' panicked at PRIVATE\n")
+            self.assertTrue(filtered.limited)
+            self.assertEqual(filtered.bytes, 12)
+            filtered.feed(b"memory allocation of 1 bytes failed\n")
+            self.assertEqual(sum(filtered.counts.values()), 0)
+        with patch.object(runtime, "MAX_LINES", 3):
+            filtered = runtime.RuntimeFilter()
+            filtered.feed(b"x\nx\nx\nthread 'main' panicked at PRIVATE\n")
+            self.assertTrue(filtered.limited)
+            self.assertEqual(filtered.lines, 3)
+            self.assertEqual(sum(filtered.counts.values()), 0)
+
+    def test_exit_137_and_actual_signal_9_are_never_conflated(self):
+        plain = runtime.exit_record(137, started=True, reason="none", already_exited=None, term_sent=False, kill_sent=False)
+        killed = runtime.exit_record(-9, started=True, reason="none", already_exited=None, term_sent=False, kill_sent=False)
+        self.assertEqual((plain["result"], plain["exitCode"], plain["signal"]), ("exited", 137, None))
+        self.assertEqual((killed["result"], killed["exitCode"], killed["signal"]), ("signalled", None, 9))
+        self.assertFalse(killed["limitInduced"])
+        self.assertNotIn("oom", json.dumps(killed))
+
+    def test_controller_success_cannot_mask_natural_exit_or_signal_at_cleanup_race(self):
+        summary = {"status": "eof"}
+        for code in (137, -9, -6):
+            for reason, dead in (("none", None), ("cleanup_marker", True)):
+                record = runtime.exit_record(code, started=True, reason=reason, already_exited=dead, term_sent=False, kill_sent=False)
+                self.assertFalse(runtime.accepted_collection(summary, record))
+        for code, term, kill in ((-15, True, False), (-9, True, True), (0, True, False)):
+            record = runtime.exit_record(code, started=True, reason="cleanup_marker", already_exited=False, term_sent=term, kill_sent=kill)
+            self.assertTrue(runtime.accepted_collection(summary, record))
+        unexpected = runtime.exit_record(-6, started=True, reason="cleanup_marker", already_exited=False, term_sent=True, kill_sent=False)
+        self.assertFalse(runtime.accepted_collection(summary, unexpected))
+
+    def supervise(self, child, chunks, cleanup=lambda: None, hold_pipe=False):
+        values = iter(chunks)
+        def read_chunk(timeout):
+            child.clock.sleep(timeout)
+            return next(values, None if hold_pipe else b"")
+        with patch.object(runtime.time, "sleep", side_effect=child.clock.sleep):
+            return runtime.supervise(child, read_chunk, cleanup, child.clock)
+
+    def test_natural_early_exit_drains_both_merged_stream_messages_then_waits(self):
+        clock = DiagnosticClock()
+        child = DiagnosticChild(clock, returncode=23)
+        summary, result = self.supervise(child, [b"thread 'main' panicked at PRIVATE_STDOUT\n", b"Failed to initialize EGL PRIVATE_STDERR", b""])
+        self.assertEqual(summary["status"], "eof")
+        self.assertEqual(summary["observations"]["rust_panic_message"], 1)
+        self.assertEqual(summary["observations"]["egl_init_message"], 1)
+        self.assertEqual(result["exitCode"], 23)
+        self.assertEqual(result["stopReason"], "none")
+        self.assertEqual((child.terms, child.kills, child.waits), (0, 0, 1))
+        self.assertNotIn("PRIVATE", json.dumps([summary, result]))
+
+    def test_descendant_held_pipe_has_bounded_drain_and_never_claims_eof(self):
+        clock = DiagnosticClock()
+        child = DiagnosticChild(clock, returncode=7)
+        summary, result = self.supervise(child, [b"PRIVATE_PARTIAL"], hold_pipe=True)
+        self.assertEqual(summary["status"], "drain_timeout")
+        self.assertEqual(summary["linesObserved"], 0)
+        self.assertEqual(result["exitCode"], 7)
+        self.assertGreaterEqual(clock(), runtime.DRAIN_SECONDS)
+        self.assertLess(clock(), runtime.DRAIN_SECONDS + 0.2)
+
+    def test_owned_cleanup_waits_signed_return_and_does_not_signal_a_dead_child(self):
+        for initial, expected_terms in ((None, 1), (23, 0)):
+            clock = DiagnosticClock()
+            child = DiagnosticChild(clock, returncode=initial)
+            summary, result = self.supervise(child, [], cleanup=lambda: "cleanup_marker")
+            self.assertEqual(result["alreadyExitedBeforeCleanup"], initial is not None)
+            self.assertEqual(result["stopReason"], "cleanup_marker")
+            self.assertEqual(child.terms, expected_terms)
+            self.assertEqual(result["signal"], 15 if initial is None else None)
+            self.assertEqual(child.waits, 1)
+            self.assertEqual(summary["status"], "eof")
+
+    def test_natural_exit_between_poll_and_term_is_not_claimed_as_our_signal(self):
+        clock = DiagnosticClock()
+        child = DiagnosticChild(clock)
+        def terminate():
+            child.returncode = 137
+            child.terms += 1
+            raise ProcessLookupError("PRIVATE_RACE_VALUE")
+        child.terminate = terminate
+        summary, result = self.supervise(child, [], cleanup=lambda: "cleanup_marker")
+        self.assertFalse(result["termSent"])
+        self.assertEqual((result["result"], result["exitCode"], result["signal"]), ("exited", 137, None))
+        self.assertFalse(runtime.accepted_collection(summary, result))
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_ignored_term_escalates_only_the_same_owned_child_with_bounded_wait(self):
+        clock = DiagnosticClock()
+        child = DiagnosticChild(clock, ignore_term=True)
+        _, result = self.supervise(child, [], cleanup=lambda: "supervisor_signal")
+        self.assertEqual((child.terms, child.kills, child.waits), (1, 1, 1))
+        self.assertTrue(result["termSent"])
+        self.assertTrue(result["killSent"])
+        self.assertEqual(result["signal"], 9)
+        self.assertEqual(result["stopReason"], "supervisor_signal")
+        self.assertLess(clock(), runtime.TERM_SECONDS + 0.3)
+
+    def test_limit_induced_termination_is_explicit_and_never_a_natural_cause(self):
+        clock = DiagnosticClock()
+        child = DiagnosticChild(clock)
+        with patch.object(runtime, "MAX_BYTES", 8):
+            summary, result = self.supervise(child, [b"PRIVATE_OUTPUT\n"])
+        self.assertEqual(summary["status"], "limit")
+        self.assertTrue(summary["limitReached"])
+        self.assertEqual(result["stopReason"], "diagnostic_limit")
+        self.assertTrue(result["limitInduced"])
+        self.assertEqual(result["signal"], 15)
+        self.assertEqual(child.terms, 1)
+        self.assertNotIn("PRIVATE", json.dumps([summary, result]))
+
+    def test_observed_limit_wins_over_a_simultaneous_later_cleanup_marker(self):
+        clock = DiagnosticClock()
+        child = DiagnosticChild(clock)
+        checks = 0
+        def cleanup():
+            nonlocal checks
+            checks += 1
+            return None if checks == 1 else "cleanup_marker"
+        with patch.object(runtime, "MAX_BYTES", 8):
+            summary, result = self.supervise(child, [b"PRIVATE_OUTPUT"], cleanup)
+        self.assertEqual(result["stopReason"], "diagnostic_limit")
+        self.assertTrue(result["limitInduced"])
+        self.assertFalse(result["alreadyExitedBeforeCleanup"])
+        self.assertFalse(runtime.accepted_collection(summary, result))
+        self.assertEqual(checks, 1)
+
+    def test_deadline_and_failed_wait_are_bounded_without_exception_payload(self):
+        clock = DiagnosticClock()
+        child = DiagnosticChild(clock, ignore_term=True, ignore_kill=True)
+        with patch.object(runtime, "LIFETIME_SECONDS", 0.1):
+            _, result = self.supervise(child, [])
+        self.assertEqual(result["result"], "wait_unavailable")
+        self.assertEqual(result["stopReason"], "deadline")
+        self.assertEqual((child.terms, child.kills, child.waits), (1, 1, 1))
+        self.assertLess(clock(), 0.1 + runtime.TERM_SECONDS + runtime.KILL_SECONDS + 0.3)
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_raw_stream_error_and_hostile_repr_never_escape(self):
+        class HostileError(Exception):
+            def __str__(self):
+                raise AssertionError("private exception must never be formatted")
+            def __repr__(self):
+                raise AssertionError("private exception must never be represented")
+        clock = DiagnosticClock()
+        child = DiagnosticChild(clock)
+        def read_chunk(timeout):
+            clock.sleep(timeout)
+            raise HostileError("PRIVATE_MESSAGE", "/PRIVATE_PATH", b"PRIVATE_FRAME")
+        with patch.object(runtime.time, "sleep", side_effect=clock.sleep):
+            summary, result = runtime.supervise(child, read_chunk, lambda: None, clock)
+        self.assertEqual(summary["status"], "read_failed")
+        self.assertEqual(result["stopReason"], "diagnostic_failure")
+        self.assertEqual(result["signal"], 15)
+        self.assertNotIn("PRIVATE", json.dumps([summary, result]))
+
+    def test_fixed_child_launch_merges_streams_without_arguments_or_env_replacement(self):
+        clock = DiagnosticClock()
+        child = DiagnosticChild(clock, returncode=0)
+        child.pid = 42
+        child.stdout = SimpleNamespace(fileno=lambda: 9, close=Mock())
+        select = SimpleNamespace(register=Mock(), select=lambda timeout: [object()], close=Mock())
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            control = root / "control"
+            control.mkdir()
+            with patch.object(runtime, "isolated_root", return_value=root), patch.object(runtime, "private_control", return_value=(control, root / "acceptance-app")), patch.object(runtime.subprocess, "Popen", return_value=child) as popen, patch.object(runtime.os, "set_blocking"), patch.object(runtime.os, "read", return_value=b""), patch.object(runtime.selectors, "DefaultSelector", return_value=select), patch.object(runtime.signal, "signal"), patch.object(runtime.time, "sleep"), patch.object(runtime, "supervise", return_value=({"version": 1, "status": "eof"}, runtime.exit_record(0, started=True, reason="none", already_exited=None, term_sent=False, kill_sent=False))):
+                self.assertEqual(runtime.main(), 0)
+            popen.assert_called_once_with([str(root / "acceptance-app")], stdin=runtime.subprocess.DEVNULL, stdout=runtime.subprocess.PIPE, stderr=runtime.subprocess.STDOUT)
+            self.assertEqual((control / "app-pid").read_text(), "42\n")
+            self.assertEqual(json.loads((root / "app-exit.txt").read_text())["exitCode"], 0)
+            self.assertEqual(json.loads((root / "app-runtime.txt").read_text())["status"], "eof")
+            child.stdout.close.assert_called_once()
+            select.close.assert_called_once()
+
+    def test_setup_failure_has_only_fixed_summaries_and_no_raw_exception(self):
+        private = "PRIVATE_STARTUP_ARGUMENT"
+        output, errors = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(runtime, "isolated_root", return_value=root), patch.object(runtime, "private_control", side_effect=ValueError(private)), patch.object(app.sys, "stdout", output), patch.object(app.sys, "stderr", errors):
+                self.assertEqual(runtime.main(), 1)
+            records = (root / "app-exit.txt").read_text() + (root / "app-runtime.txt").read_text()
+            self.assertNotIn(private, records + output.getvalue() + errors.getvalue())
+            self.assertEqual(json.loads((root / "app-exit.txt").read_text())["result"], "not_started")
+            self.assertEqual(json.loads((root / "app-runtime.txt").read_text())["status"], "not_opened")
+
+    def test_only_private_control_and_actual_fixed_regular_executable_are_admitted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            control = root / "control"
+            control.mkdir(mode=0o700)
+            executable = root / "acceptance-app"
+            executable.write_bytes(b"synthetic; never executed")
+            executable.chmod(0o700)
+            self.assertEqual(runtime.private_control(root), (control, executable))
+            control.chmod(0o755)
+            with self.assertRaises(ValueError):
+                runtime.private_control(root)
+            control.chmod(0o700)
+            executable.rename(root / "another-file")
+            executable.symlink_to(root / "another-file")
+            with self.assertRaises(ValueError):
+                runtime.private_control(root)
 
 
 if __name__ == "__main__":

@@ -1,9 +1,11 @@
 # Opt-in actual Studio/application subset
 
-This harness is source prepared and **has not run on a desktop yet**. Issue #26
-remains open. The default workflow/run.sh path still runs the separate successful
-`real_portal_prototype` baseline. Neither local harness tests nor that baseline
-establish the application cases below.
+The actual-app subset **has not passed**: both real GNOME/KDE jobs built the
+embedded application and passed the separate baseline, but the verified app
+process exited before an accessible Studio cold start. Its cause is not yet
+established. Issue #26 remains open. The default workflow/run.sh path still runs
+the separate successful `real_portal_prototype` baseline. Neither local harness
+tests nor that baseline establish the application cases below.
 
 The manual workflow input `full_app` defaults to false. When explicitly enabled,
 each existing Ubuntu26.04 GNOME/KDE job first runs its normal baseline, then builds
@@ -68,9 +70,41 @@ revocation; no old response or saved display ID may restore a session.
 
 `app-result.txt` is metadata-only and lists the unproven cases explicitly. The
 fresh success receipt is mandatory, so a zero-test or prematurely exited process
-cannot pass. The ordinary app stdout/stderr is not collected. Only the existing
-bounded desktop/service diagnostics and fixed app controller/result/binary-hash
-text are uploaded. The private data root is destroyed, never uploaded.
+cannot pass. Ordinary app stdout/stderr is never persisted or uploaded. In the
+fresh fixture only, `app-runtime-diagnostic.py` launches the fixed validated
+`acceptance-app` with the existing flags/environment unchanged. Its exact Popen
+child PID is the controller's identity; `app-session.sh` instead owns the
+supervisor. Child stdout and stderr share an anonymous pipe, consumed in memory
+with a 4 KiB read/line bound, 1 MiB total bound and 8,192-line bound. An overlong
+line is discarded as a whole. The final unterminated line is considered only on
+actual EOF. No raw app-output file, FIFO payload, exception message, backtrace,
+paths, headers, Base64 or captured bytes are retained.
+
+`app-runtime.txt` contains only fixed message-category counts (Rust panic, GTK
+display, bwrap namespace, WebKit sandbox, dynamic loader, EGL init and allocation
+failure), bounded numeric counts and EOF/limit/drain status. These are **message
+observations**, not a proven failure cause or an exhaustive classifier. A SIGKILL
+is not classified as OOM. `app-exit.txt` records the exact signed Popen wait result
+as exit code or signal, whether the child was already dead before cleanup, and
+whether this supervisor requested TERM/KILL. Thus actual exit(137) differs from
+signal 9. A natural nonzero exit/signal cannot pass because the controller happened
+to finish first. Expected owned cleanup is reported separately.
+
+The shell requests cleanup with one fixed atomic marker in its private control
+directory. The supervisor signals/waits only its own child, with bounded TERM
+then KILL grace periods; a dropped/failed controller still triggers this cleanup.
+An output cap triggers explicitly **diagnostic-limit-induced** termination, so
+resulting TERM/KILL/pipe behavior must not be attributed to the original app
+failure. Child exit with a descendant-held pipe has a two-second drain deadline
+and reports `drain_timeout`, not EOF or acceptance. A 240-second supervisor bound
+sits inside the existing whole-session timeout. No sandbox, EGL, GPU or WebKit
+flags are changed to collect this evidence. The existing fresh-account teardown
+still owns any remaining descendant processes; child cleanup is not a claim
+that all subprocess resources quiesced.
+
+Only existing bounded desktop/service diagnostics and the fixed app
+controller/result/binary-hash/runtime/exit text are uploaded. The private data
+root is destroyed, never uploaded.
 
 Still unproven: two real bot sessions, tool-round images, compositor user revoke,
 source removal/change, multiple/scaled/rotated outputs, serial/version variations,
@@ -80,7 +114,8 @@ Autopilot and physical hotplug/suspend/resume. Cleanup terminates the generated
 app process; that is **not** a claim that its native Quit handler was exercised.
 Do not mark #26 complete or Wayland generally accepted from this subset.
 
-Local `test-app.py` tests synthetic HTTP/JPEG/state/control metadata only. It
-opens no app, GUI, compositor, portal or personal data and performs no capture.
-They are intended to run after `python3-pil` is installed in the opt-in CI job;
-they have not been executed for this source checkpoint.
+Local `test-app.py` tests synthetic HTTP/JPEG/state/control metadata, hostile
+byte filtering and controlled fake-child exit/cleanup races only. It opens no
+app, GUI, compositor, portal or personal data and performs no capture. The new
+runtime-diagnostic regressions are source prepared and await the maintainer's
+bounded gate; an earlier checkpoint's passing tests do not validate this one.
