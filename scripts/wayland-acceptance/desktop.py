@@ -95,7 +95,7 @@ def visible(node):
 def sensitive(node):
     try:
         states = node.getState()
-        return states.contains(pyatspi.STATE_SENSITIVE) and states.contains(pyatspi.STATE_ENABLED)
+        return states.contains(pyatspi.STATE_SENSITIVE) and (DESKTOP == "gnome" or states.contains(pyatspi.STATE_ENABLED))
     except (RuntimeError, AttributeError):
         return False
 
@@ -171,7 +171,7 @@ def select_single_monitor(dialog, attempt=None):
                 continue
             labels = " ".join(str(item.name or "") for item in walk(node, 40)).strip()
             # These are different resources, not our sole existing virtual monitor.
-            if not labels or any(word in labels.lower() for word in ("new virtual", "full workspace", "entire screen", "window", "remember", "restor")):
+            if (not labels and DESKTOP != "kde") or any(word in labels.lower() for word in ("new virtual", "full workspace", "entire screen", "window", "remember", "restor")):
                 continue
             candidates.append(node)
             TRACE.log("monitor.candidate", name=labels, role=role)

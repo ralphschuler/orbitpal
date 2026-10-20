@@ -89,9 +89,30 @@ class ControllerConsent(unittest.TestCase):
         self.assertEqual(select(node, "accessible"), (True, False))
         self.namespace["action"].assert_called_once_with(node)
 
-    def test_sensitive_without_enabled_is_not_ready_for_input(self):
+    def test_gtk4_sensitive_without_enabled_and_kde_mapping(self):
         self.assertFalse(self.namespace["sensitive"](self.node({"sensitive"})))
         self.assertTrue(self.namespace["sensitive"](self.node({"sensitive", "enabled"})))
+        self.namespace["DESKTOP"] = "gnome"
+        self.assertTrue(self.namespace["sensitive"](self.node({"sensitive"})))
+        self.assertFalse(self.namespace["sensitive"](self.node({"enabled"})))
+
+    def test_sole_empty_kde_card_with_named_new_virtual_excluded(self):
+        existing = self.node({"sensitive", "enabled", "checked"})
+        existing.name = ""
+        virtual = self.node({"sensitive", "enabled"})
+        virtual.name = "New Virtual Output"
+        dialog = self.node({"sensitive", "enabled"})
+        dialog.getRole = lambda: "dialog"
+        self.namespace["walk"] = lambda node, *args: [node, virtual, existing] if node is dialog else [node]
+        self.assertEqual(self.namespace["select_single_monitor"](dialog), (True, False))
+        self.namespace["action"].assert_not_called()
+        self.namespace["pointer_click"].assert_not_called()
+        second = self.node({"sensitive", "enabled", "checked"})
+        second.name = ""
+        self.namespace["walk"] = lambda node, *args: [node, virtual, existing, second] if node is dialog else [node]
+        self.assertEqual(self.namespace["select_single_monitor"](dialog), (False, False))
+        self.namespace["walk"] = lambda node, *args: [node, virtual] if node is dialog else [node]
+        self.assertEqual(self.namespace["select_single_monitor"](dialog), (False, False))
 
     def test_selection_precedes_share_and_an_action_success_never_acks(self):
         controller = self.controller()
@@ -132,7 +153,7 @@ class ControllerConsent(unittest.TestCase):
 
     def test_gnome_preselected_card_is_not_toggled_and_needs_no_pointer(self):
         self.namespace["DESKTOP"] = "gnome"
-        node = self.node({"sensitive", "enabled", "pressed"})
+        node = self.node({"sensitive", "pressed"})
         node.getRole = lambda: "toggle"
         self.assertEqual(self.namespace["select_single_monitor"](node, "accessible"), (True, False))
         self.namespace["action"].assert_not_called()
