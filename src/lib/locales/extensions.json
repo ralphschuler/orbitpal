@@ -179,7 +179,13 @@
     "Verbindung zur App wird wiederhergestellt …": "Reconnecting to the app …",
     "Figurenfenster verschieben": "Move character window",
     "Emote-Audio aktivieren": "Enable emote audio",
-    "Soundhinweis schließen": "Dismiss sound notice"
+    "Soundhinweis schließen": "Dismiss sound notice",
+    "Ungespeicherter Entwurf": "Unsaved draft",
+    "Hilfe zur gemeinsamen Bibliothek": "Help with the shared library",
+    "Hilfe zu Schlüsselbund-Verweisen": "Help with credential references",
+    "Hilfe zu Botfreigaben": "Help with bot permissions",
+    "Hilfe zu Zuschauerrechten": "Help with viewer permissions",
+    "Hilfe zu Skill-Skripten": "Help with skill scripts"
   },
   "fr": {
     "Freigaben für {name} gespeichert.": "Autorisations de {name} enregistrées.",
@@ -361,7 +367,13 @@
     "Verbindung zur App wird wiederhergestellt …": "Reconnexion à l’app …",
     "Figurenfenster verschieben": "Déplacer la fenêtre du personnage",
     "Emote-Audio aktivieren": "Activer l’audio des emotes",
-    "Soundhinweis schließen": "Fermer l’avertissement sonore"
+    "Soundhinweis schließen": "Fermer l’avertissement sonore",
+    "Ungespeicherter Entwurf": "Brouillon non enregistré",
+    "Hilfe zur gemeinsamen Bibliothek": "Aide sur la bibliothèque partagée",
+    "Hilfe zu Schlüsselbund-Verweisen": "Aide sur les références du trousseau",
+    "Hilfe zu Botfreigaben": "Aide sur les autorisations du bot",
+    "Hilfe zu Zuschauerrechten": "Aide sur les autorisations du public",
+    "Hilfe zu Skill-Skripten": "Aide sur les scripts des skills"
   },
   "es": {
     "Freigaben für {name} gespeichert.": "Permisos de {name} guardados.",
@@ -543,6 +555,12 @@
     "Verbindung zur App wird wiederhergestellt …": "Reconectando con la app …",
     "Figurenfenster verschieben": "Mover ventana del personaje",
     "Emote-Audio aktivieren": "Activar audio de emotes",
-    "Soundhinweis schließen": "Cerrar aviso de sonido"
+    "Soundhinweis schließen": "Cerrar aviso de sonido",
+    "Ungespeicherter Entwurf": "Borrador sin guardar",
+    "Hilfe zur gemeinsamen Bibliothek": "Ayuda sobre la biblioteca compartida",
+    "Hilfe zu Schlüsselbund-Verweisen": "Ayuda sobre referencias al almacén de credenciales",
+    "Hilfe zu Botfreigaben": "Ayuda sobre los permisos del bot",
+    "Hilfe zu Zuschauerrechten": "Ayuda sobre los permisos de los espectadores",
+    "Hilfe zu Skill-Skripten": "Ayuda sobre los scripts de skills"
   }
 }
