@@ -1,4 +1,5 @@
 type Invoke = (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+export interface LifeUIProof { connectionId: string; sequence: number; }
 const failure = () => new Error('Die Studio-Verbindung zur nativen Laufzeit ist nicht bestätigt. Stop bleibt verfügbar. Erneut verbinden.');
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 function deadline<T>(work: Promise<T>, milliseconds: number): Promise<T> {
@@ -39,7 +40,25 @@ export class LifeUI {
     try { await this.report(true, false); }
     catch { throw failure(); }
   }
-  report(blocked: boolean, activity: boolean): Promise<void> {
+  report(blocked: boolean, activity: boolean): Promise<LifeUIProof> {
+    return this.enqueueReport(blocked, activity);
+  }
+  /** Dispatch an explicit operator command immediately after its actual report
+   * acknowledgement, before a queued heartbeat can supersede that proof. The
+   * command promise never holds this queue: newer real blockers remain prompt. */
+  reportProof<T>(blocked: boolean, activity: boolean, dispatch: (proof: LifeUIProof) => Promise<T>): Promise<T> {
+    let result: Promise<T> | undefined;
+    return this.enqueueReport(blocked, activity, proof => {
+      try { result = Promise.resolve(dispatch(proof)); }
+      catch (error) { result = Promise.reject(error); }
+      // Attach a rejection handler now; the outer report is still unwinding.
+      void result.catch(() => {});
+    }).then(() => {
+      if (!result) throw failure();
+      return result;
+    });
+  }
+  private enqueueReport(blocked: boolean, activity: boolean, afterAcknowledged?: (proof: LifeUIProof) => void): Promise<LifeUIProof> {
     const connection = this.connection, epoch = this.epoch;
     if (this.disposed || !connection) return Promise.reject(failure());
     if (this.pending >= 32) {
@@ -54,6 +73,9 @@ export class LifeUI {
       const acknowledged = await deadline(this.invoke('report_life_ui', { report: { connectionId: connection, sequence, blocked, activity } }), this.milliseconds);
       if (this.disposed || epoch !== this.epoch || connection !== this.connection || acknowledged !== true) throw failure();
       this.changed(true);
+      const proof = { connectionId: connection, sequence };
+      afterAcknowledged?.(proof);
+      return proof;
     });
     this.queue = work;
     return work.catch(() => {
