@@ -3100,6 +3100,7 @@ dependencies = [
  "block2",
  "chrono",
  "core-graphics",
+ "core-foundation-sys",
  "dbus-secret-service-keyring-store",
  "foreign-types",
  "futures-util",

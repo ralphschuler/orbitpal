@@ -31,6 +31,8 @@ mod motions;
 mod avatar_audio;
 mod gltf_import;
 mod autopilot;
+mod life_availability;
+mod life_runtime;
 pub mod life_domain;
 mod screen_capture;
 mod screen_context;
@@ -56,6 +58,7 @@ pub struct AppState {
     control_mcp:control_mcp::ControlMcp,
     updater:updater::UpdateState,
     autopilot:autopilot::AutopilotHub,
+    life_runtime:life_runtime::LifeRuntime,
     screen_context:screen_context::ScreenState,
 }
 
@@ -63,7 +66,7 @@ pub struct AppState {
 fn get_app_state(state:State<'_,AppState>,app:tauri::AppHandle,bot_id:Option<String>)->Result<Value,String> {
     let id=bot_id.unwrap_or_else(||state.store.profile().ok().and_then(|p|p["id"].as_str().map(str::to_owned)).unwrap_or("nova".into()));
     let store=state.store.scoped(&id)?;let profile=store.profile()?;let presentation=state.presentation.snapshot(&profile);
-    Ok(json!({"profile":profile,"presentation":presentation,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy(),"autopilot":state.autopilot.all()?}))
+    Ok(json!({"profile":profile,"presentation":presentation,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy(),"autopilot":state.autopilot.all()?.into_iter().map(|runtime|state.life_runtime.present(runtime)).collect::<Vec<_>>(),"lifeRuntime":state.life_runtime.snapshot_for(&state.autopilot)?}))
 }
 #[tauri::command]
 fn get_emote_capabilities(state:State<'_,AppState>,bot_id:String)->Result<Value,String>{
@@ -105,6 +108,7 @@ fn bot_summaries(state:&AppState,app:&tauri::AppHandle)->Result<Vec<Value>,Strin
 fn list_bots(state:State<'_,AppState>,app:tauri::AppHandle)->Result<Vec<Value>,String>{bot_summaries(&state,&app)}
 #[tauri::command]
 async fn create_bot(state:State<'_,AppState>,app:tauri::AppHandle,name:String,copy_current:bool)->Result<Value,String>{
+    state.life_runtime.operator_activity();
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Anlegen eines Bots beenden".to_owned())?;
     let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.create_bot(&name,copy_current)?;
@@ -113,6 +117,7 @@ async fn create_bot(state:State<'_,AppState>,app:tauri::AppHandle,name:String,co
 }
 #[tauri::command]
 async fn select_bot(state:State<'_,AppState>,app:tauri::AppHandle,id:String)->Result<Value,String>{
+    state.life_runtime.operator_activity();
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Botwechsel beenden".to_owned())?;
     let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.select_bot(&id)?;
@@ -128,7 +133,7 @@ async fn save_profile(state:State<'_,AppState>,app:tauri::AppHandle,profile:Valu
     // An identical save (also used before ordinary messages) does not disturb
     // autonomous sessions. Changed settings revoke any in-flight snapshot.
     let write=||state.screen_context.change_profile(old["id"].as_str().ok_or("Bot-ID fehlt")?,||store.profile(),&profile,||store.save_profile(profile.clone()));
-    let (profile,runtime)=if old!=profile{state.autopilot.change_profile(old["id"].as_str().ok_or("Bot-ID fehlt")?,write)?}else{(write()?,None)};
+    let (profile,runtime)=if old!=profile{state.life_runtime.change_profile(&app,old["id"].as_str().ok_or("Bot-ID fehlt")?,write)?}else{(write()?,None)};
     if old!=profile&&state.overlay.has_autopilot_speech(old["id"].as_str().ok_or("Bot-ID fehlt")?){state.overlay.publish(&app,json!({"kind":"stop","botId":old["id"]}));}
     state.presentation.committed(&profile);
     if let Some(runtime)=runtime{autopilot::publish(&app,runtime);}else{overlay_presentation::sync_or_report(&app,profile["id"].as_str().ok_or("Bot-ID fehlt")?);}
@@ -142,7 +147,7 @@ async fn save_profile(state:State<'_,AppState>,app:tauri::AppHandle,profile:Valu
 #[tauri::command]
 fn save_document(state:State<'_,AppState>,app:tauri::AppHandle,name:String,content:String,bot_id:Option<String>)->Result<(),String>{
     let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;let store=scoped.as_ref().unwrap_or(&state.store);let profile=store.profile()?;let bot_id=profile["id"].as_str().ok_or("Bot-ID fehlt")?;
-    let (_,runtime)=state.autopilot.change_profile(bot_id,||{store.save_document(&name,&content)?;store.profile()})?;
+    let (_,runtime)=state.life_runtime.change_profile(&app,bot_id,||{store.save_document(&name,&content)?;store.profile()})?;
     if state.overlay.has_autopilot_speech(bot_id){state.overlay.publish(&app,json!({"kind":"stop","botId":bot_id}));}
     if let Some(runtime)=runtime{autopilot::publish(&app,runtime);}Ok(())
 }
@@ -171,6 +176,7 @@ fn get_emote_sound(state:State<'_,AppState>,sound_id:String,bot_id:String)->Resu
 }
 #[tauri::command]
 async fn import_motion(window:tauri::Window,state:State<'_,AppState>,source_path:String,bot_id:String)->Result<motions::Motion,String>{
+    state.life_runtime.invalidate_bot(&bot_id);
     if window.label()!="main"{return Err("VRMA-Import ist nur im Steuerungsfenster verfügbar.".into());}
     state.updater.ensure_idle()?;
     let profile=state.store.bot_profile(&bot_id)?;
@@ -269,6 +275,7 @@ async fn synthesize_speech(state:State<'_,AppState>,text:String,bot_id:Option<St
 }
 #[tauri::command]
 async fn transcribe_audio(state:State<'_,AppState>,audio_base64:String,mime_type:String,bot_id:Option<String>)->Result<String,String>{
+    state.life_runtime.operator_activity();
     state.updater.ensure_idle()?;
     if audio_base64.len()>40*1024*1024{return Err("Audioaufnahme ist zu groß".into());}
     let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;let store=scoped.as_ref().unwrap_or(&state.store);
@@ -283,7 +290,7 @@ fn configure_overlay(app:tauri::AppHandle,always_on_top:bool,click_through:bool,
     let id=bot_id.unwrap_or(app.state::<AppState>().store.profile()?["id"].as_str().unwrap_or("nova").to_owned());overlay::configure_for_bot(&app,&id,always_on_top,click_through)
 }
 #[tauri::command]
-fn import_avatar(state:State<'_,AppState>,source_path:String)->Result<String,String>{state.store.import_avatar(std::path::Path::new(&source_path))}
+fn import_avatar(state:State<'_,AppState>,source_path:String)->Result<String,String>{let id=state.store.profile()?["id"].as_str().ok_or("Bot-ID fehlt")?.to_owned();state.life_runtime.invalidate_bot(&id);state.store.import_avatar(std::path::Path::new(&source_path))}
 #[tauri::command]
 async fn get_avatar_info(state:State<'_,AppState>,asset_path:Option<String>,bot_id:Option<String>)->Result<avatar_metadata::AvatarInfo,String>{
     if let Some(id)=bot_id.as_deref(){state.store.bot_profile(id)?;}
@@ -294,6 +301,7 @@ async fn get_avatar_info(state:State<'_,AppState>,asset_path:Option<String>,bot_
 fn export_profile(state:State<'_,AppState>,destination:String)->Result<(),String>{state.store.export(std::path::Path::new(&destination))}
 #[tauri::command]
 async fn import_profile(state:State<'_,AppState>,app:tauri::AppHandle,source_path:String)->Result<Value,String>{
+    state.life_runtime.operator_activity();
     let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort vor dem Import beenden".to_owned())?;
     let previous=state.store.profile()?["id"].as_str().unwrap_or_default().to_owned();
     let profile=state.store.import(std::path::Path::new(&source_path))?;
@@ -308,14 +316,15 @@ pub fn run(){
             app.manage(ui_locale::UiLocaleState::default());
             let root=app.path().app_data_dir()?;
             let store=storage::Store::new(root).map_err(std::io::Error::other)?;
-            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),presentation:overlay_presentation::PresentationHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default(),screen_context:screen_context::ScreenState::default()});
+            app.manage(AppState {store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),presentation:overlay_presentation::PresentationHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default(),life_runtime:life_runtime::LifeRuntime::default(),screen_context:screen_context::ScreenState::default()});
             tauri::async_runtime::block_on(overlay::start(app.handle().clone())).map_err(std::io::Error::other)?;
+            app.state::<AppState>().life_runtime.install(app.handle());
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![credential_session_settings::get_credential_session,credential_session_settings::set_credential_session,credential_session_settings::lock_credential_session,overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source])
+        .invoke_handler({let handler=tauri::generate_handler![life_runtime::get_life_runtime,life_runtime::get_life_bot,life_runtime::set_life_mode,life_runtime::connect_life_ui,life_runtime::disconnect_life_ui,life_runtime::report_life_ui,credential_session_settings::get_credential_session,credential_session_settings::set_credential_session,credential_session_settings::lock_credential_session,overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source];move|invoke:tauri::ipc::Invoke|{life_runtime::operator_invoke(&invoke);handler(invoke)}})
         .build(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden").run(|app,event|{
-            if matches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit){app.state::<AppState>().screen_context.portal.close_all();}
+            if matches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit){app.state::<AppState>().life_runtime.shutdown(app);app.state::<AppState>().screen_context.portal.close_all();}
         });
 }
 
@@ -326,7 +335,7 @@ fn setup_tray(app:&mut tauri::App)->Result<(),Box<dyn std::error::Error>>{
     let mut tray=TrayIconBuilder::with_id("cohost").menu(&menu).tooltip("OrbitPal").show_menu_on_left_click(true);
     if let Some(icon)=app.default_window_icon(){tray=tray.icon(icon.clone());}
     let tray=tray.on_menu_event(|app,event|match event.id.as_ref(){
-        "studio"=>{if let Some(w)=app.get_webview_window("main"){let _=w.unminimize();let _=w.show();let _=w.set_focus();}},
+        "studio"=>{app.state::<AppState>().life_runtime.shown();if let Some(w)=app.get_webview_window("main"){let _=w.unminimize();let _=w.show();let _=w.set_focus();}},
         "character"=>{if let Err(e)=overlay::open(app){let _=app.emit("cohost://agent",json!({"kind":"error","text":e}));}},
         "stop"=>{let state=app.state::<AppState>();state.screen_context.portal.close_all();if let Ok(current)=state.cancel.lock(){if let Some(cancel)=current.as_ref(){cancel.store(true,Ordering::Relaxed);}}state.overlay.publish(app,json!({"kind":"stop"}));},
         "quit"=>app.exit(0),
@@ -334,7 +343,7 @@ fn setup_tray(app:&mut tauri::App)->Result<(),Box<dyn std::error::Error>>{
     }).build(app);
     // A desktop without a tray keeps normal close behavior rather than hiding all controls.
     if tray.is_ok(){if let Some(window)=app.get_webview_window("main"){
-        let hidden=window.clone();window.on_window_event(move|event|{if let tauri::WindowEvent::CloseRequested {api,..}=event{api.prevent_close();let _=hidden.hide();}});
+        let hidden=window.clone();window.on_window_event(move|event|{if let tauri::WindowEvent::CloseRequested {api,..}=event{api.prevent_close();hidden.state::<AppState>().life_runtime.hide_main(&hidden);}});
     }}
     Ok(())
 }

@@ -244,7 +244,7 @@ pub async fn install_update(window: tauri::WebviewWindow, app: tauri::AppHandle,
     // Hold the generation lock for the complete download/install. A new model
     // turn, bot switch or import cannot race the final idle check and restart.
     let _generation = state.generation.try_lock().map_err(|_| "Bitte die aktuelle Antwort vor dem Update beenden.".to_owned())?;
-    if state.autopilot.any_active(){return Err("Bitte alle Autopiloten vor dem Update stoppen.".into());}
+    if (state.autopilot.any_active() || state.life_runtime.any_active()){return Err("Bitte alle Autopiloten vor dem Update stoppen.".into());}
     if state.overlay.has_any_pending_speech() { return Err("Bitte die vorbereitete oder laufende Sprachausgabe vor dem Update beenden.".into()); }
     let (update,control) = {
         let mut lifecycle=state.updater.lifecycle.lock().map_err(|_| "Update-Status ist nicht verfügbar.")?;
@@ -280,7 +280,7 @@ pub async fn install_update(window: tauri::WebviewWindow, app: tauri::AppHandle,
             return Err(message);
         }
     };
-    if state.overlay.has_any_pending_speech() || state.autopilot.any_active() {
+    if state.overlay.has_any_pending_speech() || (state.autopilot.any_active() || state.life_runtime.any_active()) {
         let message = "Die Ausgabe ist wieder aktiv. Das Update wurde nicht installiert; bitte erneut prüfen.";
         progress(&window, &candidate_id, "error", downloaded, None, Some(message));
         return Err(message.into());

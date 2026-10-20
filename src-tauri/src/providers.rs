@@ -15,6 +15,8 @@ fn client() -> Result<Client, String> {
     Client::builder().connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180)).build().map_err(|_| "HTTP-Client konnte nicht erstellt werden.".into())
 }
+/// Coding CLIs accept their own default model when the selector is blank.
+pub fn dialog_model_ready(config:&Value)->bool{!config["model"].as_str().unwrap_or_default().trim().is_empty()||matches!(config["provider"].as_str(),Some("codex"|"claude-code"))}
 fn field<'a>(v: &'a Value, key: &str, fallback: &'a str) -> &'a str {
     v.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()).unwrap_or(fallback)
 }

@@ -37,6 +37,9 @@ fn advance(runtime:&mut Runtime){
     // belongs only to the running process, never to an imported profile.
     runtime.revision=runtime.revision.saturating_add(1).min(9_007_199_254_740_991);
 }
+#[derive(Clone,Debug,Serialize)]
+#[serde(rename_all="camelCase")]
+pub struct SpeechBudget{pub attempts:usize,pub limit:usize,pub budget_limited:bool,pub remaining_seconds:u64}
 struct Session { runtime:Runtime, config:Config, started:Instant, attempts:VecDeque<Instant>, cancel:Arc<AtomicBool> }
 #[derive(Default)]
 pub struct AutopilotHub { sessions:Mutex<HashMap<String,Session>> }
@@ -47,6 +50,8 @@ impl AutopilotHub {
     pub fn runtime(&self,bot_id:&str,config:&Config)->Runtime {
         self.sessions.lock().ok().and_then(|sessions|sessions.get(bot_id).map(|session|session.runtime.clone())).unwrap_or_else(||Runtime{bot_id:bot_id.into(),active:false,wander:config.wander,gestures:config.gestures,started_at:0,seed:String::new(),revision:0})
     }
+    pub fn speech_budget(&self,bot_id:&str)->Result<SpeechBudget,String>{self.speech_budget_at(bot_id,Instant::now())}
+    fn speech_budget_at(&self,bot_id:&str,now:Instant)->Result<SpeechBudget,String>{let sessions=self.sessions.lock().map_err(|_|"Autopilot-Status nicht verfügbar")?;let session=sessions.get(bot_id).ok_or("Autopilot-Sitzung wurde beendet")?;let recent=session.attempts.iter().filter(|attempt|now.saturating_duration_since(**attempt)<Duration::from_secs(3600)).copied().collect::<Vec<_>>();let budget_limited=recent.len()>=session.config.max_turns_per_hour;let hour_wait=if budget_limited{Duration::from_secs(3600).saturating_sub(now.saturating_duration_since(recent[recent.len()-session.config.max_turns_per_hour]))}else{Duration::ZERO};let previous=recent.last().copied().unwrap_or(session.started).max(session.started);let spacing=Duration::from_secs(session.config.min_seconds).saturating_sub(now.saturating_duration_since(previous));let millis=hour_wait.max(spacing).as_millis();Ok(SpeechBudget{attempts:recent.len(),limit:session.config.max_turns_per_hour,budget_limited,remaining_seconds:millis.div_ceil(1000).min(u64::MAX as u128)as u64})}
     pub fn all(&self)->Result<Vec<Runtime>,String>{let sessions=self.sessions.lock().map_err(|_|"Autopilot-Status nicht verfügbar")?;Ok(sessions.values().map(|session|session.runtime.clone()).collect())}
     pub fn any_active(&self)->bool{self.sessions.lock().map(|sessions|sessions.values().any(|session|session.runtime.active)).unwrap_or(true)}
     fn set_at(&self,bot_id:&str,active:bool,config:Config,now:Instant)->Result<Runtime,String>{
@@ -65,6 +70,7 @@ impl AutopilotHub {
         Ok(session.runtime.clone())
     }
     pub fn set(&self,bot_id:&str,active:bool,config:Config)->Result<Runtime,String>{self.set_at(bot_id,active,config,Instant::now())}
+    pub fn refresh_runtime(&self,bot_id:&str)->Result<Runtime,String>{let mut sessions=self.sessions.lock().map_err(|_|"Autopilot-Status nicht verfügbar")?;let session=sessions.get_mut(bot_id).ok_or("Autopilot-Sitzung wurde beendet")?;advance(&mut session.runtime);Ok(session.runtime.clone())}
     pub fn invalidate(&self,bot_id:&str)->Result<(),String>{
         if let Some(session)=self.sessions.lock().map_err(|_|"Autopilot-Status nicht verfügbar")?.get_mut(bot_id){session.cancel.store(true,Ordering::SeqCst);session.cancel=Arc::new(AtomicBool::new(false));}
         Ok(())
@@ -110,23 +116,19 @@ impl AutopilotHub {
     }
 }
 pub fn publish(app:&tauri::AppHandle,runtime:Runtime){
+    let runtime=app.state::<crate::AppState>().life_runtime.present(runtime);
     crate::overlay_presentation::sync_or_report(app,&runtime.bot_id);
     let _=app.emit("cohost://autopilot",&runtime);
     let mut value=serde_json::to_value(runtime).unwrap_or_else(|_|json!({}));value["kind"]=json!("autopilot");app.state::<crate::AppState>().overlay.publish(app,value);
 }
 fn main_only(label:&str)->Result<(),String>{if label=="main"{Ok(())}else{Err("Autopilot wird ausschließlich vom Streamer im Studio gesteuert".into())}}
 #[tauri::command]
-pub fn set_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,active:bool)->Result<Runtime,String>{
-    main_only(window.label())?;let state=app.state::<crate::AppState>();
-    let profile=state.store.bot_profile(&bot_id)?;let config=config(&profile)?;
-    if active&&config.speak&&profile["model"]["model"].as_str().unwrap_or_default().trim().is_empty(){return Err("Bitte zuerst ein Sprachmodell für diesen Bot auswählen".into());}
-    let _idle=if active{state.updater.ensure_idle()?;Some(state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort oder das Update vor dem Autopilot-Start beenden")?)}else{None};
-    let runtime=state.autopilot.set(&bot_id,active,config)?;
-    if !active&&state.overlay.has_autopilot_speech(&bot_id){state.overlay.publish(&app,json!({"kind":"stop","botId":bot_id}));}
-    publish(&app,runtime.clone());Ok(runtime)
+pub async fn set_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,active:bool)->Result<Runtime,String>{
+    main_only(window.label())?;crate::life_runtime::set_mode(&app,&bot_id,crate::life_runtime::core::Mode::Ambient,active,false).await?;
+    let state=app.state::<crate::AppState>();let profile=state.store.bot_profile(&bot_id)?;Ok(state.life_runtime.present(state.autopilot.runtime(&bot_id,&config(&profile)?)))
 }
 #[tauri::command]
-pub async fn send_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,request_id:Option<String>)->Result<Value,String>{main_only(window.label())?;crate::agent::send_autopilot(app,bot_id,request_id).await}
+pub async fn send_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,request_id:Option<String>)->Result<Value,String>{main_only(window.label())?;let _=(app,bot_id,request_id);Err("Spontaneous turns are scheduled by the native runtime.".into())}
 
 #[cfg(test)]
 mod tests{

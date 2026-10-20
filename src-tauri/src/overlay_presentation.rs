@@ -168,7 +168,7 @@ fn sync_on_main(app:&tauri::AppHandle,id:&str,attempt:u8,expected:Option<&Arc<Wi
     if expected.is_some_and(|signals|!Arc::ptr_eq(signals,&bot.signals)){return Ok(());}
     // Read authoritative activity after serializing layout changes. A delayed
     // start/profile callback cannot expand a window after a newer Stop restored it.
-    let profile=state.store.bot_profile(id)?;let config=crate::autopilot::config(&profile)?;let runtime=state.autopilot.runtime(id,&config);
+    let profile=state.store.bot_profile(id)?;let config=crate::autopilot::config(&profile)?;let runtime=state.life_runtime.present(state.autopilot.runtime(id,&config));
     let signals=bot.signals.clone();let native=NativeWindow{window:&window,signals:&signals};
     let available=if runtime.active&&runtime.wander{displays(&window)?}else{displays(&window).unwrap_or_default()};
     let target=if runtime.active&&runtime.wander&&profile["output"]["mode"]=="overlay"{
