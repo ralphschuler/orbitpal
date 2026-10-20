@@ -36,6 +36,16 @@ dbus_owner() {
     | /usr/bin/python3 "$root/harness/service-owner.py" "$2"
 }
 backend_binary() { local package="$1" name="$2" file; while IFS= read -r file; do if [[ "${file##*/}" == "$name" && -x "$file" && ! -d "$file" ]]; then printf '%s\n' "$file"; return; fi; done < <(dpkg-query -L "$package"); return 1; }
+prepare_kde_environment() {
+  # Plasma normally supplies this before building KService's application cache.
+  # Without it the packaged plasma-applications.menu is never loaded, so KWin
+  # cannot resolve the real portal executable's restricted-interface declaration.
+  [[ $# == 1 && -f "$1" && -r "$1" && ! -L "$1" ]] || return 1
+  export XDG_MENU_PREFIX=plasma-
+  # The entry guard above already established our exact private session bus.
+  # No --systemd/--all: publish only this menu choice on that private bus.
+  dbus-update-activation-environment XDG_MENU_PREFIX
+}
 
 "$root/render-probe" "${ORBITPAL_ACCEPTANCE_DRM:?}" >"$root/render-capability.txt" 2>&1
 grep -Fxq 'real-gbm-egl-render-complete' "$root/render-capability.txt"
@@ -52,8 +62,11 @@ if [[ "$ORBITPAL_ACCEPTANCE_DESKTOP" == gnome ]]; then
 else
   [[ "$ORBITPAL_ACCEPTANCE_DESKTOP" == kde ]]
   export XDG_CURRENT_DESKTOP=KDE KDE_FULL_SESSION=true KDE_SESSION_VERSION=6 KWIN_COMPOSE=O2
+  prepare_kde_environment /etc/xdg/menus/plasma-applications.menu
   kbuildsycoca6 --noincremental >"$root/kde-cache.txt" 2>&1
-  start compositor kwin_wayland --virtual --width 1280 --height 960 --output-count 1 --socket orbitpal-acceptance --no-lockscreen --no-global-shortcuts
+  # Exact categories only, retained through the existing bounded text collector.
+  # Keep KWin's normal executable/interface permission filter enabled.
+  start compositor env QT_LOGGING_RULES='kwin_core.debug=true;KWIN_UTILS.debug=true' kwin_wayland --virtual --width 1280 --height 960 --output-count 1 --socket orbitpal-acceptance --no-lockscreen --no-global-shortcuts
   wait_for 'KWin compositor' dbus_name org.kde.KWin
   # The exact real compositor must use OpenGL. QPainter is insufficient for its
   # output screencast implementation; never count that fallback as acceptance.
@@ -66,9 +79,17 @@ export WAYLAND_DISPLAY=orbitpal-acceptance GDK_BACKEND=wayland QT_QPA_PLATFORM=w
 wait_for 'private Wayland socket' test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
 printf '[preferred]\ndefault=%s\norg.freedesktop.impl.portal.ScreenCast=%s\n' "$ORBITPAL_ACCEPTANCE_DESKTOP" "$ORBITPAL_ACCEPTANCE_DESKTOP" >"$XDG_CONFIG_HOME/xdg-desktop-portal/portals.conf"
 dbus-update-activation-environment XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_CURRENT_DESKTOP XDG_SESSION_TYPE WAYLAND_DISPLAY GDK_BACKEND QT_QPA_PLATFORM GTK_A11Y QT_LINUX_ACCESSIBILITY_ALWAYS_ON LANG LC_ALL
-start portal-backend "$(backend_binary "$backend_package" "$backend_package")"
+backend="$(backend_binary "$backend_package" "$backend_package")"
+start portal-backend "$backend"
 export ORBITPAL_ACCEPTANCE_PORTAL_PID="${pids[-1]}"
 wait_for 'private portal backend owner' dbus_owner "org.freedesktop.impl.portal.desktop.$ORBITPAL_ACCEPTANCE_DESKTOP" "$ORBITPAL_ACCEPTANCE_PORTAL_PID"
+if [[ "$ORBITPAL_ACCEPTANCE_DESKTOP" == kde ]]; then
+  # Observe the real KWin authorization decision for the actual packaged backend,
+  # not merely a frontend D-Bus interface or our separate synthetic input helper.
+  authorization="kwin_core: authorized \"$(readlink -f "$backend")\" \"zkde_screencast_unstable_v1\""
+  wait_for 'KWin authorized the real portal screencast interface' grep -Fxq -- "$authorization" "$root/compositor.txt"
+  grep -Fx -- "$authorization" "$root/compositor.txt" >>"$root/compositor-capability.txt"
+fi
 # A compositor may activate the frontend before its display/config is ready.
 # Replace only that daemon on our private session bus, using the real frontend.
 # https://flatpak.github.io/xdg-desktop-portal/docs/building-and-running.html

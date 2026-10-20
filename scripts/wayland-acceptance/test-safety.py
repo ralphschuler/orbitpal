@@ -67,12 +67,13 @@ class HarnessSafety(unittest.TestCase):
                     "ORBITPAL_WAYLAND_ACCEPTANCE": "synthetic-desktop-only", "RUNNER_ENVIRONMENT": "github-hosted",
                     "RUNNER_OS": "Linux", "GITHUB_ACTIONS": "true", "ORBITPAL_ACCEPTANCE_DRM": "/never-opened",
                     "ORBITPAL_PROBE_SENTINEL": str(sentinel)}
-            for bus in ("", "unix:path=/host/session-bus", expected + "-other", expected + ",guid=wrong"):
-                with self.subTest(bus=bus):
-                    completed = subprocess.run(["bash", str(DIRECTORY / "session.sh")],
-                                               env={**base, "DBUS_SESSION_BUS_ADDRESS": bus}, capture_output=True, timeout=5)
-                    self.assertNotEqual(completed.returncode, 73)
-                    self.assertFalse(sentinel.exists())
+            for desktop in ("gnome", "kde"):
+                for bus in ("", "unix:path=/host/session-bus", expected + "-other", expected + ",guid=wrong"):
+                    with self.subTest(desktop=desktop, bus=bus):
+                        completed = subprocess.run(["bash", str(DIRECTORY / "session.sh")],
+                                                   env={**base, "ORBITPAL_ACCEPTANCE_DESKTOP": desktop, "DBUS_SESSION_BUS_ADDRESS": bus}, capture_output=True, timeout=5)
+                        self.assertNotEqual(completed.returncode, 73)
+                        self.assertFalse(sentinel.exists())
             for bus in (expected, expected + ",guid=" + "a" * 32):
                 with self.subTest(bus=bus):
                     completed = subprocess.run(["bash", str(DIRECTORY / "session.sh")],
@@ -80,6 +81,40 @@ class HarnessSafety(unittest.TestCase):
                     self.assertEqual(completed.returncode, 73, completed.stderr)
                     self.assertTrue(sentinel.exists())
                     sentinel.unlink()
+
+    def test_kde_setup_requires_the_menu_and_publishes_only_its_prefix_before_activation(self):
+        # Execute the actual setup function using a recorder instead of D-Bus.
+        # No compositor, device, desktop API or real activation service is used.
+        source = (DIRECTORY / "session.sh").read_text(encoding="utf-8")
+        function = re.search(r"^prepare_kde_environment\(\) \{.*?^\}", source, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(function)
+        with tempfile.TemporaryDirectory(prefix="orbitpal-wayland.") as directory:
+            root = Path(directory).resolve()
+            menu = root / "plasma-applications.menu"
+            menu.write_text("<Menu/>\n", encoding="utf-8")
+            link = root / "symlink.menu"
+            link.symlink_to(menu)
+            trace = root / "activation.txt"
+            recorder = root / "dbus-update-activation-environment"
+            recorder.write_text('#!/bin/sh\nprintf "%s\\n" "$XDG_MENU_PREFIX" "$DBUS_SESSION_BUS_ADDRESS" "$#" "$@" >"$ACTIVATION_TRACE"\n', encoding="utf-8")
+            recorder.chmod(0o700)
+            bus = f"unix:path={root}/runtime/session-bus"
+            env = {"PATH": str(root) + os.pathsep + os.defpath, "ACTIVATION_TRACE": str(trace),
+                   "DBUS_SESSION_BUS_ADDRESS": bus, "XDG_MENU_PREFIX": "unrelated-"}
+            # Calling from an if deliberately disables Bash's implicit errexit
+            # inside functions. The missing/linked menu must still fail closed.
+            script = "set -eu\n" + function.group() + '\nif prepare_kde_environment "$1"; then exit 0; else exit 79; fi\n'
+            result = subprocess.run(["bash", "-c", script, "fixture", str(menu)], env=env,
+                                    text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(trace.read_text().splitlines(), ["plasma-", bus, "1", "XDG_MENU_PREFIX"])
+            trace.unlink()
+            for rejected in (root / "missing.menu", link, root):
+                with self.subTest(menu=str(rejected)):
+                    result = subprocess.run(["bash", "-c", script, "fixture", str(rejected)], env=env,
+                                            text=True, capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode, 79, result.stderr)
+                    self.assertFalse(trace.exists(), "invalid menu must not alter any activation environment")
 
     def test_runtime_refuses_missing_or_nonhosted_platform_markers_before_provisioning(self):
         # Each case fails at the first condition, before mktemp/useradd/sudo.
