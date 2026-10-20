@@ -2,7 +2,12 @@
 
 ## Unreleased
 
+- Avoid unused macOS Keychain reads for Codex/Claude Code dialog and model-list operations and browser/system speech, while preserving configured HTTP authentication. Explain per-item persistent authorization beside credential fields in all four interface languages.
+- Persist bot-bound life snapshots and bounded event histories atomically in SQLite with version validation and revision conflicts. Cancel interrupted actions on restart, bound offline clock progression, isolate corrupt life data from profiles and other bots, and prevent profile packages from inheriting local life identities.
+
 - Define a pure, versioned character-life contract with validated actor/world identities, deterministic bounded time and randomness, explicit action phases, exactly-once completion effects, bounded history and a deliberate public projection. Runtime activation, persistence, rendering and social behavior remain separate follow-up work.
+- Add optional macOS reuse of successfully retrieved keys during the current app session, shared across bots and off by default. Provide explicit Lock/resume controls, reject late reads after session changes, invalidate copies on writes/deletes, and retain permanent credentials only in the OS store.
+
 - Distribute automatic chat turns fairly across eligible bots within each priority class, even while the queue keeps filling. Preserve direct-address and manual priority, reserve asynchronous preflight, and invalidate exact claims on Stop without replaying late work.
 - Name the Autopilot hourly limit as contribution attempts in all four interface languages. Explain text-only, silent and failed attempts and distinguish the per-bot rolling limit from provider requests or monetary limits; preserve the existing counter and stored configuration.
 

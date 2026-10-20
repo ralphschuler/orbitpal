@@ -35,6 +35,8 @@ chrono = { version = "0.4", features = ["serde"] }
 url = "2"
 pdf-extract = "0.12.1"
 keyring-core = "1.0.1"
+# Only retained, opt-in session copies; the OS remains the persistent store.
+zeroize = "1"
 # Screenshot pixels remain in memory; enable only the JPEG codec we send.
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 
