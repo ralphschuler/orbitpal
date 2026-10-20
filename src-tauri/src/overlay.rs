@@ -351,7 +351,7 @@ pub async fn speech_audio(app:&tauri::AppHandle,id:&str,bot_id:&str)->Result<Val
     let still_pending=||state.overlay.speech.lock().map(|entries|entries.iter().any(|current|current.id==id&&current.bot_id==bot_id&&!current.finished&&!current.cancel.load(Ordering::Relaxed))).unwrap_or(false);
     if entry.cancel.load(Ordering::Relaxed)||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
     if let Some(audio)=state.overlay.audio.lock().map_err(|_|"Audio-Cache nicht verfügbar")?.get(id){return Ok(audio);}
-    let key=state.store.key_for(&entry.voice)?;
+    let key=state.store.key_for_purpose(&entry.voice,crate::credential_policy::Purpose::Speech)?;
     let audio=tokio::select!{
         audio=crate::providers::synthesize(&entry.voice,entry.synthesis_text(),key)=>audio?,
         _=async{while !entry.cancel.load(Ordering::Relaxed){tokio::time::sleep(Duration::from_millis(75)).await;}}=>return Err("Sprachausgabe wurde abgebrochen".into()),

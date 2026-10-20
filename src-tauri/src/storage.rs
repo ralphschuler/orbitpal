@@ -1,6 +1,6 @@
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use std::{fs, io::{Read, Write}, path::{Path, PathBuf}, sync::{Mutex,Arc}};
+use std::{fs, io::{Read, Write}, path::{Path, PathBuf}, sync::{Arc, Mutex}};
 
 const MAX_PROFILE_RESOURCE_FILES:usize=4096;
 const DEFAULT_PROFILE: &str = include_str!("../../public/default-profile.json");
@@ -12,7 +12,7 @@ pub const DEFAULT_SKILL: &str = "---\nname: stream-begruessung\ndescription: Beg
 #[path="life_store.rs"]
 pub(crate) mod life_store;
 
-pub struct Store { pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>,life_recovery:Arc<Mutex<life_store::RecoveryStatus>> }
+pub struct Store { pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>, credential_session:Arc<crate::credential_session::Session>, life_recovery:Arc<Mutex<life_store::RecoveryStatus>> }
 pub fn valid_id(id: &str) -> bool { !id.is_empty() && id.len() <= 96 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') }
 fn error(e: impl std::fmt::Display) -> String { e.to_string() }
 
@@ -24,8 +24,13 @@ impl Store {
         fs::create_dir_all(root.join("avatars")).map_err(error)?;
         let mut db = Connection::open(root.join("cohost.sqlite3")).map_err(error)?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL, source TEXT NOT NULL, user_name TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS secret_ids (id TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS bot_profiles (id TEXT PRIMARY KEY, profile TEXT NOT NULL); CREATE TABLE IF NOT EXISTS mcp_library (id TEXT PRIMARY KEY, server TEXT NOT NULL);").map_err(error)?;
+        // Optional security policy must fail closed without blocking startup.
+        // Return only a boolean from SQLite, never materialize an oversized or
+        // corrupt optional setting as a Rust String or put its payload in errors.
+        let reuse_credentials=db.query_row("SELECT CASE WHEN typeof(value)='text' AND length(CAST(value AS BLOB))=4 THEN value='true' ELSE 0 END FROM settings WHERE key='macos_credential_session_reuse'",[],|row|row.get::<_,bool>(0)).unwrap_or(false);
+        let credential_session=Arc::new(crate::credential_session::Session::new(cfg!(any(target_os="macos",test)),reuse_credentials));
         let life_status=life_store::RecoveryStatus::new(life_store::initialize(&mut db).err());
-        let store = Self {root,db:Mutex::new(db),fixed_profile:None,life_recovery:Arc::new(Mutex::new(life_status))};
+        let store = Self {root,db:Mutex::new(db),fixed_profile:None,credential_session,life_recovery:Arc::new(Mutex::new(life_status))};
         let profile = store.profile()?;
         store.ensure_profile(&profile)?;
         // The previous single-profile settings row remains authoritative during
@@ -71,7 +76,7 @@ impl Store {
         self.bot_profile(id)?;
         let connection=Connection::open(self.root.join("cohost.sqlite3")).map_err(error)?;
         connection.busy_timeout(std::time::Duration::from_secs(3)).map_err(error)?;
-        Ok(Self{root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned()),life_recovery:self.life_recovery.clone()})
+        Ok(Self{root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned()),credential_session:self.credential_session.clone(),life_recovery:self.life_recovery.clone()})
     }
     fn extensions_migrated(&self)->Result<bool,String>{
         self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key='extension_library_v1')",[],|row|row.get(0)).map_err(error)
@@ -402,20 +407,36 @@ impl Store {
     }
     pub fn secret(&self,id:&str) -> Result<Option<String>,String> {
         if id.is_empty() {return Ok(None);}
-        if !self.secret_ids()?.iter().any(|known|known==id) {return Ok(None);}
-        crate::credentials::read(id)
+        if !self.credential_session.supported(){
+            if !self.secret_ids()?.iter().any(|known|known==id){return Ok(None);}
+            return crate::credentials::read(id);
+        }
+        self.credential_session.read(id,||Ok(self.secret_ids()?.iter().any(|known|known==id)),||crate::credentials::read(id))
     }
     pub fn set_secret(&self,id:&str,value:&str) -> Result<(),String> {
         if !valid_id(id) {return Err("Ungültige Zugangsdaten-ID".into());}
         if value.is_empty() {return Err("Zugangsdaten dürfen nicht leer sein".into());}
-        crate::credentials::write(id,value)?;
-        self.db.lock().map_err(error)?.execute("INSERT OR IGNORE INTO secret_ids(id) VALUES(?1)",[id]).map_err(error)?; Ok(())
+        let write=||{crate::credentials::write(id,value)?;
+            self.db.lock().map_err(error)?.execute("INSERT OR IGNORE INTO secret_ids(id) VALUES(?1)",[id]).map_err(error)?; Ok(())};
+        if self.credential_session.supported(){self.credential_session.mutate(id,write)}else{write()}
     }
     pub fn delete_secret(&self,id:&str) -> Result<(),String> {
-        crate::credentials::delete(id)?;
-        self.db.lock().map_err(error)?.execute("DELETE FROM secret_ids WHERE id=?1",[id]).map_err(error)?; Ok(())
+        let delete=||{crate::credentials::delete(id)?;
+            self.db.lock().map_err(error)?.execute("DELETE FROM secret_ids WHERE id=?1",[id]).map_err(error)?; Ok(())};
+        if self.credential_session.supported(){self.credential_session.mutate(id,delete)}else{delete()}
     }
-    pub fn key_for(&self,config:&Value) -> Result<Option<String>,String> {self.secret(config["apiKeyId"].as_str().or_else(||config["secretId"].as_str()).unwrap_or_default())}
+    // Installation settings, deliberately outside every bot/profile export.
+    pub(crate) fn credential_session(&self)->Result<crate::credential_session::Snapshot,String>{self.credential_session.snapshot()}
+    pub(crate) fn configure_credential_session(&self,enabled:bool)->Result<crate::credential_session::Snapshot,String>{
+        self.credential_session.configure(enabled,||{
+            self.db.lock().map_err(error)?.execute("INSERT INTO settings(key,value) VALUES('macos_credential_session_reuse',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[enabled.to_string()]).map_err(error)?;Ok(())
+        })
+    }
+    pub(crate) fn lock_credential_session(&self)->Result<crate::credential_session::Snapshot,String>{self.credential_session.lock()}
+    pub fn key_for(&self,config:&Value) -> Result<Option<String>,String> {self.key_for_purpose(config,crate::credential_policy::Purpose::Http)}
+    pub(crate) fn key_for_purpose(&self,config:&Value,purpose:crate::credential_policy::Purpose) -> Result<Option<String>,String> {
+        crate::credential_policy::resolve_for(config,purpose,|id|self.secret(id))
+    }
     pub fn import_avatar(&self,source:&Path) -> Result<String,String> {
         let ext=source.extension().and_then(|e|e.to_str()).unwrap_or("").to_ascii_lowercase();
         if !["vrm","glb","gltf"].contains(&ext.as_str()) {return Err("Bitte eine VRM-, GLB- oder glTF-2.0-Datei auswählen".into());}
@@ -858,9 +879,121 @@ fn export_sanitize(value:Value)->Value {
 #[cfg(test)]
 mod extension_tests{
     use super::*;
+    #[test]
+    fn malformed_optional_session_settings_fail_closed_without_losing_other_app_data(){
+        use rusqlite::types::Value as SqlValue;
+        let fixture=Fixture::new();
+        // A permissive old/corrupt schema can contain non-text/NULL values.
+        Connection::open(fixture.0.join("cohost.sqlite3")).unwrap().execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value);").unwrap();
+        let store=Store::new(fixture.0.clone()).unwrap();
+        let profile=store.profile().unwrap();
+        for value in [SqlValue::Text("not-json".into()),SqlValue::Text("{\"unsafe\":true}".into()),SqlValue::Integer(1),SqlValue::Real(1.0),SqlValue::Null,SqlValue::Blob(vec![255;1024]),SqlValue::Text("x".repeat(2*1024*1024))]{
+            store.db.lock().unwrap().execute("INSERT INTO settings(key,value) VALUES('macos_credential_session_reuse',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[value]).unwrap();
+            let reopened=Store::new(fixture.0.clone()).unwrap();assert!(!reopened.credential_session().unwrap().enabled);
+            assert_eq!(reopened.profile().unwrap(),profile);
+        }
+        store.db.lock().unwrap().execute("UPDATE settings SET value='true' WHERE key='macos_credential_session_reuse'",[]).unwrap();
+        assert!(Store::new(fixture.0.clone()).unwrap().credential_session().unwrap().enabled);
+    }
+    #[test]
+    fn corrupted_registered_ids_cannot_allocate_or_retain_session_slots(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();store.configure_credential_session(true).unwrap();
+        for id in ["x".repeat(128*1024),"bad/id".into(),"clé".into()]{
+            store.db.lock().unwrap().execute("INSERT INTO secret_ids(id) VALUES(?1)",[&id]).unwrap();
+            assert!(store.secret(&id).is_err());assert_eq!(store.credential_session().unwrap().remembered_keys,0);
+        }
+        // The policy uses the same reference grammar as persistent writes.
+        for id in ["key-1_ok".to_owned(),"a".repeat(96)]{assert!(valid_id(&id));}
+    }
+    #[test]
+    fn session_reuse_is_shared_by_scoped_stores_and_always_checks_the_registry(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
+        assert!(!store.credential_session().unwrap().enabled);
+        let id=format!("session-{}",uuid::Uuid::new_v4());store.set_secret(&id,"synthetic-session-key").unwrap();
+        store.configure_credential_session(true).unwrap();
+        let scoped=store.scoped("nova").unwrap();
+        assert_eq!(store.secret(&id).unwrap().as_deref(),Some("synthetic-session-key"));
+        let entry=crate::credentials::entry(&id).unwrap();
+        let mock=entry.as_any().downcast_ref::<keyring_core::mock::Cred>().unwrap();
+        mock.set_error(keyring_core::Error::NoStorageAccess(Box::new(std::io::Error::other("synthetic-denial"))));
+        assert_eq!(scoped.secret(&id).unwrap().as_deref(),Some("synthetic-session-key"));
+        // The pending backend error proves the scoped Store reused the approved
+        // value instead of touching its own newly constructed native Entry.
+        assert!(crate::credentials::read(&id).is_err());
+        store.db.lock().unwrap().execute("DELETE FROM secret_ids WHERE id=?1",[&id]).unwrap();
+        assert_eq!(scoped.secret(&id).unwrap(),None);
+        assert_eq!(store.credential_session().unwrap().remembered_keys,0);
+        store.db.lock().unwrap().execute("INSERT INTO secret_ids(id) VALUES(?1)",[&id]).unwrap();
+        mock.set_error(keyring_core::Error::NoStorageAccess(Box::new(std::io::Error::other("synthetic-denial"))));
+        assert!(scoped.secret(&id).is_err());
+        assert_eq!(scoped.secret(&id).unwrap().as_deref(),Some("synthetic-session-key"));
+        store.lock_credential_session().unwrap();
+        assert!(scoped.secret(&id).is_err());assert_eq!(store.credential_session().unwrap().remembered_keys,0);
+        store.configure_credential_session(true).unwrap();
+        assert_eq!(scoped.secret(&id).unwrap().as_deref(),Some("synthetic-session-key"));
+    }
+    #[test]
+    fn session_writes_deletes_and_failed_mutations_never_serve_an_old_cached_key(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
+        let id=format!("session-{}",uuid::Uuid::new_v4());store.set_secret(&id,"first-synthetic-value").unwrap();
+        store.configure_credential_session(true).unwrap();let scoped=store.scoped("nova").unwrap();
+        scoped.secret(&id).unwrap();store.set_secret(&id,"second-synthetic-value").unwrap();
+        assert_eq!(store.credential_session().unwrap().remembered_keys,0);
+        assert_eq!(scoped.secret(&id).unwrap().as_deref(),Some("second-synthetic-value"));
+        let entry=crate::credentials::entry(&id).unwrap();
+        let mock=entry.as_any().downcast_ref::<keyring_core::mock::Cred>().unwrap();
+        mock.set_error(keyring_core::Error::NoStorageAccess(Box::new(std::io::Error::other("synthetic-denial"))));
+        assert!(store.delete_secret(&id).is_err());
+        assert_eq!(store.credential_session().unwrap().remembered_keys,0);
+        assert_eq!(scoped.secret(&id).unwrap().as_deref(),Some("second-synthetic-value"));
+        store.delete_secret(&id).unwrap();assert_eq!(scoped.secret(&id).unwrap(),None);
+        assert_eq!(store.credential_session().unwrap().remembered_keys,0);
+    }
+    #[test]
+    fn session_setting_persists_per_installation_but_values_and_setting_are_not_exported(){
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
+        let id=format!("session-{}",uuid::Uuid::new_v4());store.set_secret(&id,"synthetic-never-export-this-value").unwrap();
+        store.configure_credential_session(true).unwrap();store.secret(&id).unwrap();
+        let export=fixture.0.join("profile.json");store.export(&export).unwrap();
+        let text=fs::read_to_string(&export).unwrap();
+        assert!(!text.contains("synthetic-never-export-this-value"));assert!(!text.contains("macos_credential_session_reuse"));
+        let reopened=Store::new(fixture.0.clone()).unwrap();
+        let status=reopened.credential_session().unwrap();assert!(status.enabled);assert!(!status.locked);assert_eq!(status.remembered_keys,0);
+        let independent=Fixture::new();let other=Store::new(independent.0.clone()).unwrap();other.import(&export).unwrap();
+        assert!(!other.credential_session().unwrap().enabled);
+        store.configure_credential_session(false).unwrap();assert!(!store.scoped("nova").unwrap().credential_session().unwrap().enabled);
+        assert!(!Store::new(fixture.0.clone()).unwrap().credential_session().unwrap().enabled);
+    }
     struct Fixture(PathBuf);
     impl Fixture{fn new()->Self{let root=std::env::temp_dir().join(format!("cohost-library-{}",uuid::Uuid::new_v4()));fs::create_dir_all(&root).unwrap();Self(root)}}
     impl Drop for Fixture{fn drop(&mut self){let _=fs::remove_dir_all(&self.0);}}
+    #[test]
+    fn purpose_specific_store_resolution_skips_only_unused_credentials() {
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
+        let id=format!("purpose-fixture-{}",uuid::Uuid::new_v4());
+        store.set_secret(&id,"synthetic-http-token").unwrap();
+        for (purpose,provider) in [
+            (crate::credential_policy::Purpose::Dialog,"codex"),
+            (crate::credential_policy::Purpose::Dialog,"claude-code"),
+            (crate::credential_policy::Purpose::ModelCatalogue,"codex"),
+            (crate::credential_policy::Purpose::ModelCatalogue,"claude-code"),
+            (crate::credential_policy::Purpose::Speech,"system"),
+        ] {
+            let config=json!({"provider":provider,"apiKeyId":id});
+            let entry=crate::credentials::entry(&id).unwrap();
+            let mock=entry.as_any().downcast_ref::<keyring_core::mock::Cred>().unwrap();
+            mock.set_error(keyring_core::Error::NoStorageAccess(Box::new(std::io::Error::other("synthetic-denial"))));
+            assert_eq!(store.key_for_purpose(&config,purpose).unwrap(),None);
+            // The error is consumed by a read. Its survival proves the used
+            // Store path did not even touch this registered credential.
+            assert!(store.key_for(&config).is_err());
+            assert_eq!(store.key_for(&config).unwrap().as_deref(),Some("synthetic-http-token"));
+        }
+        let scoped=store.scoped("nova").unwrap();
+        for provider in ["whisper-local","compatible","ollama","lmstudio"] {
+            assert_eq!(scoped.key_for(&json!({"provider":provider,"baseUrl":"http://127.0.0.1:8080","apiKeyId":id})).unwrap().as_deref(),Some("synthetic-http-token"));
+        }
+    }
     fn legacy(id:&str,server_id:&str,enabled:bool)->Value{
         let mut profile:Value=serde_json::from_str(DEFAULT_PROFILE).unwrap();profile["id"]=json!(id);profile["name"]=json!(id);profile["skillsEnabled"]=json!(["shared"]);
         profile["mcpServers"]=json!([{"id":server_id,"name":id,"transport":"stdio","command":"node","args":["fixture.js"],"enabled":enabled,"allowedTools":if enabled{json!(["read"])}else{json!(["*"])},"viewerAllowedTools":[]}]);profile

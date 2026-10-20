@@ -16,7 +16,7 @@ The fixed bundle and signing identifier is `studio.streamer-ai.cohost`, the prod
 
 Public packages through **v0.9.0** use **ad-hoc signing**. Apple explains that TCC (the privacy subsystem) tracks the app's *designated requirement*. An ad-hoc requirement identifies a particular binary by its code hash, which changes with a new build. A fixed display name or updater signature alone cannot preserve that identity.
 
-The selected next-release path is a **persistent self-signed codesigning certificate**, at no Apple-account cost and without Apple notarization. The release pipeline requires the same certificate for Apple Silicon and Intel, verifies its reviewed complete public SHA-256 fingerprint and enforces an exact app-ID/certificate-bound designated requirement. Its public certificate/pin is versioned and the matching encrypted archive/password are protected repository secrets. Missing keys or signing failures never fall back to ad-hoc output.
+Published releases from **v0.10.0** use a **persistent self-signed codesigning certificate**, at no Apple-account cost and without Apple notarization. The release pipeline requires the same certificate for Apple Silicon and Intel, verifies its reviewed complete public SHA-256 fingerprint and enforces an exact app-ID/certificate-bound designated requirement. Its public certificate/pin is versioned and the matching encrypted archive/password are protected repository secrets. Missing keys or signing failures never fall back to ad-hoc output.
 
 The distinction between the available identities remains:
 
@@ -25,7 +25,7 @@ The distinction between the available identities remains:
 | A long-lived self-signed codesigning certificate/key | Can provide a stable, certificate-bound requirement; OrbitPal still needs real A→B update/TCC acceptance on supported macOS versions | No Apple-verified identity or notarization; downloaded-app Gatekeeper approval remains separate |
 | Maintainer-owned Developer ID Application certificate with consistent app/team identity | Apple's supported identity for distribution outside the App Store; still requires update acceptance | Pair with successful notarization and stapling |
 
-The persistent identity is provisioned for future release builds; this source change does not publish or install a new signed version. A self-signed certificate is technically distinct from ad-hoc signing; an Apple Developer account is not required merely to create a persistent signing identity. Apple recommends Developer ID for public distribution. Our own certificate does not provide Apple-verified publisher trust or notarization, and downloaded-app first-launch approval remains separate. We do not install a trusted root certificate or change Gatekeeper settings on the user's Mac.
+The persistent identity has shipped for both architectures since v0.10.0; see the actual pipeline evidence in [release trust](RELEASE-TRUST.md). A self-signed certificate is technically distinct from ad-hoc signing; an Apple Developer account is not required merely to create a persistent signing identity. Apple recommends Developer ID for public distribution. Our own certificate does not provide Apple-verified publisher trust or notarization, and downloaded-app first-launch approval remains separate. We do not install a trusted root certificate or change Gatekeeper settings on the user's Mac.
 
 macOS CI uses two harmless app fixtures and temporary keys to verify code-identity continuity, another key's rejection even with the same certificate name, and tamper rejection. The fixtures are signed but never executed and never request privacy access. **Actual microphone/screen TCC retention across two OrbitPal versions still requires manual acceptance**; passing those signatures alone is not evidence of preserved OS grants.
 
@@ -33,6 +33,13 @@ Whichever path is chosen, preserve and protect the signing key, pin the certific
 
 Moving from existing hash-bound ad-hoc builds can require one final approval. There is no legitimate way for OrbitPal to silently copy those permissions to a different signer. OS policy changes, revocation or administrator restrictions can also require new approval later. Never edit/reset the user's TCC database or weaken the signing requirement to avoid consent.
 
-The Tauri updater key remains a separate trust mechanism and must not change as part of OS signing. See [release instructions](RELEASING.md) for offline identity preparation, CI cleanup and protected provisioning. Apple-verified signing/notarization and the broader provenance work in #17 / PR #37 remain separate; they are not enabled by this free self-signed path.
+The Tauri updater key remains a separate trust mechanism and must not change as part of OS signing. See [release instructions](RELEASING.md) for offline identity preparation, CI cleanup and protected provisioning. Artifact provenance is already verified by the current release workflow; Apple-verified signing/notarization and remaining operational/native acceptance in #17 remain separate.
+
+## Credential access is separate
+
+API-key dialogs belong to the macOS Keychain rather than TCC. Saved values and
+per-item application authorization have separate lifetimes. See [macOS Keychain
+access](MACOS-KEYCHAIN.md) for Allow versus Always Allow, multiple credential items,
+locked Keychains and the operation-specific handling of CLI/system-voice keys.
 
 References: [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements), [Apple Code Signing Guide](https://developer.apple.com/library/archive/documentation/Security/Conceptual/CodeSigningGuide/AboutCS/AboutCS.html), [Apple screen request API](https://developer.apple.com/documentation/coregraphics/cgrequestscreencaptureaccess()), [Tauri macOS signing](https://v2.tauri.app/distribute/sign/macos/).
