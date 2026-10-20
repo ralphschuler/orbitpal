@@ -5,19 +5,21 @@
   import { call, native, prettyError } from '../lib/api';
   import HelpTip from './HelpTip.svelte';
   import { systemPermission } from '../lib/system-permission';
+  import { selectScreenSession, ScreenSessionCleanupError, type ScreenSession } from '../lib/screen-session';
   import ScreenCapturePermissions from './ScreenCapturePermissions.svelte';
 
   interface ScreenContextConfig { enabled: boolean; displayId: string }
   interface CaptureDisplay { id: string; name: string; primary: boolean }
-  interface ScreenSession { backend: 'native' | 'wayland'; phase: string; displayId: string; message: string }
   interface Props {
     botId: string;
     config: ScreenContextConfig;
     visionEnabled: boolean;
     disabled?: boolean;
     permissionContext?: () => string;
+    prepareSelection: (botId: string, current: () => boolean) => Promise<string | null>;
+    onError: (message: string) => void;
   }
-  let { botId, config = $bindable(), visionEnabled, disabled = false, permissionContext = () => '' }: Props = $props();
+  let { botId, config = $bindable(), visionEnabled, disabled = false, permissionContext = () => '', prepareSelection, onError }: Props = $props();
   let displays = $state<CaptureDisplay[] | null>(null);
   let loading = $state(false);
   let error = $state('');
@@ -62,15 +64,17 @@
 
   async function selectWayland() {
     if (loading || enabling || disabled || disposed) return;
-    const targetBot = botId; const context = permissionContext(); const expected = JSON.stringify(config);
+    const targetBot = botId;
     const revision = ++request; loading = true; error = '';
-    const current = () => !disposed && !disabled && targetBot === botId && revision === request && context === permissionContext() && expected === JSON.stringify(config);
+    const current = () => !disposed && !disabled && targetBot === botId && revision === request;
     try {
-      const result = await call<ScreenSession>('select_screen_source', { botId: targetBot });
-      if (!current()) return;
-      if (result.backend !== 'wayland' || result.phase !== 'ready' || !/^wayland:[0-9a-f-]{36}$/.test(result.displayId)) throw new Error('Die Wayland-Quelle wurde nicht verbunden.');
-      ++statusRevision; config.displayId = result.displayId; session = result;
-    } catch (cause) { if (current()) error = prettyError(cause); }
+      await selectScreenSession({ botId: targetBot, current, context: permissionContext,
+        prepare: () => prepareSelection(targetBot, current), invoke: call,
+        adopt: result => { ++statusRevision; config.displayId = result.displayId; session = result; } });
+    } catch (cause) {
+      if (cause instanceof ScreenSessionCleanupError) onError(prettyError(cause));
+      else if (current()) error = prettyError(cause);
+    }
     finally { if (!disposed && revision === request) loading = false; }
   }
 
@@ -109,6 +113,7 @@
     <ScreenCapturePermissions {disabled} {permissionContext}/>
     {#if session?.backend === 'wayland'}
       <p class="field-note">{$t("Unter Wayland wählst du die Quelle im Freigabedialog deines Desktops. Diese Sitzung ersetzt nicht die Bildfreigabe dieses Bots. Die Auswahl bleibt nur für diese App-Sitzung bestehen; anschließend die Einstellungen speichern.")}</p>
+      <p class="field-note">{$t("Beim Klick auf „Quelle auswählen“ werden zuerst die aktuellen Bot-Einstellungen gespeichert. So gehört die Freigabe zum angezeigten Modell. Anschließend die neue Quellenauswahl speichern.")}</p>
       <div class="display-choice">
         <button class="button secondary" onclick={selectWayland} disabled={disabled || loading}>{loading ? $t("Wayland-Auswahl läuft …") : $t("Wayland-Quelle auswählen / erneut verbinden")}</button>
         <button class="button secondary" onclick={disconnectWayland} disabled={disabled || (!loading && session.phase === 'closed')}>{$t("Bildschirmfreigabe trennen")}</button>
