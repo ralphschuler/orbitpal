@@ -290,4 +290,3 @@ fn actual_runtime_hooks_use_the_exact_registry_and_presentation_invalidation_lat
     runtime.output_window_lost("main");
     assert!(third.cancel.load(Ordering::SeqCst));
 }
-
