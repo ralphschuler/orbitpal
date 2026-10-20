@@ -33,6 +33,7 @@ pub(crate) enum NativeWindowChange {
     Hidden,
     Closing,
     Destroyed,
+    Document,
 }
 
 /// Native-only evidence of a current window instance/route revision. Not a
@@ -78,9 +79,13 @@ struct LayoutSlot {
     deadline: u64,
     classifying: Option<u64>,
     active: bool,
+    permission:LayoutUi,
+    surface:Option<Arc<super::native_layout::SurfaceCell>>,
 }
 #[derive(Clone)]
-pub(super) struct LayoutUi { connection: String, generation: u64 }
+pub(super) enum LayoutUi { Studio{connection:String,generation:u64}, Session{cancel:Arc<AtomicBool>} }
+impl LayoutUi{fn same_permission(&self,other:&Self)->bool{match(self,other){(Self::Studio{connection:a,generation:x},Self::Studio{connection:b,generation:y})=>a==b&&x==y,(Self::Session{cancel:a},Self::Session{cancel:b})=>Arc::ptr_eq(a,b),_=>false}}
+fn current(&self,state:&State)->bool{match self{Self::Studio{connection,generation}=>state.ui_generation==*generation&&state.ui.as_ref().is_some_and(|(id,seq,blocked)|id==connection&&*seq>0&&!*blocked),Self::Session{cancel}=>!cancel.load(Ordering::SeqCst)}}}
 impl Drop for PreparationTicket {
     fn drop(&mut self) {
         // Dropping an async caller never keeps its pending slot busy beyond
@@ -150,7 +155,7 @@ impl State {
     }
     fn reap(&mut self, now: u64) {
         for slot in self.layouts.values() {
-            if now < slot.issued_at || now > slot.deadline { slot.route.cancel.store(true, Ordering::SeqCst); }
+            if !slot.permission.current(self)||slot.surface.as_ref().map_or(now<slot.issued_at||now>slot.deadline,|cell|!cell.retained_current(now)) { slot.route.cancel.store(true, Ordering::SeqCst); }
         }
         self.windows.retain(|_, window| {
             if window.signals.strong_count() == 0 {
@@ -184,6 +189,14 @@ impl Drop for NativeOutputRoutes {
     }
 }
 impl NativeOutputRoutes {
+    /// Actual document invalidation is not a fabricated OS geometry/visibility
+    /// event. Retired known constructors cannot revoke a successor's routes.
+    pub(super) fn revoke_document(&self,bot:&str,signals:&Arc<WindowSignals>,outputs:&super::action_output::OutputGate)->bool{
+        let Ok(mut state)=self.lock()else{outputs.geometry(Some(bot));return false;};
+        if state.windows.get(bot).is_some_and(|w|!w.same_instance(signals)){return false;}
+        let current=Self::change_window_locked(&mut state,bot,signals,NativeWindowChange::Document);
+        state.cancel_layouts(Some(bot));outputs.geometry(Some(bot));current
+    }
     /// Poison may deny work, but must not leave previously issued cancellation
     /// atoms apparently live. Recovery is cancellation-only: poison is never
     /// cleared and this path returns no state guard or successor identity.
@@ -390,11 +403,11 @@ impl NativeOutputRoutes {
     pub(super) fn retain_preparation(&self,ticket:&PreparationTicket,signals:&Arc<WindowSignals>,cancel:&Arc<AtomicBool>,ui:&LayoutUi,now:u64)->Result<LayoutRoute,RouteError>{
         let mut state=self.lock()?;state.reap(now);
         if now<ticket.issued_at||now>ticket.deadline||cancel.load(Ordering::SeqCst)||ticket.cancel.load(Ordering::SeqCst)||state.layouts.contains_key(&ticket.id){return Err(RouteError::Expired);}
-        if state.ui_generation!=ui.generation||state.ui.as_ref().is_none_or(|(id,seq,blocked)|id!=&ui.connection||*seq==0||*blocked){return Err(RouteError::StaleWindow);}
+        if !ui.current(&state){return Err(RouteError::StaleWindow);}
         let window=state.windows.get(&ticket.window.bot).ok_or(RouteError::StaleWindow)?;
         if !window.matches(&ticket.window)||!window.same_instance(signals)||window.pending.as_ref().is_none_or(|p|p.id!=ticket.id||!Arc::ptr_eq(&p.cancel,&ticket.cancel)){return Err(RouteError::StaleWindow);}
         let route=LayoutRoute{id:ticket.id,bot:ticket.window.bot.clone(),instance:ticket.window.instance.clone(),signals:Arc::downgrade(signals),cancel:cancel.clone()};
-        state.layouts.insert(route.id,LayoutSlot{route:route.clone(),issued_at:ticket.issued_at,deadline:ticket.deadline,classifying:None,active:false});Ok(route)
+        state.layouts.insert(route.id,LayoutSlot{route:route.clone(),issued_at:ticket.issued_at,deadline:ticket.deadline,classifying:None,active:false,permission:ui.clone(),surface:None});Ok(route)
     }
     /// The Hub reservation/cleanup owner exists before this exchange. No caller
     /// closure or Hub/Core/GUI lock is entered under the native route guard.
@@ -407,7 +420,7 @@ impl NativeOutputRoutes {
         if now < ticket.issued_at || now > ticket.deadline || cancel.load(Ordering::SeqCst) {
             return Err(RouteError::Expired);
         }
-        if state.ui_generation != ui.generation || state.ui.as_ref().is_none_or(|(id, seq, blocked)| id != &ui.connection || *seq == 0 || *blocked) {
+        if !ui.current(&state) {
             return Err(RouteError::StaleWindow);
         }
         let window = state.windows.get(&ticket.window.bot).ok_or(RouteError::StaleWindow)?;
@@ -417,11 +430,19 @@ impl NativeOutputRoutes {
             return Err(RouteError::StaleWindow);
         }
         let route = LayoutRoute { id: ticket.id, bot: ticket.window.bot.clone(), instance: ticket.window.instance.clone(), signals: Arc::downgrade(signals), cancel: cancel.clone() };
-        let slot=state.layouts.get_mut(&route.id).filter(|slot|slot.route.matches(&route)&&!slot.active).ok_or(RouteError::StaleWindow)?;
+        let slot=state.layouts.get_mut(&route.id).filter(|slot|slot.route.matches(&route)&&!slot.active&&slot.permission.same_permission(ui)).ok_or(RouteError::StaleWindow)?;
         slot.active=true;
         state.windows.get_mut(&route.bot).expect("checked window").pending.take();
         ticket.cancel.store(true, Ordering::SeqCst);
         Ok(route)
+    }
+    /// Staging is not publication: Pending still expires at original D5.
+    pub(super) fn stage_surface(&self,route:&LayoutRoute,cell:&Arc<super::native_layout::SurfaceCell>,now:u64)->Result<(),RouteError>{
+        let mut state=self.lock()?;state.reap(now);
+        let slot=state.layouts.get_mut(&route.id).filter(|slot|slot.active&&slot.route.matches(route)&&!route.cancel.load(Ordering::SeqCst)).ok_or(RouteError::StaleWindow)?;
+        if slot.surface.is_some()||!cell.matches(&route.cancel,slot.issued_at,slot.deadline)||!cell.pending_current(now){return Err(RouteError::StaleWindow);}
+        if slot.classifying.is_some(){cell.invalidate_geometry();}
+        slot.surface=Some(cell.clone());Ok(())
     }
     pub(super) fn layout_state(&self, route: &LayoutRoute, now: u64) -> LayoutRouteState {
         let Ok(mut state) = self.lock() else { return LayoutRouteState::Revoked; };
@@ -454,6 +475,7 @@ impl NativeOutputRoutes {
         for slot in state.layouts.values().filter(|slot|slot.route.bot==bot&&slot.route.instance==instance&&!slot.active){slot.route.cancel.store(true,Ordering::SeqCst);}
         let slot = state.layouts.values_mut().find(|slot| slot.active && slot.route.bot == bot && slot.route.instance == instance && !slot.route.cancel.load(Ordering::SeqCst))?;
         if slot.classifying.is_some() { slot.route.cancel.store(true, Ordering::SeqCst); return None; }
+        if let Some(cell)=&slot.surface{cell.invalidate_geometry();}
         slot.classifying = Some(serial);
         Some(GeometryClassification { id: slot.route.id, serial, cancel: slot.route.cancel.clone() })
     }
@@ -486,9 +508,10 @@ impl NativeOutputRoutes {
         let state = self.lock()?;
         let (id, sequence, blocked) = state.ui.as_ref().ok_or(RouteError::StaleWindow)?;
         if *blocked || *sequence == 0 || state.ui_generation >= MAX_COUNTER { return Err(RouteError::StaleWindow); }
-        Ok(LayoutUi { connection: id.clone(), generation: state.ui_generation })
+        Ok(LayoutUi::Studio { connection: id.clone(), generation: state.ui_generation })
     }
-    pub(super) fn layout_ui_connection<'a>(&self, ui: &'a LayoutUi) -> &'a str { &ui.connection }
+    pub(super) fn layout_ui_connection<'a>(&self, ui: &'a LayoutUi) -> &'a str { match ui{LayoutUi::Studio{connection,..}=>connection,LayoutUi::Session{..}=>""} }
+    pub(super) fn session_layout(&self,cancel:&Arc<AtomicBool>)->Result<LayoutUi,RouteError>{let mut state=self.lock()?;if state.serial>=MAX_COUNTER{state.next()?;return Err(RouteError::Unavailable);}if cancel.load(Ordering::SeqCst){return Err(RouteError::Unavailable);}Ok(LayoutUi::Session{cancel:cancel.clone()})}
 
     fn change_window_locked(
         state: &mut State,

@@ -86,6 +86,7 @@ function morphVowel(name: string): Vowel | undefined {
 
 /** A self-contained renderer shared by the dashboard, native overlay and OBS. */
 export class AvatarStage {
+  private normalWarmFrameSequence = 0;
   private renderer: THREE.WebGLRenderer;
   private assetLoader: ReturnType<typeof createAvatarLoader>;
   private scene = new THREE.Scene();
@@ -483,6 +484,18 @@ export class AvatarStage {
     if(this.motionSource==='world')this.cancelWorld('cancelled');
     if (this.emoteSource === 'ambient') this.finishEmote();
     return this.presentation.acquire(signal);
+  }
+  /** Observes one NEW successful fixed normal draw. This grants neither World
+   * readiness nor playback; the native host still owns all later admission. */
+  async prepareNativeWorldWarm(signal:AbortSignal):Promise<{frameSequence:number;release:PresentationRelease}>{
+    const context=this.presentationContext,before=this.normalWarmFrameSequence;
+    const current=()=>!signal.aborted&&!this.disposed&&this.motionSource==='fixed'&&!this.desktopActive
+      &&!this.options.worldBinding&&!this.options.worldChallenge&&!this.options.audioEnabled&&!this.options.speaking
+      &&context===this.presentationContext;
+    if(!current())throw presentationAbortError();
+    const release=await this.preparePresentation(signal);
+    if(!current()||!Number.isSafeInteger(this.normalWarmFrameSequence)||this.normalWarmFrameSequence<=before){release();throw presentationAbortError();}
+    return {frameSequence:this.normalWarmFrameSequence,release};
   }
 
   get clipNames(): string[] { return this.clips.map((clip) => clip.name); }
@@ -1258,6 +1271,10 @@ export class AvatarStage {
       if (this.presentation.requested) {
         const hostVisible = this.host.isConnected && this.host.clientWidth > 0 && this.host.clientHeight > 0 && getComputedStyle(this.host).visibility !== 'hidden';
         const ready = hostVisible && !this.renderer.getContext().isContextLost() && this.assetState === 'ready' && loaded && !this.emote && !this.walking && this.walkStrength < 0.001 && (!this.desktopActive || this.desktopPresentationReady);
+        if(ready&&this.motionSource==='fixed'&&!this.desktopActive&&!this.options.worldChallenge&&!this.options.worldBinding){
+          if(this.normalWarmFrameSequence>=Number.MAX_SAFE_INTEGER){this.presentation.fail(presentationAbortError());return;}
+          this.normalWarmFrameSequence++;
+        }
         this.presentation.rendered(ready);
       }
       // Audio events follow an actually rendered emote/walk frame. Automatic

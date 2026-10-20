@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, Weak,
+        Arc, Mutex, MutexGuard, Weak,
     },
 };
 const LIMIT: usize = 64;
@@ -25,6 +25,7 @@ struct State {
     generation: u64,
     surfaces: BTreeMap<String, SurfaceWatch>,
     watches: BTreeMap<usize, Watch>,
+    deliveries: BTreeMap<usize, Watch>,
     ui: Option<(String, u64, u64)>,
 }
 #[derive(Default)]
@@ -32,8 +33,40 @@ pub(crate) struct OutputGate {
     state: Mutex<State>,
 }
 impl OutputGate {
+    fn lock(&self) -> Result<MutexGuard<'_, State>, ()> {
+        match self.state.lock() {
+            Ok(state) => Ok(state),
+            Err(poison) => {
+                // Recovery can only cancel. Keep poison, never publish a new
+                // watch or clear a native cancellation identity.
+                let mut state = poison.into_inner();
+                Self::delivery_revoke(&mut state, |_| true);
+                Err(())
+            }
+        }
+    }
     pub(crate) fn ticket(&self) -> Option<u64> {
-        self.state.lock().ok().map(|s| s.generation)
+        self.lock().ok().map(|s| s.generation)
+    }
+    /// Cancellation-only watch for one native document capability. There is no
+    /// UI proof here: this cannot establish a session, source or visible output.
+    /// An already admitted identity is inert on retry; a cancelled one cannot
+    /// reattach to a newer ticket. Ordinary Studio registrations only fence new
+    /// attachment and do not revoke an admitted native delivery.
+    pub(crate) fn watch_delivery(&self, ticket: u64, bot: &str, window: &str, cancel: &Arc<AtomicBool>) -> bool {
+        let Ok(mut state) = self.lock() else { cancel.store(true, Ordering::SeqCst); return false; };
+        state.deliveries.retain(|_, watch| watch.cancel.upgrade().is_some_and(|atom| !atom.load(Ordering::SeqCst)));
+        if cancel.load(Ordering::SeqCst) { return false; }
+        let key = Arc::as_ptr(cancel) as usize;
+        if let Some(original) = state.deliveries.get(&key) {
+            return original.bot == bot && original.window == window;
+        }
+        if state.generation != ticket || ticket >= crate::life_domain::MAX_COUNTER
+            || !crate::storage::valid_id(bot) || window != format!("avatar-{bot}") || state.deliveries.len() >= LIMIT {
+            cancel.store(true, Ordering::SeqCst); return false;
+        }
+        state.deliveries.insert(key, Watch { bot: bot.into(), window: window.into(), cancel: Arc::downgrade(cancel) });
+        true
     }
     pub(crate) fn watch(
         &self,
@@ -43,7 +76,7 @@ impl OutputGate {
         cancel: &Arc<AtomicBool>,
         ui: (&str, u64),
     ) -> bool {
-        let Ok(mut s) = self.state.lock() else {
+        let Ok(mut s) = self.lock() else {
             cancel.store(true, Ordering::SeqCst);
             return false;
         };
@@ -103,7 +136,7 @@ impl OutputGate {
         >,
     ) -> Result<crate::world_output::RegisteredWorldActor, crate::world_output::RenderReason> {
         use crate::world_output::RenderReason;
-        let mut state = self.state.lock().map_err(|_| RenderReason::Cancelled)?;
+        let mut state = self.lock().map_err(|_| RenderReason::Cancelled)?;
         state.surfaces.retain(|_, watch| {
             watch
                 .cancel
@@ -159,7 +192,7 @@ impl OutputGate {
         cancel: &Arc<AtomicBool>,
         ui: (&str, u64),
     ) -> bool {
-        let Ok(mut s) = self.state.lock() else {
+        let Ok(mut s) = self.lock() else {
             cancel.store(true, Ordering::SeqCst);
             return false;
         };
@@ -217,15 +250,32 @@ impl OutputGate {
             !c.load(Ordering::SeqCst)
         });
     }
+    fn delivery_revoke(s: &mut State, predicate: impl Fn(&Watch) -> bool) {
+        s.deliveries.retain(|_, watch| {
+            let Some(cancel) = watch.cancel.upgrade() else { return false; };
+            if predicate(watch) { cancel.store(true, Ordering::SeqCst); }
+            !cancel.load(Ordering::SeqCst)
+        });
+    }
     /// Geometry/profile/window invalidation is cancellation-only and precedes Core.
     pub(crate) fn geometry(&self, bot: Option<&str>) {
-        if let Ok(mut s) = self.state.lock() {
+        if let Ok(mut s) = self.lock() {
             Self::revoke_locked(&mut s, |w| bot.is_none_or(|b| b == w.bot));
             Self::surface_revoke(&mut s, |w| bot.is_none_or(|b| b == w.bot));
         }
     }
+    /// Semantic profile/World/operator invalidation includes delivered but
+    /// still unpinned documents. Raw classified native layout geometry must use
+    /// geometry(), otherwise an owner's own setter would cancel its auth.
+    pub(crate) fn semantic_geometry(&self, bot: Option<&str>) {
+        if let Ok(mut s) = self.lock() {
+            Self::revoke_locked(&mut s, |w| bot.is_none_or(|b| b == w.bot));
+            Self::surface_revoke(&mut s, |w| bot.is_none_or(|b| b == w.bot));
+            Self::delivery_revoke(&mut s, |w| bot.is_none_or(|b| b == w.bot));
+        }
+    }
     pub(crate) fn unregister_surface(&self, window: &str, render: &str, binding: u64) -> bool {
-        let Ok(mut s) = self.state.lock() else {
+        let Ok(mut s) = self.lock() else {
             return false;
         };
         let ui = s.ui.as_ref().map(|v| v.0.clone());
@@ -257,25 +307,28 @@ impl OutputGate {
         });
     }
     fn revoke(&self, predicate: impl Fn(&Watch) -> bool) {
-        if let Ok(mut s) = self.state.lock() {
-            Self::revoke_locked(&mut s, predicate);
+        if let Ok(mut s) = self.lock() {
+            Self::revoke_locked(&mut s, &predicate);
+            Self::delivery_revoke(&mut s, predicate);
         }
     }
     pub(crate) fn ui_connect(&self, id: &str) {
         if id.is_empty() || id.len() > 96 {
             return;
         }
-        if let Ok(mut s) = self.state.lock() {
+        if let Ok(mut s) = self.lock() {
             Self::revoke_locked(&mut s, |_| true);
             Self::surface_revoke(&mut s, |_| true);
+            Self::delivery_revoke(&mut s, |_| true);
             s.ui = Some((id.into(), 0, 0));
         }
     }
     pub(crate) fn ui_disconnect(&self, id: &str) {
-        if let Ok(mut s) = self.state.lock() {
+        if let Ok(mut s) = self.lock() {
             if s.ui.as_ref().is_some_and(|(current, _, _)| current == id) {
                 Self::revoke_locked(&mut s, |_| true);
                 Self::surface_revoke(&mut s, |_| true);
+                Self::delivery_revoke(&mut s, |_| true);
                 s.ui = None;
             }
         }
@@ -283,7 +336,7 @@ impl OutputGate {
     /// This mirrored native nonce/sequence is cancellation-only. It cannot
     /// accept a Core report, clear a block or grant output/session authority.
     pub(crate) fn ui_report(&self, id: &str, sequence: u64, block_or_activity: bool) {
-        if let Ok(mut s) = self.state.lock() {
+        if let Ok(mut s) = self.lock() {
             let Some((current, prior, last_revoke)) = &mut s.ui else {
                 return;
             };
@@ -294,16 +347,28 @@ impl OutputGate {
             if block_or_activity {
                 *last_revoke = sequence;
                 Self::revoke_locked(&mut s, |_| true);
+                Self::delivery_revoke(&mut s, |_| true);
             }
         }
     }
     pub(crate) fn window(&self, label: &str) {
-        self.revoke(|w| label == "main" || w.window == label);
-        if let Ok(mut s) = self.state.lock() {
+        if let Ok(mut s) = self.lock() {
+            Self::revoke_locked(&mut s, |w| label == "main" || w.window == label);
             Self::surface_revoke(&mut s, |w| label == "main" || w.window == label);
+            Self::delivery_revoke(&mut s, |w| label == "main" || w.window == label);
         }
     }
     pub(crate) fn bot(&self, bot: Option<&str>) {
         self.revoke(|w| bot.is_none_or(|id| id == w.bot));
     }
 }
+impl Drop for OutputGate {
+    fn drop(&mut self) {
+        let state = self.state.get_mut().unwrap_or_else(|poison| poison.into_inner());
+        Self::delivery_revoke(state, |_| true);
+    }
+}
+
+#[cfg(test)]
+#[path = "action_output_delivery_tests.rs"]
+mod delivery_tests;

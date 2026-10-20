@@ -41,7 +41,7 @@ fn sample(app: &tauri::AppHandle, profile: &Value) -> Result<StudioSample, Strin
         visible,
     })
 }
-fn native_walk(app: &tauri::AppHandle, profile: &Value) -> bool {
+pub(super) fn native_walk(app: &tauri::AppHandle, profile: &Value) -> bool {
     let asset = profile["avatar"]["assetPath"].as_str();
     if asset.is_none() || asset == Some("nova") {
         return true;
@@ -98,6 +98,7 @@ fn source(
         .as_f64()
         .unwrap_or(profile_scale);
     Ok(NativeSource {
+        route: SourceRoute::Studio,
         context,
         profile_token: state
             .store
@@ -116,6 +117,7 @@ fn source(
         effective_scale,
         native_walk: walk,
         owner,
+        native_framing: None,
     })
 }
 #[tauri::command]

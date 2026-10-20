@@ -597,3 +597,6 @@ fn mirrored_same_id_conflicts_are_excluded_and_order_cannot_change_selection() {
         )
         .is_ok());
 }
+
+#[path = "slot_action_tests.rs"]
+mod slot_actions;

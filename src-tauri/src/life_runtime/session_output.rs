@@ -40,6 +40,33 @@ struct Target {
     created: bool,
     was_visible: bool,
 }
+/// Captured by native code only. A label or WebviewWindow equality is not
+/// constructor identity: the unforgeable signals Arc and exact lease are both
+/// required, and the retained window is never reacquired by label for its work.
+#[derive(Clone)]
+pub(crate) struct ConstructorReceipt {
+    lease: Lease,
+    window: tauri::WebviewWindow,
+    signals: Arc<WindowSignals>,
+    created_for_session: bool,
+}
+impl ConstructorReceipt {
+    pub(super) fn bot(&self) -> &str { &self.lease.bot }
+    pub(super) fn route_id(&self) -> &str { &self.lease.id }
+    pub(super) fn lease_current(&self) -> bool { self.lease.current() }
+    /// Read-only cancellation identity of the exact native session route.
+    /// A document delivered for this lease cannot adopt a later same-window
+    /// Start. This conveys no presentation, rendering or action authority.
+    pub(super) fn lease_cancel(&self) -> Arc<AtomicBool> { self.lease.cancel.clone() }
+    pub(super) fn signals(&self) -> &Arc<WindowSignals> { &self.signals }
+    pub(super) fn persists_fixed_bounds(&self) -> bool { !self.created_for_session }
+    pub(super) fn window(&self) -> &tauri::WebviewWindow { &self.window }
+    pub(super) fn same_constructor(&self, other: &Self) -> bool {
+        self.lease.bot == other.lease.bot && self.lease.id == other.lease.id
+            && Arc::ptr_eq(&self.lease.cancel, &other.lease.cancel)
+            && Arc::ptr_eq(&self.signals, &other.signals)
+    }
+}
 struct Entry {
     lease: Lease,
     sequence: u64,
@@ -182,6 +209,36 @@ impl SessionOutputs {
             Some(_) => Err(ERROR.into()),
         }
     }
+    pub(super) fn constructor_for(&self, lease: &Lease) -> Result<ConstructorReceipt, String> {
+        let state = self.lock()?;
+        let entry = state.entries.get(&lease.bot).filter(|entry|
+            Self::matches(entry, lease) && entry.lease.current() && entry.state == "visible"
+                && !entry.opening && !entry.cleanup_queued).ok_or(ERROR)?;
+        let target = entry.target.as_ref().ok_or(ERROR)?;
+        Ok(ConstructorReceipt { lease: lease.clone(), window: target.window.clone(), signals: target.signals.clone(), created_for_session: target.created })
+    }
+    pub(super) fn constructor_current(&self, receipt: &ConstructorReceipt) -> bool {
+        self.lock().is_ok_and(|state| state.entries.get(receipt.bot()).is_some_and(|entry|
+            Self::matches(entry, &receipt.lease) && entry.lease.current() && entry.state == "visible"
+                && !entry.opening && !entry.cleanup_queued
+                && entry.target.as_ref().is_some_and(|target| Arc::ptr_eq(&target.signals, &receipt.signals))))
+    }
+    /// The same physical cancellation atom is revoked on session replacement,
+    /// Stop and destruction; adding a watcher cannot revive an obsolete target.
+    pub(super) fn bind_surface(&self, receipt: &ConstructorReceipt, cancel: &Arc<AtomicBool>) -> Result<(), String> {
+        let mut state = self.lock()?;
+        let entry = state.entries.get_mut(receipt.bot()).filter(|entry|
+            Self::matches(entry, &receipt.lease) && entry.lease.current() && entry.state == "visible"
+                && !entry.opening && !entry.cleanup_queued
+                && entry.target.as_ref().is_some_and(|target| Arc::ptr_eq(&target.signals, &receipt.signals))).ok_or(ERROR)?;
+        entry.jobs.retain(|job| job.strong_count() > 0);
+        if !entry.jobs.iter().any(|job| job.upgrade().is_some_and(|job| Arc::ptr_eq(&job, cancel))) {
+            if entry.jobs.len() >= 64 { return Err(ERROR.into()); }
+            entry.jobs.push(Arc::downgrade(cancel));
+        }
+        if cancel.load(Ordering::SeqCst) { return Err(ERROR.into()); }
+        Ok(())
+    }
     pub(crate) fn lease_for_stop(&self, bot: &str) -> Option<Lease> {
         self.lock().ok()?.entries.get(bot).map(|entry| entry.lease.clone())
     }
@@ -269,6 +326,16 @@ impl SessionOutputs {
         let Some(target) = target else { return; };
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
+            let state=app.state::<crate::AppState>();
+            let receipt=ConstructorReceipt{lease:lease.clone(),window:target.window.clone(),signals:target.signals.clone(),created_for_session:target.created};
+            if let Some(member)=state.life_runtime.native_scenes.for_constructor(&receipt){
+                if super::native_scene::release_exact(&app,member).await.is_err(){
+                    state.life_runtime.session_outputs.cleanup_unavailable(&app,&lease);return;
+                }
+            }
+            if state.presentation.current_window(&lease.bot,&target.signals)&&state.presentation.native_guarded(&lease.bot){
+                state.life_runtime.session_outputs.cleanup_unavailable(&app,&lease);return;
+            }
             let main = app.clone();
             let _ = app.run_on_main_thread(move || {
                 let state = main.state::<crate::AppState>();
@@ -289,6 +356,15 @@ impl SessionOutputs {
                 }
             });
         });
+    }
+    fn cleanup_unavailable(&self,app:&tauri::AppHandle,lease:&Lease){
+        if let Ok(mut state)=self.lock(){
+            let sequence=state.advance().unwrap_or(MAX_SEQUENCE);
+            if let Some(entry)=state.entries.get_mut(&lease.bot).filter(|entry|Self::matches(entry,lease)){
+                entry.state="unavailable";entry.sequence=sequence;
+            }
+        }
+        self.publish(app,&lease.bot);
     }
     fn cleanup_current(&self, lease: &Lease) -> bool {
         self.lock().is_ok_and(|state| state.entries.get(&lease.bot).is_some_and(|entry|

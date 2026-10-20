@@ -23,6 +23,7 @@ impl VisualFixture {
         let context = f.context("nova");
         let profile = f.store.bot_profile("nova").unwrap();
         let source = NativeSource {
+            route: SourceRoute::Studio,
             context,
             profile_token: f.store.action_profile_token("nova", &profile).unwrap(),
             ui_connection: "studio".into(),
@@ -36,6 +37,7 @@ impl VisualFixture {
             effective_scale: 1.0,
             native_walk: true,
             owner: true,
+            native_framing: None,
         };
         let request = RegisterWorldActor {
             version: 1,
@@ -873,3 +875,6 @@ fn capability_and_plan_reject_old_private_session_revision_or_replaced_ui_even_w
         assert!(v.f.core.world_outputs.take_command().is_none());
     }
 }
+
+#[path = "slot_action_tests.rs"]
+mod slot_backend;

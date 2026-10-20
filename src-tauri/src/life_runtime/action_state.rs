@@ -56,6 +56,8 @@ pub(crate) struct WorldActionFence {
 #[derive(Clone)]
 pub(crate) struct NativeJob {
     pub visual: Option<crate::world_output::VisualExecution>,
+    pub native_permit: Option<super::native_scene::NativeActionPermit>,
+    pub slot: Option<crate::world_hub::SlotReservation>,
     pub authority: NativeAuthority,
     pub key: JobKey,
     pub fence: LocalFence,

@@ -10,6 +10,16 @@ pub(crate) mod native_layout;
 pub(crate) use native_output_route::NativeWindowChange;
 #[path = "life_runtime/session_output.rs"]
 pub(crate) mod session_output;
+#[path = "life_runtime/native_scene.rs"]
+pub(crate) mod native_scene;
+#[path = "life_runtime/native_scene_host.rs"]
+mod native_scene_host;
+#[path = "life_runtime/native_document.rs"]
+mod native_document;
+#[path = "life_runtime/native_scene_document.rs"]
+pub(crate) mod native_scene_document;
+#[path = "life_runtime/native_scene_ipc.rs"]
+pub(crate) mod native_scene_ipc;
 #[path = "life_runtime/action_state.rs"]
 pub(crate) mod action_state;
 #[path = "life_runtime/actions.rs"]
@@ -162,6 +172,8 @@ pub struct LifeRuntime {
     outputs: action_output::OutputGate,
     native_routes: native_output_route::NativeOutputRoutes,
     pub(crate) session_outputs: session_output::SessionOutputs,
+    native_scenes: native_scene::NativeScenes,
+    native_documents: native_document::Documents,
     core: Mutex<Core>,
     monitor: OnceLock<NativeMonitor>,
     started: Instant,
@@ -174,6 +186,8 @@ impl Default for LifeRuntime {
             outputs: action_output::OutputGate::default(),
             native_routes: native_output_route::NativeOutputRoutes::default(),
             session_outputs: session_output::SessionOutputs::default(),
+            native_scenes: native_scene::NativeScenes::default(),
+            native_documents: native_document::Documents::default(),
             core: Mutex::new(Core::new(SystemSnapshot {
                 state: Availability::Unknown,
                 reason: SystemReason::Initializing,
@@ -188,6 +202,9 @@ impl Default for LifeRuntime {
     }
 }
 impl LifeRuntime {
+    pub(crate) fn native_document_route_revoked(&self,bot:&str,signals:&Arc<crate::window_signals::WindowSignals>){
+        self.native_routes.revoke_document(bot,signals,&self.outputs);
+    }
     pub fn session_output(&self, bot: &str) -> Result<session_output::Projection, String> {
         self.session_outputs.snapshot(bot)
     }
@@ -324,7 +341,10 @@ impl LifeRuntime {
     }
     pub fn invalidate_bot(&self, app: &tauri::AppHandle, bot: &str) {
         self.native_routes.revoke(Some(bot));
-        self.outputs.geometry(Some(bot));
+        self.outputs.semantic_geometry(Some(bot));
+        // The operator activity below invalidates the global UI epoch. Fence
+        // delivered, still-unpinned documents for every participant as well.
+        self.outputs.bot(None);
         if let Ok(mut core) = self.core.lock() {
             core.invalidate_bot(bot, self.now());
             core.operator_activity(self.now());
@@ -384,7 +404,8 @@ impl LifeRuntime {
         write: impl FnOnce() -> Result<Value, String>,
     ) -> Result<(Value, Option<crate::autopilot::Runtime>), String> {
         self.native_routes.revoke(Some(bot));
-        self.outputs.geometry(Some(bot));
+        self.outputs.semantic_geometry(Some(bot));
+        self.outputs.bot(None);
         let mut core = self.core.lock().map_err(|_| UNAVAILABLE)?;
         core.invalidate_bot(bot, self.now());
         core.operator_activity(self.now());
@@ -410,7 +431,7 @@ impl LifeRuntime {
     pub fn stop(&self, app: &tauri::AppHandle, bot: Option<&str>) {
         self.session_outputs.cancel(app, bot);
         self.native_routes.revoke(bot);
-        self.outputs.geometry(bot);
+        self.outputs.semantic_geometry(bot);
         let state = app.state::<crate::AppState>();
         // Runtime -> AutopilotHub -> Store is the admitted mutation/commit order.
         // Keep Stop and a concurrent new Start indivisible; emit only after unlock.
@@ -498,7 +519,7 @@ impl LifeRuntime {
 
     pub(crate) fn invalidate_world_presentation(&self, bot: Option<&str>) {
         self.native_routes.revoke(bot);
-        self.outputs.geometry(bot);
+        self.outputs.semantic_geometry(bot);
     }
     /// Only the actual native constructor supplies this Arc. Tracking never
     /// enables World registration; an unprepared window remains unsupported.

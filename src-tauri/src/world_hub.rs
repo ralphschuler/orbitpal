@@ -7,7 +7,7 @@ use crate::{
 };
 use serde_json::json;
 use state::DisplaySample;
-pub(crate) use state::{current_actors, output_window, ActionContext, NativeActor, TopologySample};
+pub(crate) use state::{current_actors, output_window, ActionContext, ActionSlotTarget, NativeActor, SlotReservation, TopologySample};
 pub use state::{PublicWorld, WorldHub, WorldSettings};
 use std::{
     sync::atomic::Ordering,

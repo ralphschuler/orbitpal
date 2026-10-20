@@ -5,7 +5,7 @@ import { captureWorldPose, configureWorldCamera, placeWorldReference, placementF
   type WorldAvatarOptions } from './world-avatar';
 import { WorldRenderGeometry, type RenderPort, type SurfaceObservation } from './world-render-geometry';
 import type { LocalWorldFrame, MeasurementChallenge, NativeMotionBinding as MotionBinding, MotionFence, RenderMeasurement,
-  WorldAdapterReason } from './world-output';
+  NativePhysicalPolicy, WorldAdapterReason } from './world-output';
 import type { MotionOffer } from './world-motion';
 
 // Actual Three geometry/camera/transforms with SYNTHETIC submitted-draw port.
@@ -62,6 +62,27 @@ function move(binding:MotionBinding,ordinal=1,sequence=1):MotionOffer{
 }
 
 describe('actual-camera placement, synthetic submitted frames',()=>{
+  it('native camera preserves the issued physical size across expanded viewport/DPI without a fit scale',()=>{
+    const normalSpan=2*Math.hypot(.55,.7,7.6)*Math.tan(32*Math.PI/360),camera=new THREE.OrthographicCamera();
+    const framing:NativePhysicalPolicy={kind:'native_physical_iso_v1',referencePhysicalHeight:500,physicalWidth:1600,
+      physicalHeight:1200,scaleFactor:2,normalCamera:'full',normalVerticalSpan:normalSpan,verticalSpan:normalSpan*1200/500};
+    expect(configureWorldCamera(camera,800,600,framing)).toBe(true);
+    expect(camera.top-camera.bottom).toBeCloseTo(framing.verticalSpan,12);
+    const oneUnitPixels=600/framing.verticalSpan*framing.scaleFactor;
+    expect(oneUnitPixels).toBeCloseTo(500/normalSpan,12);
+    expect(configureWorldCamera(camera,799,600,framing)).toBe(false);
+    expect(configureWorldCamera(camera,800,601,framing)).toBe(false);
+  });
+  it('same-stamp native camera-policy changes cancel instead of retaining old movement or adopting a new fit',()=>{
+    const f=fixture(),normalSpan=2*Math.hypot(.55,.7,7.6)*Math.tan(32*Math.PI/360);
+    const policy:NativePhysicalPolicy={kind:'native_physical_iso_v1',referencePhysicalHeight:400,physicalWidth:400,physicalHeight:400,
+      scaleFactor:1,normalCamera:'full',normalVerticalSpan:normalSpan,verticalSpan:normalSpan};
+    // A changed policy under the already established Studio stamp cannot be
+    // used to replace that stamp's mapping or reset its cancellation atom.
+    f.update({worldChallenge:{...challenge(),cameraPolicy:'native_physical_iso_v1',nativeFraming:policy,expectedReferenceLocal:{x:0,y:1.45,z:0}}});
+    expect(f.reasons).toContain('stale_binding');
+    expect(f.controller.prepare(17,400,400,true,.5,true,0,false)).toBeNull();
+  });
   it('calibrates the loaded asset forward axis independently of an old presentation yaw',()=>{
     const scene=new THREE.Scene(),presentation=new THREE.Group(),imported=new THREE.Group(),normalization=new THREE.Group(),rig=new THREE.Object3D();
     scene.add(presentation);presentation.add(imported);imported.add(normalization);normalization.add(rig);

@@ -16,15 +16,31 @@
   import { foregroundSoundPlaying, SoundPlaybackReports, type SoundActivity } from './lib/sound-playback';
   import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
+  import { NativeWorldOutput,type NativeWorldPort,type NativeWorldView } from './lib/native-world-output';
+  import {NativeWorldSnapshots} from './lib/native-world-snapshots';
+  import type {BindingStamp} from './lib/world-output';
 
   type SpeechEvent = { presentationOutput?:'studio'|'overlay'|'obs';presentationRouteId?:string|null;kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
   type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void>; controller: AbortController; presentation?: PresentationTicket; visualEndAt: number; emoteRevision: number };
-  let avatar = $state<{preparePresentation:(signal:AbortSignal)=>Promise<()=>void>;canPresent:(event:EmotePayload)=>boolean;present:(event:EmotePayload)=>boolean}>();
+  let avatar = $state<NativeWorldPort&{preparePresentation:(signal:AbortSignal)=>Promise<()=>void>;canPresent:(event:EmotePayload)=>boolean;present:(event:EmotePayload)=>boolean}>();
+  let nativeWorld:NativeWorldOutput|undefined;
+  let nativeWorldView=$state<NativeWorldView>({phase:'normal',exposed:false,covered:false});
+  let nativeWorldSeen=$state(false);
+  let nativeSnapshots:NativeWorldSnapshots|undefined;
+  function acceptNativeWorld(value:unknown){
+    if(native)nativeSnapshots?.hint(value);
+  }
+  function nativePosition(expected:BindingStamp){
+    return nativeSnapshots?.position(expected)??null;
+  }
+  let profileLoaded=false;
+  const worldActive=$derived(nativeWorldView.phase==='world');
+  const nativeFixed=$derived(nativeWorldSeen||nativeWorldView.phase!=='normal');
   const admittedEmotes=(events:EmotePayload[]=[])=>events.filter(event=>avatar?.canPresent(event));
   let profile = $state<any>(cloneDefaults());
   let lifeOutput=$state<LifeOutput>();
   const lifeOutputVersions=new LifeOutputVersions();
-  function acceptLifeOutput(value:unknown){try{const next=lifeOutputVersions.accept(value,botId);if(next){if(lifeOutput?.routeId&&(lifeOutput.routeId!==next.routeId||next.state!=='visible'))cancelCurrent();lifeOutput=next;}}catch{connectionFailure='Die Desktop-Ausgabe konnte nicht bestätigt werden.';}}
+  function acceptLifeOutput(value:unknown){try{const next=lifeOutputVersions.accept(value,botId);if(next){if(lifeOutput?.routeId&&(lifeOutput.routeId!==next.routeId||next.state!=='visible')){nativeWorld?.revoke();cancelCurrent();}if(next.state==='inactive')nativeWorldSeen=false;lifeOutput=next;}}catch{nativeWorld?.revoke();connectionFailure='Die Desktop-Ausgabe konnte nicht bestätigt werden.';}}
   const outputEnabled=$derived(lifeOutput&&lifeOutput.state!=='inactive'?native&&lifeOutput.state==='visible':profile.output.mode===(native?'overlay':'obs'));
   let presentation=$state<PresentationSnapshot>();
   const presentationVersions=new PresentationVersions();
@@ -73,6 +89,9 @@
   const subtitles = new SubtitleLifetime((value) => { text = value; });
 
   async function prepareFigure(signal: AbortSignal): Promise<() => void> {
+    // Native has already authorized/restored this speech route. The local
+    // barrier must not depend on delayed evalRevoke arriving before speech.
+    nativeWorld?.revoke();
     await tick();
     if (disposed || signal.aborted) throw new DOMException('Die Figurenpräsentation wurde abgebrochen.', 'AbortError');
     if (!avatar) throw new Error('Die Figur ist nicht für die Ausgabe verfügbar.');
@@ -297,8 +316,10 @@
     const globalStop = event.kind === 'stop' && !targetBot;
     if (!globalStop && (!targetBot || (botId && targetBot !== botId))) return;
     if(event.kind==='life-output'){acceptLifeOutput(event.lifeOutput??event);return;}
+    if(event.kind==='world-state'){acceptNativeWorld(event.world);return;}
     if(event.kind==='presentation'){acceptPresentation(event);return;}
     if (event.kind === 'profile') {
+      nativeWorld?.revoke();
       cancelCurrent();
       botId ||= event.profile.id;
       acceptPresentation(event.presentation);
@@ -315,7 +336,7 @@
       return;
     }
     if (event.kind === 'cancel-speech') { if (current?.event.id === event.id) cancelCurrent(); return; }
-    if (event.kind === 'stop') { ++runtimeRevision; autopilot = undefined; cancelCurrent(); failure = ''; failureDetail = ''; return; }
+    if (event.kind === 'stop') { nativeWorld?.revoke();++runtimeRevision; autopilot = undefined; cancelCurrent(); failure = ''; failureDetail = ''; return; }
     if (event.kind === 'error') { subtitles.cancel(); connectionFailure = event.text || 'Die Verbindung zur App ist nicht verfügbar.'; return; }
     if (event.kind !== 'speech' || !event.id || receivedIds.has(event.id) || !speechRouteCurrent(event)) return;
     receivedIds.add(event.id);
@@ -350,6 +371,27 @@
     const soundHeartbeat=window.setInterval(()=>{if(soundPlaying&&!disposed)reportCombinedSound();},4000);
     const cleanup: (() => void)[] = [];
     if (native) {
+      nativeSnapshots=new NativeWorldSnapshots({
+        read:async actorId=>(await call('get_app_state',{botId:actorId})).world,
+        current:(scope,signal)=>!disposed&&!signal.aborted&&profileLoaded&&botId===scope.actorId
+          &&profile.id===scope.actorId&&outputEnabled&&document.visibilityState!=='hidden',
+        revision:()=>`${profileRevision}:${lifeOutput?.routeId??''}:${lifeOutput?.state??''}`,
+        mismatch:()=>nativeWorld?.revoke(),
+      });
+      nativeWorld=new NativeWorldOutput({invoke:call,adapter:()=>avatar,actorId:()=>botId,
+        scope:(expected,signal)=>nativeSnapshots?.expect(expected,signal),
+        position:nativePosition,
+        current:()=>!disposed&&profileLoaded&&!!botId&&profile.id===botId&&outputEnabled&&document.visibilityState!=='hidden',
+        normal:async(signal)=>{
+          await ready;await tick();
+          if(disposed||signal.aborted||current||!avatar)throw new DOMException('Die Figurenpräsentation wurde abgebrochen.','AbortError');
+          cancelCurrent();await tick();
+          if(disposed||signal.aborted||soundPlaying)throw new DOMException('Die Figurenpräsentation wurde abgebrochen.','AbortError');
+        },changed:view=>{
+          nativeWorldView=view;
+          if(view.phase==='normal')nativeSnapshots?.invalidate();
+          if(view.phase!=='normal'){nativeWorldSeen=true;modelAudioStop++;}
+        },afterDOM:()=>tick()});
       const initialRevision = profileRevision;
       const initialRuntimeRevision = runtimeRevision;
       const subscribe=(name:string,handler:(event:any)=>void)=>onEvent(name,handler).then(stop=>{if(disposed)stop();else cleanup.push(stop);});
@@ -358,11 +400,27 @@
         if (disposed) return;
         botId ||= state.profile.id;
         if (profileRevision === initialRevision) profile = state.profile;
+        profileLoaded=true;
+        // This read began before a native scope was known. Its .world may be an
+        // old epoch; the current native response schedules its own fresh read.
         acceptPresentation(state.presentation);
         if(state.lifeOutput)acceptLifeOutput(state.lifeOutput);
         if (runtimeRevision === initialRuntimeRevision) { const runtime=(state.autopilot || []).find((entry:any) => entry.botId === botId); if(runtime)acceptAutopilot(runtime); }
         const url = new URL(state.overlayUrl); url.searchParams.set('bot', botId); overlayUrl = url.toString();
       }).catch(() => { if (!disposed) connectionFailure = 'Charakterprofil konnte nicht geladen werden.'; });
+      const target=window as Window&{__orbitpalNativeWorldBootstrap?:(auth:unknown)=>void;__orbitpalNativeWorldRevoke?:()=>void};
+      const bootstrap=(auth:unknown)=>{if(window===window.top&&!disposed)nativeWorld?.bootstrap(auth);};
+      const revoke=()=>nativeWorld?.revoke();
+      if(window===window.top){
+        Object.defineProperty(target,'__orbitpalNativeWorldBootstrap',{value:bootstrap,configurable:true});
+        Object.defineProperty(target,'__orbitpalNativeWorldRevoke',{value:revoke,configurable:true});
+        cleanup.push(()=>{if(target.__orbitpalNativeWorldBootstrap===bootstrap)delete target.__orbitpalNativeWorldBootstrap;
+          if(target.__orbitpalNativeWorldRevoke===revoke)delete target.__orbitpalNativeWorldRevoke;});
+      }
+      void subscribe('cohost://world-action',event=>nativeWorld?.receive(event));
+      const hidden=()=>{if(document.visibilityState==='hidden')nativeWorld?.revoke();};
+      document.addEventListener('visibilitychange',hidden);window.addEventListener('pagehide',revoke);
+      cleanup.push(()=>{document.removeEventListener('visibilitychange',hidden);window.removeEventListener('pagehide',revoke);});
     } else {
       const url = new URL('/events', overlayUrl);
       url.search = new URL(overlayUrl).search;
@@ -376,15 +434,23 @@
       cleanup.push(() => events.close());
     }
     return () => {
-      disposed = true; window.clearInterval(soundHeartbeat);cancelCurrent(); subtitles.destroy(); cleanup.forEach((close) => close()); player.destroy(); emoteAudio.destroy();
+      disposed = true;nativeSnapshots?.dispose();nativeWorld?.dispose();window.clearInterval(soundHeartbeat);cancelCurrent(); subtitles.destroy(); cleanup.forEach((close) => close()); player.destroy(); emoteAudio.destroy();
       document.documentElement.classList.remove('overlay-document');
     };
   });
 </script>
 
 <div class="overlay-scene">
-  <Avatar bind:this={avatar} audioEnabled={outputEnabled} audioStop={modelAudioStop} onAudioPlaying={modelAudioPlaying} profile={renderProfile} {speaking} {level} {emotion} {autopilot} {desktop} onDesktopAnchor={value=>anchor=value} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
-  {#if native && !desktop?.active && !profile.output?.clickThrough}
+  <Avatar bind:this={avatar} audioEnabled={outputEnabled&&!worldActive&&nativeWorldView.phase!=='warming'} audioStop={modelAudioStop} onAudioPlaying={modelAudioPlaying} profile={renderProfile} {speaking} {level} {emotion}
+    autopilot={nativeFixed?undefined:autopilot} desktop={worldActive||nativeWorldView.phase==='warming'?undefined:desktop}
+    motionSource={worldActive?'world':nativeFixed?'fixed':undefined}
+    worldOwner={worldActive} worldChallenge={nativeWorldView.challenge} worldBinding={nativeWorldView.binding} worldExposed={nativeWorldView.exposed}
+    worldMirrorPosition={nativeWorldView.position}
+    onWorldPrepared={identity=>void nativeWorld?.prepared(identity)} onWorldMeasurement={report=>nativeWorld?.measurement(report)}
+    onWorldFrame={frame=>nativeWorld?.frame(frame)} onWorldUnavailable={(identity,reason)=>nativeWorld?.unavailable(identity,reason)}
+    onDesktopAnchor={value=>anchor=value} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  {#if nativeWorldView.covered}<div class="native-world-preparing" aria-hidden="true"></div>{/if}
+  {#if native && !worldActive && !desktop?.active && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
       <svg width="20" height="14" viewBox="0 0 20 14" fill="currentColor" aria-hidden="true"><circle cx="5" cy="4" r="1.4"/><circle cx="10" cy="4" r="1.4"/><circle cx="15" cy="4" r="1.4"/><circle cx="5" cy="10" r="1.4"/><circle cx="10" cy="10" r="1.4"/><circle cx="15" cy="10" r="1.4"/></svg>
     </button>
@@ -402,6 +468,7 @@
 </div>
 
 <style>
+  .native-world-preparing{position:absolute;inset:0;background:#141923;pointer-events:none;z-index:20;}
   .overlay-subtitle.desktop-caption {bottom:auto;right:auto;align-items:center;width:max-content;overflow:hidden;transform:none;overflow-wrap:anywhere;}
   .desktop-caption>span{max-width:min(360px,calc(100vw - 32px));}
   .overlay-drag { position: absolute; top: 12px; right: 12px; display: grid; place-items: center; width: 36px; height: 29px; border: 1px solid #b2c6e54d; border-radius: 8px; background: #1d2c45c9; color: #d1dff6; cursor: grab; opacity: 0; transition: opacity 0.15s; backdrop-filter: blur(8px); }

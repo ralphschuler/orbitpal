@@ -304,6 +304,17 @@ pub(super) fn publish(app: &tauri::AppHandle) {
     }
 }
 impl LifeRuntime {
+    /// Caller already owns the app-wide generation turn, and publishes its
+    /// cancellation before awaiting Main. The pending speech queue takes over
+    /// this barrier before that same generation guard is released.
+    pub(crate) async fn quiesce_native_for_dialog(&self,app:&tauri::AppHandle,origin:Origin)->Result<(),String>{
+        if origin.autonomous()&&self.core.lock().map_err(|_|action_host::UNAVAILABLE)?.local_actions_busy(){
+            return Err("Bitte die lokale Lebensaktion vor der automatischen Antwort beenden.".into());
+        }
+        self.outputs.bot(None);
+        super::native_scene::quiesce(app,None).await?;
+        app.state::<crate::AppState>().presentation.admit_dialog()
+    }
     pub(super) fn poll_actions(&self, app: &tauri::AppHandle) {
         // Wry getters may await Main. Collect all route evidence before Core locks.
         let state = app.state::<crate::AppState>();
@@ -353,12 +364,13 @@ impl LifeRuntime {
         super::world_output::publish(app);
         publish(app);
     }
-    pub(crate) fn before_dialog(
+    pub(crate) async fn before_dialog(
         &self,
         app: &tauri::AppHandle,
         origin: Origin,
     ) -> Result<(), String> {
         let state = app.state::<crate::AppState>();
+        self.quiesce_native_for_dialog(app,origin).await?;
         // Revocation is a latch, not completed restoration. A manual request
         // gets the existing busy error until exact cleanup actually releases.
         if !origin.autonomous(){self.native_routes.revoke(None);}

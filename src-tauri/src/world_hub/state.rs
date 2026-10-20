@@ -8,7 +8,7 @@ use crate::{
     },
     world_state::{
         coordinates::{self, LogicalSize, OutputGeometry, Point},
-        RuntimeEpoch, SessionStamp, SlotId, SlotLease, WorkIdentity, WorldConfig, WorldSnapshot,
+        AnchorKind, RuntimeEpoch, SessionStamp, SlotId, SlotLease, WorkIdentity, WorldConfig, WorldSnapshot,
         WorldState,
     },
 };
@@ -83,6 +83,28 @@ struct Hub {
     topology_revision: u64,
 }
 pub(crate) use crate::life_runtime::action_state::WorldActionFence as ActionContext;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ActionSlotTarget {
+    pub(crate) id: SlotId,
+    pub(crate) kind: AnchorKind,
+    pub(crate) position: Point,
+}
+/// Constructed only from the actual World reservation for a current Life Plan.
+/// The opaque lease and its target cannot be independently replaced by callers.
+#[derive(Clone)]
+pub(crate) struct SlotReservation {
+    target: ActionSlotTarget,
+    lease: SlotLease,
+    valid_from: u64,
+    valid_until: u64,
+}
+impl SlotReservation {
+    pub(crate) fn lease(&self) -> SlotLease { self.lease.clone() }
+    pub(crate) fn target(&self) -> &ActionSlotTarget { &self.target }
+    pub(crate) fn fresh(&self, now: u64) -> bool {
+        now >= self.valid_from && now < self.valid_until
+    }
+}
 pub struct WorldHub {
     inner: Mutex<Hub>,
     pub(super) sample_ticket: AtomicU64,
@@ -666,33 +688,117 @@ impl WorldHub {
     ) -> Result<T, String> {
         let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
         Self::refresh_record(&mut hub, store)?;
-        let world = hub.world.as_ref().ok_or(UNAVAILABLE)?;
-        let bot = expected.session.actor_id().as_str();
-        if hub.instance_id != expected.instance_id
-            || hub.bound.get(bot) != Some(&expected.session)
-            || hub.unavailable.contains(bot)
-            || world.config().stage_id() != &expected.stage
-            || world.config().revision() != expected.config_revision
-            || hub.topology_revision != expected.topology_revision
-            || hub
-                .topology
-                .as_ref()
-                .is_none_or(|t| t.observed.elapsed() > Duration::from_secs(5))
-            || world
-                .snapshot()
-                .actors
-                .iter()
-                .find(|a| a.actor_id.as_str() == bot)
-                .is_none_or(|a| {
-                    a.position != expected.position
-                        || a.life
-                            .as_ref()
-                            .is_none_or(|life| life.world_id() != &expected.source_world)
-                })
-        {
+        if !Self::action_context_matches(&hub, expected) {
             return Err(UNAVAILABLE.into());
         }
         operation()
+    }
+    fn action_context_matches(hub: &Hub, expected: &ActionContext) -> bool {
+        let Some(world) = hub.world.as_ref() else { return false; };
+        let bot = expected.session.actor_id().as_str();
+        hub.instance_id == expected.instance_id
+            && hub.bound.get(bot) == Some(&expected.session)
+            && !hub.unavailable.contains(bot)
+            && world.config().stage_id() == &expected.stage
+            && world.config().revision() == expected.config_revision
+            && hub.topology_revision == expected.topology_revision
+            && hub.topology.as_ref().is_some_and(|t| t.observed.elapsed() <= Duration::from_secs(5))
+            && world.snapshot().actors.iter().find(|a| a.actor_id.as_str() == bot).is_some_and(|a|
+                a.position == expected.position && a.life.as_ref().is_some_and(|life| life.world_id() == &expected.source_world))
+    }
+    pub(crate) fn slot_target(&self, store: &Store, expected: &ActionContext, slot: &SlotId) -> Result<ActionSlotTarget, String> {
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        Self::refresh_record(&mut hub, store)?;
+        if !Self::action_context_matches(&hub, expected) { return Err(UNAVAILABLE.into()); }
+        let (kind, position) = hub.world.as_ref().and_then(|world| world.slot_geometry(slot)).ok_or(UNAVAILABLE)?;
+        Ok(ActionSlotTarget { id: slot.clone(), kind, position })
+    }
+    /// Current selected display observation, never a window/layout proof. The
+    /// host must compare this with its fresh actual Prepared geometry.
+    pub(crate) fn native_output_geometry(&self, store: &Store, expected: &ActionContext) -> Result<OutputGeometry, String> {
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        Self::refresh_record(&mut hub, store)?;
+        if !Self::action_context_matches(&hub, expected) { return Err(UNAVAILABLE.into()); }
+        let topology = hub.topology.as_ref().ok_or(UNAVAILABLE)?;
+        let record = hub.record.as_ref().ok_or(UNAVAILABLE)?;
+        let preferred = record.output_binding.monitor_id.as_deref().unwrap_or_default();
+        select(topology, preferred).map(|display| display.geometry.clone()).ok_or(UNAVAILABLE.into())
+    }
+    fn check_action_slot(hub: &mut Hub, expected: &ActionContext, slot: &SlotReservation, now: u64) -> Result<(), String> {
+        // `synchronize` may have waited in Store after sampling its clock. Age
+        // the actual World again before rejecting a locally expired lease so
+        // its reservation cannot remain publicly occupied at that old sample.
+        hub.world.as_mut().ok_or(UNAVAILABLE)?.advance(now).map_err(|_| UNAVAILABLE)?;
+        if !slot.fresh(now) || !Self::action_context_matches(hub, expected) { return Err(UNAVAILABLE.into()); }
+        let world = hub.world.as_mut().ok_or(UNAVAILABLE)?;
+        if world.slot_geometry(&slot.target.id) != Some((slot.target.kind, slot.target.position)) { return Err(UNAVAILABLE.into()); }
+        let member = world.member_handle(expected.session.actor_id()).ok_or(UNAVAILABLE)?;
+        if world.validate_reservation(&slot.lease, &member, now).map_err(|_| UNAVAILABLE)? != slot.target.position { return Err(UNAVAILABLE.into()); }
+        Ok(())
+    }
+    /// Core is held by the caller. This must run after the real Plan and after
+    /// the earlier with_action_context closure has released this Hub guard.
+    pub(crate) fn reserve_action_slot_current(
+        &self, core: &crate::life_runtime::core::Core, store: &Store, expected: &ActionContext,
+        target: ActionSlotTarget, action: crate::life_domain::ActionId, ttl: u64, now: impl Fn() -> u64,
+    ) -> Result<SlotReservation, String> {
+        let issued = now();
+        let valid_until = issued.checked_add(ttl).filter(|value| *value <= MAX_COUNTER).ok_or(UNAVAILABLE)?;
+        let lease = self.reserve_current(core, store, expected.session.actor_id().as_str(), WorkIdentity::Life(action), &target.id, ttl, issued)?;
+        let slot = SlotReservation { target, lease, valid_from: issued, valid_until };
+        if let Err(error) = self.validate_action_slot_current(core, store, expected, &slot, &now) {
+            let _ = self.release(&expected.session, &slot.lease, now());
+            return Err(error);
+        }
+        Ok(slot)
+    }
+    pub(crate) fn validate_action_slot_current(
+        &self, core: &crate::life_runtime::core::Core, store: &Store, expected: &ActionContext, slot: &SlotReservation, now: impl Fn() -> u64,
+    ) -> Result<(), String> {
+        self.synchronize(store, &current_actors(core), None, now())?;
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        Self::refresh_record(&mut hub, store)?;
+        Self::check_action_slot(&mut hub, expected, slot, now())
+    }
+    pub(crate) fn renew_action_slot_current(
+        &self, core: &crate::life_runtime::core::Core, store: &Store, expected: &ActionContext, slot: &mut SlotReservation, ttl: u64, now: impl Fn() -> u64,
+    ) -> Result<(), String> {
+        self.synchronize(store, &current_actors(core), None, now())?;
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        Self::refresh_record(&mut hub, store)?;
+        let renewed = now();
+        let valid_until = renewed.checked_add(ttl).filter(|value| *value <= MAX_COUNTER).ok_or(UNAVAILABLE)?;
+        Self::check_action_slot(&mut hub, expected, slot, renewed)?;
+        let world = hub.world.as_mut().ok_or(UNAVAILABLE)?;
+        let member = world.member_handle(expected.session.actor_id()).ok_or(UNAVAILABLE)?;
+        world.renew(&slot.lease, &member, ttl, renewed).map_err(|_| UNAVAILABLE)?;
+        slot.valid_from = renewed; slot.valid_until = valid_until;
+        Ok(())
+    }
+    /// Exact lease ownership is held stable by this same Hub guard through
+    /// Store CAS. The callback must additionally check slot.fresh(now()) after
+    /// SQLite waits; no GUI, Core or World reentry is permitted here.
+    pub(crate) fn with_action_slot_context<T>(
+        &self, store: &Store, expected: &ActionContext, slot: &SlotReservation, now: impl Fn() -> u64,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        Self::refresh_record(&mut hub, store)?;
+        Self::check_action_slot(&mut hub, expected, slot, now())?;
+        operation()
+    }
+    pub(crate) fn apply_slot_progress(
+        &self, store: &Store, expected: &ActionContext, slot: &SlotReservation, position: Point,
+        now: impl Fn() -> u64, admit: impl FnOnce() -> bool,
+    ) -> Result<ActionContext, String> {
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        Self::refresh_record(&mut hub, store)?;
+        Self::check_action_slot(&mut hub, expected, slot, now())?;
+        if !slot.fresh(now()) || !admit() { return Err(UNAVAILABLE.into()); }
+        let world = hub.world.as_mut().ok_or(UNAVAILABLE)?;
+        let member = world.member_handle(expected.session.actor_id()).ok_or(UNAVAILABLE)?;
+        world.move_actor(&member, position).map_err(|_| UNAVAILABLE)?;
+        let mut next = expected.clone(); next.position = position; Ok(next)
     }
     /// Exact native revocation proof for failed local work. A new session is
     /// untouched. Pure unbind atomically removes its old session's every lease.

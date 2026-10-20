@@ -280,7 +280,10 @@ impl Core {
         };
         source.context.session == stamp
             && source.context.session.actor_id().as_str() == bot
-            && self.world_ui_connection(raw) == Some(source.ui_connection.as_str())
+            && match &source.route {
+                crate::world_output::SourceRoute::Studio => self.world_ui_connection(raw) == Some(source.ui_connection.as_str()),
+                crate::world_output::SourceRoute::Native(p) => p.context_current(self, raw) && p.live_current(raw),
+            }
             && self
                 .sessions
                 .get(bot)
@@ -301,7 +304,11 @@ impl Core {
         raw: u64,
     ) -> Result<crate::world_output::MeasurementAck, crate::world_output::RenderReason> {
         let now = raw.max(self.last_time);
-        if self.world_ui_connection(now) != Some(source.ui_connection.as_str()) {
+        let current = match &source.route {
+            crate::world_output::SourceRoute::Studio => self.world_ui_connection(now) == Some(source.ui_connection.as_str()),
+            crate::world_output::SourceRoute::Native(p) => p.context_current(self,now) && (p.preparing_current(now)||p.live_current(now)),
+        };
+        if !current {
             return Err(crate::world_output::RenderReason::StaleBinding);
         }
         self.world_outputs

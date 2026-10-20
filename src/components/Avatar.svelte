@@ -55,6 +55,13 @@
   export function beginWorldAfterDelivered(fence:MotionFence,offerSequence:number):boolean {return stage?.beginWorldAfterDelivered(fence,offerSequence)??false;}
   export function confirmWorldStarted(fence:MotionFence,firstBehaviorFrameSequence:number):boolean {return stage?.confirmWorldStarted(fence,firstBehaviorFrameSequence)??false;}
   export function cancelWorld(reason:WorldAdapterReason='cancelled'):void {stage?.cancelWorld(reason);}
+  export async function prepareNativeWorldWarm(signal:AbortSignal):Promise<{frameSequence:number;release:PresentationRelease}>{
+    if(signal.aborted||disposed)throw presentationAbortError();
+    await tick();
+    const renderer=stage;
+    if(signal.aborted||disposed||!renderer||unavailable)throw presentationAbortError();
+    return renderer.prepareNativeWorldWarm(signal);
+  }
 
   onMount(() => {
     try {

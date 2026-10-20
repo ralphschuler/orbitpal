@@ -12,3 +12,6 @@ mod execution;
 pub(crate) use execution::VisualExecution;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+#[path = "world_output/native_policy_tests.rs"]
+mod native_policy_tests;

@@ -537,11 +537,17 @@ fn open_window(app:&tauri::AppHandle,bot_id:&str,profile:Value,session:Option<&c
         let _=app.emit("cohost://overlay-state",json!({"botId":bot_id,"active":true}));return Ok(());
     }
     if let Some(legacy)=app.get_webview_window("avatar"){let _=legacy.close();}
+    let signals=Arc::new(crate::window_signals::WindowSignals::default());
+    let policy=crate::life_runtime::native_scene_document::NavigationPolicy::for_app(app,bot_id)?;
+    let mut document_guard=crate::life_runtime::native_scene_document::track(app,bot_id,&signals);
+    let navigation_app=app.clone();let navigation_policy=policy.clone();let navigation_signals=signals.clone();
+    let load_signals=signals.clone();
     let window=tauri::WebviewWindowBuilder::new(app,&label,tauri::WebviewUrl::App(format!("index.html?overlay=1&bot={bot_id}").into()))
+        .on_navigation(move|url|crate::life_runtime::native_scene_document::navigation(&navigation_app,&navigation_policy,&navigation_signals,url))
+        .on_page_load(move|window,payload|crate::life_runtime::native_scene_document::page_load(&window,&policy,&load_signals,payload))
         .title(format!("OrbitPal · {}",profile["name"].as_str().unwrap_or("Charakter"))).inner_size(520.,720.).transparent(true).decorations(false).shadow(false).resizable(true).visible(false)
         .always_on_top(profile["output"]["alwaysOnTop"].as_bool().unwrap_or(false)).build().map_err(|error|error.to_string())?;
     let mut constructor_guard=NewWindowGuard{window:window.clone(),handed:false};
-    let signals=Arc::new(crate::window_signals::WindowSignals::default());
     if let Some(lease)=session{
         if !state.life_runtime.session_outputs.attach(lease,window.clone(),signals.clone(),true,false){let _=window.close();return Err("Der Start von Life wurde abgebrochen.".into());}
     }
@@ -598,6 +604,7 @@ fn open_window(app:&tauri::AppHandle,bot_id:&str,profile:Value,session:Option<&c
         }
         if let tauri::WindowEvent::ScaleFactorChanged{..}=event{crate::overlay_presentation::sync_or_report(&handle,&bot_id);}
         if let tauri::WindowEvent::Destroyed=event{
+            crate::life_runtime::native_scene_document::retired(&handle,&bot_id,&signals);
             handle.state::<crate::AppState>().life_runtime.session_outputs.destroyed(&handle,&bot_id,&signals);
             // Setters can dispatch Destroyed inline on Main. Defer cleanup,
             // never wait for the transition's Hub mutex from that callback.
@@ -627,6 +634,7 @@ fn open_window(app:&tauri::AppHandle,bot_id:&str,profile:Value,session:Option<&c
             });
         }
     });
+    document_guard.complete();
     constructor_guard.handed=true;
     if session.is_some(){crate::life_runtime::session_output::initial_window_position(app,&window,profile["id"].as_str().ok_or("Bot-ID fehlt")?)?;}
     window.set_ignore_cursor_events(profile["output"]["clickThrough"].as_bool().unwrap_or(false)).map_err(|error|error.to_string())?;

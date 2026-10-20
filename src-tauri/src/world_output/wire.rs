@@ -161,6 +161,48 @@ pub(crate) struct BindingStamp {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CameraPolicy {
     WorldIsoV1,
+    NativePhysicalIsoV1,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum NormalCamera { Full, Portrait }
+/// Host-issued physical reference; it is never accepted from a registration
+/// request. Keeping a normal-window reference avoids enlarging the character
+/// just because its native canvas now spans a whole display.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct NativePhysicalPolicy {
+    pub kind: CameraPolicy,
+    pub reference_physical_height: u32,
+    pub physical_width: u32,
+    pub physical_height: u32,
+    pub scale_factor: f64,
+    pub normal_camera: NormalCamera,
+    pub normal_vertical_span: f64,
+    pub vertical_span: f64,
+}
+impl NativePhysicalPolicy {
+    pub(crate) fn new(reference: u32, width: u32, height: u32, scale: f64, camera: NormalCamera) -> Result<Self, RenderReason> {
+        let distance = match camera { NormalCamera::Full => 0.55_f64.hypot(0.7).hypot(7.6), NormalCamera::Portrait => 0.35_f64.hypot(0.48).hypot(5.4) };
+        let normal_vertical_span = 2.0 * distance * (32.0_f64.to_radians() / 2.0).tan();
+        let policy = Self { kind: CameraPolicy::NativePhysicalIsoV1, reference_physical_height: reference,
+            physical_width: width, physical_height: height, scale_factor: scale, normal_camera: camera,
+            normal_vertical_span, vertical_span: normal_vertical_span * f64::from(height) / f64::from(reference) };
+        policy.valid().then_some(policy).ok_or(RenderReason::LayoutUnconfirmed)
+    }
+    pub(crate) fn valid(self) -> bool {
+        let dimension = |n: u32| n > 0 && f64::from(n) <= MAX_DIM;
+        let distance = match self.normal_camera { NormalCamera::Full => 0.55_f64.hypot(0.7).hypot(7.6), NormalCamera::Portrait => 0.35_f64.hypot(0.48).hypot(5.4) };
+        let normal = 2.0 * distance * (32.0_f64.to_radians() / 2.0).tan();
+        let expected = normal * f64::from(self.physical_height) / f64::from(self.reference_physical_height);
+        self.kind == CameraPolicy::NativePhysicalIsoV1 && dimension(self.reference_physical_height)
+            && dimension(self.physical_width) && dimension(self.physical_height)
+            && self.scale_factor.is_finite() && (0.25..=8.0).contains(&self.scale_factor)
+            && self.normal_vertical_span.is_finite() && (self.normal_vertical_span - normal).abs() <= 1e-8
+            && self.vertical_span.is_finite() && self.vertical_span > 0.0 && self.vertical_span <= MAX_DIM
+            && (self.vertical_span - expected).abs() <= 1e-8
+    }
+    pub(crate) fn viewport(self) -> CssSize { CssSize { width: f64::from(self.physical_width) / self.scale_factor, height: f64::from(self.physical_height) / self.scale_factor } }
 }
 /// Encloses current CPU-submitted source geometry under the current Three.js
 /// Float64 graph. This is not tight extrema, shader/GPU or visible-pixel proof.
@@ -177,6 +219,8 @@ pub(crate) struct MeasurementChallenge {
     pub expires_in_ms: u16,
     pub expected: BindingStamp,
     pub camera_policy: CameraPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_framing: Option<NativePhysicalPolicy>,
     pub enclosure_kind: EnclosureKind,
     pub profile_scale: f64,
     pub effective_scale: f64,
@@ -198,6 +242,12 @@ pub(crate) struct MotionBinding {
     pub measurement_revision: u64,
     pub reference_revision: u64,
     pub enclosure_kind: EnclosureKind,
+    // Studio's established binding schema stays unchanged. Native bindings
+    // always carry this closed pair; a missing half cannot become Studio.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_policy: Option<CameraPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_framing: Option<NativePhysicalPolicy>,
     pub viewport: CssSize,
     pub safe_centers: CssRect,
     pub maximum_footprint: CssSize,
@@ -248,7 +298,7 @@ pub(crate) struct RegisterWorldActor {
     pub studio_proof: Option<crate::life_runtime::action_state::UiProof>,
 }
 impl RegisterWorldActor {
-    pub fn valid(&self) -> bool {
+    pub(crate) fn valid_native_scope(&self) -> bool {
         self.version == 1
             && [
                 &self.mount_id,
@@ -259,6 +309,9 @@ impl RegisterWorldActor {
             .into_iter()
             .all(|v| id(v))
             && counter(self.config_revision)
+    }
+    pub fn valid(&self) -> bool {
+        self.valid_native_scope()
             && self
                 .studio_proof
                 .as_ref()

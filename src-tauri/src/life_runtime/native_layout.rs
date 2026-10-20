@@ -1,10 +1,11 @@
 //! Private constructor-bound native layout driver. Preparation is not reachable
-//! from ordinary overlay opening, IPC, model tools or renderer messages. It is
-//! geometry observation only; no conversion to World Ready or action authority.
+//! from ordinary overlay opening, IPC, model tools or renderer messages.
+//! Preparation stays non-authorizing. One-use promotion follows real Registry
+//! calibration; only the root transport may publish Ready or admit an action.
 use super::{action_state::LocalFence,core::Core,native_output_route::{LayoutRoute,LayoutRouteState,LayoutUi,PreparationTicket},LifeRuntime};
 use crate::{overlay_presentation::{Bounds,LayoutError,LayoutHandle,LayoutMain,LayoutOwner,LayoutPhase,LayoutSample,NativeLayoutMain},storage::Store,world_hub::{ActionContext,WorldHub},world_state::SessionStamp};
 use serde_json::Value;
-use std::{sync::{atomic::{AtomicBool,Ordering},Arc},time::Duration};
+use std::{sync::{atomic::{AtomicBool,Ordering},Arc,Mutex,Weak},time::Duration};
 use tauri::Manager;
 
 pub(crate) struct NativeLayoutIntent {host:Arc<dyn LayoutHost>,ticket:PreparationTicket,handle:LayoutHandle}
@@ -21,6 +22,90 @@ pub(crate) enum NativeLayoutRestoreOutcome {ReleasedWithoutGeometry,Restored,Ret
 impl Drop for NativeLayoutRelease {fn drop(&mut self){self.owner.cancelled();}}
 impl NativeLayoutPrepared {
     pub(crate) fn current(&self,now:u64)->bool{self.release.owner.valid(now)&&self.release.owner.phase()==LayoutPhase::Prepared&&self.release.owner.getter_fence().is_ok()&&self.release.host.route_current(&self.release.route)}
+    pub(crate) async fn release(self)->NativeLayoutRestoreOutcome{self.release.owner.cancelled();loop{let notified=self.release.completed.changed.notified();if let Some(result)=self.release.completed.result(){return result;}notified.await;}}
+}
+/// The cell is shared by the existing owner and route; it owns no Normal,
+/// cleanup or independent cancellation identity. Only the owning live handle
+/// can advance successful-frame evidence after Registry validation.
+const LIVE_FRAME_MS:u64=5_000;
+const ADMISSION_FRAME_MS:u64=250;
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum SurfacePhase{Pending,Live,Revoked}
+struct SurfaceState{phase:SurfacePhase,frame:u64,received:u64,admitted:u64,geometry_current:bool}
+pub(crate) struct SurfaceCell{cancel:Arc<AtomicBool>,issued:u64,deadline:u64,state:Mutex<SurfaceState>}
+impl SurfaceCell{
+    fn new(owner:&LayoutOwner)->Arc<Self>{Arc::new(Self{cancel:owner.cancel.clone(),issued:owner.issued,deadline:owner.deadline,state:Mutex::new(SurfaceState{phase:SurfacePhase::Pending,frame:0,received:0,admitted:0,geometry_current:true})})}
+    fn lock(&self)->Result<std::sync::MutexGuard<'_,SurfaceState>,LayoutError>{self.state.lock().map_err(|_|{self.cancel.store(true,Ordering::SeqCst);LayoutError::Unavailable})}
+    pub(crate) fn matches(&self,cancel:&Arc<AtomicBool>,issued:u64,deadline:u64)->bool{Arc::ptr_eq(&self.cancel,cancel)&&self.issued==issued&&self.deadline==deadline}
+    pub(crate) fn retained_current(&self,now:u64)->bool{
+        if self.cancel.load(Ordering::SeqCst)||now<self.issued{return false;}
+        self.lock().is_ok_and(|s|match s.phase{SurfacePhase::Pending=>now<=self.deadline,SurfacePhase::Live=>now>=s.admitted&&now>=s.received&&now-s.received<=LIVE_FRAME_MS,SurfacePhase::Revoked=>false})
+    }
+    pub(crate) fn pending_current(&self,now:u64)->bool{self.retained_current(now)&&self.lock().is_ok_and(|s|s.phase==SurfacePhase::Pending&&s.geometry_current)}
+    pub(crate) fn live_current(&self,now:u64)->bool{self.retained_current(now)&&self.lock().is_ok_and(|s|s.phase==SurfacePhase::Live&&s.geometry_current)}
+    pub(crate) fn invalidate_geometry(&self){if let Ok(mut s)=self.lock(){s.geometry_current=false;if s.phase==SurfacePhase::Live{s.phase=SurfacePhase::Revoked;self.cancel.store(true,Ordering::SeqCst);}}}
+    pub(crate) fn confirm_geometry(&self,now:u64)->Result<(),LayoutError>{if !self.retained_current(now){return Err(LayoutError::Expired);}let mut s=self.lock()?;if s.phase==SurfacePhase::Revoked{return Err(LayoutError::Stale);}s.geometry_current=true;Ok(())}
+    pub(crate) fn revoke(&self){self.cancel.store(true,Ordering::SeqCst);if let Ok(mut s)=self.state.lock(){s.phase=SurfacePhase::Revoked;}}
+    pub(crate) fn commit(&self,frame:u64,received:u64,now:u64,clock:&impl Fn()->u64)->Result<(),LayoutError>{
+        let mut s=self.lock()?;let now=now.max(clock());
+        if s.phase!=SurfacePhase::Pending||!s.geometry_current||self.cancel.load(Ordering::SeqCst)||now<self.issued||now>self.deadline||received<self.issued||received>now||now-received>ADMISSION_FRAME_MS||frame==0||frame>crate::life_domain::MAX_COUNTER{return Err(LayoutError::Expired);}
+        s.phase=SurfacePhase::Live;s.frame=frame;s.received=received;s.admitted=now;Ok(())
+    }
+    fn accepted(&self,frame:u64,received:u64,now:u64,clock:&impl Fn()->u64)->Result<(),LayoutError>{
+        let mut s=self.lock()?;let now=now.max(clock());
+        if s.phase!=SurfacePhase::Live||self.cancel.load(Ordering::SeqCst)||now<s.admitted||now<s.received||now-s.received>LIVE_FRAME_MS||frame<=s.frame||frame>crate::life_domain::MAX_COUNTER||received<=s.received||received>now||now-received>ADMISSION_FRAME_MS{return Err(LayoutError::Expired);}
+        s.frame=frame;s.received=received;s.admitted=now;Ok(())
+    }
+}
+#[derive(Clone)]
+pub(crate) struct NativeSurfaceProof{owner:Weak<LayoutOwner>,host:Weak<dyn LayoutHost>,route:LayoutRoute,cell:Arc<SurfaceCell>}
+impl std::fmt::Debug for NativeSurfaceProof{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str("NativeSurfaceProof")}}
+impl NativeSurfaceProof{
+    pub(crate) fn same_surface(&self,other:&Self)->bool{Weak::ptr_eq(&self.owner,&other.owner)&&Arc::ptr_eq(&self.cell,&other.cell)}
+    pub(crate) fn preparing_current(&self,now:u64)->bool{self.owner.upgrade().is_some_and(|owner|owner.promotion_current(&self.cell,now))&&self.host.upgrade().is_some_and(|host|host.route_current(&self.route))}
+    pub(crate) fn live_current(&self,now:u64)->bool{self.owner.upgrade().is_some_and(|owner|owner.live_current(&self.cell,now))&&self.host.upgrade().is_some_and(|host|host.route_current(&self.route))}
+    pub(crate) fn current(&self,now:u64)->bool{self.live_current(now)}
+}
+pub(crate) struct PromotionGuard{pub(crate) bounds:Bounds,pub(crate) scale:f64,pub(crate) reference_physical_height:u32,release:NativeLayoutRelease,cell:Arc<SurfaceCell>}
+pub(crate) struct LiveNativeSurface{pub(crate) bounds:Bounds,pub(crate) scale:f64,pub(crate) reference_physical_height:u32,release:NativeLayoutRelease,cell:Arc<SurfaceCell>}
+fn surface_proof(release:&NativeLayoutRelease,cell:&Arc<SurfaceCell>)->NativeSurfaceProof{NativeSurfaceProof{owner:Arc::downgrade(&release.owner),host:Arc::downgrade(&release.host),route:release.route.clone(),cell:cell.clone()}}
+impl NativeLayoutPrepared{
+    pub(crate) fn begin_promotion(self,now:u64)->Result<PromotionGuard,LayoutError>{
+        let now=now.max(self.release.host.now());
+        if !self.release.owner.valid(now)||self.release.owner.phase()!=LayoutPhase::Prepared||self.release.host.route_state(&self.release.route)==LayoutRouteState::Revoked{return Err(LayoutError::Stale);}
+        let cell=SurfaceCell::new(&self.release.owner);
+        self.release.owner.begin_promotion(&cell,now)?;
+        self.release.host.stage_surface(&self.release.route,&cell)?;
+        if !self.release.owner.pending_retained(&cell,now)||self.release.host.route_state(&self.release.route)==LayoutRouteState::Revoked{return Err(LayoutError::Stale);}
+        let Self{bounds,scale,reference_physical_height,release}=self;
+        Ok(PromotionGuard{bounds,scale,reference_physical_height,release,cell})
+    }
+}
+impl PromotionGuard{
+    pub(crate) async fn release(self)->NativeLayoutRestoreOutcome{self.release.owner.cancelled();loop{let notified=self.release.completed.changed.notified();if let Some(result)=self.release.completed.result(){return result;}notified.await;}}
+    pub(crate) fn proof(&self)->NativeSurfaceProof{surface_proof(&self.release,&self.cell)}
+    /// Caller has accepted the genuine calibration in Registry and rechecked
+    /// actual context/time under Core. No public/action Ready before this call.
+    pub(crate) fn commit_live(self,frame_sequence:u64,received:u64,now:u64)->Result<LiveNativeSurface,LayoutError>{
+        let now=now.max(self.release.host.now());
+        if !self.release.host.route_current(&self.release.route){return Err(LayoutError::Stale);}
+        self.release.owner.commit_live(&self.cell,frame_sequence,received,now,&||self.release.host.now())?;
+        if !self.release.host.route_current(&self.release.route){return Err(LayoutError::Stale);}
+        let Self{bounds,scale,reference_physical_height,release,cell}=self;
+        Ok(LiveNativeSurface{bounds,scale,reference_physical_height,release,cell})
+    }
+}
+impl LiveNativeSurface{
+    pub(crate) fn proof(&self)->NativeSurfaceProof{surface_proof(&self.release,&self.cell)}
+    pub(crate) fn current(&self,now:u64)->bool{self.proof().live_current(now)}
+    /// Called only AFTER exact Registry accepted a newer successful frame.
+    /// A failure leaves previous evidence unchanged, never resurrects expiry.
+    pub(crate) fn accepted_frame(&self,frame_sequence:u64,received:u64,now:u64)->Result<(),LayoutError>{
+        let now=now.max(self.release.host.now());
+        if !self.current(now){return Err(LayoutError::Stale);}
+        self.cell.accepted(frame_sequence,received,now,&||self.release.host.now())?;
+        if !self.current(now){return Err(LayoutError::Stale);}Ok(())
+    }
     pub(crate) async fn release(self)->NativeLayoutRestoreOutcome{self.release.owner.cancelled();loop{let notified=self.release.completed.changed.notified();if let Some(result)=self.release.completed.result(){return result;}notified.await;}}
 }
 /// Phase Released is only a Main observation; the permit/Hub/route can still
@@ -53,7 +138,9 @@ pub(crate) fn context_current(expected:&LayoutContext,core:&Core,store:&Store,wo
     if profile!=expected.profile||!store.profile().is_ok_and(|p|p["id"]==expected.bot){return false;}
     world.registration_context(store,&expected.world.session,&expected.world.source_world).is_ok_and(|(current,_)|current==expected.world)
 }
-/// No method is called under a Hub/owner guard. Implementations do not put GUI
+/// Only now() may run under owner/cell guards: it MUST be a nonblocking native
+/// monotonic clock read, with no Core/Store/GUI/registry access. Other methods
+/// are never called under those guards. Implementations do not put GUI
 /// calls in validate/persist; all GUI work uses the separately scheduled runner.
 pub(crate) trait LayoutHost:Send+Sync {
     fn now(&self)->u64;
@@ -67,6 +154,8 @@ pub(crate) trait LayoutHost:Send+Sync {
     fn handoff(&self,ticket:&PreparationTicket,owner:&Arc<LayoutOwner>)->Result<LayoutRoute,LayoutError>;
     fn route_state(&self,route:&LayoutRoute)->LayoutRouteState;
     fn route_current(&self,route:&LayoutRoute)->bool{self.route_state(route)==LayoutRouteState::Current}
+    fn stage_surface(&self,route:&LayoutRoute,cell:&Arc<SurfaceCell>)->Result<(),LayoutError>;
+    fn validate_live(&self,cancel:&Arc<AtomicBool>)->Result<(),LayoutError>;
     fn release_route(&self,route:&LayoutRoute)->bool;
     fn finish(&self,owner:&Arc<LayoutOwner>)->bool;
     fn policy(&self)->Option<crate::storage::profile_mutation::NativeLayoutPolicy>;
@@ -97,6 +186,8 @@ impl LayoutHost for NativeHost {
     fn retain(&self,ticket:&PreparationTicket,handle:&LayoutHandle,cancel:&Arc<AtomicBool>)->Result<LayoutRoute,LayoutError>{self.app.state::<crate::AppState>().life_runtime.native_routes.retain_preparation(ticket,handle.signals(),cancel,&self.expected.ui,self.now()).map_err(|_|LayoutError::Stale)}
     fn handoff(&self,ticket:&PreparationTicket,owner:&Arc<LayoutOwner>)->Result<LayoutRoute,LayoutError>{self.app.state::<crate::AppState>().life_runtime.native_routes.handoff_preparation(ticket,owner.handle().signals(),&owner.cancel,&self.expected.ui,self.now()).map_err(|_|LayoutError::Stale)}
     fn route_state(&self,route:&LayoutRoute)->LayoutRouteState{self.app.state::<crate::AppState>().life_runtime.native_routes.layout_state(route,self.now())}
+    fn stage_surface(&self,route:&LayoutRoute,cell:&Arc<SurfaceCell>)->Result<(),LayoutError>{self.app.state::<crate::AppState>().life_runtime.native_routes.stage_surface(route,cell,self.now()).map_err(|_|LayoutError::Stale)}
+    fn validate_live(&self,cancel:&Arc<AtomicBool>)->Result<(),LayoutError>{self.validate(cancel)}
     fn release_route(&self,route:&LayoutRoute)->bool{self.app.state::<crate::AppState>().life_runtime.native_routes.release_layout(route)}
     fn finish(&self,owner:&Arc<LayoutOwner>)->bool{let state=self.app.state::<crate::AppState>();let finished=state.presentation.finish_native(owner);if finished&&owner.handle().current(){crate::overlay::configure_after_native_release(&self.app,owner.handle().clone());crate::overlay_presentation::sync_after_native_release(&self.app,owner.handle().bot(),owner.handle().signals().clone());}finished}
     fn policy(&self)->Option<crate::storage::profile_mutation::NativeLayoutPolicy>{self.app.state::<crate::AppState>().store.native_layout_policy(&self.expected.bot)}
@@ -132,7 +223,7 @@ async fn main_job<T:Send+'static>(host:Arc<dyn LayoutHost>,owner:Arc<LayoutOwner
     let permit=owner.begin_main(cleanup,host.now())?;
     let (tx,rx)=tokio::sync::oneshot::channel();let current=host.clone();let job_owner=owner.clone();
     host.main().enqueue(Box::new(move||{let result=if permit.allowed(cleanup,current.now()){operation(&job_owner)}else{Err(LayoutError::Expired)};drop(permit);let _=tx.send(result);}))?;
-    let wait=if cleanup{1000}else{owner.deadline.checked_sub(host.now()).ok_or(LayoutError::Expired)?};
+    let wait=if cleanup{1000}else{owner.observation_wait(host.now()).ok_or(LayoutError::Expired)?};
     tokio::time::timeout(Duration::from_millis(wait),rx).await.map_err(|_|LayoutError::Expired)?.map_err(|_|LayoutError::Dispatch)?
 }
 struct CleanupState {route:std::sync::Mutex<Option<LayoutRoute>>,preparing:AtomicBool,ready:std::sync::Mutex<Option<LayoutSample>>}
@@ -213,17 +304,43 @@ async fn wait_for_observation(host:&Arc<dyn LayoutHost>,owner:&Arc<LayoutOwner>)
 
 async fn cleanup(host:Arc<dyn LayoutHost>,owner:Arc<LayoutOwner>,state:Arc<CleanupState>,completed:Arc<CleanupCompletion>){
     loop {
-        if owner.cancel.load(Ordering::SeqCst)||host.now()>owner.deadline||owner.destroyed(){break;}
-        if owner.phase()==LayoutPhase::Prepared {
+        if owner.cleanup_required(host.now()){break;}
+        let phase=owner.phase();
+        if matches!(phase,LayoutPhase::Live|LayoutPhase::PromotionPending) {
+            let Some(route)=state.route.lock().ok().and_then(|route|route.clone())else{owner.cancelled();break;};
+            match host.route_state(&route){
+                LayoutRouteState::Revoked=>{owner.cancelled();break;},
+                LayoutRouteState::Classifying=>{tokio::time::sleep(Duration::from_millis(25)).await;continue;},
+                LayoutRouteState::Current=>{}
+            }
+            let fence=match owner.getter_fence(){Ok(fence)=>fence,Err(_)=>{owner.cancelled();break;}};
+            let expected=state.ready.lock().ok().and_then(|ready|ready.clone());
+            // This queued operation ONLY reads the exact retained window. It
+            // owns no setter permit and cannot delay or undo actual cleanup.
+            // A phase/cancel change discards its result below.
+            let observation_deadline=host.now().checked_add(250).map(|deadline|if phase==LayoutPhase::PromotionPending{deadline.min(owner.deadline)}else{deadline});
+            let observed=match observation_deadline{Some(deadline)=>initial_sample(host.clone(),owner.handle().clone(),owner.cancel.clone(),deadline).await,None=>Err(LayoutError::Expired)};
+            if owner.phase()!=phase{continue;}
+            match host.route_state(&route){LayoutRouteState::Revoked=>{owner.cancelled();break;},LayoutRouteState::Classifying=>continue,LayoutRouteState::Current=>{}}
+            match (observed,expected){
+                (Ok(sample),Some(expected)) if sample.visible&&sample.bounds==expected.bounds&&sample.inner==sample.outer&&sample.monitor==expected.monitor&&sample.same_topology(&expected)=>{
+                    if owner.verify_surface_getter(fence,sample.bounds,host.now()).is_err()||host.validate_live(&owner.cancel).is_err(){owner.cancelled();break;}
+                },
+                _=>{owner.cancelled();break;}
+            }
+        } else if phase==LayoutPhase::Prepared {
             if owner.getter_fence().is_err(){owner.cancelled();break;}
             let expected=state.ready.lock().ok().and_then(|ready|ready.clone());
             if let Some(expected)=expected {
-                // No platform visibility event is assumed. This fresh Main
-                // sample is observation only and never renews the deadline.
+                // Observation only: neither native getters nor metadata renew
+                // preparation D5 or the separate successful-frame lease.
                 let observed=main_job(host.clone(),owner.clone(),false,|o|o.handle().sample()).await;
+                if owner.phase()!=LayoutPhase::Prepared{continue;}
                 if observed.is_err()||observed.as_ref().is_ok_and(|sample|!sample.visible||sample.bounds!=expected.bounds||sample.inner!=sample.outer||!sample.same_topology(&expected))||host.validate(&owner.cancel).is_err(){owner.cancelled();break;}
             }
         }
+        // PromotionPending retains D5. Read-only native samples never renew
+        // time or a successful-frame lease, and no setters are issued here.
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     owner.cancelled();
@@ -260,4 +377,16 @@ async fn cleanup(host:Arc<dyn LayoutHost>,owner:Arc<LayoutOwner>,state:Arc<Clean
     while !owner.destroyed()||owner.in_flight(){tokio::time::sleep(Duration::from_millis(250)).await;}
     owner.finish_destroyed();
     if hub_finished||host.finish(&owner){if let Ok(route)=state.route.lock(){if let Some(route)=route.as_ref(){host.release_route(route);}}}
+}
+
+#[cfg(test)]
+mod surface_cell_tests{
+    use super::*;
+    #[test]
+    fn poisoned_live_cell_cancels_retained_proofs_and_never_recovers_authority(){
+        let cancel=Arc::new(AtomicBool::new(false));
+        let cell=SurfaceCell{cancel:cancel.clone(),issued:0,deadline:5000,state:Mutex::new(SurfaceState{phase:SurfacePhase::Live,frame:1,received:0,admitted:0,geometry_current:true})};
+        let _=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{let _held=cell.state.lock().unwrap();panic!("synthetic surface poison");}));
+        assert!(!cell.retained_current(0));assert!(cancel.load(Ordering::SeqCst));assert!(!cell.live_current(0));assert!(cell.accepted(2,1,1,&||1).is_err());assert!(cell.commit(2,1,1,&||1).is_err());assert!(cell.state.is_poisoned());
+    }
 }
