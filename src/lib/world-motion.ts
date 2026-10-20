@@ -2,25 +2,17 @@
 /** Pure, currently unwired World motion adapter. Inputs are authorized LOCAL
  * CSS targets: no canonical/DPI conversion, DOM, native APIs, timers or random
  * goals. A mathematical target is never a successful-render/arrival receipt. */
-export type CssPoint = Readonly<{ x: number; y: number }>;
-export type CssSize = Readonly<{ width: number; height: number }>;
-export type CssRect = Readonly<{ left: number; top: number; right: number; bottom: number }>;
+import type { CssPoint as WirePoint, CssSize as WireSize, CssRect as WireRect,
+  ActionId as WireActionId, GroundBasis as WireBasis, MotionBinding as WireBinding,
+  MotionFence as WireFence, EnvelopeExtents, LocalReference } from './world-output';
+export type CssPoint = Readonly<WirePoint>;
+export type CssSize = Readonly<WireSize>;
+export type CssRect = Readonly<WireRect>;
 export type GroundPoint = Readonly<{ x: number; z: number }>;
-export type ActionId = Readonly<{ actorId: string; worldId: string; ordinal: number }>;
-export type GroundBasis = Readonly<{ right: GroundPoint; down: GroundPoint }>;
-export type MotionBinding = Readonly<{
-  actorId: string; sourceWorldId: string; renderSessionId: string;
-  bindingSequence: number; worldInstanceId: string; stageId: string;
-  configRevision: number; topologyRevision: number; layoutRevision: number;
-  assetRevision: number; measurementRevision: number;
-  viewport: CssSize; safeCenters: CssRect; maximumFootprint: CssSize;
-  position: CssPoint; groundBasis: GroundBasis; modelForwardYaw: number;
-  scale: number; reducedMotion: boolean; walkSupported: boolean;
-}>;
-export type MotionFence = Readonly<Pick<MotionBinding,
-  'actorId' | 'renderSessionId' | 'bindingSequence' | 'worldInstanceId' | 'stageId'
-  | 'configRevision' | 'topologyRevision' | 'layoutRevision' | 'assetRevision' | 'measurementRevision'
-> & { actionId: ActionId; deliveryId: string }>;
+export type ActionId = Readonly<WireActionId>;
+export type GroundBasis = Readonly<WireBasis>;
+export type MotionBinding = Readonly<WireBinding>;
+export type MotionFence = Readonly<WireFence>;
 type Header = Readonly<{ version: 1; sequence: number; fence: MotionFence }>;
 export type MotionOffer = Header & Readonly<{
   type: 'offer'; activity: 'move_to'; from: CssPoint; target: CssPoint;
@@ -51,9 +43,10 @@ function directionOf(travel: CssPoint): Direction8 | null {
     ? directions[(Math.round(Math.atan2(travel.y, travel.x) / (Math.PI / 4)) + 8) % 8] : null;
 }
 const fenceKeys = ['actorId', 'renderSessionId', 'bindingSequence', 'worldInstanceId', 'stageId',
-  'configRevision', 'topologyRevision', 'layoutRevision', 'assetRevision', 'measurementRevision'] as const;
+  'configRevision', 'topologyRevision', 'layoutRevision', 'assetRevision', 'measurementRevision', 'referenceRevision'] as const;
 const bindingKeys = [...fenceKeys, 'sourceWorldId', 'viewport', 'safeCenters', 'maximumFootprint',
-  'position', 'groundBasis', 'modelForwardYaw', 'scale', 'reducedMotion', 'walkSupported'] as const;
+  'position', 'groundBasis', 'modelForwardYaw', 'scale', 'reducedMotion', 'walkSupported',
+  'referenceLocal', 'envelopeExtents', 'profileScale', 'effectiveScale'] as const;
 const clamp = (value: number, minimum: number, maximum: number) => Math.min(maximum, Math.max(minimum, value));
 const finite = (value: unknown, minimum: number, maximum: number): value is number => typeof value === 'number' && Number.isFinite(value) && value >= minimum && value <= maximum;
 const counter = (value: unknown): value is number => Number.isSafeInteger(value) && Number(value) > 0 && Number(value) <= MAX_COUNTER;
@@ -91,6 +84,20 @@ function basis(value: unknown): GroundBasis | null {
   if (Math.abs(r.x * d.z - r.z * d.x) < 1e-12) return null;
   return Object.freeze({ right: Object.freeze({ ...r }), down: Object.freeze({ ...d }) });
 }
+function reference(value: unknown): Readonly<LocalReference> | null {
+  const data = fields(value, ['x', 'y', 'z']);
+  return data && [data.x, data.y, data.z].every(n => finite(n, -MAX_DIMENSION, MAX_DIMENSION))
+    ? Object.freeze({ ...data }) as Readonly<LocalReference> : null;
+}
+function envelope(value: unknown): Readonly<EnvelopeExtents> | null {
+  const data = fields(value, ['left', 'top', 'right', 'bottom']);
+  return data && [data.left, data.top, data.right, data.bottom].every(n => finite(n, 0, MAX_DIMENSION))
+    ? Object.freeze({ ...data }) as Readonly<EnvelopeExtents> : null;
+}
+export function containsPosedEnvelope(anchor: CssPoint, posed: CssRect, extents: Readonly<EnvelopeExtents>, tolerance = 0): boolean {
+  return posed.left >= anchor.x - extents.left - tolerance && posed.right <= anchor.x + extents.right + tolerance
+    && posed.top >= anchor.y - extents.top - tolerance && posed.bottom <= anchor.y + extents.bottom + tolerance;
+}
 function inside(position: CssPoint, bounds: CssRect): boolean {
   return position.x >= bounds.left && position.x <= bounds.right && position.y >= bounds.top && position.y <= bounds.bottom;
 }
@@ -112,7 +119,7 @@ function actionId(value: unknown): ActionId | null {
 function fence(value: unknown): MotionFence | null {
   const data = fields(value, [...fenceKeys, 'actionId', 'deliveryId']);
   if (!data || !['actorId', 'renderSessionId', 'worldInstanceId', 'stageId', 'deliveryId'].every(key => id(data[key]))
-    || !['bindingSequence', 'configRevision', 'topologyRevision', 'layoutRevision', 'assetRevision', 'measurementRevision'].every(key => counter(data[key]))) return null;
+    || !['bindingSequence', 'configRevision', 'topologyRevision', 'layoutRevision', 'assetRevision', 'measurementRevision', 'referenceRevision'].every(key => counter(data[key]))) return null;
   const action = actionId(data.actionId);
   if (!action || action.actorId !== data.actorId) return null;
   return Object.freeze({ ...data, actionId: action }) as MotionFence;
@@ -120,17 +127,21 @@ function fence(value: unknown): MotionFence | null {
 export function parseMotionBinding(value: unknown): MotionBinding | null {
   const data = fields(value, bindingKeys);
   if (!data || !['actorId', 'sourceWorldId', 'renderSessionId', 'worldInstanceId', 'stageId'].every(key => id(data[key]))
-    || !['bindingSequence', 'configRevision', 'topologyRevision', 'layoutRevision', 'assetRevision', 'measurementRevision'].every(key => counter(data[key]))
+    || !['bindingSequence', 'configRevision', 'topologyRevision', 'layoutRevision', 'assetRevision', 'measurementRevision', 'referenceRevision'].every(key => counter(data[key]))
     || typeof data.reducedMotion !== 'boolean' || typeof data.walkSupported !== 'boolean'
-    || !finite(data.modelForwardYaw, -Math.PI * 2, Math.PI * 2) || !finite(data.scale, 0.01, 100)) return null;
+    || !finite(data.modelForwardYaw, -Math.PI, Math.PI) || !finite(data.scale, 0.01, 100)
+    || !finite(data.profileScale, .3, 2.5) || !finite(data.effectiveScale, .3, 2.5)) return null;
   const viewport = size(data.viewport), safeCenters = rect(data.safeCenters), maximumFootprint = size(data.maximumFootprint), position = point(data.position), groundBasis = basis(data.groundBasis);
-  if (!viewport || !safeCenters || !maximumFootprint || !position || !groundBasis
+  const referenceLocal = reference(data.referenceLocal), envelopeExtents = envelope(data.envelopeExtents);
+  if (!viewport || !safeCenters || !maximumFootprint || !position || !groundBasis || !referenceLocal || !envelopeExtents
+    || Math.abs(maximumFootprint.width - 2 * Math.max(envelopeExtents.left, envelopeExtents.right)) > 1e-7
+    || Math.abs(maximumFootprint.height - 2 * Math.max(envelopeExtents.top, envelopeExtents.bottom)) > 1e-7
     || safeCenters.right > viewport.width || safeCenters.bottom > viewport.height || !inside(position, safeCenters)
     || maximumFootprint.width > viewport.width || maximumFootprint.height > viewport.height
     || safeCenters.left < maximumFootprint.width / 2 || safeCenters.top < maximumFootprint.height / 2
     || safeCenters.right > viewport.width - maximumFootprint.width / 2
     || safeCenters.bottom > viewport.height - maximumFootprint.height / 2) return null;
-  return Object.freeze({ ...data, viewport, safeCenters, maximumFootprint, position, groundBasis }) as MotionBinding;
+  return Object.freeze({ ...data, viewport, safeCenters, maximumFootprint, position, groundBasis, referenceLocal, envelopeExtents }) as MotionBinding;
 }
 export function parseWorldMotionCommand(value: unknown): WorldMotionCommand | null {
   if (typeof value !== 'object' || value === null) return null;
@@ -338,7 +349,7 @@ export class WorldMotionFollower {
       || bounds.right > viewport.width || bounds.bottom > viewport.height
       || bounds.right - bounds.left > binding.maximumFootprint.width + RENDER_TOLERANCE
       || bounds.bottom - bounds.top > binding.maximumFootprint.height + RENDER_TOLERANCE
-      || actual.x < bounds.left || actual.x > bounds.right || actual.y < bounds.top || actual.y > bounds.bottom
+      || !containsPosedEnvelope(actual, bounds, binding.envelopeExtents, RENDER_TOLERANCE)
       || !inside(actual, binding.safeCenters)) { this.stopWork('invalid_render'); return null; }
     const travel = { x: actual.x - this.position!.x, y: actual.y - this.position!.y };
     const ground = { x: travel.x * binding.groundBasis.right.x + travel.y * binding.groundBasis.down.x,

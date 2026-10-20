@@ -1,6 +1,6 @@
 import { describe,it,expect,vi } from 'vitest';
 import { LifeUI } from './life-ui';
-import { actionReasons,actionStatusLabels,actionFailureLabels,cancellationLabels,parseLifeActions,requestQuietRest,type LifeActionsSnapshot } from './life-actions';
+import { actionReasons,actionStatusLabels,actionFailureLabels,cancellationLabels,parseLifeActions,requestQuietRest,requestLifeMove,type LifeActionsSnapshot } from './life-actions';
 import catalogue from './locales/life-actions.json';
 const connection='22222222-2222-2222-2222-222222222222';
 const action={actorId:'nova',worldId:'world_nova',ordinal:1};
@@ -18,7 +18,27 @@ describe('Confirmed local action boundary',()=>{
     expect(parseLifeActions({...raw,availability:'not_initialized',reason:'life_not_initialized',confirmed:null,runtime:null},'nova').runtime).toBeNull();
   });
   it('rejects unsupported schemas, wrong owner/identity, unsafe numbers and inconsistent status claims',()=>{
-    for(const change of [{version:2},{botId:'other'},{instanceId:'not-a-native-instance'},{sequence:NaN},{sequence:Infinity},{sequence:Number.MAX_SAFE_INTEGER+1},{visualAvailable:true},{availability:'ready',reason:'busy'},{availability:'not_initialized',reason:null},{availability:'unavailable',reason:'life_not_initialized'},{confirmed:{...snapshot().confirmed,actionId:{...action,actorId:'other'}}},{confirmed:{...snapshot().confirmed,phase:'cancelled',cancellation:null}},{confirmed:{...snapshot().confirmed,cancellation:'operator'}},{runtime:{...snapshot().runtime,failure:'timeout'}},{runtime:{...snapshot().runtime,status:'failed',failure:null}},{runtime:{...snapshot().runtime,activeMilliseconds:-1}},{runtime:{...snapshot().runtime,actionId:{...action,ordinal:0}}}])expect(()=>parseLifeActions({...snapshot(),...change},'nova')).toThrow();
+    for(const change of [{version:2},{botId:'other'},{instanceId:'not-a-native-instance'},{sequence:NaN},{sequence:Infinity},{sequence:Number.MAX_SAFE_INTEGER+1},{visualAvailable:'true'},{availability:'ready',reason:'busy'},{availability:'not_initialized',reason:null},{availability:'unavailable',reason:'life_not_initialized'},{confirmed:{...snapshot().confirmed,actionId:{...action,actorId:'other'}}},{confirmed:{...snapshot().confirmed,phase:'cancelled',cancellation:null}},{confirmed:{...snapshot().confirmed,cancellation:'operator'}},{runtime:{...snapshot().runtime,failure:'timeout'}},{runtime:{...snapshot().runtime,status:'failed',failure:null}},{runtime:{...snapshot().runtime,activeMilliseconds:-1}},{runtime:{...snapshot().runtime,actionId:{...action,ordinal:0}}}])expect(()=>parseLifeActions({...snapshot(),...change},'nova')).toThrow();
+  });
+  it('reads current visual capability without manufacturing admission or completion',()=>{
+    const next=parseLifeActions({...snapshot(),visualAvailable:true,availability:'unavailable',reason:'busy'},'nova');
+    expect(next.visualAvailable).toBe(true);expect(next.availability).toBe('unavailable');expect(next.runtime?.status).toBe('started');expect(next.confirmed?.activity).toBe('rest');
+  });
+  it('dispatches one explicit move with an exact fresh proof and preserves native Planned facts',async()=>{
+    const moved={...snapshot(),visualAvailable:true,confirmed:{...snapshot().confirmed!,activity:'move_to',phase:'planned'},runtime:{...snapshot().runtime!,presentation:'visual',status:'awaiting_delivery',activeMilliseconds:0}};
+    const invoke=vi.fn(async(command:string)=>command==='connect_life_ui'?{connectionId:connection}:command==='start_life_move'?moved:true);
+    const ui=new LifeUI(invoke,vi.fn());await ui.connect();const next=await requestLifeMove(invoke,ui,'nova',{x:0,y:1_000_000},()=>true);
+    expect(invoke).toHaveBeenCalledWith('start_life_move',{botId:'nova',target:{x:0,y:1_000_000},ui:{connectionId:connection,sequence:2}});
+    expect(next?.confirmed?.phase).toBe('planned');expect(next?.runtime?.status).toBe('awaiting_delivery');
+    expect(invoke.mock.calls.some(call=>['set_life_mode','send_message','synthesize_speech'].includes(call[0]))).toBe(false);ui.dispose();
+  });
+  it('rejects invalid move targets before IPC and a blocked or superseded move before dispatch',async()=>{
+    const invoke=vi.fn();const reporter={reportProof:vi.fn()};
+    for(const target of [{x:-1,y:0},{x:1_000_001,y:0},{x:.5,y:0},{x:NaN,y:0},{x:0,y:Infinity}])await expect(requestLifeMove(invoke,reporter,'nova',target,()=>true)).rejects.toThrow();
+    await expect(requestLifeMove(invoke,reporter,'nova',{x:1,y:1},()=>false)).rejects.toThrow();expect(invoke).not.toHaveBeenCalled();expect(reporter.reportProof).not.toHaveBeenCalled();
+    const pending=held<unknown>();let reports=0,current=true;const call=vi.fn(async(command:string)=>command==='connect_life_ui'?{connectionId:connection}:command==='report_life_ui'&&++reports===2?pending.promise:true);
+    const ui=new LifeUI(call,vi.fn());await ui.connect();const result=requestLifeMove(call,ui,'nova',{x:1,y:1},()=>current);const rejected=expect(result).rejects.toThrow();await flush();current=false;pending.resolve(true);await rejected;
+    expect(call.mock.calls.some(item=>item[0]==='start_life_move')).toBe(false);ui.dispose();
   });
   it('uses only an acknowledged Studio proof for one explicit rest request',async()=>{
     const invoke=vi.fn(async(command:string)=>command==='connect_life_ui'?{connectionId:connection}:command==='start_life_rest'?snapshot():true);const ui=new LifeUI(invoke,vi.fn());await ui.connect();const onProof=vi.fn();

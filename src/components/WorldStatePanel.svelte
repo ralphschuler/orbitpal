@@ -6,8 +6,17 @@
   import { anchorKinds, canonicalToPercent, draftWorld, newWorldDraft, parseWorldSettings, parseWorldState, placeWorld, saveWorld, worldDraft, worldDraftChanged, worldReasons, type AnchorKind, type PointDraft, type WorldDraft, type WorldRecord, type WorldSettings, type WorldState } from '../lib/world-state';
   import type { OutputDisplay } from '../lib/output-presentation';
   import HelpTip from './HelpTip.svelte';
-  interface Props { bots:{id:string;name:string}[]; displays?:OutputDisplay[]; visible:boolean; disabled?:boolean; onDirtyChange:(dirty:boolean)=>void; onBusyChange:(busy:boolean)=>void; confirmDiscard:(action:()=>void)=>void; }
-  let { bots, displays=[], visible, disabled=false, onDirtyChange, onBusyChange, confirmDiscard }:Props=$props();
+  import WorldViewport from './WorldViewport.svelte';
+  import type { CanonicalPoint, RegisterWorldActor } from '../lib/world-output';
+  import type { LifeActionsSnapshot } from '../lib/life-actions';
+  interface Props { bots:{id:string;name:string;profile?:any}[]; displays?:OutputDisplay[]; visible:boolean; disabled?:boolean; onDirtyChange:(dirty:boolean)=>void; onBusyChange:(busy:boolean)=>void; confirmDiscard:(action:()=>void)=>void;
+    selectedBotId?:string;outputUrl?:string;executionBlocked?:boolean;
+    registerWorld?:(request:Omit<RegisterWorldActor,'studioProof'>)=>Promise<unknown>;
+    onMove?:(target:CanonicalPoint)=>Promise<LifeActionsSnapshot|undefined>;
+  }
+  const unavailable=()=>Promise.reject(new Error('Die Verbindung zur sichtbaren Bühne ist nicht bestätigt.'));
+  let { bots, displays=[], visible, disabled=false, onDirtyChange, onBusyChange, confirmDiscard,
+    selectedBotId='',outputUrl='',executionBlocked=true,registerWorld=unavailable,onMove=unavailable }:Props=$props();
   const uid=$props.id();
   let settings=$state<WorldSettings>();
   let confirmedState=$state<WorldState>();
@@ -83,7 +92,7 @@
 <section class="settings-panel world-panel" aria-labelledby={`${uid}-title`}>
   <div class="world-heading"><div class="section-heading"><Map size={20}/><div><h2 id={`${uid}-title`}>{$t('Gemeinsame Bühne')}</h2><p>{$t('Ein gemeinsamer Raum für ausdrücklich ausgewählte Bots dieser Installation.')}</p></div></div><button class="button secondary small" onclick={refresh} disabled={!native||pending||disabled}><RefreshCw size={14}/>{$t('Bühne aktualisieren')}</button></div>
   <p class="world-scope">{$t('Diese Einstellung gilt für alle Teilnehmer, unabhängig vom gerade ausgewählten Bot. Beitreten und Speichern starten weder Life noch Ambient und erteilen keinen Bildschirmzugriff.')}</p>
-  <p class="field-note">{$t('Hier legst du die Weltbeschreibung fest. Die 2D-Vorschau ist ein Entwurf, keine laufende Figurenszene. Automatisches Gehen zu Objekten und 3D-Weltdarstellung folgen separat.')}</p>
+  <p class="field-note">{$t('Die 2D-Vorschau zeigt deinen Entwurf. Eine bestätigte Konfiguration kannst du unten als gemeinsame 3D-Bühne öffnen. Automatische Folgeaktivitäten sind noch nicht angebunden.')}</p>
   {#if !native}<p role="status">{$t('Die gemeinsame Bühne wird in der Desktop-App verwaltet.')}</p>{:else if !settings}<p role="status">{$t(pending?'Bühnenstatus wird geladen …':'Bühnenstatus nicht bestätigt. Bitte aktualisieren.')}</p>{/if}
   {#if error}<p class="world-error" role="alert">{error}</p>{/if}
   {#if settings?.reason}<p class="world-warning" role="status">{$t(worldReasons[settings.reason])}</p>{/if}
@@ -100,7 +109,7 @@
           <h3>{$t('Teilnehmer')} <HelpTip text={$t('Nur hier ausgewählte Bots gehören zur gemeinsamen Bühne. Ihre eigenen Life-Verläufe bleiben getrennt. Kopierte und importierte Bots treten nicht automatisch bei.')}/></h3>
           <div class="world-members">{#each bots as bot(bot.id)}<label><input type="checkbox" checked={draft.members.includes(bot.id)} disabled={!draft.members.includes(bot.id)&&draft.members.length>=64} onchange={event=>member(bot.id,event.currentTarget.checked)}/><span>{bot.name}</span></label>{/each}{#each missing as id(id)}<label class="world-warning"><input type="checkbox" checked onchange={event=>member(id,event.currentTarget.checked)}/><span>{$t('Nicht mehr verfügbar: {id}',{id})}</span></label>{/each}</div>
           <h3>{$t('Zielmonitor')}</h3><label class="sr-only" for={`${uid}-monitor`}>{$t('Zielmonitor der gemeinsamen Bühne')}</label><select id={`${uid}-monitor`} bind:value={draft.monitorId}><option value="">{$t('Sicherer Ersatzmonitor · automatisch geprüft')}</option>{#if draft.monitorId&&!displays.some(display=>display.id===draft?.monitorId)}<option value={draft.monitorId}>{$t('Gespeicherter Monitor · derzeit nicht verfügbar')}</option>{/if}{#each displays as display(display.id)}<option value={display.id}>{display.name}</option>{/each}</select><p class="field-note">{$t('Die Monitorauswahl bleibt lokal. Entfernte oder ungültige Monitore verwenden nativ einen sicheren Ersatzbereich. Es werden keine Fenster oder Bildschirminhalte erkannt.')}</p>
-          <h3>{$t('Bewegungsbereich')} <HelpTip text={$t('Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die Anbindung an sichtbare Figuren mit Monitorursprung, Skalierung und Figurengröße folgt separat.')}/></h3>
+          <h3>{$t('Bewegungsbereich')} <HelpTip text={$t('Prozentangaben beziehen sich auf die gesamte Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die sichtbare Figur muss mit ihrer gemessenen Größe vollständig in den bestätigten Bereich passen.')}/></h3>
           <div class="coordinate-grid">{#each [['min','x','Linker Rand'],['min','y','Oberer Rand'],['max','x','Rechter Rand'],['max','y','Unterer Rand']] as [edge,axis,label]}<label>{$t(label)} (%)<input type="text" inputmode="decimal" maxlength="9" bind:value={draft.safeRegion[edge as 'min'|'max'][axis as 'x'|'y']} required/></label>{/each}</div>
         </div><div class="preview-column"><h3>{$t('2D-Entwurfsvorschau')}</h3><div class="world-preview" role="img" aria-label={$t('Vorschau des geplanten Bewegungsbereichs mit Ankern und festen Plätzen. Keine laufende Bewegung.')}>{#if parsedDraft}<div class="safe-region" style:left={`${parsedDraft.config.safeRegion.min.x/10000}%`} style:top={`${parsedDraft.config.safeRegion.min.y/10000}%`} style:width={`${(parsedDraft.config.safeRegion.max.x-parsedDraft.config.safeRegion.min.x)/10000}%`} style:height={`${(parsedDraft.config.safeRegion.max.y-parsedDraft.config.safeRegion.min.y)/10000}%`}></div>{#each parsedDraft.config.anchors as anchor,index(anchor.id)}<span class="anchor-marker" style:left={`${anchor.position.x/10000}%`} style:top={`${anchor.position.y/10000}%`} title={`${$t(anchorKinds[anchor.kind])} ${index+1}`}>{index+1}</span>{#each anchor.slots as slot(slot.id)}<span class="slot-marker" style:left={`${slot.position.x/10000}%`} style:top={`${slot.position.y/10000}%`}></span>{/each}{/each}{:else}<p>{$t('Für die Vorschau gültige Prozentangaben und einen geordneten Bewegungsbereich eingeben.')}</p>{/if}</div><p class="field-note">{$t('Nummern markieren Anker, kleine Punkte deren exklusive feste Plätze. Alle Angaben lassen sich per Tastatur bearbeiten.')}</p></div></div>
         <div class="anchors-heading"><h3>{$t('Anker und feste Plätze')}</h3><span>{$t('{count} von 128 Plätzen',{count:number(totalSlots)})}</span></div>
@@ -119,6 +128,7 @@
     <p class="field-note">{$t('{count} Plätze sind derzeit nativ belegt.',{count:number(snapshot.occupied.length)})}</p>
     <form class="placement-form" onsubmit={event=>{event.preventDefault();void place();}} oninput={()=>placementEdited=true}><fieldset disabled={pending||disabled||configDirty||unconfirmed}><legend>{$t('Bestätigte Position ausdrücklich setzen')}</legend><label for={`${uid}-actor`}>{$t('Teilnehmer auswählen')}</label><select id={`${uid}-actor`} value={actor} onchange={event=>selectActor(event.currentTarget.value)}><option value="">{$t('Teilnehmer auswählen')}</option>{#each snapshot.actors as entry(entry.actorId)}<option value={entry.actorId}>{name(entry.actorId)}</option>{/each}</select><div class="coordinate-grid"><label>{$t('Figur X')} (%)<input type="text" inputmode="decimal" maxlength="9" bind:value={position.x} disabled={!actor}/></label><label>{$t('Figur Y')} (%)<input type="text" inputmode="decimal" maxlength="9" bind:value={position.y} disabled={!actor}/></label></div><button class="button secondary small" type="submit" disabled={!actor||!placementEdited}>{$t('Position nativ setzen')}</button></fieldset></form>
   </div>{/if}
+  {#if confirmedState?.availability==='ready'&&!unconfirmed}<WorldViewport world={confirmedState} {bots} {selectedBotId} {outputUrl} {visible} blocked={executionBlocked||disabled||dirty||writing} register={registerWorld} {onMove}/>{/if}
   {#if message}<p class="world-message" role="status">{$t(message)}</p>{/if}
 </section>
 

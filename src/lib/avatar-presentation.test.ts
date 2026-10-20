@@ -75,6 +75,7 @@ describe('Rendered avatar presentation leases without GPU or output devices', ()
 // Real Three.js scene geometry and desktop motion, without constructing WebGL.
 // Returning to the screen alone must never resolve an output presentation.
 import * as THREE from 'three';
+import { WorldAvatarController } from './world-avatar';
 import { AvatarStage, createRobot } from './avatar';
 import { DesktopMotionController } from './desktop-motion';
 import { measureDesktopModel } from './desktop-framing';
@@ -83,13 +84,14 @@ function desktopStage() {
   vi.stubGlobal('window', { devicePixelRatio: 1 });
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   const robot = createRobot(), imported = new THREE.Group(), travel = new THREE.Group();
-  travel.add(robot.root, imported);
+  const worldHeading=new THREE.Group(),worldOffset=new THREE.Group();
+  worldOffset.add(robot.root,imported);worldHeading.add(worldOffset);travel.add(worldHeading);
   const camera = new THREE.PerspectiveCamera(32, 1.5, .05, 100), target = new THREE.Vector3();
   const profile = { id: 'nova', avatar: { scale: .6, camera: 'full', accent: '#80b8e8' } };
   const options = { profile, transparent: true, speaking: false, level: 0, emotion: 'neutral', desktop: { active: true, referencePhysicalHeight: 720 }, autopilot: { active: true, wander: true, gestures: false, startedAt: 1_000, seed: 'presentation-fixture' } };
   const gate = new AvatarPresentationGate();
   const stage = Object.create(AvatarStage.prototype) as any;
-  Object.assign(stage, { options, robot, imported, travel, camera, controls: { target, update() { camera.lookAt(target); camera.updateMatrixWorld(); } }, ground: new THREE.Group(), desktopCamera: new THREE.OrthographicCamera(-1, 1, 1, -1, .05, 100), host: { clientWidth: 1200, clientHeight: 800 }, desktopModelBounds: measureDesktopModel(robot.root), desktopMotion: new DesktopMotionController(), asset: '', cameraMode: '', ambientSession: '', ambientGesture: '', ambientActions: [], walkStrength: 0, walkClock: new DistanceWalkClock(), walkingCycleDistance: 1, modelForwardYaw: 0, walking: false, presentation: gate, presentationContext: '', assetState: 'ready' });
+  Object.assign(stage, { options, robot, imported, travel, worldHeading, worldOffset, world:new WorldAvatarController(travel,worldHeading,worldOffset), previousMotionSource:'fixed',worldRecovery:false, camera, controls: { target, update() { camera.lookAt(target); camera.updateMatrixWorld(); } }, ground: new THREE.Group(), desktopCamera: new THREE.OrthographicCamera(-1, 1, 1, -1, .05, 100), host: { clientWidth: 1200, clientHeight: 800 }, desktopModelBounds: measureDesktopModel(robot.root), desktopMotion: new DesktopMotionController(), asset: '', cameraMode: '', ambientSession: '', ambientGesture: '', ambientActions: [], walkStrength: 0, walkClock: new DistanceWalkClock(), walkingCycleDistance: 1, modelForwardYaw: 0, walking: false, presentation: gate, presentationContext: '', assetState: 'ready' });
   stage.update(options); stage.updateAutopilot(0, false);
   return { stage, gate, options, advance() { now += 50; stage.updateAutopilot(.05, false); } };
 }

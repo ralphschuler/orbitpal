@@ -1,18 +1,18 @@
-# World output authority foundation (#72, still open)
+# World output — selected Studio MoveTo (#72, still open)
 
-This packet provides native registration, receipt validation and checked storage
-for a future selected-bot Studio `MoveTo` adapter. It adds no mounted 3D World
-view, movement control, Avatar adapter or renderer bridge. The ordinary App,
-character view and overlay rendering are unchanged. With no registered renderer,
-normal application flows keep `visualAvailable:false` and cannot plan a visual
-action. The existing explicit quiet-rest path is unchanged.
+The Studio now mounts an explicitly opened 3D World view, its Avatar adapter and
+the native registration/receipt bridge. For the selected bot, the operator can
+request one `MoveTo` target through the existing one-use native intent path.
+Life must already be active, the bot must explicitly belong to the shared stage
+and use Studio output, and its current renderer must register and report a
+successful exposed frame before movement is available. Opening or registering
+the view starts no mode or action. Other supported visible participants are
+mirror views; they receive no action authority.
 
-The protocol below describes requirements for that future adapter. Life must
-already be active, the bot must explicitly belong to the shared stage, and the
-bundled renderer must register and report a successful exposed frame. Registration
-starts no session or action. Other visible participants would be mirrors. Native
-overlay/OBS execution, nonselected Studio execution and other visual activities
-remain unsupported. Issue #72 remains open.
+This first integration supports selected-bot Studio MoveTo only. Native overlay
+and OBS execution, nonselected/multi-actor action ownership and other visual Life
+activities remain unsupported. Issue #72 stays open for that full scope and its
+platform/output acceptance. The existing explicit quiet-rest path is unchanged.
 
 ## Ownership and protocol
 
@@ -27,6 +27,13 @@ source World authority, capture grant or provider credential.
 Registration returns a native-issued challenge with the exact asset, layout,
 measurement and reference revisions. Reports echo the challenge ID and provide
 observations. The host creates all binding revisions and the render-session ID.
+A mandatory `enclosureKind: "conservative_submitted_geometry_v1"` appears in the
+challenge, measurement report, accepted motion binding and every frame report.
+The host issues that policy, checks its echo, freezes it for the binding and
+checks each action frame against it. Missing or unknown kinds are rejected;
+there is no default or renderer-selected alternative. Same-binding renewal
+cannot reset the policy, reference or original identity.
+
 A same-mount renewal reuses the unchanged binding and one unexpired challenge;
 a metadata call does not refresh successful-frame age or cancel that binding.
 Only a newer matching frame refreshes its age. The original frame expires after
@@ -45,12 +52,29 @@ rejected. Late old-session/binding/action messages cannot acknowledge a successo
 
 Coordinates in measurements and motion commands are local CSS pixels. Canonical
 stage positions remain integer values from zero to one million. The stable
-placement anchor is distinct from absolute posed bounds. Nonnegative asymmetric
-envelope extents surround that anchor; the anchor need not lie inside the body
+placement anchor and its explicit local reference are distinct from absolute
+posed bounds. Once accepted, the reference remains frozen under its native
+reference revision; a changed attachment requires a fresh binding. Nonnegative
+asymmetric envelope extents surround that anchor; the anchor need not lie inside the body
 hull. The host computes conservative symmetric safe-center bounds using the
 maximum horizontal/vertical extent, intersects them with the stage safe region
 and viewport clip, and rejects targets that do not fit. It does not clamp or
 silently replace an operator's target.
+
+`posedBounds` is a conservative enclosure of currently submitted CPU source
+geometry under the current Three.js Float64 transform graph, not necessarily
+tight vertex extrema, shader/GPU positions or rasterized visible pixels. A rigid
+draw range may use a conservative source-AABB enclosure; supported skinned/morph
+geometry uses its current CPU evaluation or fails unavailable. Mixed components
+retain the same enclosing contract. The bounds may include empty space and
+reject a target that tighter geometry could fit; they are never cropped or
+shrunk to manufacture readiness. See [geometry support and limits](WORLD-RENDER-GEOMETRY.md).
+
+The Avatar adapter collects 32 calibration observations across eight headings
+and four gait phases, removes its preparation cover, then renders a new exposed
+idle frame for the native challenge. A covered calibration frame cannot be
+promoted into that measurement. Subsequent actual frames must still satisfy the
+frozen envelope; calibration is not a promise that every imported animation fits.
 
 `world_iso_v1` uses elevation π/6, camera yaw 0, distance 20, vertical span 8,
 near 0.05 and far 100. Positive camera Z maps CSS down to positive ground Z. The
@@ -67,9 +91,13 @@ recover its matrices.
 Each accepted frame is checked against its exact current binding, increasing
 frame/receipt sequence, viewport, clip, envelope, safe center and native arrival
 time. Movement is bounded by the native straight-line target and speed policy.
-A nontrivial anchor displacement requires the observed walking flag. A successful
-render bridge must derive that flag from committed movement, not intent. The
-renderer-provided idle counter is diagnostic only. Native arrival needs at least
+A nontrivial anchor displacement requires the observed walking flag. The render
+bridge derives that flag from committed movement, not intent. Its first behavior
+frame primes the walk pose without displacement; further travel waits for the
+native Start acknowledgement. Gait follows committed traveled distance and
+eight-direction facing, while failed proposals cannot advance accepted travel.
+Neither a conservative hull's center nor its overlap with the target is arrival.
+The renderer-provided idle counter is diagnostic only. Native arrival needs at least
 three distinct accepted stationary target frames spanning 100 ms, no more than
 250 ms apart. A gap, movement, breach or rebind resets this evidence. Completion
 must reference a new frame; no integer counter can manufacture arrival.
@@ -114,29 +142,41 @@ geometry/close events invalidate retained tokens before Core waits. Retired
 window callbacks cannot revoke a replacement in this new registry. Counter
 exhaustion and registry poison cancel retained tokens and grant no successors.
 
-This foundation exposes no native registration IPC, prepared-layout promotion or
-rendering capability. Its Hidden event is currently a synthetic/API seam, not
+This native-window foundation exposes no avatar registration IPC, prepared-layout
+promotion or rendering capability. It is not a native-window adapter for the
+Studio bridge. Its Hidden event is currently a synthetic/API seam, not
 an exercised avatar-hide callback. The legacy label-scoped output cancellation
 path is unchanged; whole-host replacement isolation must be reconciled before
-native visual actions. Confirmed layout/DPI/restoration, renderer measurement and
-speech ownership handoff remain separate implementation and platform work.
+native visual actions. Confirmed native-window layout/DPI/restoration, its own
+renderer measurement and speech ownership handoff remain separate implementation
+and platform work.
 
 ## Validation status
 
-Native tests cover registry/geometry/arrival, actual Core/WorldHub/SQLite
-lifecycle and held-write-lock cases, including the native-route cancellation
-regressions. They validate protocol and storage behavior independently of a GPU.
+The actual production Tauri suite passed **552 tests**, including real
+Core/WorldHub/SQLite lifecycle and held-write-lock cases, native-route cancellation
+and the required enclosure policy. The added cases reject missing/unknown policy,
+preserve binding/reference identity on renewal, keep conservative safe-center
+restrictions and prevent a hull centered at the target from completing a
+stationary actor's action. This native result validates protocol/storage behavior
+independently of a GPU.
+
+The separate actual Chromium/Metal AvatarStage exercise passed **eight checks**
+with two builtin Nova figures, including all eight directions and three
+captured views. It exercises the real renderer with **synthetic native bindings
+and acknowledgements**. It does not prove real Tauri IPC, native Store commits,
+native-window layout or OBS ownership in that rendered run. The focused frontend
+gate passed **292 tests**, and both TypeScript checks reported zero errors and
+warnings. Final composed application/CI gates remain separate results.
 
 Reviewed World reports, Life UI heartbeat/status, playback reports and selected
 metadata getters use Tauri asynchronous dispatch for their Core/SQLite waits.
 This is not a guarantee of native Stop latency under worker starvation; actual
 window/event scheduling remains part of #75 acceptance.
 
-These results do not establish successful WebGL rendering, real motion quality,
-native/OBS execution or multi-actor authority. A separate experimental actual-
-renderer integration failed its acceptance exercise and is excluded from this
-packet; its repair and rerun remain integration work. The pure helpers are also
-unmounted and need explicit wire reconciliation with this native protocol. The
-real Avatar bridge, eight-direction gait/scale/topology exercises, renderer
-performance and platform/output acceptance (#75) remain required before #72 can
-close. No 3D view or successful visible MoveTo is claimed by this foundation.
+These distinct native and renderer results are not an end-to-end proof of every
+asset, device, native window or output route. Native overlay/OBS rendering and
+prepared-layout/speech ownership, nonselected/multi-actor execution, wider
+scale/topology/asset exercises and real platform/output acceptance (#75) remain
+required before #72 can close. A successful Studio frame grants none of those
+missing capabilities.

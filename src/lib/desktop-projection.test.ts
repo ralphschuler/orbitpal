@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
+import { WorldAvatarController } from './world-avatar';
 import { AvatarStage, createRobot, type AvatarOptions } from './avatar';
 import { configureDesktopCamera, desktopFraming, measureDesktopModel } from './desktop-framing';
 import { desktopSafeBounds } from './desktop-motion';
@@ -35,14 +36,15 @@ function stageFixture(root?:THREE.Group,width=1920,height=1080,pixelRatio=1) {
   const robot=createRobot(), imported=root??new THREE.Group();
   const model=root??robot.root, bounds=measureDesktopModel(model);
   robot.root.visible=!root;
-  const travel=new THREE.Group(); travel.add(robot.root,imported);
+  const travel=new THREE.Group(),worldHeading=new THREE.Group(),worldOffset=new THREE.Group();
+  worldOffset.add(robot.root,imported);worldHeading.add(worldOffset);travel.add(worldHeading);
   const camera=new THREE.PerspectiveCamera(32,width/height,.05,100);
   const target=new THREE.Vector3();
   const controls={target,enabled:false,update:()=>{camera.lookAt(target);camera.updateMatrixWorld();}};
   const options:AvatarOptions={profile:{avatar:{scale:1,camera:'portrait',accent:'#80b8e8'}},transparent:true,speaking:false,level:0,emotion:'neutral',autopilot:{active:true,wander:true,gestures:false,startedAt:1000,seed:'projection-fixture'}};
   const point={x:width/2,y:height/2,walking:false,facing:1,travel:{x:0,y:0},presentationReady:true};
   const stage=Object.create(AvatarStage.prototype) as any;
-  Object.assign(stage,{options,robot,imported,travel,camera,controls,ground:new THREE.Group(),desktopCamera:new THREE.OrthographicCamera(-1,1,1,-1,.05,100),host:{clientWidth:width,clientHeight:height},desktopModelBounds:bounds,desktopMotion:{reset:vi.fn(),sample:vi.fn(()=>point)},asset:root?'fixture.glb':'',walkingClip:root?new THREE.AnimationClip('Walk',1,[]):undefined,contentWidth:bounds.size.x,contentHeight:bounds.size.y,contentDepth:bounds.size.z,cameraMode:'',ambientSession:'',ambientGesture:'',ambientActions:[],walkStrength:0,walkClock:new DistanceWalkClock(),walkingCycleDistance:proceduralCycleDistance(bounds.size.y),modelForwardYaw:0,setWalking:vi.fn()});
+  Object.assign(stage,{options,robot,imported,travel,worldHeading,worldOffset,world:new WorldAvatarController(travel,worldHeading,worldOffset),previousMotionSource:'fixed',worldRecovery:false,camera,controls,ground:new THREE.Group(),desktopCamera:new THREE.OrthographicCamera(-1,1,1,-1,.05,100),host:{clientWidth:width,clientHeight:height},desktopModelBounds:bounds,desktopMotion:{reset:vi.fn(),sample:vi.fn(()=>point)},asset:root?'fixture.glb':'',walkingClip:root?new THREE.AnimationClip('Walk',1,[]):undefined,contentWidth:bounds.size.x,contentHeight:bounds.size.y,contentDepth:bounds.size.z,cameraMode:'',ambientSession:'',ambientGesture:'',ambientActions:[],walkStrength:0,walkClock:new DistanceWalkClock(),walkingCycleDistance:proceduralCycleDistance(bounds.size.y),modelForwardYaw:0,setWalking:vi.fn()});
   stage.update(options);
   const desktopOptions=(scale=1):AvatarOptions=>({...options,profile:{avatar:{...options.profile.avatar,scale}},desktop:{active:true,referencePhysicalHeight:720}});
   return {stage,robot,model,bounds,options,desktopOptions,point,camera,controls,width,height};

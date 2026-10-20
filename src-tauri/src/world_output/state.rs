@@ -141,6 +141,7 @@ impl Registry {
                 expires_in_ms: TTL_MS as u16,
                 expected: entry.stamp.clone(),
                 camera_policy: CameraPolicy::WorldIsoV1,
+                enclosure_kind: EnclosureKind::ConservativeSubmittedGeometryV1,
                 profile_scale: entry.source.profile_scale,
                 effective_scale: entry.source.effective_scale,
                 expected_reference_local: entry.binding.as_ref().map(|b| b.reference_local),
@@ -303,6 +304,7 @@ impl Registry {
         if received > now
             || now - received > FRAME_MS
             || !report.valid()
+            || report.enclosure_kind != pending.challenge.enclosure_kind
             || !entry.source.same_binding(source)
             || entry.cancel.load(Ordering::SeqCst)
             || now < pending.issued
@@ -375,7 +377,8 @@ impl Registry {
             return Err(RenderReason::TargetDoesNotFit);
         }
         if let Some(binding) = &entry.binding {
-            if binding.viewport != report.viewport
+            if binding.enclosure_kind != report.enclosure_kind
+                || binding.viewport != report.viewport
                 || entry.clip != Some(report.clip)
                 || binding.envelope_extents != report.envelope_extents
                 || binding.reference_local != report.reference_local
@@ -415,6 +418,7 @@ impl Registry {
             asset_revision: s.asset_revision,
             measurement_revision: s.measurement_revision,
             reference_revision: s.reference_revision,
+            enclosure_kind: pending.challenge.enclosure_kind,
             viewport: report.viewport,
             safe_centers,
             maximum_footprint: CssSize {
@@ -495,6 +499,7 @@ impl Registry {
         if e.stamp.render_session_id != proof.binding.render_session_id
             || e.stamp.binding_sequence != proof.binding.binding_sequence
             || !frame.valid()
+            || frame.enclosure_kind != b.enclosure_kind
             || frame.frame_sequence <= e.frame
             || frame.viewport != b.viewport
             || Some(frame.clip) != e.clip

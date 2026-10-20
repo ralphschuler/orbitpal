@@ -162,6 +162,14 @@ pub(crate) struct BindingStamp {
 pub(crate) enum CameraPolicy {
     WorldIsoV1,
 }
+/// Encloses current CPU-submitted source geometry under the current Three.js
+/// Float64 graph. This is not tight extrema, shader/GPU or visible-pixel proof.
+/// No fallback/default: older or unknown measurement policies must be rejected.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Eq, PartialEq)]
+pub(crate) enum EnclosureKind {
+    #[serde(rename = "conservative_submitted_geometry_v1")]
+    ConservativeSubmittedGeometryV1,
+}
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct MeasurementChallenge {
@@ -169,6 +177,7 @@ pub(crate) struct MeasurementChallenge {
     pub expires_in_ms: u16,
     pub expected: BindingStamp,
     pub camera_policy: CameraPolicy,
+    pub enclosure_kind: EnclosureKind,
     pub profile_scale: f64,
     pub effective_scale: f64,
     pub expected_reference_local: Option<LocalReference>,
@@ -188,6 +197,7 @@ pub(crate) struct MotionBinding {
     pub asset_revision: u64,
     pub measurement_revision: u64,
     pub reference_revision: u64,
+    pub enclosure_kind: EnclosureKind,
     pub viewport: CssSize,
     pub safe_centers: CssRect,
     pub maximum_footprint: CssSize,
@@ -260,10 +270,12 @@ impl RegisterWorldActor {
 pub(crate) struct RenderMeasurement {
     pub version: u16,
     pub challenge_id: String,
+    pub enclosure_kind: EnclosureKind,
     pub frame_sequence: u64,
     pub viewport: CssSize,
     pub clip: CssRect,
     pub anchor: CssPoint,
+    /// Enclosure at the submitted pose; not necessarily tight or raster-visible.
     pub posed_bounds: CssRect,
     pub envelope_extents: EnvelopeExtents,
     pub reference_local: LocalReference,
@@ -344,9 +356,11 @@ impl MotionFence {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FrameObservation {
     pub frame_sequence: u64,
+    pub enclosure_kind: EnclosureKind,
     pub viewport: CssSize,
     pub clip: CssRect,
     pub anchor: CssPoint,
+    /// Same frozen enclosure contract as the native-issued binding.
     pub posed_bounds: CssRect,
     pub walking: bool,
     pub target_idle_frames: u16,

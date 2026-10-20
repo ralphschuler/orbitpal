@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { DesktopMotionController } from './desktop-motion';
 import { AvatarPresentationGate, presentationAbortError, type PresentationRelease } from './avatar-presentation';
 import { configureDesktopCamera, desktopFraming, desktopTravelVector, measureDesktopModel } from './desktop-framing';
-import { DistanceWalkClock, estimateWalkingCycleDistance, proceduralCycleDistance } from './avatar-locomotion';
+import { DistanceWalkClock, estimateWalkingCycleDistance, proceduralCycleDistance, type WalkingCycleDistance } from './avatar-locomotion';
 import type { DesktopLayout } from './output-presentation';
 export type DesktopAnchor={x:number;y:number;width:number;height:number;visible:boolean;viewport:{width:number;height:number}};
 import { availableActions, clipHasTarget, avatarBinding, currentEmotePayload, resolveAvailableAction, unavailableEmote, type AvailableAction } from './emote-capabilities';
@@ -20,7 +20,12 @@ import { ensureMotionLookAtProxy, isMotionAction, loadMotionClips, transferMotio
 import type { VRMLookAtQuaternionProxy } from '@pixiv/three-vrm-animation';
 import { ambientGestureActions, discoverWalkingLegs, followAmbientPosition, motionLaneHalfWidth, sampleAmbientMotion, sampleWalkingGait, selectWalkingAnimation, type AutopilotVisualConfig, type WalkingLegs } from './autopilot-motion';
 
-export interface AvatarOptions {
+import { WorldAvatarController, placementForwardYaw, type WorldAvatarOptions, type WorldTrial } from './world-avatar';
+import type { MotionFence, WorldMotionCommand, ReceiveResult } from './world-motion';
+import type { WorldAdapterReason } from './world-output';
+
+export interface AvatarOptions extends WorldAvatarOptions {
+  motionSource?: 'fixed'|'ambient'|'world';
   profile: any;
   speaking: boolean;
   level: number;
@@ -86,13 +91,19 @@ export class AvatarStage {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera(32, 1, 0.05, 100);
   private desktopCamera=new THREE.OrthographicCamera(-1,1,1,-1,.05,100);
-  private get activeCamera(){return this.desktopActive?this.desktopCamera:this.camera;}
+  private get activeCamera(){return this.motionSource==='world'?this.world.camera:this.desktopActive?this.desktopCamera:this.camera;}
   private controls: OrbitControls;
   private clock = new THREE.Clock();
   private robot: Robot;
   private ground = new THREE.Group();
   private travel = new THREE.Group();
   private imported = new THREE.Group();
+  private worldHeading = new THREE.Group();
+  private worldOffset = new THREE.Group();
+  private world: WorldAvatarController;
+  private previousMotionSource = 'fixed';
+  private worldRecovery = false;
+  private get motionSource(){return this.options.motionSource??(this.options.autopilot?.active?'ambient':'fixed');}
   private vrm?: VRM;
   private mixer?: THREE.AnimationMixer;
   private clips: THREE.AnimationClip[] = [];
@@ -121,10 +132,12 @@ export class AvatarStage {
   private walkingPhase = 0;
   private walkClock = new DistanceWalkClock();
   private walkingCycleDistance = proceduralCycleDistance(2.9);
+  private walkingCalibration: WalkingCycleDistance = {cycleDistance:proceduralCycleDistance(2.9),source:'height-fallback'};
   private walkingAudioRate = 0;
   private walkAnchor?: THREE.Object3D;
   private walkAnchorRest = new THREE.Vector3();
   private modelForwardYaw = 0;
+  private worldForwardKnown = true;
   private contentWidth = 2.05;
   private contentDepth = 1.35;
   private travelFraction = 0;
@@ -136,7 +149,7 @@ export class AvatarStage {
   private desktopFigure={width:1,height:1};
   private desktopModelBounds={center:new THREE.Vector3(0,1.45,0),size:new THREE.Vector3(2.05,2.9,1.35)};
   private lastDesktopAnchor=0;
-  private get desktopActive(){return Boolean(this.options.transparent&&this.options.desktop?.active);}
+  private get desktopActive(){return this.motionSource!=='world'&&Boolean(this.options.transparent&&this.options.desktop?.active);}
   private ambientSession = '';
   private ambientGesture = '';
   private ambientActions: string[] = ['wave', 'nod', 'celebrate'];
@@ -185,6 +198,8 @@ export class AvatarStage {
     this.renderer.domElement.setAttribute('aria-hidden', 'true');
     this.renderer.domElement.style.cssText = 'display:block;width:100%;height:100%;touch-action:none';
     this.host.appendChild(this.renderer.domElement);
+    this.renderer.domElement.addEventListener('webglcontextlost', this.worldContextLost);
+    this.renderer.domElement.addEventListener('webglcontextrestored', this.worldContextRestored);
 
     this.scene.add(new THREE.HemisphereLight(0xf4f6ff, 0x9695bc, 2.5));
     const key = new THREE.DirectionalLight(0xfff6e8, 3.7);
@@ -207,7 +222,8 @@ export class AvatarStage {
 
     this.robot = createRobot();
     this.desktopModelBounds=measureDesktopModel(this.robot.root);
-    this.travel.add(this.robot.root, this.imported);
+    this.worldOffset.add(this.robot.root,this.imported);this.worldHeading.add(this.worldOffset);this.travel.add(this.worldHeading);
+    this.world = new WorldAvatarController(this.travel,this.worldHeading,this.worldOffset);
     this.scene.add(this.travel, this.ground, this.lookAt);
     this.makeGround();
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -227,18 +243,29 @@ export class AvatarStage {
   }
 
   update(options: AvatarOptions) {
-    const context = JSON.stringify([options.profile?.id, options.profile?.avatar?.assetPath, options.profile?.motions ?? [], options.autopilot?.active === true, options.autopilot?.seed, options.autopilot?.startedAt, options.desktop?.active === true]);
-    if (this.presentationContext && context !== this.presentationContext) this.presentation?.invalidate();
+    const context = JSON.stringify([options.profile?.id, options.profile?.avatar?.assetPath, options.profile?.motions ?? [],options.profile?.avatar?.scale,options.profile?.avatar?.camera,options.profile?.output?.mode,options.motionSource, options.autopilot?.active === true, options.autopilot?.seed, options.autopilot?.startedAt, options.desktop?.active === true]);
+    if (this.presentationContext && context !== this.presentationContext) {this.presentation?.invalidate();if(this.motionSource==='world')this.cancelWorld('stale_binding');}
     this.presentationContext = context;
     this.options = options;
+    const source=this.motionSource;
+    if(source!==this.previousMotionSource){
+      this.world?.cancel('cancelled');this.desktopMotion.reset();this.setWalking(false,true);this.walkClock.reset();this.walkStrength=0;
+      if(this.emoteSource==='ambient')this.finishEmote();
+      this.travel.position.set(0,0,0);this.travel.rotation.set(0,0,0);this.travel.scale.setScalar(1);
+      this.worldHeading.position.set(0,0,0);this.worldHeading.rotation.set(0,0,0);this.worldOffset.position.set(0,0,0);
+      this.previousMotionSource=source;
+    }
+    this.world?.update(options,performance.now());
     this.modelAudio?.setEnabled(options.audioEnabled === true);
     if ((options.audioStop ?? 0) !== this.modelAudioStop) { this.modelAudioStop = options.audioStop ?? 0; this.modelAudio?.stop(); }
     const avatar = options.profile?.avatar ?? {};
-    this.ground.visible = !options.transparent;
+    this.ground.visible = !options.transparent&&this.motionSource!=='world';
     let scale = THREE.MathUtils.clamp(Number(avatar.scale) || 1, 0.3, 2.5);
     if(this.desktopActive){const frame=this.desktopFrame(scale);scale=frame.scale;this.desktopCamera.left=-frame.worldWidth/2;this.desktopCamera.right=frame.worldWidth/2;this.desktopCamera.top=frame.worldHeight/2;this.desktopCamera.bottom=-frame.worldHeight/2;configureDesktopCamera(this.desktopCamera);}
-    this.robot.root.scale.setScalar(scale);
-    this.imported.scale.setScalar(scale);
+    if(this.motionSource==='world'){
+      const applied=options.worldBinding?.scale??options.worldChallenge?.effectiveScale??scale;
+      this.travel.scale.setScalar(applied);this.robot.root.scale.setScalar(1);this.imported.scale.setScalar(1);
+    }else{this.travel.scale.setScalar(1);this.robot.root.scale.setScalar(scale);this.imported.scale.setScalar(scale);}
     const accent = new THREE.Color();
     try { accent.set(avatar.accent || '#80b8e8'); } catch { accent.set('#80b8e8'); }
     for (const material of this.robot.accents) {
@@ -254,7 +281,7 @@ export class AvatarStage {
       this.controls.target.set(0, focusY, 0);
       this.controls.update();
     }
-    this.controls.enabled = !options.transparent;
+    this.controls.enabled = !options.transparent&&this.motionSource!=='world';
     const emote = avatar.emote;
     if (!emote && this.emoteSource === 'manual') this.finishEmote();
     if (!emote && this.emoteNonce !== undefined) {
@@ -273,6 +300,7 @@ export class AvatarStage {
     const emoteBinding = JSON.stringify(avatarBinding(this.options.profile));
     const key = JSON.stringify([next,botId,motions,outputUrl,emoteBinding]);
     if (key === this.assetKey) return;
+    if(this.assetKey&&this.motionSource==='world')this.cancelWorld('asset_unavailable');
     this.assetKey = key;
     this.emoteReady = false;
     this.asset = next;
@@ -374,13 +402,14 @@ export class AvatarStage {
       normalization.updateWorldMatrix(true, true);
       if (vrm) this.walkAnchor = vrm.humanoid.getRawBoneNode('hips') ?? this.walkAnchor;
       if (this.walkAnchor) this.walkAnchorRest.copy(this.imported.worldToLocal(this.walkAnchor.getWorldPosition(new THREE.Vector3())));
-      const forward = new THREE.Vector3(0, 0, 1);
-      if (this.armRig) forward.applyQuaternion(this.armRig.root.getWorldQuaternion(new THREE.Quaternion()).multiply(this.armRig.frame));
+      const forward = new THREE.Vector3(0, 0, 1);let measuredWorldForward=false;
+      if (this.armRig) {forward.applyQuaternion(this.armRig.root.getWorldQuaternion(new THREE.Quaternion()).multiply(this.armRig.frame));measuredWorldForward=true;}
       else if (this.genericHead && this.walkAnchor) {
         const direction = this.genericHead.getWorldPosition(new THREE.Vector3()).sub(this.walkAnchor.getWorldPosition(new THREE.Vector3()));
-        if (Math.hypot(direction.x, direction.z) > Math.abs(direction.y)) forward.copy(direction);
+        if (Math.hypot(direction.x, direction.z) > Math.abs(direction.y)) {forward.copy(direction);measuredWorldForward=true;}
       }
-      this.modelForwardYaw = Math.atan2(forward.x, forward.z);
+      const localForward=measuredWorldForward?placementForwardYaw(this.imported,forward):null;
+      this.worldForwardKnown=localForward!==null;this.modelForwardYaw=localForward??0;
       this.vrm = vrm;
       if (vrm) {
         this.jawBone = vrm.humanoid.getNormalizedBoneNode('jaw') ?? undefined;
@@ -427,9 +456,10 @@ export class AvatarStage {
         }
       }
       this.desktopModelBounds=measureDesktopModel(this.imported);
-      this.walkingCycleDistance = this.walkingClip
-        ? estimateWalkingCycleDistance(this.imported, this.walkingClip, this.contentHeight).cycleDistance
-        : proceduralCycleDistance(this.contentHeight);
+      this.walkingCalibration = this.walkingClip
+        ? estimateWalkingCycleDistance(this.imported, this.walkingClip, this.contentHeight)
+        : {cycleDistance:proceduralCycleDistance(this.contentHeight),source:'height-fallback'};
+      this.walkingCycleDistance=this.walkingCalibration.cycleDistance;
       this.emoteReady = true;
       this.loadedEmoteBinding = emoteBinding;
       this.ambientActions = ambientGestureActions(this.clips.filter(clip=>this.getModelInfo().actions?.some(action=>action.action===clip.name)), this.getModelInfo().proceduralGestures);
@@ -450,6 +480,7 @@ export class AvatarStage {
   /** Hold wandering from the request through actual output completion. */
   preparePresentation(signal: AbortSignal): Promise<PresentationRelease> {
     if (signal.aborted || this.disposed) return Promise.reject(presentationAbortError());
+    if(this.motionSource==='world')this.cancelWorld('cancelled');
     if (this.emoteSource === 'ambient') this.finishEmote();
     return this.presentation.acquire(signal);
   }
@@ -552,7 +583,7 @@ export class AvatarStage {
   private desktopFrame(scale:number){return desktopFraming({width:this.host.clientWidth,height:this.host.clientHeight,pixelRatio:window.devicePixelRatio||1,referencePhysicalHeight:this.options.desktop?.referencePhysicalHeight??this.host.clientHeight,scale,contentWidth:this.desktopModelBounds.size.x,contentHeight:this.desktopModelBounds.size.y,contentDepth:this.desktopModelBounds.size.z,fov:this.camera.fov,normalDistance:this.options.profile?.avatar?.camera==='full'?Math.hypot(.55,.7,7.6):Math.hypot(.35,.48,5.4)});}
 
   private updateAutopilot(delta: number, reduced: boolean) {
-    const config = this.options.autopilot;
+    const config = this.motionSource==='fixed'?undefined:this.options.autopilot;
     const frame = sampleAmbientMotion(config, Date.now());
     const session = frame.active && config ? `${config.startedAt}:${config.seed.slice(0, 128)}` : '';
     if (session !== this.ambientSession) {
@@ -686,6 +717,7 @@ export class AvatarStage {
   }
 
   private triggerEmote(action: string, duration: number, intensity: number, source: 'manual' | 'ambient' = 'manual') {
+    if(this.motionSource==='world')this.cancelWorld('cancelled');
     const resolved=resolveAvailableAction(this.getModelInfo().actions??[],action);
     if (!this.emoteReady || !resolved) { this.onEmoteError?.(unavailableEmote); return false; }
     action=resolved.action;
@@ -1061,6 +1093,65 @@ export class AvatarStage {
     this.ground.add(contact, shadow, halo);
   }
 
+  private worldContextLost = (event:Event) => {event.preventDefault();this.cancelWorld('context_lost');if(this.motionSource==='world')this.recoverWorldPose();};
+  private worldContextRestored = () => {this.cancelWorld('context_lost');};
+  acceptWorldCommand(command:WorldMotionCommand):ReceiveResult {return this.motionSource==='world'?this.world.command(command,performance.now()):'stale';}
+  beginWorldAfterDelivered(fence:MotionFence,offerSequence:number):boolean {return this.motionSource==='world'&&this.world.begin(fence,offerSequence,performance.now());}
+  confirmWorldStarted(fence:MotionFence,firstBehaviorFrameSequence:number):boolean {return this.motionSource==='world'&&this.world.confirmStarted(fence,firstBehaviorFrameSequence);}
+  cancelWorld(reason:WorldAdapterReason='cancelled'):void {this.world?.cancel(reason);this.modelAudio?.stop();this.setWalking(false,true);this.walkStrength=0;}
+  private worldSurface(){
+    const width=this.host.clientWidth,height=this.host.clientHeight;
+    let connected=this.host.isConnected,visible=connected&&document.visibilityState!=='hidden';
+    const canvasStyle=getComputedStyle(this.renderer.domElement),canvasRect=this.renderer.domElement.getBoundingClientRect();
+    if(canvasStyle.display==='none'||canvasStyle.visibility!=='visible'||Number(canvasStyle.opacity)<=0
+      ||Math.abs(canvasRect.width-width)>.5||Math.abs(canvasRect.height-height)>.5)visible=false;
+    const rect=this.host.getBoundingClientRect();let left=Math.max(0,-rect.left),top=Math.max(0,-rect.top);
+    let right=Math.min(width,window.innerWidth-rect.left),bottom=Math.min(height,window.innerHeight-rect.top);
+    let node:HTMLElement|null=this.host,count=0;
+    while(node&&++count<=64){
+      const style=getComputedStyle(node);
+      if(style.display==='none'||style.visibility!=='visible'||Number(style.opacity)<=0||style.transform!=='none'
+        ||style.perspective!=='none'||style.filter!=='none'||style.clipPath!=='none'||style.maskImage!=='none')visible=false;
+      if(node!==this.host&&(['hidden','clip','scroll','auto'].includes(style.overflowX)||['hidden','clip','scroll','auto'].includes(style.overflowY))){
+        const corners=[style.borderTopLeftRadius,style.borderTopRightRadius,style.borderBottomLeftRadius,style.borderBottomRightRadius];
+        if(corners.some(value=>!/^(?:[\d.]+px)(?: [\d.]+px)?$/.test(value)))visible=false;
+        const radius=Math.max(0,...corners.flatMap(value=>value.split(' ').map(v=>parseFloat(v)||0)));
+        const clip=node.getBoundingClientRect();left=Math.max(left,clip.left+radius-rect.left);top=Math.max(top,clip.top+radius-rect.top);
+        right=Math.min(right,clip.right-radius-rect.left);bottom=Math.min(bottom,clip.bottom-radius-rect.top);
+      }
+      node=node.parentElement;
+    }
+    if(node)visible=false;
+    if(Math.abs(rect.width-width)>.5||Math.abs(rect.height-height)>.5)visible=false;
+    return {connected,visible,viewport:{width,height},clip:{left,top,right,bottom}};
+  }
+  private applyWorldTrial(trial:WorldTrial){
+    this.setWalking(trial.walking,!trial.walking);this.walkStrength=trial.walking?1:0;this.walkingPhase=trial.cycles/.65;this.walkingAudioRate=0;
+    if(this.idleAction){this.idleAction.stopFading();this.idleAction.setEffectiveWeight(trial.walking?0:1);}
+    if(this.walkingAction&&this.walkingClip&&trial.walking){this.walkingAction.stopFading();this.walkingAction.setEffectiveWeight(1).setEffectiveTimeScale(0);this.walkingAction.time=(trial.cycles%1)*this.walkingClip.duration;}
+  }
+  private recoverWorldPose(){
+    this.modelAudio.stop();this.walking=false;this.walkStrength=0;this.walkingPhase=0;
+    const mixer=this.mixer,root=mixer?.getRoot(),idleClip=this.idleAction?.getClip();
+    if(mixer&&root instanceof THREE.Object3D){mixer.stopAllAction();mixer.uncacheRoot(root);this.mixer=new THREE.AnimationMixer(root);this.authoredProperties=new AuthoredAnimationProperties(root);
+      this.idleAction=idleClip?this.mixer.clipAction(idleClip).play():undefined;this.walkingAction=this.walkingClip?this.mixer.clipAction(this.walkingClip):undefined;}
+    this.vrm?.springBoneManager?.reset();this.renderer.domElement.style.visibility='hidden';this.worldRecovery=true;
+  }
+  /** Failed World mounts stay suppressed until explicit reconnect creates a
+   * fresh Stage. A plain fallback draw cannot verify World pose/visibility. */
+  private renderOutput(worldTrial:WorldTrial|null):boolean {
+    if(worldTrial){
+      const result=this.world.render(worldTrial,this.scene,this.renderer,()=>this.worldSurface(),performance.now(),()=>performance.now());
+      if(result!=='committed'){if(result==='failed')this.recoverWorldPose();return false;}
+    }else{
+      this.renderer.render(this.scene,this.activeCamera);
+      if(this.worldRecovery&&this.motionSource!=='world'&&!this.renderer.getContext().isContextLost()&&this.assetState==='ready'){
+        this.renderer.domElement.style.visibility='';this.worldRecovery=false;
+      }
+    }
+    // Also withhold presentation/audio readiness for a suppressed World mount.
+    return !this.worldRecovery;
+  }
   private animate = (now = performance.now()) => {
     if (this.disposed) return;
     this.frame = requestAnimationFrame(this.animate);
@@ -1073,7 +1164,13 @@ export class AvatarStage {
     const reduced = this.motion.matches;
     const { speaking, level, emotion, profile } = this.options;
     const idle = !reduced && profile?.avatar?.idle !== false;
-    this.updateAutopilot(dt, reduced);
+    const worldActive=this.motionSource==='world';
+    if(worldActive&&(speaking||this.emoteSource==='manual'||this.presentation.requested))this.cancelWorld('cancelled');
+    const worldTrial=worldActive?this.world.prepare(now,this.host.clientWidth,this.host.clientHeight,
+      this.assetState==='ready'&&this.emoteReady&&JSON.stringify(avatarBinding(profile))===this.loadedEmoteBinding
+        &&(!this.world.identity||this.world.identity.actorId===profile?.id),this.walkingCycleDistance,this.worldForwardKnown&&this.canWalk()&&(!this.walkingClip||this.walkingCalibration.source!=='height-fallback'),
+      this.modelForwardYaw,reduced):null;
+    if(worldActive){if(worldTrial)this.applyWorldTrial(worldTrial);else{this.setWalking(false,true);this.walkStrength=0;}}else this.updateAutopilot(dt, reduced);
     const blinkEnabled = profile?.avatar?.autoBlink !== false;
     this.updateSpeech(dt, speaking, level);
     const t = this.time;
@@ -1093,7 +1190,7 @@ export class AvatarStage {
     }
     for (const { node, quaternion } of this.humanoidPose.values()) node.quaternion.copy(quaternion);
     this.applyHumanoidRestPose();
-    const breath = idle ? Math.sin(t * 1.5) : 0;
+    const breath = idle&&!worldActive ? Math.sin(t * 1.5) : 0;
     r.torso.position.y = breath * 0.013;
     r.torso.rotation.set(0, 0, 0);
     r.head.position.y = 2.24 + breath * 0.016;
@@ -1150,13 +1247,13 @@ export class AvatarStage {
     }
     this.compensateWalkingRootMotion();
     this.clampDesktopEmote();
-    this.controls.update();
+    if(!worldActive)this.controls.update();
     if(now-this.lastDesktopAnchor>100){
       this.lastDesktopAnchor=now;
       if(this.desktopActive){const root=this.asset?this.imported:this.robot.root;const center=root.localToWorld(this.desktopModelBounds.center.clone()).project(this.activeCamera);const width=this.host.clientWidth,height=this.host.clientHeight;const x=(center.x+1)*width/2,y=(1-center.y)*height/2;this.options.onDesktopAnchor?.({x,y,...this.desktopFigure,visible:center.z>=-1&&center.z<=1&&x+this.desktopFigure.width/2>0&&x-this.desktopFigure.width/2<width&&y+this.desktopFigure.height/2>0&&y-this.desktopFigure.height/2<height,viewport:{width,height}});}else this.options.onDesktopAnchor?.(undefined);
     }
     try {
-      this.renderer.render(this.scene, this.activeCamera);
+      if(!this.renderOutput(worldTrial))return;
       const loaded = this.emoteReady && JSON.stringify(avatarBinding(this.options.profile)) === this.loadedEmoteBinding;
       if (this.presentation.requested) {
         const hostVisible = this.host.isConnected && this.host.clientWidth > 0 && this.host.clientHeight > 0 && getComputedStyle(this.host).visibility !== 'hidden';
@@ -1166,7 +1263,7 @@ export class AvatarStage {
       // Audio events follow an actually rendered emote/walk frame. Automatic
       // load/idle, muted previews and other output surfaces never authorize sound.
       const emote = this.emote?.clip;
-      const action = emote ?? (this.walking ? this.walkingAction : undefined);
+      const action = emote ?? (!worldActive&&this.walking ? this.walkingAction : undefined);
       const audible = loaded && action?.enabled && action.isScheduled() && action.getEffectiveWeight() > 0.00001;
       this.modelAudio.present(audible && action ? {
         activity: renderedModelSoundActivity(!!emote, this.emoteSource),
@@ -1175,7 +1272,7 @@ export class AvatarStage {
         time: action.time, loop: !emote,
         rate: emote && this.emote ? action.getClip().duration / this.emote.duration : this.walkingAudioRate,
       } : undefined, Number(this.options.profile?.voice?.volume ?? 1));
-    } catch (error) { this.modelAudio?.stop(); this.presentation.fail(error); }
+    } catch (error) { if(worldActive){worldTrial?.snapshot.restore();this.cancelWorld('render_failed');this.recoverWorldPose();}this.modelAudio?.stop(); this.presentation.fail(error); }
   };
 
   private clearImported() {
@@ -1202,10 +1299,12 @@ export class AvatarStage {
     this.walkingPhase = 0;
     this.walkingAudioRate = 0;
     this.walkingCycleDistance = proceduralCycleDistance(2.9);
+    this.walkingCalibration={cycleDistance:this.walkingCycleDistance,source:'height-fallback'};
     this.walkingLegs = undefined;
     this.walkAnchor = undefined;
     this.walkAnchorRest.set(0, 0, 0);
     this.modelForwardYaw = 0;
+    this.worldForwardKnown = true;
     this.contentWidth = 2.05;
     this.contentDepth = 1.35;
     this.travelFraction = 0;
@@ -1239,7 +1338,8 @@ export class AvatarStage {
   }
 
   dispose() {
-    this.disposed = true;
+    this.disposed = true;this.world.dispose();
+    this.renderer.domElement.removeEventListener('webglcontextlost',this.worldContextLost);this.renderer.domElement.removeEventListener('webglcontextrestored',this.worldContextRestored);
     this.presentation.dispose();
     this.modelAudio.destroy();
     ++this.request;

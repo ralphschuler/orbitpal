@@ -11,6 +11,14 @@ struct VisualFixture {
 }
 impl VisualFixture {
     fn new() -> Self {
+        Self::with_envelope(EnvelopeExtents {
+            left: 20.0,
+            top: 40.0,
+            right: 30.0,
+            bottom: 10.0,
+        })
+    }
+    fn with_envelope(envelope_extents: EnvelopeExtents) -> Self {
         let mut f = Fixture::new(&["nova"]);
         let context = f.context("nova");
         let profile = f.store.bot_profile("nova").unwrap();
@@ -60,6 +68,7 @@ impl VisualFixture {
         let report = RenderMeasurement {
             version: 1,
             challenge_id: challenge.id,
+            enclosure_kind: challenge.enclosure_kind,
             frame_sequence: 1,
             viewport: CssSize {
                 width: 800.0,
@@ -78,12 +87,7 @@ impl VisualFixture {
                 right: binding_position.x + 10.0,
                 bottom: binding_position.y,
             },
-            envelope_extents: EnvelopeExtents {
-                left: 20.0,
-                top: 40.0,
-                right: 30.0,
-                bottom: 10.0,
-            },
+            envelope_extents,
             reference_local: LocalReference {
                 x: 0.0,
                 y: 0.0,
@@ -251,6 +255,7 @@ fn make_report(
 ) -> ActionReport {
     let frame = FrameObservation {
         frame_sequence: frame_seq,
+        enclosure_kind: EnclosureKind::ConservativeSubmittedGeometryV1,
         viewport: CssSize {
             width: 800.0,
             height: 600.0,
@@ -371,6 +376,82 @@ fn incomplete_native_arrival_ignores_renderer_idle_counter_and_cancels() {
         ReportOutcome::Cancelled
     ));
     assert_eq!(v.phase(), ActionPhase::Cancelled);
+}
+
+#[test]
+fn conservative_hull_center_at_target_cannot_complete_or_move_a_stationary_actor() {
+    let mut v = VisualFixture::with_envelope(EnvelopeExtents {
+        left: 80.0,
+        top: 80.0,
+        right: 80.0,
+        bottom: 80.0,
+    });
+    let fence = v.get_started();
+    let origin = v.output.binding.position;
+    let needs = v.f.store.load_life("nova").unwrap().unwrap().state().needs();
+    for (receipt, frame_sequence, at, kind) in [
+        (3, 4, 70, ReportKind::Progress),
+        (4, 5, 120, ReportKind::Progress),
+        (5, 6, 170, ReportKind::Completed),
+    ] {
+        let mut report = make_report(
+            &fence, receipt, frame_sequence, kind, origin.x, origin.y, false,
+        );
+        let frame = match &mut report {
+            ActionReport::Delivered { frame, .. }
+            | ActionReport::Started { frame, .. }
+            | ActionReport::Progress { frame, .. }
+            | ActionReport::Completed { frame, .. } => frame,
+        };
+        // The conservative hull covers the target and its centre IS the
+        // target; the independently frozen placement anchor has not moved.
+        frame.posed_bounds = CssRect {
+            left: origin.x + 10.0,
+            top: origin.y - 20.0,
+            right: origin.x + 70.0,
+            bottom: origin.y + 20.0,
+        };
+        assert_eq!(
+            (frame.posed_bounds.left + frame.posed_bounds.right) / 2.0,
+            origin.x + 40.0
+        );
+        v.f.now.store(at, Ordering::SeqCst);
+        let ack = crate::life_runtime::action_host::visual_report(
+            &mut v.f.core,
+            &v.f.store,
+            &v.f.world,
+            &report,
+            at,
+            || at,
+            || 100 + at,
+        )
+        .unwrap();
+        if kind == ReportKind::Completed {
+            assert!(matches!(ack.outcome, ReportOutcome::Cancelled));
+        } else {
+            assert!(matches!(ack.outcome, ReportOutcome::Accepted));
+        }
+        poll(&mut v.f.core, &v.f.store, &v.f.world, || at, || 100 + at).unwrap();
+    }
+    assert_eq!(v.phase(), ActionPhase::Cancelled);
+    assert_eq!(
+        v.f.store.load_life("nova").unwrap().unwrap().state().needs(),
+        needs
+    );
+    let actor = v
+        .f
+        .world
+        .action_context(
+            &v.f.store,
+            &world_hub::current_actors(&v.f.core),
+            "nova",
+            170,
+        )
+        .unwrap();
+    assert_eq!(
+        crate::world_output::css(actor.position, v.output.binding.viewport),
+        origin
+    );
 }
 #[test]
 fn stop_then_late_frame_cannot_complete_or_move_actor() {

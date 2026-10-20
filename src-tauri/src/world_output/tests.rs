@@ -61,6 +61,7 @@ fn measurement(challenge: &MeasurementChallenge, seq: u64) -> RenderMeasurement 
     RenderMeasurement {
         version: 1,
         challenge_id: challenge.id.clone(),
+        enclosure_kind: challenge.enclosure_kind,
         frame_sequence: seq,
         viewport: CssSize {
             width: 800.0,
@@ -119,6 +120,7 @@ fn ready() -> (Registry, NativeSource, OutputProof) {
 fn frame(seq: u64, x: f64, walking: bool) -> FrameObservation {
     FrameObservation {
         frame_sequence: seq,
+        enclosure_kind: EnclosureKind::ConservativeSubmittedGeometryV1,
         viewport: CssSize {
             width: 800.0,
             height: 600.0,
@@ -164,6 +166,110 @@ fn renewal_is_idempotent_and_metadata_never_refreshes_the_successful_frame() {
             .reference_revision,
         proof.binding.reference_revision
     );
+}
+
+#[test]
+fn required_closed_enclosure_kind_cannot_default_or_refresh_an_existing_binding() {
+    fn rejects_missing_or_changed_kind<T: serde::de::DeserializeOwned>(value: serde_json::Value) {
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove("enclosureKind");
+        assert!(serde_json::from_value::<T>(missing).is_err());
+        for wrong in [
+            json!("submitted_vertices_exact_v1"),
+            json!("conservative_submitted_geometry_v2"),
+            json!(null),
+            json!(1),
+        ] {
+            let mut changed = value.clone();
+            changed["enclosureKind"] = wrong;
+            assert!(serde_json::from_value::<T>(changed).is_err());
+        }
+    }
+    let (mut registry, source, proof) = ready();
+    let (reply, _, created) = registry.register(&request(), source.clone(), 3000).unwrap();
+    assert!(!created);
+    let challenge = challenge(&reply);
+    assert_eq!(
+        serde_json::to_value(&challenge).unwrap()["enclosureKind"],
+        "conservative_submitted_geometry_v1"
+    );
+    let report = measurement(&challenge, 2);
+    rejects_missing_or_changed_kind::<RenderMeasurement>(serde_json::to_value(&report).unwrap());
+    rejects_missing_or_changed_kind::<MotionBinding>(serde_json::to_value(&proof.binding).unwrap());
+    rejects_missing_or_changed_kind::<FrameObservation>(
+        serde_json::to_value(frame(2, 400.0, false)).unwrap(),
+    );
+    // Invalid ingress never refreshes the original successful-frame age. A
+    // later VALID frame may renew, with the original policy/reference identity.
+    assert!(registry.ready("nova", 5010).is_ok());
+    assert!(registry.ready("nova", 5011).is_err());
+    registry.measurement(&report, &source, 5020, 5020).unwrap();
+    let renewed = registry.ready("nova", 5020).unwrap();
+    assert_eq!(renewed.binding.enclosure_kind, challenge.enclosure_kind);
+    assert_eq!(renewed.binding.enclosure_kind, proof.binding.enclosure_kind);
+    assert_eq!(
+        renewed.binding.measurement_revision,
+        proof.binding.measurement_revision
+    );
+    assert_eq!(
+        renewed.binding.reference_revision,
+        proof.binding.reference_revision
+    );
+    assert_eq!(renewed.binding.reference_local, proof.binding.reference_local);
+    assert!(std::sync::Arc::ptr_eq(&renewed.cancel, &proof.cancel));
+}
+
+#[test]
+fn conservative_enclosure_restricts_safe_centers_without_clamping_or_dropping_extent() {
+    let mut registry = Registry::default();
+    let source = source();
+    let (reply, _, _) = registry.register(&request(), source.clone(), 0).unwrap();
+    let mut report = measurement(&challenge(&reply), 1);
+    report.envelope_extents = EnvelopeExtents {
+        left: 80.0,
+        top: 120.0,
+        right: 90.0,
+        bottom: 130.0,
+    };
+    report.posed_bounds = CssRect {
+        left: 350.0,
+        top: 220.0,
+        right: 450.0,
+        bottom: 380.0,
+    };
+    registry.measurement(&report, &source, 10, 10).unwrap();
+    let proof = registry.ready("nova", 10).unwrap();
+    assert_eq!(
+        proof.binding.enclosure_kind,
+        EnclosureKind::ConservativeSubmittedGeometryV1
+    );
+    assert_eq!(proof.binding.position, report.anchor);
+    assert_eq!(
+        proof.binding.maximum_footprint,
+        CssSize {
+            width: 180.0,
+            height: 260.0
+        }
+    );
+    assert_eq!(
+        proof.binding.safe_centers,
+        CssRect {
+            left: 90.0,
+            top: 130.0,
+            right: 710.0,
+            bottom: 470.0
+        }
+    );
+    // x=70 would fit a +/-50 body hull, but not the frozen conservative
+    // envelope. The host must reject it rather than crop/shrink/retarget.
+    assert!(
+        VisualExecution::new(proof.clone(), Point::new(87_500, 500_000).unwrap(), 10).is_err()
+    );
+    let mut observed = frame(2, 400.0, false);
+    observed.posed_bounds = report.posed_bounds;
+    registry.check_frame(&proof, &observed, 20).unwrap();
+    observed.posed_bounds.right = 491.0;
+    assert!(registry.check_frame(&proof, &observed, 20).is_err());
 }
 #[test]
 fn native_challenge_revisions_scope_and_closed_ground_basis_cannot_be_supplied_by_renderer() {

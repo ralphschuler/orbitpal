@@ -3,12 +3,14 @@
  * contribute posed geometry; these observations are never native arrival. */
 import * as THREE from 'three';
 import { MToonMaterial } from '@pixiv/three-vrm';
+import { RigidSupportPreparation, rigidAffine, type RigidWork } from './world-rigid-support';
 import type { CssPoint, CssRect, CssSize, GroundBasis, MotionBinding } from './world-motion';
+import type { EnvelopeExtents, LocalReference } from './world-output';
 
 export type GeometryBinding = Readonly<Pick<MotionBinding, 'actorId' | 'sourceWorldId'
   | 'renderSessionId' | 'bindingSequence' | 'worldInstanceId' | 'stageId'
   | 'configRevision' | 'topologyRevision' | 'layoutRevision' | 'assetRevision'
-  | 'measurementRevision' | 'scale'>>;
+  | 'measurementRevision' | 'referenceRevision' | 'scale'>>;
 export type GeometryFrame = Readonly<{ binding: GeometryBinding; frameSequence: number }>;
 export type SurfaceObservation = Readonly<{
   connected: boolean; visible: boolean; viewport: CssSize; clip: CssRect;
@@ -20,15 +22,20 @@ export type RenderPort = Pick<THREE.WebGLRenderer, 'render' | 'getSize' | 'getVi
 export type GeometryUnavailable = 'invalid_binding' | 'stale_frame' | 'invalid_surface'
   | 'unsupported_camera' | 'unsupported_deformation' | 'measurement_budget'
   | 'empty_geometry' | 'invalid_geometry' | 'clipped_geometry' | 'render_failed';
+export const CONSERVATIVE_ENCLOSURE_KIND = 'conservative_submitted_geometry_v1' as const;
+export type GeometryEnclosureKind = 'exact_submitted_geometry_v1' | typeof CONSERVATIVE_ENCLOSURE_KIND;
 export type GeometryMeasurement = Readonly<{
+  enclosureKind: GeometryEnclosureKind;
   frame: GeometryFrame; viewport: CssSize; clip: CssRect; position: CssPoint;
   posedBounds: CssRect; maximumFootprint: CssSize; groundBasis: GroundBasis;
+  envelopeExtents: Readonly<EnvelopeExtents>;
   /** Initial measured centre convention, not a cached collision envelope. */
-  referenceLocal: Readonly<{ x: number; y: number; z: number }>;
+  referenceLocal: Readonly<LocalReference>;
   meshes: number; vertices: number;
 }>;
 export type GeometryResult = Readonly<{ available: true; measurement: GeometryMeasurement }>
-  | Readonly<{ available: false; reason: GeometryUnavailable }>;
+  | Readonly<{ available: false; reason: GeometryUnavailable; preparing?: false }>
+  | Readonly<{ available: false; preparing: true; reason?: never }>;
 
 export const GEOMETRY_MAX_NODES = 2048;
 export const GEOMETRY_MAX_MESHES = 256;
@@ -39,7 +46,7 @@ export const GEOMETRY_MAX_CPU_MS = 8;
 const LIMIT = 1_000_000;
 const stampKeys = ['actorId', 'sourceWorldId', 'renderSessionId', 'bindingSequence',
   'worldInstanceId', 'stageId', 'configRevision', 'topologyRevision', 'layoutRevision',
-  'assetRevision', 'measurementRevision', 'scale'] as const;
+  'assetRevision', 'measurementRevision', 'referenceRevision', 'scale'] as const;
 const ids = new Set<string>(['actorId', 'sourceWorldId', 'renderSessionId', 'worldInstanceId', 'stageId']);
 const counter = (n: number) => Number.isSafeInteger(n) && n > 0;
 const finite = (n: number) => Number.isFinite(n) && Math.abs(n) <= LIMIT;
@@ -147,9 +154,65 @@ function groundBasis(camera: THREE.Camera, view: CssSize, at: CssPoint, frame: T
   return Object.freeze({ right: Object.freeze(right), down: Object.freeze(down) });
 }
 
+type VertexAttribute = THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
+type AttributeSnapshot = Readonly<{ attribute: VertexAttribute; version: number; array: unknown;
+  count: number; itemSize: number; normalized: boolean; stride: number; offset: number }>;
+function attributeSnapshot(attribute: VertexAttribute): AttributeSnapshot {
+  const interleaved=attribute instanceof THREE.InterleavedBufferAttribute;
+  return {attribute,version:interleaved?attribute.data.version:attribute.version,
+    array:interleaved?attribute.data.array:attribute.array,count:attribute.count,itemSize:attribute.itemSize,
+    normalized:attribute.normalized,stride:interleaved?attribute.data.stride:0,offset:interleaved?attribute.offset:0};
+}
+function sameAttribute(snapshot: AttributeSnapshot, attribute: VertexAttribute | undefined | null): boolean {
+  if(!attribute||attribute!==snapshot.attribute)return false;
+  const interleaved=attribute instanceof THREE.InterleavedBufferAttribute;
+  return (interleaved?attribute.data.version:attribute.version)===snapshot.version
+    && (interleaved?attribute.data.array:attribute.array)===snapshot.array
+    && attribute.count===snapshot.count&&attribute.itemSize===snapshot.itemSize&&attribute.normalized===snapshot.normalized
+    && (interleaved?attribute.data.stride:0)===snapshot.stride&&(interleaved?attribute.offset:0)===snapshot.offset;
+}
+type VertexPose = Readonly<{ geometry: THREE.BufferGeometry; matrix: readonly number[];
+  position: AttributeSnapshot; index: AttributeSnapshot | null; morphs: readonly AttributeSnapshot[];
+  relative: boolean; weights: readonly number[]; skinIndex: AttributeSnapshot | null; skinWeight: AttributeSnapshot | null;
+  skeleton: THREE.Skeleton | null; bind: readonly number[]; inverseBind: readonly number[];
+  bones: readonly THREE.Bone[]; inverseBones: readonly THREE.Matrix4[]; bonePose: readonly number[] }>;
+function vertexPose(mesh: THREE.Mesh, geometry: THREE.BufferGeometry): VertexPose {
+  const skin=mesh instanceof THREE.SkinnedMesh?mesh:null;
+  return {geometry,matrix:mesh.matrixWorld.elements.slice(),position:attributeSnapshot(geometry.attributes.position),
+    index:geometry.index?attributeSnapshot(geometry.index):null,morphs:(geometry.morphAttributes.position??[]).map(attributeSnapshot),
+    relative:geometry.morphTargetsRelative,weights:mesh.morphTargetInfluences?.slice()??[],
+    skinIndex:skin?attributeSnapshot(geometry.attributes.skinIndex):null,skinWeight:skin?attributeSnapshot(geometry.attributes.skinWeight):null,
+    skeleton:skin?.skeleton??null,bind:skin?.bindMatrix.elements.slice()??[],inverseBind:skin?.bindMatrixInverse.elements.slice()??[],
+    bones:skin?.skeleton.bones.slice()??[],inverseBones:skin?.skeleton.boneInverses.slice()??[],
+    bonePose:skin?.skeleton.bones.flatMap((bone,i)=>[...bone.matrixWorld.elements,...skin.skeleton.boneInverses[i].elements])??[]};
+}
+function sameVertexPose(mesh: THREE.Mesh, pose: VertexPose): boolean {
+  const geometry=mesh.geometry,morphs=geometry.morphAttributes.position??[],weights=mesh.morphTargetInfluences??[];
+  if(geometry!==pose.geometry||!mesh.matrixWorld.elements.every((n,i)=>n===pose.matrix[i])
+    ||!sameAttribute(pose.position,geometry.attributes.position)
+    ||(pose.index?!sameAttribute(pose.index,geometry.index):geometry.index!==null)
+    ||geometry.morphTargetsRelative!==pose.relative||morphs.length!==pose.morphs.length
+    ||morphs.some((attribute,i)=>!sameAttribute(pose.morphs[i],attribute))
+    ||weights.length!==pose.weights.length||weights.some((n,i)=>n!==pose.weights[i]))return false;
+  if(!(mesh instanceof THREE.SkinnedMesh))return pose.skeleton===null;
+  if(mesh.skeleton!==pose.skeleton||!pose.skinIndex||!pose.skinWeight
+    ||!sameAttribute(pose.skinIndex,geometry.attributes.skinIndex)||!sameAttribute(pose.skinWeight,geometry.attributes.skinWeight)
+    ||!mesh.bindMatrix.elements.every((n,i)=>n===pose.bind[i])||!mesh.bindMatrixInverse.elements.every((n,i)=>n===pose.inverseBind[i])
+    ||mesh.skeleton.bones.length!==pose.bones.length||mesh.skeleton.boneInverses.length!==pose.inverseBones.length)return false;
+  return mesh.skeleton.bones.every((bone,i)=>bone===pose.bones[i]&&mesh.skeleton.boneInverses[i]===pose.inverseBones[i]
+    &&bone.matrixWorld.elements.every((n,j)=>n===pose.bonePose[i*32+j])
+    &&mesh.skeleton.boneInverses[i].elements.every((n,j)=>n===pose.bonePose[i*32+16+j]));
+}
+
 /** One local probe per loaded actor attachment. Renderer, scene and CPU mesh
  * objects come from trusted application code, never JSON/model/tool payloads. */
 export class WorldRenderGeometry {
+  private readonly enclosureKind:GeometryEnclosureKind;
+  /** Explicit local policy: existing callers retain exact current extrema. */
+  constructor(enclosureKind?:typeof CONSERVATIVE_ENCLOSURE_KIND){
+    if(enclosureKind!==undefined&&enclosureKind!==CONSERVATIVE_ENCLOSURE_KIND)throw new Error('invalid_binding');
+    this.enclosureKind=enclosureKind??'exact_submitted_geometry_v1';
+  }
   private binding?: GeometryBinding;
   private root?: THREE.Object3D;
   private camera?: THREE.Camera;
@@ -158,6 +221,7 @@ export class WorldRenderGeometry {
   private highBinding = 0;
   private lastFrame = 0;
   private busy = false;
+  private rigid=new RigidSupportPreparation();
 
   bind(binding: GeometryBinding, root: THREE.Object3D, camera: THREE.Camera,
     groundToWorld: THREE.Matrix4, referenceLocal?: THREE.Vector3): boolean {
@@ -167,13 +231,14 @@ export class WorldRenderGeometry {
       || groundToWorld.elements[11] !== 0 || groundToWorld.elements[15] !== 1
       || referenceLocal && !referenceLocal.toArray().every(finite)) return false;
     const previous = this.binding;
+    this.rigid.invalidate();this.rigid=new RigidSupportPreparation();
     this.highBinding = binding.bindingSequence;
     this.binding = Object.freeze({ ...binding }); this.root = root; this.camera = camera;
     this.ground = groundToWorld.clone(); this.reference = referenceLocal?.clone();
     if (previous?.renderSessionId !== binding.renderSessionId) this.lastFrame = 0;
     return true;
   }
-  invalidate(): void { this.binding = undefined; this.root = undefined; this.camera = undefined; this.ground = undefined; this.reference = undefined; }
+  invalidate(): void { this.rigid.invalidate();this.binding = undefined; this.root = undefined; this.camera = undefined; this.ground = undefined; this.reference = undefined; }
 
   /** Installs temporary after-draw hooks, invokes the actual synchronous render,
    * then checks the current attachment/surface before publishing any geometry.
@@ -181,13 +246,14 @@ export class WorldRenderGeometry {
    * morphs or skeleton are refreshed after draw into a different pose. */
   renderFrame(frame: GeometryFrame, scene: THREE.Scene, renderer: RenderPort,
     observeSurface: () => SurfaceObservation, currentFrame: () => GeometryFrame,
-    clock: () => number): GeometryResult {
+    clock: () => number, options:Readonly<{allowCoveredPreparation?:boolean}> = {}): GeometryResult {
     const binding = this.binding, root = this.root, camera = this.camera, ground = this.ground;
     if (this.busy || !binding || !root || !camera || !ground || !same(frame.binding, binding)
       || !counter(frame.frameSequence) || frame.frameSequence <= this.lastFrame) return fail('stale_frame');
     // Sequence is consumed even by a failed frame; it cannot later be replayed.
     const frameSequence = frame.frameSequence;
     this.lastFrame = frameSequence;
+    const deny=(reason:GeometryUnavailable):GeometryResult=>{if(this.binding===binding)this.rigid.invalidate();return fail(reason);};
     const current = () => {
       const value = currentFrame();
       return this.binding === binding && value.frameSequence === frameSequence && same(value.binding, binding);
@@ -195,6 +261,9 @@ export class WorldRenderGeometry {
     type Hook = THREE.Object3D['onAfterRender'];
     const hooks: { mesh: THREE.Mesh; original: Hook; installed: Hook }[] = [];
     let reason: GeometryUnavailable | undefined;
+    let preparationOnly=options.allowCoveredPreparation===true&&this.rigid.hasPending();
+    let preparing=preparationOnly;
+    const rigidRanges:{mesh:THREE.Mesh;start:number;end:number}[]=[];
     let elapsed = 0, segment = 0, previousClock = -Infinity;
     const read = () => {
       const n = clock();
@@ -208,7 +277,13 @@ export class WorldRenderGeometry {
     let surface: SurfaceObservation;
     const bounds = new THREE.Box3(), css = { left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity };
     const seen = new Set<THREE.Mesh>();
-    let visits = 0, operations = 0, depthMin = Infinity, depthMax = -Infinity;
+    // Evaluated indices are local to this exact submitted pose and frame. Each
+    // mesh owns its own set even when geometries are shared across actors.
+    const evaluated=new Map<THREE.Mesh,{pose:VertexPose;indices:Set<number>}>();
+    let visits = 0, rawEntries = 0, operations = 0, depthMin = Infinity, depthMax = -Infinity;
+    const rigidWork:RigidWork={operation(units){operations+=units;if(operations>GEOMETRY_MAX_DEFORM_OPERATIONS)throw new Error('measurement_budget');},
+      vertex(){if(visits>=GEOMETRY_MAX_VERTEX_VISITS)throw new Error('measurement_budget');visits++;},check,
+      shouldYield:()=>elapsed+read()-segment>=4};
     const projected = new THREE.Vector3(), world = new THREE.Vector3();
     const pv = new THREE.Matrix4();
     let renderedMatrices: number[] | undefined;
@@ -243,14 +318,65 @@ export class WorldRenderGeometry {
         const start = Math.max(range.start, group?.start ?? 0);
         const endAt = Math.min(range.start + range.count, group ? group.start + group.count : Infinity, index?.count ?? position.count);
         if (!Number.isSafeInteger(endAt) || endAt <= start) return;
-        if (visits + endAt - start > GEOMETRY_MAX_VERTEX_VISITS) throw new Error('measurement_budget');
-        operations += (endAt - start) * (1 + morphs.length + (mesh instanceof THREE.SkinnedMesh ? 4 : 0));
+        // Every raw index remains bounded and validated, including duplicates.
+        // Deformation is charged once per actually evaluated vertex.
+        operations += endAt - start;
         if (operations > GEOMETRY_MAX_DEFORM_OPERATIONS) throw new Error('measurement_budget');
+        // Covered preparation is local-only and cannot emit a partial frame.
+        // Exact policy uses boxes only to prune actual-point support queries.
+        // Conservative policy transforms the current rigid source enclosure.
+        if((options.allowCoveredPreparation||this.rigid.stats().ranges>0)&&Math.min(position.count,endAt-start)>32
+          &&rigidAffine(mesh.matrixWorld)&&rigidAffine(camera.matrixWorldInverse)&&rigidAffine(camera.projectionMatrix)){
+          const range={start,end:endAt},status=this.rigid.request(mesh,range);
+          if(status!=='unsupported')rigidRanges.push({mesh,...range});
+          if(status==='invalid')throw new Error('invalid_geometry');
+          if(status==='preparing'){
+            if(!options.allowCoveredPreparation)throw new Error('invalid_geometry');
+            preparationOnly=true;
+            const advanced=this.rigid.prepare(mesh,range,rigidWork);
+            if(advanced==='invalid'||advanced==='unsupported')throw new Error('invalid_geometry');
+            preparing=true;end();return; // Even a just-completed plan needs a newer actual draw.
+          }
+          if(status==='ready'){
+            if(preparationOnly){preparing=true;end();return;}
+            pv.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);
+            const queried=this.enclosureKind===CONSERVATIVE_ENCLOSURE_KIND
+              ?this.rigid.enclose(mesh,range,pv,rigidWork):this.rigid.query(mesh,range,pv,rigidWork);
+            if(queried.status!=='ready'&&queried.status!=='unsupported')throw new Error('invalid_geometry');
+            if(queried.status==='ready'){
+              if([...queried.world.min,...queried.world.max].some(n=>!finite(n)))throw new Error('invalid_geometry');
+              if(queried.ndc.min[2]<-1||queried.ndc.max[2]>1)throw new Error('clipped_geometry');
+              const left=(queried.ndc.min[0]+1)*surface.viewport.width/2,right=(queried.ndc.max[0]+1)*surface.viewport.width/2;
+              const top=(1-queried.ndc.max[1])*surface.viewport.height/2,bottom=(1-queried.ndc.min[1])*surface.viewport.height/2;
+              if(left<surface.clip.left||right>surface.clip.right||top<surface.clip.top||bottom>surface.clip.bottom)throw new Error('clipped_geometry');
+              bounds.expandByPoint(new THREE.Vector3(...queried.world.min as [number,number,number]));
+              bounds.expandByPoint(new THREE.Vector3(...queried.world.max as [number,number,number]));
+              css.left=Math.min(css.left,left);css.right=Math.max(css.right,right);css.top=Math.min(css.top,top);css.bottom=Math.max(css.bottom,bottom);
+              depthMin=Math.min(depthMin,queried.ndc.min[2]);depthMax=Math.max(depthMax,queried.ndc.max[2]);
+              const current=evaluated.get(mesh);
+              if(current&&!sameVertexPose(mesh,current.pose))throw new Error('invalid_geometry');
+              if(!current)evaluated.set(mesh,{pose:vertexPose(mesh,geometry),indices:new Set<number>()});
+              seen.add(mesh);end();return;
+            }
+          }
+          // Morph/skin/projective or otherwise ineligible data uses current vertices.
+        }
+        // A covered pending frame has no geometry authority. Defer even the
+        // dynamic exact path so an early expensive actor cannot starve prep.
+        if(preparationOnly){preparing=true;end();return;}
+        let cached=evaluated.get(mesh);
+        if(cached&&!sameVertexPose(mesh,cached.pose))throw new Error('invalid_geometry');
+        if(!cached){cached={pose:vertexPose(mesh,geometry),indices:new Set<number>()};evaluated.set(mesh,cached);}
         pv.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
         for (let i = start; i < endAt; i++) {
-          if ((visits++ & 63) === 0) check();
+          if ((rawEntries++ & 63) === 0) check();
           const vertex = index ? index.getX(i) : i;
           if (!Number.isSafeInteger(vertex) || vertex < 0 || vertex >= position.count) throw new Error('invalid_geometry');
+          if(cached.indices.has(vertex))continue;
+          if(visits>=GEOMETRY_MAX_VERTEX_VISITS)throw new Error('measurement_budget');
+          visits++;operations+=morphs.length+(mesh instanceof THREE.SkinnedMesh?4:0);
+          if(operations>GEOMETRY_MAX_DEFORM_OPERATIONS)throw new Error('measurement_budget');
+          cached.indices.add(vertex);
           mesh.getVertexPosition(vertex, world).applyMatrix4(mesh.matrixWorld);
           if (!world.toArray().every(finite)) throw new Error('invalid_geometry');
           bounds.expandByPoint(world); projected.copy(world).applyMatrix4(pv);
@@ -262,6 +388,7 @@ export class WorldRenderGeometry {
           css.top = Math.min(css.top, y); css.bottom = Math.max(css.bottom, y);
           depthMin = Math.min(depthMin, projected.z); depthMax = Math.max(depthMax, projected.z);
         }
+        if(!sameVertexPose(mesh,cached.pose))throw new Error('invalid_geometry');
         seen.add(mesh); end();
       } catch (error) {
         reason = error instanceof Error && ['unsupported_deformation', 'measurement_budget', 'empty_geometry', 'clipped_geometry'].includes(error.message)
@@ -270,33 +397,33 @@ export class WorldRenderGeometry {
     };
     this.busy = true;
     try {
-      if (!current()) return fail('stale_frame');
-      if (!(camera instanceof THREE.OrthographicCamera)) return fail('unsupported_camera');
+      if (!current()) return deny('stale_frame');
+      if (!(camera instanceof THREE.OrthographicCamera)) return deny('unsupported_camera');
       const before = observeSurface();
-      if (!validSurface(before)) return fail('invalid_surface');
+      if (!validSurface(before)) return deny('invalid_surface');
       surface = Object.freeze({ connected: before.connected, visible: before.visible, viewport: Object.freeze({ ...before.viewport }), clip: Object.freeze({ ...before.clip }) });
-      if (!validSurface(surface) || renderer.getContext().isContextLost() || renderer.getScissorTest() || renderer.getRenderTarget() !== null) return fail('invalid_surface');
+      if (!validSurface(surface) || renderer.getContext().isContextLost() || renderer.getScissorTest() || renderer.getRenderTarget() !== null) return deny('invalid_surface');
       renderer.getSize(viewport); renderer.getViewport(glViewport);
       if (viewport.x !== surface.viewport.width || viewport.y !== surface.viewport.height || glViewport.x !== 0 || glViewport.y !== 0
-        || glViewport.z !== viewport.x || glViewport.w !== viewport.y) return fail('invalid_surface');
+        || glViewport.z !== viewport.x || glViewport.w !== viewport.y) return deny('invalid_surface');
       if (scene.overrideMaterial || scene.onBeforeRender !== THREE.Object3D.prototype.onBeforeRender
-        || scene.onAfterRender !== THREE.Object3D.prototype.onAfterRender) return fail('unsupported_deformation');
+        || scene.onAfterRender !== THREE.Object3D.prototype.onAfterRender) return deny('unsupported_deformation');
       let parent: THREE.Object3D | null = root, parents = 0;
-      while (parent && parent !== scene && parents++ < 64) { if (!parent.visible) return fail('empty_geometry'); parent = parent.parent; }
-      if (parent !== scene) return fail('invalid_geometry');
+      while (parent && parent !== scene && parents++ < 64) { if (!parent.visible) return deny('empty_geometry'); parent = parent.parent; }
+      if (parent !== scene) return deny('invalid_geometry');
       begin();
       const pending: THREE.Object3D[] = [root]; let nodes = 0, drawGroups = 0;
       while (pending.length) {
-        if (++nodes > GEOMETRY_MAX_NODES) return fail('measurement_budget');
+        if (++nodes > GEOMETRY_MAX_NODES) return deny('measurement_budget');
         const node = pending.pop()!;
         if (!node.visible) continue;
-        if (pending.length + node.children.length + nodes > GEOMETRY_MAX_NODES) return fail('measurement_budget');
+        if (pending.length + node.children.length + nodes > GEOMETRY_MAX_NODES) return deny('measurement_budget');
         pending.push(...node.children);
         if (node instanceof THREE.Mesh) {
           drawGroups += Math.max(1, node.geometry.groups.length);
-          if (drawGroups > GEOMETRY_MAX_DRAW_GROUPS) return fail('measurement_budget');
+          if (drawGroups > GEOMETRY_MAX_DRAW_GROUPS) return deny('measurement_budget');
           if (hooks.length >= GEOMETRY_MAX_MESHES || node.onBeforeRender !== THREE.Object3D.prototype.onBeforeRender
-            || node.onAfterRender !== THREE.Object3D.prototype.onAfterRender) return fail('unsupported_deformation');
+            || node.onAfterRender !== THREE.Object3D.prototype.onAfterRender) return deny('unsupported_deformation');
           const original = node.onAfterRender;
           const installed: Hook = function (this: THREE.Object3D, r, s, c, g, m, group) {
             if (s !== scene || c !== camera) { reason = 'stale_frame'; return; }
@@ -306,46 +433,53 @@ export class WorldRenderGeometry {
           };
           hooks.push({ mesh: node, original, installed }); node.onAfterRender = installed;
         } else if ((node as THREE.Object3D & { isLine?: boolean; isPoints?: boolean; isSprite?: boolean }).isLine
-          || (node as THREE.Points).isPoints || (node as THREE.Sprite).isSprite) return fail('unsupported_deformation');
+          || (node as THREE.Points).isPoints || (node as THREE.Sprite).isSprite) return deny('unsupported_deformation');
         check();
       }
       end();
       // The only path that can populate the bounds is the renderer's draw hook.
       renderer.render(scene, camera);
-      if (reason) return fail(reason);
-      if (!current()) return fail('stale_frame');
-      if (!sameMatrices()) return fail('invalid_geometry');
+      if (reason) return deny(reason);
+      if (!current()) return deny('stale_frame');
+      if (!sameMatrices()) return deny('invalid_geometry');
+      begin();
+      for(const [mesh,cached] of evaluated){if(!sameVertexPose(mesh,cached.pose))return deny('invalid_geometry');check();}
+      for(const range of rigidRanges){const status=this.rigid.request(range.mesh,range);if(status==='invalid'||status==='unsupported')return deny('invalid_geometry');check();}
+      end();
       const after = observeSurface();
-      if (!validSurface(after) || !sameSurface(after, surface) || renderer.getContext().isContextLost()) return fail('invalid_surface');
+      if (!validSurface(after) || !sameSurface(after, surface) || renderer.getContext().isContextLost()) return deny('invalid_surface');
       renderer.getSize(viewport); renderer.getViewport(glViewport);
       if (renderer.getScissorTest() || renderer.getRenderTarget() !== null || viewport.x !== surface.viewport.width || viewport.y !== surface.viewport.height
-        || glViewport.x !== 0 || glViewport.y !== 0 || glViewport.z !== viewport.x || glViewport.w !== viewport.y) return fail('invalid_surface');
-      if (!seen.size || bounds.isEmpty() || css.right <= css.left || css.bottom <= css.top) return fail('empty_geometry');
+        || glViewport.x !== 0 || glViewport.y !== 0 || glViewport.z !== viewport.x || glViewport.w !== viewport.y) return deny('invalid_surface');
+      if(preparing)return Object.freeze({available:false,preparing:true});
+      if (!seen.size || this.enclosureKind==='exact_submitted_geometry_v1'&&visits===0 || bounds.isEmpty() || css.right <= css.left || css.bottom <= css.top) return deny('empty_geometry');
       begin();
       let reference = this.reference?.clone();
       if (!reference) {
         reference = new THREE.Vector3((css.left + css.right) / surface.viewport.width - 1,
           1 - (css.top + css.bottom) / surface.viewport.height, (depthMin + depthMax) / 2).applyMatrix4(pv.clone().invert());
-        if (!matrixValid(root.matrixWorld)) return fail('invalid_geometry');
+        if (!matrixValid(root.matrixWorld)) return deny('invalid_geometry');
         reference.applyMatrix4(root.matrixWorld.clone().invert());
       }
       projected.copy(reference).applyMatrix4(root.matrixWorld).applyMatrix4(pv);
       const position = { x: (projected.x + 1) * surface.viewport.width / 2, y: (1 - projected.y) * surface.viewport.height / 2 };
       if (!reference.toArray().every(finite) || !projected.toArray().every(Number.isFinite)
-        || position.x < css.left || position.x > css.right || position.y < css.top || position.y > css.bottom) return fail('invalid_geometry');
-      const footprint = { width: 2 * Math.max(position.x - css.left, css.right - position.x), height: 2 * Math.max(position.y - css.top, css.bottom - position.y) };
+        || position.x < surface.clip.left || position.x > surface.clip.right || position.y < surface.clip.top || position.y > surface.clip.bottom) return deny('invalid_geometry');
+      const envelopeExtents = { left: Math.max(0, position.x - css.left), right: Math.max(0, css.right - position.x),
+        top: Math.max(0, position.y - css.top), bottom: Math.max(0, css.bottom - position.y) };
+      const footprint = { width: 2 * Math.max(envelopeExtents.left, envelopeExtents.right), height: 2 * Math.max(envelopeExtents.top, envelopeExtents.bottom) };
       const basis = groundBasis(camera, surface.viewport, position, ground);
-      if (!basis || ![footprint.width, footprint.height].every(n => finite(n) && n > 0)) return fail('invalid_geometry');
+      if (!basis || ![footprint.width, footprint.height].every(n => finite(n) && n > 0)) return deny('invalid_geometry');
       end();
-      if (!current()) return fail('stale_frame');
+      if (!current()) return deny('stale_frame');
       this.reference = reference;
-      const measurement: GeometryMeasurement = Object.freeze({ frame: Object.freeze({ binding, frameSequence }),
+      const measurement: GeometryMeasurement = Object.freeze({ enclosureKind:this.enclosureKind,frame: Object.freeze({ binding, frameSequence }),
         viewport: Object.freeze({ ...surface.viewport }), clip: Object.freeze({ ...surface.clip }), position: Object.freeze(position),
-        posedBounds: Object.freeze({ ...css }), maximumFootprint: Object.freeze(footprint), groundBasis: basis,
+        posedBounds: Object.freeze({ ...css }), maximumFootprint: Object.freeze(footprint), groundBasis: basis, envelopeExtents: Object.freeze(envelopeExtents),
         referenceLocal: Object.freeze({ x: reference.x, y: reference.y, z: reference.z }), meshes: seen.size, vertices: visits });
       return Object.freeze({ available: true, measurement });
     } catch (error) {
-      return fail(error instanceof Error && error.message === 'measurement_budget' ? 'measurement_budget' : 'render_failed');
+      return deny(error instanceof Error && error.message === 'measurement_budget' ? 'measurement_budget' : 'render_failed');
     } finally {
       for (const { mesh, original, installed } of hooks) if (mesh.onAfterRender === installed) mesh.onAfterRender = original;
       this.busy = false;

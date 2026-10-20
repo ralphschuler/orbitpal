@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
+import { WorldAvatarController } from './world-avatar';
 import { AvatarStage, createRobot, type AvatarOptions } from './avatar';
 import { DistanceWalkClock } from './avatar-locomotion';
 import { desktopTravelVector, measureDesktopModel } from './desktop-framing';
@@ -14,7 +15,8 @@ function fixture(scale = 1, modelForwardYaw = 0) {
   vi.stubGlobal('window', { devicePixelRatio: 1 });
   vi.spyOn(Date, 'now').mockImplementation(() => now);
   const robot = createRobot(), imported = new THREE.Group(), travel = new THREE.Group();
-  robot.root.visible = false; travel.add(robot.root, imported);
+  const worldHeading=new THREE.Group(),worldOffset=new THREE.Group();
+  robot.root.visible=false;worldOffset.add(robot.root,imported);worldHeading.add(worldOffset);travel.add(worldHeading);
   const foot = new THREE.Bone(); foot.name = 'Foot'; imported.add(foot);
   const clip = new THREE.AnimationClip('Walking', 1, [
     new THREE.VectorKeyframeTrack('Foot.position', [0, .5, 1], [0, 0, -.2, 0, 0, .2, 0, 0, -.2]),
@@ -30,7 +32,7 @@ function fixture(scale = 1, modelForwardYaw = 0) {
   const point = { x: 600, y: 400, travel: { x: 0, y: 0 }, walking: false, presentationReady: true };
   const stage = Object.create(AvatarStage.prototype) as any;
   Object.assign(stage, {
-    options, robot, imported, travel, camera, mixer, walkingClip: clip, walkingAction,
+    options, robot, imported, travel,worldHeading,worldOffset,world:new WorldAvatarController(travel,worldHeading,worldOffset),previousMotionSource:'fixed',worldRecovery:false, camera, mixer, walkingClip: clip, walkingAction,
     controls: { target, update() { camera.lookAt(target); camera.updateMatrixWorld(); } },
     ground: new THREE.Group(), desktopCamera: new THREE.OrthographicCamera(-1, 1, 1, -1, .05, 100),
     host: { clientWidth: 1200, clientHeight: 800 }, desktopModelBounds: measureDesktopModel(robot.root),

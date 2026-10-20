@@ -7,8 +7,12 @@
   import type { AutopilotVisualConfig } from '../lib/autopilot-motion';
   import { presentationAbortError, type PresentationRelease } from '../lib/avatar-presentation';
   import type { DesktopLayout } from '../lib/output-presentation';
+  import type { WorldAvatarOptions } from '../lib/world-avatar';
+  import type { MotionFence, WorldMotionCommand, ReceiveResult } from '../lib/world-motion';
+  import type { WorldAdapterReason } from '../lib/world-output';
 
-  interface Props {
+  interface Props extends WorldAvatarOptions {
+    motionSource?: 'fixed'|'ambient'|'world';
     profile: any;
     speaking?: boolean;
     level?: number;
@@ -25,7 +29,9 @@
     onAudioPlaying?: (playing: boolean, activity: SoundActivity) => void;
   }
 
-  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, outputUrl = '', onModelLoaded, autopilot, desktop, onDesktopAnchor, audioEnabled = false, audioStop = 0, onAudioPlaying }: Props = $props();
+  let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, outputUrl = '', onModelLoaded, autopilot, desktop, onDesktopAnchor, audioEnabled = false, audioStop = 0, onAudioPlaying,
+    motionSource,worldOwner=false,worldChallenge,worldBinding,worldExposed=false,worldMirrorPosition,
+    onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable }: Props = $props();
   let host: HTMLDivElement;
   let stage = $state<AvatarStage>();
   let failure = $state('');
@@ -45,10 +51,15 @@
   }
   export function canPresent(event:EmotePayload):boolean { return stage?.canPresentEmote(event,profile)??false; }
   export function present(event:EmotePayload):boolean { return stage?.presentEmote(event,profile)??false; }
+  export function acceptWorldCommand(command:WorldMotionCommand):ReceiveResult {return stage?.acceptWorldCommand(command)??'stale';}
+  export function beginWorldAfterDelivered(fence:MotionFence,offerSequence:number):boolean {return stage?.beginWorldAfterDelivered(fence,offerSequence)??false;}
+  export function confirmWorldStarted(fence:MotionFence,firstBehaviorFrameSequence:number):boolean {return stage?.confirmWorldStarted(fence,firstBehaviorFrameSequence)??false;}
+  export function cancelWorld(reason:WorldAdapterReason='cancelled'):void {stage?.cancelWorld(reason);}
 
   onMount(() => {
     try {
-      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying }, (message) => { emoteFailure = message; }, assetUrl);
+      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying,
+        motionSource,worldOwner,worldChallenge,worldBinding,worldExposed,worldMirrorPosition,onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable }, (message) => { emoteFailure = message; }, assetUrl);
       stage = renderer;
       return () => { disposed = true; ++assetRequest; renderer.dispose(); };
     } catch (error) {
@@ -59,7 +70,8 @@
   });
 
   $effect(() => {
-    stage?.update({ profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying });
+    stage?.update({ profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying,
+      motionSource,worldOwner,worldChallenge,worldBinding,worldExposed,worldMirrorPosition,onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable });
   });
 
   $effect(() => {
