@@ -11,6 +11,7 @@
   import type { MotionAsset } from './lib/avatar-motion';
   import ModelFeatures from './components/ModelFeatures.svelte';
   import AutopilotPanel from './components/AutopilotPanel.svelte';
+  import UsageBudgetPanel from './components/UsageBudgetPanel.svelte';
   import ScreenContextPanel from './components/ScreenContextPanel.svelte';
   import { prepareScreenSession } from './lib/screen-session';
   import { AutopilotScheduler, type AutopilotClaim, type AutopilotSchedule } from './lib/autopilot';
@@ -58,6 +59,7 @@
   let wakeActive = $state(false);
   let autopilots = $state<Record<string,AutopilotRuntime>>({});
   let autopilotPending = $state(false);
+  let usageBudgetDirty = $state(false);
   let autopilotStartRevision = 0;
   let autopilotEventRevision = 0;
   const autopilotVersions = new AutopilotRuntimeVersions();
@@ -288,8 +290,9 @@
   function navigate(next:Page) {
     if(next===page)return;
     if(extensionBusy){notify(translate('Die Bibliothek wird gerade aktualisiert. Bitte kurz warten.'));return;}
-    const proceed=()=>{botMenu=false;page=next;extensionDirty=false;};
-    if(page==='extensions'&&extensionDirty)requestDiscard(proceed);else proceed();
+    const proceed=()=>{botMenu=false;page=next;extensionDirty=false;usageBudgetDirty=false;};
+    if(page==='autopilot'&&usageBudgetDirty){confirmation={title:translate('Budgetentwurf verwerfen?'),message:translate('Die neuen Tagesgrenzen wurden noch nicht gespeichert. Beim Verlassen gelten weiterhin die bisherigen Grenzen.'),confirmLabel:translate('Entwurf verwerfen'),action:proceed,danger:true,dismissBeforeAction:true};}
+    else if(page==='extensions'&&extensionDirty)requestDiscard(proceed);else proceed();
   }
   async function confirmAction(){
     if(!confirmation||confirming)return;
@@ -302,7 +305,7 @@
     permission:!!$systemPermission, update:updateInstalling, starting:autopilotPending, reply:busy||speaking||speechPreparing,
     sound:foregroundEmotePlaying||externalEmoteBlocking, recording:microphone||microphoneStarting,
     transcription:transcribing, saving, botChange:switchingBot||creatingBot,
-    extensions:extensionEditing, botDialog, updatesDialog:updatesOpen, unsaved:hasUnsavedChanges,
+    extensions:extensionEditing, botDialog, updatesDialog:updatesOpen, unsaved:hasUnsavedChanges||usageBudgetDirty,
     draft:!!message.trim(), secretDraft:Object.values(secretInputs).some(value=>!!value.trim()),
   }));
   const autopilotSpeechStatus = $derived(speechStatus({
@@ -317,7 +320,7 @@
     microphone || microphoneStarting || transcribing || wakeActive ? $t("Beende zuerst die Mikrofonaufnahme und das Zuhören mit Aktivierungsphrase (Stop).") :
     Object.keys(autopilots).length ? $t("Pausiere zuerst alle Autopiloten.") :
     running ? $t("Pausiere zuerst die automatischen Chat-Antworten.") :
-    hasUnsavedChanges || message.trim() || Object.values(secretInputs).some(value=>!!value.trim()) ? $t("Speichere deine Änderungen und sende oder leere Entwürfe vor der Installation.") :
+    hasUnsavedChanges || usageBudgetDirty || message.trim() || Object.values(secretInputs).some(value=>!!value.trim()) ? $t("Speichere deine Änderungen und sende oder leere Entwürfe vor der Installation.") :
     saving || switchingBot || creatingBot || autopilotPending || extensionEditing || botDialog ? $t("Schließe zuerst laufende Bearbeitungen und Speichervorgänge.") : ''
   );
   const currentPage = $derived(nav.find(n => n.id === page));
@@ -649,7 +652,7 @@
       if(epoch!==turnEpoch||!currentAutopilot()||!currentChat()||!currentManual()||!sameBotConfig())return;
       onAccepted?.();
       if(selected&&!autonomous)history=[...history,{id:crypto.randomUUID(),role:'user',text,source,user,createdAt:new Date().toISOString()}];
-      const reply=autonomous?await call('send_autopilot',{botId,requestId}):await call('send_message',{text,source,user,skillIds:[],botId,requestId,replyRouteId});
+      const reply=autonomous?await call('send_autopilot',{botId,requestId}):chatClaim?await call('send_automatic_message',{text,source,user,botId,requestId,replyRouteId}):await call('send_message',{text,source,user,skillIds:[],botId,requestId,replyRouteId});
       if(epoch!==turnEpoch)return;
       if(autonomous){
         const next={...silentAutopilots};
@@ -943,6 +946,7 @@
       {:else if page==='autopilot'}
         <section class="settings-panel"><OutputPreviewControls {profile} displays={outputDisplays} refreshDisplays={refreshOutputDisplays} monitor={true} disabled={saving||switchingBot||creatingBot||updateInstalling} preview={previewOutput}/></section>
         <AutopilotPanel bind:config={profile.autopilot} botName={profile.name} active={!!selectedAutopilot?.active} speechStatus={autopilotSpeechStatus} lastAttemptSilent={!!selectedAutopilot?.active&&silentAutopilots[profile.id]===selectedAutopilot.seed} disabled={busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing||updateInstalling} pending={autopilotPending} previewing={autopilotPreview?.botId===profile.id} onStart={()=>toggleAutopilot(true)} onStop={()=>toggleAutopilot(false)} onPreview={previewAutopilot}/>
+        <UsageBudgetPanel {bots} disabled={updateInstalling||saving||switchingBot||creatingBot} onDirtyChange={value=>usageBudgetDirty=value}/>
         {#key profile.id}<ScreenContextPanel botId={profile.id} {permissionContext} prepareSelection={prepareScreenSource} onError={message=>notify(message,true)} bind:config={profile.screenContext} visionEnabled={profile.model.visionEnabled} disabled={updateInstalling}/>{/key}
         {#if motionRuntime}<section class="autopilot-stage"><Avatar bind:this={liveAvatar} {profile} {speaking} {level} {emotion} autopilot={motionRuntime} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath,overlayUrl)} onModelLoaded={info=>renderedModel=info}/><span>{autopilotPreview ? $t('Stumme Bewegungsvorschau · 30 Sekunden') : $t('Autopilot · {name}',{name:profile.name})}</span></section>{/if}
       {:else if page==='character'}
