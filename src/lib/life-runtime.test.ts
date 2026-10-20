@@ -96,6 +96,21 @@ describe('Native started admission ordering without serializing playback',()=>{
     else await admissions.start({...start,turnId:'newer'},async()=>true);
     check.resolve(true);expect(await pending).toBe(false);expect(await reply).toBe(false);expect(committed).toBe(false);
   });
+  it('never lets a stale failed started event evict an already accepted newer turn',async()=>{
+    const admissions=new LifeTurnAdmissions(),older=parseLifeTurn(event()),newer={...older,turnId:'newer'};
+    expect(await admissions.start(newer,async()=>true)).toBe(true);
+    expect(await admissions.start(older,async()=>false)).toBe(false);
+    expect(await admissions.ready(newer)).toBe(true);expect(await admissions.ready(older)).toBe(false);
+    admissions.finish(older);expect(await admissions.ready(newer)).toBe(true);
+  });
+  it('bounds pending candidates without evicting accepted or already pending identities',async()=>{
+    const admissions=new LifeTurnAdmissions(),check=held(),turn=parseLifeTurn(event());
+    await admissions.start(turn,async()=>true);
+    const candidates=Array.from({length:16},(_,index)=>admissions.start({...turn,turnId:`candidate-${index}`},async current=>{await check.promise;return current()&&false;}));
+    const overflow=()=>{throw Error('must not invoke overflow admission');};
+    expect(await admissions.start({...turn,turnId:'overflow'},overflow)).toBe(false);expect(await admissions.ready(turn)).toBe(true);
+    admissions.cancel();check.resolve(true);expect(await Promise.all(candidates)).toEqual(Array(16).fill(false));expect(await admissions.ready(turn)).toBe(false);
+  });
   it('rejects failed start admission and ignores an unrelated old finish',async()=>{
     const admissions=new LifeTurnAdmissions(),start=parseLifeTurn(event());
     await expect(admissions.start(start,async()=>{throw Error('synthetic failure');})).resolves.toBe(false);

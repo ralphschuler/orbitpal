@@ -980,7 +980,8 @@
     subscribe('cohost://overlay',e=>{
       if(e.kind==='cancel-speech'){
         if(typeof e.id!=='string'||!e.id)return;
-        if(nativeLifeTurn?.turnId===e.id&&nativeLifeTurn.botId===e.botId)lifeAdmissions.finish(nativeLifeTurn);
+        const nativeTurn=nativeLifeTurn;
+        if(nativeTurn&&nativeTurn.turnId===e.id&&nativeTurn.botId===e.botId)lifeAdmissions.finish(nativeTurn);
         cancelPlaybackTurn(e,{id:answeringSpeechId,botId:answeringBotId,autopilot:answeringAutopilot},()=>{nativeLifeTurn=undefined;},()=>{
           ++turnEpoch;running=false;chatScheduler.cancel();player?.stop();clearEmotes();subtitleLifetime?.cancel(e.id);
           busy=false;speechPreparing=false;answeringBotId='';answeringSpeechId='';answeringAutopilot=false;speaking=false;level=0;

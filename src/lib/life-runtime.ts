@@ -129,24 +129,38 @@ export class LifeSnapshots {
 /** A reply may overtake the asynchronous fresh-snapshot check for its start.
  * Wait only for that exact admission; never queue cancellation behind audio. */
 export class LifeTurnAdmissions {
-  private pending?: { turn: LifeTurn; ready: Promise<boolean> };
+  private accepted?: LifeTurn;
+  private candidates = new Map<string, { turn: LifeTurn; ready: Promise<boolean> }>();
+  private key(turn: LifeTurn): string { return JSON.stringify([turn.botId, turn.sessionId, turn.revision, turn.turnId]); }
   start(turn: LifeTurn, admission: (current: () => boolean) => Promise<boolean>): Promise<boolean> {
-    const previous = this.pending;
-    if (previous && sameLifeTurn(previous.turn, turn)) return previous.ready;
+    if (sameLifeTurn(this.accepted, turn)) return Promise.resolve(true);
+    const key = this.key(turn), previous = this.candidates.get(key);
+    if (previous) return previous.ready;
+    // A delayed/rejected candidate cannot evict an already accepted turn, nor
+    // can a burst of host events allocate an unbounded set of pending checks.
+    if (this.candidates.size >= 16) return Promise.resolve(false);
     const record = { turn, ready: Promise.resolve(false) };
-    this.pending = record;
-    const current = () => this.pending === record;
-    record.ready = admission(current).then(accepted => accepted && current(), () => false);
+    this.candidates.set(key, record);
+    const current = () => this.candidates.get(key) === record;
+    record.ready = Promise.resolve().then(() => current() ? admission(current) : false).then(allowed => {
+      if (!allowed || !current()) return false;
+      this.accepted = turn;
+      this.candidates.clear();
+      return true;
+    }, () => false).finally(() => { if (current()) this.candidates.delete(key); });
     return record.ready;
   }
   async ready(turn: LifeTurn): Promise<boolean> {
-    const record = this.pending;
-    return !!record && sameLifeTurn(record.turn, turn) && await record.ready && this.pending === record;
+    if (sameLifeTurn(this.accepted, turn)) return true;
+    const record = this.candidates.get(this.key(turn));
+    return !!record && await record.ready && sameLifeTurn(this.accepted, turn);
   }
   finish(turn: LifeTurn): void {
-    if (this.pending && sameLifeTurn(this.pending.turn, turn)) this.pending = undefined;
+    this.candidates.delete(this.key(turn));
+    if (sameLifeTurn(this.accepted, turn)) this.accepted = undefined;
   }
   cancel(botId?: string): void {
-    if (!botId || this.pending?.turn.botId === botId) this.pending = undefined;
+    for (const [key, record] of this.candidates) if (!botId || record.turn.botId === botId) this.candidates.delete(key);
+    if (!botId || this.accepted?.botId === botId) this.accepted = undefined;
   }
 }
