@@ -2,15 +2,14 @@
  * Genuine pointer input for the disposable KDE acceptance desktop only.
  * This never calls a portal API, fabricates consent, or reads screen pixels.
  *
- * KWin 5.27 requires a desktop entry with this executable's exact absolute
+ * KWin requires a desktop entry with this executable's exact absolute
  * Exec path and X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input; it checks the
  * executable origin before exposing the interface. Do not disable that check.
- * https://github.com/KDE/kwin/blob/v5.27.11/src/wayland_server.cpp
- * https://github.com/KDE/kwin/blob/v5.27.11/src/utils/serviceutils.h
+ * https://github.com/KDE/kwin/blob/v6.6.4/src/wayland_server.cpp
  * KWin then authenticates this bound input device and routes pointer events:
- * https://github.com/KDE/kwin/blob/v5.27.11/src/backends/fakeinput/fakeinputdevice.cpp
- * Protocol v4, shipped by Ubuntu 24.04's plasma-wayland-protocols 1.10.0:
- * https://github.com/KDE/plasma-wayland-protocols/blob/v1.10.0/src/protocols/fake-input.xml
+ * https://github.com/KDE/kwin/blob/v6.6.4/src/backends/fakeinput/fakeinputdevice.cpp
+ * Bind at most protocol v4; Escape needs its real keyboard_key request:
+ * https://github.com/KDE/plasma-wayland-protocols/blob/v1.19.0/src/protocols/fake-input.xml
  */
 #define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
@@ -100,8 +99,9 @@ int main(int argc, char **argv)
         return 1;
     alarm(5); /* Includes connection, registry discovery and every round trip. */
 
-    double x, y;
-    if (argc != 3 || !coordinate(argv[1], 1280, &x) || !coordinate(argv[2], 720, &y)
+    double x = 0, y = 0;
+    bool escape = argc == 2 && strcmp(argv[1], "--escape") == 0;
+    if ((!escape && (argc != 3 || !coordinate(argv[1], 1280, &x) || !coordinate(argv[2], 960, &y)))
         || geteuid() == 0 || getuid() != geteuid()
         || !marker("ORBITPAL_WAYLAND_ACCEPTANCE", "synthetic-desktop-only")
         || !marker("GITHUB_ACTIONS", "true")
@@ -172,6 +172,18 @@ int main(int argc, char **argv)
                                        "Select a monitor in the disposable acceptance dialog");
     if (wl_display_roundtrip(display) < 0)
         goto connection_failed;
+    if (escape) {
+        if (wl_proxy_get_version((struct wl_proxy *)input) < 4) {
+            fputs("KDE chooser cancellation requires genuine input protocol v4\n", stderr);
+            goto cleanup;
+        }
+        org_kde_kwin_fake_input_keyboard_key(input, KEY_ESC, WL_KEYBOARD_KEY_STATE_PRESSED);
+        if (wl_display_roundtrip(display) < 0) goto connection_failed;
+        org_kde_kwin_fake_input_keyboard_key(input, KEY_ESC, WL_KEYBOARD_KEY_STATE_RELEASED);
+        if (wl_display_roundtrip(display) < 0) goto connection_failed;
+        result = 0;
+        goto cleanup;
+    }
     org_kde_kwin_fake_input_pointer_motion_absolute(input, wl_fixed_from_double(x), wl_fixed_from_double(y));
     if (wl_display_roundtrip(display) < 0)
         goto connection_failed;

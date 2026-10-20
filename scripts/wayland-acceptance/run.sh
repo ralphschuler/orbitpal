@@ -23,11 +23,16 @@ cleanup() {
   diagnostic="$RUNNER_TEMP/wayland-acceptance-$desktop"
   mkdir -p "$diagnostic"
   # Exact text-only files; never recursively collect a home, screenshot or frame.
-  for name in compositor pipewire wireplumber portal portal-backend session desktop chooser-tree portal-interfaces kde-cache versions; do
-    if sudo test -f "$root/$name.txt"; then sudo head -c 65536 "$root/$name.txt" >"$diagnostic/$name.txt"; fi
+  for name in compositor pipewire wireplumber portal portal-backend session desktop chooser-tree portal-interfaces kde-cache versions vgem render-capability compositor-capability; do
+    if sudo test -f "$root/$name.txt" && ! sudo test -L "$root/$name.txt"; then sudo head -c 65536 "$root/$name.txt" >"$diagnostic/$name.txt"; fi
   done
-  printf '%s\n' "$result" >"$diagnostic/exit-code.txt"
   if ! sudo rm -rf -- "$root"; then printf 'Failed to remove the private test root\n' >&2; result=1; fi
+  # Only unload the software device this invocation itself loaded. No existing
+  # Hyper-V/physical device permissions, module or host desktop are changed.
+  if [[ "${vgem_created:-}" == yes ]]; then
+    if ! sudo modprobe -r vgem; then printf 'Failed to unload the isolated vgem device\n' >&2; result=1; fi
+  fi
+  printf '%s\n' "$result" >"$diagnostic/exit-code.txt"
   exit "$result"
 }
 trap cleanup EXIT
@@ -38,6 +43,32 @@ sudo install -d -m 0700 "$root/runtime" "$root/control" "$root/config" "$root/ca
 sudo cp -R scripts/wayland-acceptance "$root/harness"
 sudo cp "$2" "$root/acceptance-test"
 sudo chmod 0700 "$root/acceptance-test"
+probe="$RUNNER_TEMP/orbitpal-wayland-render-probe"
+[[ -f "$probe" && -x "$probe" && ! -L "$probe" ]]
+sudo cp "$probe" "$root/render-probe"
+sudo chmod 0700 "$root/render-probe"
+# KWin 6's real virtual EGL backend requires an actual DRM/GBM device. A vgem
+# primary node is explicitly supported upstream. Never reuse/chown another GPU.
+[[ ! -d /sys/module/vgem ]]
+sudo modprobe vgem
+vgem_created=yes
+for _ in {1..100}; do
+  devices=()
+  for entry in /sys/class/drm/card[0-9]*; do
+    [[ "${entry##*/}" =~ ^card[0-9]+$ ]] || continue
+    # Linux7 vgem uses faux_device_create(..., NULL): there is deliberately no
+    # bound device/driver/module symlink. Match its actual faux bus/name instead;
+    # the native probe separately requires DRM_IOCTL_VERSION's exact vgem name.
+    if [[ $(basename "$(readlink -f "$entry/device")") == vgem && $(basename "$(readlink -f "$entry/device/subsystem")") == faux ]]; then devices+=("/dev/dri/${entry##*/}"); fi
+  done
+  if [[ ${#devices[@]} == 1 && -c "${devices[0]}" ]]; then break; fi
+  sleep .1
+done
+[[ ${#devices[@]} == 1 && -c "${devices[0]}" && ! -L "${devices[0]}" ]]
+device="${devices[0]}"
+sudo chown "$account" "$device"
+sudo chmod 0600 "$device"
+printf 'genuine isolated software DRM device: %s\nmodule: vgem\n' "$device" | sudo tee "$root/vgem.txt" >/dev/null
 if [[ "$desktop" == kde ]]; then
   pointer="$RUNNER_TEMP/orbitpal-wayland-pointer"
   [[ -f "$pointer" && -x "$pointer" && ! -L "$pointer" ]]
@@ -61,10 +92,11 @@ EOF
   printf 'source-commit: %s\ndesktop: %s\n' "$(git rev-parse HEAD)" "$desktop"
   cat /etc/os-release
   # A single matrix job deliberately lacks the other desktop's packages.
-  dpkg-query -W gnome-shell mutter-common kwin-wayland plasma-workspace xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-kde pipewire wireplumber 2>/dev/null || true
+  uname -r
+  dpkg-query -W gnome-shell mutter-common kwin-wayland plasma-workspace qt6-wayland xdg-desktop-portal xdg-desktop-portal-gnome xdg-desktop-portal-kde pipewire wireplumber libdrm2 libegl-mesa0 libgbm1 2>/dev/null || true
 } | sudo tee "$root/versions.txt" >/dev/null
 sudo chown -R "$account" "$root"
 sudo -H -u "$account" env -i PATH=/usr/bin:/bin HOME="$root/home" USER="$account" LOGNAME="$account" \
   GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted RUNNER_OS=Linux \
-  ORBITPAL_WAYLAND_ACCEPTANCE=synthetic-desktop-only ORBITPAL_ACCEPTANCE_ROOT="$root" ORBITPAL_ACCEPTANCE_DESKTOP="$desktop" \
+  ORBITPAL_WAYLAND_ACCEPTANCE=synthetic-desktop-only ORBITPAL_ACCEPTANCE_ROOT="$root" ORBITPAL_ACCEPTANCE_DESKTOP="$desktop" ORBITPAL_ACCEPTANCE_DRM="$device" \
   bash -c 'exec timeout --signal=TERM --kill-after=10s 240s dbus-run-session --config-file="$ORBITPAL_ACCEPTANCE_ROOT/bus.conf" -- bash "$ORBITPAL_ACCEPTANCE_ROOT/harness/session.sh" >"$ORBITPAL_ACCEPTANCE_ROOT/session.txt" 2>&1'

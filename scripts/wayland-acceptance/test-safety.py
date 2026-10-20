@@ -56,11 +56,11 @@ class ControllerConsent(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name).resolve()
         tree = ast.parse((DIRECTORY / "desktop.py").read_text(encoding="utf-8"))
-        wanted = {"atomic_json", "sensitive", "select_single_monitor", "translated_pointer", "kwin_geometry", "Desktop"}
+        wanted = {"atomic_json", "sensitive", "chooser_title", "kde6_monitor", "pointer_escape", "select_single_monitor", "translated_pointer", "kwin_geometry", "Desktop"}
         module = ast.Module(body=[item for item in tree.body if isinstance(item, (ast.FunctionDef, ast.ClassDef)) and item.name in wanted], type_ignores=[])
-        self.api = SimpleNamespace(STATE_SENSITIVE="sensitive", STATE_ENABLED="enabled", STATE_PRESSED="pressed", STATE_CHECKED="checked", STATE_SELECTED="selected", ROLE_LIST_ITEM="card", ROLE_TOGGLE_BUTTON="toggle")
-        self.namespace = {"CONTROL": self.root, "ROOT": self.root, "DESKTOP": "kde", "json": json,
-                          "time": SimpleNamespace(monotonic=lambda: 0), "pyatspi": self.api, "math": math, "re": re, "stat": stat,
+        self.api = SimpleNamespace(STATE_SENSITIVE="sensitive", STATE_ENABLED="enabled", STATE_PRESSED="pressed", STATE_CHECKED="checked", STATE_SELECTED="selected", ROLE_LIST_ITEM="card", ROLE_TOGGLE_BUTTON="toggle", ROLE_PUSH_BUTTON="button")
+        self.namespace = {"CONTROL": self.root, "ROOT": self.root, "DESKTOP": "kde", "KDE6": False, "TITLES": {"gnome": "Share Screen", "kde": "Screen Sharing"}, "json": json,
+                          "time": SimpleNamespace(monotonic=lambda: 0, time=lambda: 10), "pyatspi": self.api, "math": math, "re": re, "stat": stat,
                           "TRACE": SimpleNamespace(log=lambda *args, **kwargs: None, begin=lambda *args: None, finish=lambda: None),
                           "action": Mock(return_value=True), "pointer_click": Mock(return_value=True),
                           "visible": lambda node: True, "walk": lambda node, *args: [node]}
@@ -153,6 +153,13 @@ class ControllerConsent(unittest.TestCase):
         self.assertIn("/7", calls[1].args[0])
         self.assertTrue(calls[-1].args[0][-2].endswith("unloadScript"))
         self.assertEqual(list(self.root.glob("*.js")), [])
+
+    def test_kwin6_uses_current_window_list_and_registered_script_path(self):
+        self.namespace["KDE6"] = True
+        snapshot, nonce = self.kwin_fixture()
+        self.assertEqual(self.namespace["kwin_geometry"](42), (snapshot, nonce))
+        calls = self.namespace["subprocess"].run.call_args_list
+        self.assertIn("/Scripting/Script7", calls[1].args[0])
 
     def test_kwin_cleanup_runs_on_script_error_and_local_file_removed_on_unload_error(self):
         for fail_cleanup in (False, True):
@@ -256,6 +263,66 @@ class ControllerConsent(unittest.TestCase):
         controller.poll()
         self.assertFalse((self.root / "ack.json").exists())
         self.namespace["action"].assert_not_called()
+
+    def test_kde6_selects_only_the_named_existing_monitor_button(self):
+        self.namespace["KDE6"] = True
+        (self.root / "output-name.txt").write_text("('Virtual-1',)\n", encoding="utf-8")
+        existing = self.node({"sensitive", "enabled"})
+        existing.getRole = lambda: "button"
+        virtual = self.node({"sensitive", "enabled"})
+        virtual.name, virtual.getRole = "Share virtual screen", lambda: "button"
+        region = self.node({"sensitive", "enabled"})
+        region.name, region.getRole = "Share region", lambda: "button"
+        dialog = object()
+        self.namespace["walk"] = lambda node: [virtual, region, existing]
+        self.assertIs(self.namespace["kde6_monitor"](dialog), existing)
+        self.namespace["walk"] = lambda node: [virtual, region]
+        self.assertIsNone(self.namespace["kde6_monitor"](dialog))
+        self.namespace["walk"] = lambda node: [existing, existing]
+        self.assertIsNone(self.namespace["kde6_monitor"](dialog))
+        (self.root / "output-name.txt").write_text("('Virtual-1', 'other')", encoding="utf-8")
+        with self.assertRaises(RuntimeError): self.namespace["kde6_monitor"](dialog)
+
+    def test_kde6_single_choice_click_does_not_ack_until_actual_dismissal(self):
+        self.namespace["KDE6"] = True
+        controller = self.controller()
+        self.namespace["kde6_monitor"] = Mock(return_value=self.node({"sensitive", "enabled"}))
+        controller.poll()
+        self.namespace["action"].assert_called_once()
+        self.namespace["button"].assert_not_called()
+        self.assertFalse((self.root / "ack.json").exists())
+        controller.poll()
+        self.namespace["pointer_click"].assert_called_once()
+        self.assertFalse((self.root / "ack.json").exists())
+        self.namespace["chooser"].return_value = None
+        controller.poll()
+        self.assertTrue(json.loads((self.root / "ack.json").read_text())["ok"])
+
+    def test_kde6_escape_requires_fresh_focused_exact_chooser(self):
+        self.namespace["KDE6"] = True
+        (self.root / "pointer").write_text("fixture-never-executed")
+        snapshot = {"nonce": "test", "timestamp": 10000, "count": 1, "matches": [{"pid": 42, "active": True}]}
+        self.namespace["kwin_geometry"] = Mock(return_value=(snapshot, "test"))
+        self.namespace["subprocess"] = SimpleNamespace(run=Mock(return_value=SimpleNamespace(returncode=0)))
+        dialog = SimpleNamespace(name="Share screen with the requesting application", get_process_id=lambda: 42)
+        self.assertTrue(self.namespace["pointer_escape"](dialog))
+        self.namespace["subprocess"].run.assert_called_once_with([str(self.root / "pointer"), "--escape"], capture_output=True, timeout=6, check=False)
+        for override in ({"timestamp": 0}, {"nonce": "wrong"}, {"count": 2}, {"matches": [{"pid": 43, "active": True}]}, {"matches": [{"pid": 42, "active": False}]}):
+            self.namespace["kwin_geometry"].return_value = ({**snapshot, **override}, "test")
+            self.namespace["subprocess"].run.reset_mock()
+            with self.assertRaises(RuntimeError): self.namespace["pointer_escape"](dialog)
+            self.namespace["subprocess"].run.assert_not_called()
+
+    def test_kde6_cancel_uses_escape_and_waits_for_actual_dismissal(self):
+        self.namespace["KDE6"] = True
+        self.namespace["pointer_escape"] = Mock(return_value=True)
+        controller = self.controller("cancel")
+        controller.poll()
+        self.namespace["pointer_escape"].assert_called_once()
+        self.assertFalse((self.root / "ack.json").exists())
+        self.namespace["chooser"].return_value = None
+        controller.poll()
+        self.assertTrue(json.loads((self.root / "ack.json").read_text())["ok"])
 
 
 if __name__ == "__main__":

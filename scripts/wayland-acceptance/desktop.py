@@ -25,7 +25,14 @@ import pyatspi
 ROOT = Path(os.environ["ORBITPAL_ACCEPTANCE_ROOT"])
 CONTROL = ROOT / "control"
 DESKTOP = os.environ["ORBITPAL_ACCEPTANCE_DESKTOP"]
+KDE6 = os.environ.get("KDE_SESSION_VERSION") == "6"
 TITLES = {"gnome": "Share Screen", "kde": "Screen Sharing"}
+
+
+def chooser_title(name):
+    if DESKTOP == "kde" and KDE6:
+        return str(name).startswith(("Share screen with ", "Choose which screen to share with "))
+    return name == TITLES[DESKTOP]
 
 
 class PhaseTrace:
@@ -139,13 +146,39 @@ def chooser():
                 name = node.name
                 if node is application:
                     TRACE.log("chooser.application.name", index=index, name=name)
-                if name == TITLES[DESKTOP] and visible(node):
+                if chooser_title(name) and visible(node):
+                    if KDE6 and (node.getRole() not in (pyatspi.ROLE_FRAME, pyatspi.ROLE_DIALOG)
+                                 or node.get_process_id() != int(os.environ["ORBITPAL_ACCEPTANCE_PORTAL_PID"])):
+                        continue
                     TRACE.log("chooser.dialog.found", name=name)
                     return node
             except (RuntimeError, AttributeError):
                 continue
         TRACE.log("chooser.application.walk.end", index=index)
     return None
+
+
+def kde6_monitor(dialog):
+    """Single-choice KDE6 cards are buttons; clicking the real output grants.
+
+    Match its real compositor name, excluding Share virtual screen/Share region.
+    The separate native assertion still requires a granted monitor and frames.
+    """
+    source = (CONTROL / "output-name.txt").read_text(encoding="utf-8")
+    match = re.fullmatch(r"\('([A-Za-z0-9_-]{1,80})',\)\n?", source)
+    if not match:
+        raise RuntimeError("Private compositor did not name exactly one output")
+    name = match.group(1)
+    candidates = []
+    for node in walk(dialog):
+        try:
+            label = str(node.name or "").strip()
+            if node.getRole() == pyatspi.ROLE_PUSH_BUTTON and visible(node) and sensitive(node) \
+                    and (label == name or label.endswith("(" + name + ")")):
+                candidates.append(node)
+        except (RuntimeError, AttributeError):
+            continue
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def button(dialog, name):
@@ -226,16 +259,16 @@ def translated_pointer(target, window, snapshot, nonce, pid, now_ms):
     tx, ty, tw, th = rect(target)
     if (bw, bh) != (rw, rh) or tx < rx or ty < ry or tx + tw > rx + rw or ty + th > ry + rh:
         raise RuntimeError("Qt and compositor window bounds do not match")
-    if bx < 0 or by < 0 or bx + bw > 1280 or by + bh > 720:
+    if bx < 0 or by < 0 or bx + bw > 1280 or by + bh > 960:
         raise RuntimeError("Synthetic chooser is outside the private output")
     x, y = bx + tx - rx + tw / 2, by + ty - ry + th / 2
-    if not (0 <= x < 1280 and 0 <= y < 720):
+    if not (0 <= x < 1280 and 0 <= y < 960):
         raise RuntimeError("Synthetic pointer destination is outside the output")
     return x, y
 
 
 def kwin_geometry(pid):
-    """Read-only KWin5 snapshot; never move a window or alter a portal grant."""
+    """Read-only KWin snapshot; never move a window or alter a portal grant."""
     runtime = ROOT / "runtime"
     bus = f"unix:path={runtime}/session-bus"
     address = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
@@ -253,19 +286,19 @@ def kwin_geometry(pid):
     plugin = "orbitpal-geometry-" + nonce
     script = CONTROL / (plugin + ".js")
     prefix = "ORBITPAL_KWIN_GEOMETRY:" + nonce + ":"
-    # These are the actual5.27 JS properties. clientGeometry is not exposed.
+    # KWin6 renamed clientList() to windowList() and moved script object paths.
     code = """(function () {
-        var windows = workspace.clientList(), matches = [], titles = [];
+        var windows = workspace.WINDOW_LIST(), matches = [], titles = [];
         for (var i = 0; i < windows.length && i < 64; i++) {
             var title = String(windows[i].caption);
             if (titles.length < 8) titles.push(title.substring(0, 120));
             if (windows[i].pid === PID) {
                 var b = windows[i].bufferGeometry;
-                matches.push({pid: windows[i].pid, caption: title.substring(0, 120), buffer: {x:b.x, y:b.y, width:b.width, height:b.height}});
+                matches.push({pid: windows[i].pid, active: windows[i].active, caption: title.substring(0, 120), buffer: {x:b.x, y:b.y, width:b.width, height:b.height}});
             }
         }
         console.warn(PREFIX + JSON.stringify({nonce: NONCE, timestamp: Date.now(), count: matches.length, matches: matches.slice(0, 2), titles: titles}));
-    })();""".replace("PREFIX", json.dumps(prefix)).replace("NONCE", json.dumps(nonce)).replace("PID", str(pid))
+    })();""".replace("WINDOW_LIST", "windowList" if KDE6 else "clientList").replace("PREFIX", json.dumps(prefix)).replace("NONCE", json.dumps(nonce)).replace("PID", str(pid))
     deadline = time.monotonic() + 3
     loaded = False
     def call(path, method, *arguments, cleanup=False):
@@ -282,7 +315,7 @@ def kwin_geometry(pid):
         if not match:
             raise RuntimeError("KWin did not load the read-only metadata script")
         loaded = True
-        call("/" + match.group(1), "org.kde.kwin.Script.run")
+        call(("/Scripting/Script" if KDE6 else "/") + match.group(1), "org.kde.kwin.Script.run")
         log = ROOT / "compositor.txt"
         metadata = log.lstat()
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
@@ -315,7 +348,7 @@ def pointer_click(node, dialog):
         TRACE.log("pointer.geometry.begin")
         bounds = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
         window = dialog.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
-        if dialog.name != TITLES["kde"] or not visible(dialog):
+        if not chooser_title(dialog.name) or not visible(dialog):
             return False
         pid = dialog.get_process_id()
         snapshot, nonce = kwin_geometry(pid)
@@ -334,6 +367,27 @@ def pointer_click(node, dialog):
     except (RuntimeError, AttributeError, KeyError, ValueError, OSError, NotImplementedError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
         TRACE.log("pointer.rejected", reason=f"{type(error).__name__}: {error}")
         return False
+
+
+def pointer_escape(dialog):
+    """KDE6's single-choice dialog has no Cancel button; real Escape rejects it."""
+    helper = ROOT / "pointer"
+    if DESKTOP != "kde" or not KDE6 or not chooser_title(dialog.name) or not visible(dialog) \
+            or not helper.is_file() or helper.is_symlink():
+        return False
+    pid = dialog.get_process_id()
+    snapshot, nonce = kwin_geometry(pid)
+    timestamp = snapshot.get("timestamp")
+    if snapshot.get("nonce") != nonce or isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) \
+            or not math.isfinite(timestamp) or not 0 <= time.time() * 1000 - timestamp <= 5000:
+        raise RuntimeError("Cancel requires fresh private chooser metadata")
+    if snapshot.get("count") != 1 or len(snapshot.get("matches", [])) != 1 \
+            or snapshot["matches"][0].get("pid") != pid or snapshot["matches"][0].get("active") is not True:
+        raise RuntimeError("Cancel requires the real private chooser to have focus")
+    completed = subprocess.run([str(helper), "--escape"], capture_output=True, timeout=6, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError("Private compositor rejected genuine Escape input")
+    return True
 
 
 def text_tree():
@@ -421,6 +475,26 @@ class Desktop:
                     TRACE.log("chooser.dismissed")
                     self.ack()
                 elif dialog is not None:
+                    if DESKTOP == "kde" and KDE6:
+                        if self.pending == "cancel":
+                            if not self.consent_attempted:
+                                self.consent_attempted = True
+                                pointer_escape(dialog)
+                        else:
+                            target = kde6_monitor(dialog)
+                            if target is not None:
+                                if not self.consent_attempted:
+                                    self.consent_attempted = True
+                                    action(target)
+                                elif not self.consent_pointer_attempted:
+                                    self.consent_pointer_attempted = True
+                                    pointer_click(target, dialog)
+                        # Only the later observed dismissal can acknowledge it.
+                        # Native select/capture separately verifies the response.
+                        if self.pending and time.monotonic() >= self.deadline:
+                            (ROOT / "chooser-tree.txt").write_text(text_tree(), encoding="utf-8")
+                            self.ack("KDE6 real chooser action timed out")
+                        return True
                     ready = self.pending == "cancel"
                     if not ready:
                         attempt = None
