@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0 — 2026-10-20
+
+- Redesign the Studio with consistent dark surfaces, readable typography and controls, one header save/status area and persistent selected-bot context. Move the composer directly below the character and keep the crew in a compact scrolling roster. Preserve full text navigation at smaller widths.
+- Separate shared Skill/MCP installations from per-bot grants more clearly. Present Autopilot, screen permissions and updates with consistent sections and expandable technical details while keeping grants, costs, errors and pending actions visible. Retain all four interface languages independently of bot content.
+- Confirm before discarding changed library drafts or deleting knowledge/history. Preserve unchanged drafts without unnecessary prompts, retain shared drafts across bot switches and keep errors/drafts when a save fails. Hold the same editor through compound profile/document/library saves so delayed completion cannot save a replacement draft.
+- Fix Escape ordering for the bot picker, tooltips, keyboard help and editors. Keep global save/send/navigation shortcuts behind confirmations, preserve IME composition, restore focus after local discard and associate all edited form labels explicitly. Keep the narrow-window bot menu above the sticky header and prevent crew labels from collapsing into vertical text.
+- Preserve installed identities, provider/permission behavior, updater trust and the persistent self-signed macOS certificate. Local UI validation covers 96 page views across four languages and three sizes, plus keyboard/dialog and transparent-overlay fixtures; these browser fixtures do not establish native installation, privacy retention or live provider acceptance. Existing signing/install, upstream maintenance and Wayland acceptance work remains tracked in #17, #19 and #26.
+
 ## 0.10.1 — 2026-10-20
 
 - Replace the monolithic keyring dependency with supported explicit native stores while preserving the legacy service, credential IDs, macOS User Keychain, Windows credential encoding/target and Linux persistent Secret Service `target=default` attributes. Construct stores directly without a process-global default. Return fixed, localized credential error categories without backend payloads or malformed secret bytes.
