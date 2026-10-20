@@ -5,7 +5,7 @@
 export type Size = Readonly<{width:number;height:number}>;
 export type Point = Readonly<{x:number;y:number}>;
 export type DesktopMotionPhase = 'entry'|'walk'|'idle'|'exit'|'offscreen'|'return'|'paused'|'centered';
-export type DesktopMotionFrame = Point & {facing:-1|1;walking:boolean;phase:DesktopMotionPhase;visible:boolean;presentationReady:boolean};
+export type DesktopMotionFrame = Point & {facing:-1|1;travel:Point;walking:boolean;phase:DesktopMotionPhase;visible:boolean;presentationReady:boolean};
 export type DesktopMotionInput = {
   seed:string; startedAt:number; now:number; delta:number;
   viewport:Size; figure:Size; margin?:number; paused?:boolean; presentationRequested?:boolean;
@@ -51,12 +51,16 @@ function point(bounds:DesktopBounds,normal:Point):Point {return {x:bounds.left+(
 export class DesktopMotionController {
   private session=''; private initialized=false; private lastNow=0;
   private x=0; private y=0; private facing:-1|1=1; private speed=0;
+  private travel:Point={x:0,y:0};
   private mode:'entry'|'walk'|'idle'|'exit'|'offscreen'|'return'='idle'; private target:Point={x:.5,y:.5};
   private nextWaypoint=0; private hold=0; private geometry:number[]=[];
   private visits=0; private nextExcursion=4; private excursions=0; private exitSide:-1|1=-1;
   reset():void {this.session='';this.initialized=false;this.speed=0;this.geometry=[];}
 
   sample(input:DesktopMotionInput):DesktopMotionFrame {
+    // Only this frame's actual displacement drives heading and gait. Never
+    // count initial placement, reframing or a paused wall-clock interval.
+    this.travel={x:0,y:0};
     const bounds=desktopSafeBounds(input.viewport,input.figure,input.margin);
     const sessionValid=typeof input.seed==='string'&&input.seed.length>0&&input.seed.length<=256&&Number.isFinite(input.startedAt)&&input.startedAt>=0&&Number.isFinite(input.now)&&input.now>=input.startedAt;
     const session=sessionValid?`${input.startedAt}:${input.seed}`:'';
@@ -124,7 +128,7 @@ export class DesktopMotionController {
     const desired=Math.min(cruise,Math.sqrt(2*ACCELERATION*distance));
     this.speed+=clamp(desired-this.speed,-ACCELERATION*delta,ACCELERATION*delta);
     const travel=Math.min(distance,Math.max(0,this.speed)*delta);
-    if(travel>0&&distance>0){this.x+=dx/distance*travel;this.y+=dy/distance*travel;if(Math.abs(dx/distance)>.05)this.facing=dx>0?1:-1;}
+    if(travel>0&&distance>0){this.travel={x:dx/distance*travel,y:dy/distance*travel};this.x+=this.travel.x;this.y+=this.travel.y;if(Math.abs(dx/distance)>.05)this.facing=dx>0?1:-1;}
     if(delta>0&&distance-travel<=1e-9){
       this.x=destination.x;this.y=destination.y;this.speed=0;
       if(this.mode==='exit'){
@@ -139,7 +143,7 @@ export class DesktopMotionController {
   private inside(bounds:DesktopBounds):boolean {return bounds.valid&&this.x>=bounds.left&&this.x<=bounds.right&&this.y>=bounds.top&&this.y<=bounds.bottom;}
   private frame(phase:DesktopMotionPhase,walking:boolean,viewport:Size,figure:Size,bounds:DesktopBounds):DesktopMotionFrame {
     const width=dimension(viewport.width),height=dimension(viewport.height),halfWidth=dimension(figure.width)/2,halfHeight=dimension(figure.height)/2;
-    return {x:this.x,y:this.y,facing:this.facing,walking,phase,visible:validSize(viewport)&&validSize(figure)&&this.x+halfWidth>0&&this.x-halfWidth<width&&this.y+halfHeight>0&&this.y-halfHeight<height,presentationReady:!walking&&this.inside(bounds)};
+    return {x:this.x,y:this.y,facing:this.facing,travel:{...this.travel},walking,phase,visible:validSize(viewport)&&validSize(figure)&&this.x+halfWidth>0&&this.x-halfWidth<width&&this.y+halfHeight>0&&this.y-halfHeight<height,presentationReady:!walking&&this.inside(bounds)};
   }
 }
 
