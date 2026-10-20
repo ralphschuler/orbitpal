@@ -82,6 +82,32 @@ class HarnessSafety(unittest.TestCase):
                     self.assertTrue(sentinel.exists())
                     sentinel.unlink()
 
+    def test_only_gnome_replaces_an_early_backend_without_changing_kde_arguments(self):
+        source = (DIRECTORY / "session.sh").read_text(encoding="utf-8")
+        function = re.search(r"^start_portal_backend\(\) \{.*?^\}", source, re.MULTILINE | re.DOTALL)
+        self.assertIsNotNone(function)
+        script = "set -eu\nstart() { printf '%s\\0' \"$@\"; }\n" + function.group() + '\nstart_portal_backend "$@"\n'
+        for desktop, flags in (("gnome", ["--replace"]), ("kde", [])):
+            result = subprocess.run(["bash", "-c", script, "fixture", desktop, "/synthetic path/backend"], capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.split(b"\0")[:-1], [b"portal-backend", b"/synthetic path/backend", *[flag.encode() for flag in flags]])
+        for args in ([], ["gnome"], ["other", "/never-invoked"], ["gnome", "/never-invoked", "--extra"]):
+            result = subprocess.run(["bash", "-c", script, "fixture", *args], capture_output=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, b"")
+
+    def test_owner_diagnostics_are_bounded_metadata_and_cannot_accept_a_wrong_owner(self):
+        for raw, expected, actual in ((b"(uint32 123,)\n", "123", "123"), (b"(uint32 124,)\n", "123", "124"),
+                                      (b"marker-secret-invalid", "123", "unavailable"), (b"x" * 1025, "123", "unavailable"),
+                                      (b"\xff", "123", "unavailable"), (b"(uint32 2147483648,)\n", "123", "unavailable")):
+            result = subprocess.run([sys.executable, str(DIRECTORY / "service-owner.py"), "--diagnostic", expected], input=raw, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f"expected={expected}; actual={actual}".encode(), result.stdout)
+            self.assertLess(len(result.stdout), 120)
+            self.assertNotIn(b"marker-secret", result.stdout)
+            strict = subprocess.run([sys.executable, str(DIRECTORY / "service-owner.py"), expected], input=raw, capture_output=True, timeout=5)
+            self.assertEqual(strict.returncode == 0, actual == expected)
+
     def test_kde_setup_requires_the_menu_and_publishes_only_its_prefix_before_activation(self):
         # Execute the actual setup function using a recorder instead of D-Bus.
         # No compositor, device, desktop API or real activation service is used.

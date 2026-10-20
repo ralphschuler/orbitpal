@@ -36,6 +36,20 @@ dbus_owner() {
     | /usr/bin/python3 "$root/harness/service-owner.py" "$2"
 }
 backend_binary() { local package="$1" name="$2" file; while IFS= read -r file; do if [[ "${file##*/}" == "$name" && -x "$file" && ! -d "$file" ]]; then printf '%s\n' "$file"; return; fi; done < <(dpkg-query -L "$package"); return 1; }
+start_portal_backend() {
+  [[ $# == 2 ]] || return 1
+  if [[ "$1" == gnome ]]; then
+    # GNOME Shell can auto-activate a backend before our display environment.
+    # The real GNOME 50.0 backend supports replacing that instance. The private
+    # bus guard above and exact spawned-PID gate below remain mandatory.
+    # https://gitlab.gnome.org/GNOME/xdg-desktop-portal-gnome/-/blob/50.0/src/xdg-desktop-portal-gnome.c
+    start portal-backend "$2" --replace
+  elif [[ "$1" == kde ]]; then
+    start portal-backend "$2"
+  else
+    return 1
+  fi
+}
 prepare_kde_environment() {
   # Plasma normally supplies this before building KService's application cache.
   # Without it the packaged plasma-applications.menu is never loaded, so KWin
@@ -80,9 +94,15 @@ wait_for 'private Wayland socket' test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
 printf '[preferred]\ndefault=%s\norg.freedesktop.impl.portal.ScreenCast=%s\n' "$ORBITPAL_ACCEPTANCE_DESKTOP" "$ORBITPAL_ACCEPTANCE_DESKTOP" >"$XDG_CONFIG_HOME/xdg-desktop-portal/portals.conf"
 dbus-update-activation-environment XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_CURRENT_DESKTOP XDG_SESSION_TYPE WAYLAND_DISPLAY GDK_BACKEND QT_QPA_PLATFORM GTK_A11Y QT_LINUX_ACCESSIBILITY_ALWAYS_ON LANG LC_ALL
 backend="$(backend_binary "$backend_package" "$backend_package")"
-start portal-backend "$backend"
+start_portal_backend "$ORBITPAL_ACCEPTANCE_DESKTOP" "$backend"
 export ORBITPAL_ACCEPTANCE_PORTAL_PID="${pids[-1]}"
-wait_for 'private portal backend owner' dbus_owner "org.freedesktop.impl.portal.desktop.$ORBITPAL_ACCEPTANCE_DESKTOP" "$ORBITPAL_ACCEPTANCE_PORTAL_PID"
+if ! wait_for 'private portal backend owner' dbus_owner "org.freedesktop.impl.portal.desktop.$ORBITPAL_ACCEPTANCE_DESKTOP" "$ORBITPAL_ACCEPTANCE_PORTAL_PID"; then
+  # The parser emits only bounded numeric/fixed metadata into session.txt;
+  # never copy an arbitrary D-Bus error or response into diagnostic evidence.
+  gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.GetConnectionUnixProcessID "org.freedesktop.impl.portal.desktop.$ORBITPAL_ACCEPTANCE_DESKTOP" 2>/dev/null \
+    | /usr/bin/python3 "$root/harness/service-owner.py" --diagnostic "$ORBITPAL_ACCEPTANCE_PORTAL_PID" || true
+  exit 1
+fi
 if [[ "$ORBITPAL_ACCEPTANCE_DESKTOP" == kde ]]; then
   # Observe the real KWin authorization decision for the actual packaged backend,
   # not merely a frontend D-Bus interface or our separate synthetic input helper.
