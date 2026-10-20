@@ -50,12 +50,12 @@
 {/if}
 
 <style>
-  .microphone-permissions { margin: -8px 0 18px; border: 1px solid #3c4860; border-radius: 10px; background: #1e2635; }
-  .permission-heading { width: 100%; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 10px 13px; background: none; border: 0; color: #cad6ee; font: inherit; font-size: 11px; text-align: left; cursor: pointer; }
-  .permission-heading span { color: #a8b6ce; }
+  .microphone-permissions { margin: -8px 0 18px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+  .permission-heading { width: 100%; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; min-height: 40px; padding: 10px 14px; background: none; border: 0; color: var(--text); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+  .permission-heading span { color: var(--muted); }
   .permission-details { padding: 0 13px 13px; }
-  p { margin: 6px 0; font-size: 11px; line-height: 1.6; color: #b5c3dc; }
-  [role=alert] { color: #efbbc0; }
+  p { margin: 6px 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+  [role=alert] { color: var(--danger); }
   .permission-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-  .permission-actions button { background: #303c52; border: 1px solid #55647e; border-radius: 7px; padding: 7px 10px; color: #d3def3; font: inherit; font-size: 11px; cursor: pointer; }
+  .permission-actions button { background: var(--surface-raised); border: 1px solid var(--line); border-radius: 7px; min-height: 40px; padding: 9px 12px; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
 </style>

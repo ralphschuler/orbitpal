@@ -105,39 +105,131 @@
   }
 </script>
 
-<section class="settings-panel screen-context" aria-label={$t("Bildschirm als Kontext")}>
-  <div class="section-heading"><Eye size={20}/><div><h2>{$t("Bildschirm als Kontext")}</h2><p>{$t("Eine gemeinsame Einstellung für Chats und Autopilot dieses Bots.")}</p></div></div>
-  <div class="toggle-row"><div><strong>{$t("Bildschirm bei jeder Anfrage mitsenden")} <HelpTip text={$t("Die Desktop-App nimmt vor jedem Aufruf des Dialogmodells einen aktuellen Screenshot auf und fügt ihn als Bild hinzu, auch bei normalen Chat-Antworten und im Autopilot. MCP-Server, Skills und Werkzeugfreigaben werden dafür nicht benötigt. Diese Einstellung erlaubt keine Computersteuerung.")}/></strong><small>{$t("Aktueller Screenshot vor jedem Modellaufruf, kein laufendes Video.")}</small></div><input type="checkbox" role="switch" aria-label={$t("Bildschirm bei jeder Anfrage mitsenden")} checked={config.enabled} disabled={disabled || enabling} onchange={event => toggleScreen(event.currentTarget.checked)}/></div>
-  <p class="field-note">{$t("Das Bild wird an das ausgewählte Dialogmodell übertragen. Bei Cloud- oder Remote-Anbietern verlässt es deinen Rechner und kann sichtbare private Inhalte enthalten. Benötigt ein bildfähiges Modell und die aktivierte Einstellung „Bilder an das Modell senden“.")}</p>
-  {#if config.enabled}
-    <ScreenCapturePermissions {disabled} {permissionContext}/>
-    {#if session?.backend === 'wayland'}
-      <p class="field-note">{$t("Unter Wayland wählst du die Quelle im Freigabedialog deines Desktops. Diese Sitzung ersetzt nicht die Bildfreigabe dieses Bots. Die Auswahl bleibt nur für diese App-Sitzung bestehen; anschließend die Einstellungen speichern.")}</p>
-      <p class="field-note">{$t("Beim Klick auf „Quelle auswählen“ werden zuerst die aktuellen Bot-Einstellungen gespeichert. So gehört die Freigabe zum angezeigten Modell. Anschließend die neue Quellenauswahl speichern.")}</p>
-      <div class="display-choice">
-        <button class="button secondary" onclick={selectWayland} disabled={disabled || loading}>{loading ? $t("Wayland-Auswahl läuft …") : $t("Wayland-Quelle auswählen / erneut verbinden")}</button>
-        <button class="button secondary" onclick={disconnectWayland} disabled={disabled || (!loading && session.phase === 'closed')}>{$t("Bildschirmfreigabe trennen")}</button>
+<section class="settings-panel screen-context" aria-label={$t('Bildschirm als Kontext')}>
+  <div class="screen-heading">
+    <div class="section-heading">
+      <Eye size={20}/>
+      <div>
+        <h2>{$t('Bildschirm als Kontext')}</h2>
+        <p>{$t('Eine gemeinsame Einstellung für Chats und Autopilot dieses Bots.')}</p>
       </div>
-      <p class="field-note" role="status">{$t(session.message)}</p>
-      {#if session.phase !== 'ready'}<p class="screen-warning" role="status">{$t("Keine verbundene Wayland-Quelle. Anfragen mit Bildschirmkontext werden abgewiesen; die App verwendet keinen anderen Bildschirm.")}</p>{/if}
+    </div>
+    <span class="screen-state" class:enabled={config.enabled}>
+      {enabling ? $t('Prüft …') : config.enabled ? $t('Für diesen Bot aktiviert') : $t('Nicht aktiviert')}
+    </span>
+  </div>
+
+  <div class="toggle-row screen-toggle">
+    <div>
+      <strong>
+        {$t('Bildschirm bei jeder Anfrage mitsenden')}
+        <HelpTip text={$t('Die Desktop-App nimmt vor jedem Aufruf des Dialogmodells einen aktuellen Screenshot auf und fügt ihn als Bild hinzu, auch bei normalen Chat-Antworten und im Autopilot. MCP-Server, Skills und Werkzeugfreigaben werden dafür nicht benötigt. Diese Einstellung erlaubt keine Computersteuerung.')}/>
+      </strong>
+      <small>{$t('Aktueller Screenshot vor jedem Modellaufruf, kein laufendes Video.')}</small>
+    </div>
+    <input type="checkbox" role="switch" aria-label={$t('Bildschirm bei jeder Anfrage mitsenden')} checked={config.enabled} disabled={disabled || enabling} onchange={event => toggleScreen(event.currentTarget.checked)}/>
+  </div>
+  <div class="privacy-note">
+    <strong>{$t('Anbieter & Datenschutz')}</strong>
+    <p>{$t('Das Bild wird an das ausgewählte Dialogmodell übertragen. Bei Cloud- oder Remote-Anbietern verlässt es deinen Rechner und kann sichtbare private Inhalte enthalten. Benötigt ein bildfähiges Modell und die aktivierte Einstellung „Bilder an das Modell senden“.')}</p>
+  </div>
+
+  {#if config.enabled}
+    <p class="screen-note">{$t('Vor dem Start wird die Systemfreigabe geprüft. Fehlende Rechte kannst du im Dialog anfragen und erneut prüfen.')}</p>
+    <ScreenCapturePermissions {disabled} {permissionContext}/>
+
+    {#if session?.backend === 'wayland'}
+      <div class="source-settings">
+        <h3>{$t('Bildschirm')}</h3>
+        <p class="screen-note">{$t('Unter Wayland wählst du die Quelle im Freigabedialog deines Desktops. Diese Sitzung ersetzt nicht die Bildfreigabe dieses Bots. Die Auswahl bleibt nur für diese App-Sitzung bestehen; anschließend die Einstellungen speichern.')}</p>
+        <p class="screen-note">{$t('Beim Klick auf „Quelle auswählen“ werden zuerst die aktuellen Bot-Einstellungen gespeichert. So gehört die Freigabe zum angezeigten Modell. Anschließend die neue Quellenauswahl speichern.')}</p>
+        <div class="source-actions">
+          <button class="button secondary" onclick={selectWayland} disabled={disabled || loading}>
+            {loading ? $t('Wayland-Auswahl läuft …') : $t('Wayland-Quelle auswählen / erneut verbinden')}
+          </button>
+          <button class="button secondary" onclick={disconnectWayland} disabled={disabled || (!loading && session.phase === 'closed')}>
+            {$t('Bildschirmfreigabe trennen')}
+          </button>
+        </div>
+        <p class="source-status" role="status">{$t(session.message)}</p>
+        {#if session.phase !== 'ready'}
+          <p class="screen-warning" role="status">{$t('Keine verbundene Wayland-Quelle. Anfragen mit Bildschirmkontext werden abgewiesen; die App verwendet keinen anderen Bildschirm.')}</p>
+        {/if}
+      </div>
     {:else}
-    <div class="display-choice"><label>{$t("Bildschirm")}<select bind:value={config.displayId} disabled={disabled || loading}><option value="">{$t("Hauptbildschirm (automatisch)")}</option>{#if config.displayId && !displays?.some(display => display.id === config.displayId)}<option value={config.displayId}>{missingDisplay ? $t("Nicht verfügbar") : $t("Gespeicherte Auswahl")} · {config.displayId}</option>{/if}{#each displays || [] as display (display.id)}<option value={display.id}>{display.name || display.id}{display.primary ? ' · ' + $t('Hauptbildschirm') : ''}</option>{/each}</select></label><button class="button secondary" onclick={loadDisplays} disabled={disabled || loading}>{loading ? $t("Lädt …") : $t("Bildschirme laden")}</button></div>
+      <div class="display-choice">
+        <label>
+          {$t('Bildschirm')}
+          <select bind:value={config.displayId} disabled={disabled || loading}>
+            <option value="">{$t('Hauptbildschirm (automatisch)')}</option>
+            {#if config.displayId && !displays?.some(display => display.id === config.displayId)}
+              <option value={config.displayId}>{missingDisplay ? $t('Nicht verfügbar') : $t('Gespeicherte Auswahl')} · {config.displayId}</option>
+            {/if}
+            {#each displays || [] as display (display.id)}
+              <option value={display.id}>{display.name || display.id}{display.primary ? ' · ' + $t('Hauptbildschirm') : ''}</option>
+            {/each}
+          </select>
+        </label>
+        <button class="button secondary" onclick={loadDisplays} disabled={disabled || loading}>
+          {loading ? $t('Lädt …') : $t('Bildschirme laden')}
+        </button>
+      </div>
     {/if}
-    {#if !visionEnabled}<p class="screen-warning" role="status">{$t("Die Bildübertragung ist für diesen Bot ausgeschaltet. Aktiviere „Bilder an das Modell senden“ unter Modelle, damit Bildschirmkontext funktioniert.")}</p>{/if}
-    {#if session?.backend !== 'wayland' && missingDisplay}<p class="screen-warning" role="status">{$t("Der ausgewählte Bildschirm ist nicht verfügbar. Wähle einen erreichbaren Bildschirm; die App wechselt nicht automatisch auf einen anderen.")}</p>{/if}
-    {#if displays?.length === 0}<p class="screen-warning" role="status">{$t("Das Betriebssystem hat keine Bildschirme gemeldet. Bildschirmkontext ist so nicht verfügbar.")}</p>{/if}
-    {#if !native}<p class="screen-warning" role="status">{$t("Bildschirmaufnahmen sind nur in der Desktop-App verfügbar. Die Browseransicht kann deinen Bildschirm nicht aufnehmen.")}</p>{/if}
-    <p class="field-note">{$t("Das Betriebssystem kann eine Freigabe für Bildschirmaufnahmen verlangen. Vor dem Start wird die Freigabe geprüft; bei fehlender Freigabe hilft ein Dialog beim Anfragen und erneuten Prüfen. Screenshots bleiben nur während der Anfrage im Arbeitsspeicher, werden als JPEG auf höchstens 1.280 Pixel Kantenlänge verkleinert und nicht als Datei gespeichert.")}</p>
+
+    {#if !visionEnabled}
+      <p class="screen-warning" role="status">{$t('Die Bildübertragung ist für diesen Bot ausgeschaltet. Aktiviere „Bilder an das Modell senden“ unter Modelle, damit Bildschirmkontext funktioniert.')}</p>
+    {/if}
+    {#if session?.backend !== 'wayland' && missingDisplay}
+      <p class="screen-warning" role="status">{$t('Der ausgewählte Bildschirm ist nicht verfügbar. Wähle einen erreichbaren Bildschirm; die App wechselt nicht automatisch auf einen anderen.')}</p>
+    {/if}
+    {#if displays?.length === 0}
+      <p class="screen-warning" role="status">{$t('Das Betriebssystem hat keine Bildschirme gemeldet. Bildschirmkontext ist so nicht verfügbar.')}</p>
+    {/if}
+    {#if !native}
+      <p class="screen-warning" role="status">{$t('Bildschirmaufnahmen sind nur in der Desktop-App verfügbar. Die Browseransicht kann deinen Bildschirm nicht aufnehmen.')}</p>
+    {/if}
+    <details class="capture-details">
+      <summary>{$t('Aufnahme & Verarbeitung')}</summary>
+      <p class="screen-note">{$t('Screenshots bleiben nur während der Anfrage im Arbeitsspeicher. Sie werden als JPEG auf höchstens 1.280 Pixel Kantenlänge verkleinert und nicht als Datei gespeichert.')}</p>
+    </details>
   {/if}
-  {#if error}<p class="screen-warning" role="status">{$t(error)}</p>{/if}
+  {#if error}
+    <p class="screen-error" role="alert">{$t(error)}</p>
+  {/if}
 </section>
 
 <style>
   .screen-context { margin-bottom: 20px; }
-  .toggle-row strong { display: flex; gap: 7px; align-items: center; }
-  .display-choice { display: flex; gap: 12px; align-items: flex-end; }
-  .display-choice label { flex: 1; min-width: 0; }
-  .display-choice button { margin-bottom: 16px; white-space: nowrap; }
-  .screen-warning { color: #f1b8a8; font-size: 12px; line-height: 1.7; }
-  @media (max-width: 650px) { .display-choice { align-items: stretch; flex-direction: column; gap: 0; } }
+  .screen-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+  .section-heading { margin-bottom: 0; }
+  .section-heading h2 { color: var(--text); font-size: 17px; }
+  .section-heading p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .screen-state { flex-shrink: 0; border: 1px solid var(--line); border-radius: 6px; background: var(--input-bg); padding: 6px 10px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .screen-state.enabled { color: var(--accent); border-color: var(--accent); }
+  .screen-toggle { padding-block: 20px; margin-top: 20px; border-bottom: 1px solid var(--line); }
+  .toggle-row strong { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; color: var(--text); font-size: 13px; }
+  .toggle-row small { color: var(--muted); font-size: 12px; line-height: 1.65; }
+  .privacy-note { margin-top: 16px; padding: 14px 16px; background: var(--input-bg); border-left: 3px solid var(--accent); border-radius: 6px; }
+  .privacy-note strong { color: var(--text); font-size: 12px; }
+  .privacy-note p { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+  .screen-note { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 12px 0 0; }
+  .source-settings { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
+  h3 { color: var(--text); font-size: 13px; }
+  .source-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+  .source-actions button { white-space: normal; text-align: left; }
+  .source-status { margin-top: 14px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+  .display-choice { display: flex; gap: 12px; align-items: flex-end; margin-top: 20px; }
+  .display-choice label { flex: 1; min-width: 0; margin: 0; color: var(--text); font-size: 12px; }
+  .display-choice select { min-height: 40px; margin-top: 8px; color: var(--text); background: var(--input-bg); border-color: var(--line); font-size: 13px; }
+  .display-choice button { min-height: 40px; }
+  .screen-warning, .screen-error { margin-top: 14px; padding: 12px 14px; border-left: 3px solid var(--warning); border-radius: 6px; background: var(--surface-raised); color: var(--warning); font-size: 12px; line-height: 1.7; }
+  .screen-error { border-left-color: var(--danger); color: var(--danger); }
+  .capture-details { margin-top: 20px; border-top: 1px solid var(--line); }
+  summary { padding-top: 16px; color: var(--text); font-size: 12px; font-weight: 600; line-height: 1.6; cursor: pointer; }
+  summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; border-radius: 3px; }
+  @media (max-width: 800px) {
+    .screen-heading { flex-direction: column; gap: 12px; }
+    .display-choice { align-items: stretch; flex-direction: column; }
+    .display-choice button { align-self: flex-start; }
+  }
 </style>

@@ -83,7 +83,13 @@
     "Wayland-Sitzungsende konnte nicht abonniert werden": "Wayland session closure could not be subscribed",
     "Unter Wayland wird die Quelle ausdrücklich im ScreenCast-Freigabedialog ausgewählt; es gibt keinen automatischen Hauptbildschirm oder XWayland-Ersatz.": "On Wayland, explicitly select the source in the ScreenCast sharing dialog; there is no automatic primary monitor or XWayland fallback.",
     "Beim Klick auf „Quelle auswählen“ werden zuerst die aktuellen Bot-Einstellungen gespeichert. So gehört die Freigabe zum angezeigten Modell. Anschließend die neue Quellenauswahl speichern.": "Clicking ‘Select source’ first saves the current bot settings, so sharing belongs to the model shown. Save the new source selection afterwards.",
-    "Die veraltete Bildschirmfreigabe konnte nicht geschlossen werden. Bitte die Bildschirmfreigabe trennen oder Stop drücken.": "The outdated screen-sharing session could not be closed. Disconnect screen sharing or press Stop."
+    "Die veraltete Bildschirmfreigabe konnte nicht geschlossen werden. Bitte die Bildschirmfreigabe trennen oder Stop drücken.": "The outdated screen-sharing session could not be closed. Disconnect screen sharing or press Stop.",
+    "Anbieter & Datenschutz": "Provider & privacy",
+    "Aufnahme & Verarbeitung": "Capture & processing",
+    "Für diesen Bot aktiviert": "Enabled for this bot",
+    "Nicht aktiviert": "Not enabled",
+    "Vor dem Start wird die Systemfreigabe geprüft. Fehlende Rechte kannst du im Dialog anfragen und erneut prüfen.": "System permissions are checked before starting. You can request missing permissions in the dialog and check again.",
+    "Screenshots bleiben nur während der Anfrage im Arbeitsspeicher. Sie werden als JPEG auf höchstens 1.280 Pixel Kantenlänge verkleinert und nicht als Datei gespeichert.": "Screenshots stay in memory only for the duration of the request. They are resized as JPEGs with a maximum edge length of 1,280 pixels and are not saved as files."
   },
   "fr": {
     "Unter Wayland wählst du die Quelle im Freigabedialog deines Desktops. Diese Sitzung ersetzt nicht die Bildfreigabe dieses Bots. Die Auswahl bleibt nur für diese App-Sitzung bestehen; anschließend die Einstellungen speichern.": "Sous Wayland, sélectionnez une source dans le dialogue de partage du bureau. Cette session ne remplace pas l’autorisation d’image de ce bot. La sélection dure uniquement pour cette session de l’application ; enregistrez ensuite les paramètres.",
@@ -169,7 +175,13 @@
     "Wayland-Sitzungsende konnte nicht abonniert werden": "L’abonnement à la fermeture de session Wayland a échoué",
     "Unter Wayland wird die Quelle ausdrücklich im ScreenCast-Freigabedialog ausgewählt; es gibt keinen automatischen Hauptbildschirm oder XWayland-Ersatz.": "Sous Wayland, sélectionnez explicitement la source dans le dialogue ScreenCast ; il n’y a ni écran principal automatique ni remplacement XWayland.",
     "Beim Klick auf „Quelle auswählen“ werden zuerst die aktuellen Bot-Einstellungen gespeichert. So gehört die Freigabe zum angezeigten Modell. Anschließend die neue Quellenauswahl speichern.": "Cliquer sur « Choisir la source » enregistre d’abord les paramètres actuels du bot, afin que le partage corresponde au modèle affiché. Enregistrez ensuite la nouvelle source choisie.",
-    "Die veraltete Bildschirmfreigabe konnte nicht geschlossen werden. Bitte die Bildschirmfreigabe trennen oder Stop drücken.": "L’ancienne session de partage d’écran n’a pas pu être fermée. Déconnectez le partage d’écran ou appuyez sur Stop."
+    "Die veraltete Bildschirmfreigabe konnte nicht geschlossen werden. Bitte die Bildschirmfreigabe trennen oder Stop drücken.": "L’ancienne session de partage d’écran n’a pas pu être fermée. Déconnectez le partage d’écran ou appuyez sur Stop.",
+    "Anbieter & Datenschutz": "Fournisseur et confidentialité",
+    "Aufnahme & Verarbeitung": "Capture et traitement",
+    "Für diesen Bot aktiviert": "Activé pour ce bot",
+    "Nicht aktiviert": "Non activé",
+    "Vor dem Start wird die Systemfreigabe geprüft. Fehlende Rechte kannst du im Dialog anfragen und erneut prüfen.": "Les autorisations système sont vérifiées avant le démarrage. La boîte de dialogue permet de demander les autorisations manquantes et de les vérifier à nouveau.",
+    "Screenshots bleiben nur während der Anfrage im Arbeitsspeicher. Sie werden als JPEG auf höchstens 1.280 Pixel Kantenlänge verkleinert und nicht als Datei gespeichert.": "Les captures d’écran restent en mémoire uniquement pendant la requête. Elles sont réduites au format JPEG, avec un côté le plus long de 1 280 pixels au maximum, et ne sont pas enregistrées dans des fichiers."
   },
   "es": {
     "Unter Wayland wählst du die Quelle im Freigabedialog deines Desktops. Diese Sitzung ersetzt nicht die Bildfreigabe dieses Bots. Die Auswahl bleibt nur für diese App-Sitzung bestehen; anschließend die Einstellungen speichern.": "En Wayland, elige una fuente en el diálogo de uso compartido del escritorio. Esta sesión no sustituye el permiso de imágenes de este bot. La selección solo dura durante esta sesión de la aplicación; guarda los ajustes después.",
@@ -255,6 +267,12 @@
     "Wayland-Sitzungsende konnte nicht abonniert werden": "No se pudo suscribir al cierre de la sesión de Wayland",
     "Unter Wayland wird die Quelle ausdrücklich im ScreenCast-Freigabedialog ausgewählt; es gibt keinen automatischen Hauptbildschirm oder XWayland-Ersatz.": "En Wayland, selecciona explícitamente la fuente en el diálogo de ScreenCast; no hay un monitor principal automático ni sustitución XWayland.",
     "Beim Klick auf „Quelle auswählen“ werden zuerst die aktuellen Bot-Einstellungen gespeichert. So gehört die Freigabe zum angezeigten Modell. Anschließend die neue Quellenauswahl speichern.": "Al pulsar « Seleccionar fuente » se guardan primero los ajustes actuales del bot, para que el permiso corresponda al modelo mostrado. Guarda después la nueva fuente seleccionada.",
-    "Die veraltete Bildschirmfreigabe konnte nicht geschlossen werden. Bitte die Bildschirmfreigabe trennen oder Stop drücken.": "No se pudo cerrar la sesión anterior de pantalla compartida. Desconecta la pantalla compartida o pulsa Stop."
+    "Die veraltete Bildschirmfreigabe konnte nicht geschlossen werden. Bitte die Bildschirmfreigabe trennen oder Stop drücken.": "No se pudo cerrar la sesión anterior de pantalla compartida. Desconecta la pantalla compartida o pulsa Stop.",
+    "Anbieter & Datenschutz": "Proveedor y privacidad",
+    "Aufnahme & Verarbeitung": "Captura y procesamiento",
+    "Für diesen Bot aktiviert": "Activado para este bot",
+    "Nicht aktiviert": "No activado",
+    "Vor dem Start wird die Systemfreigabe geprüft. Fehlende Rechte kannst du im Dialog anfragen und erneut prüfen.": "Antes de comenzar, se comprueban los permisos del sistema. Puedes solicitar los permisos que falten en el diálogo y volver a comprobarlos.",
+    "Screenshots bleiben nur während der Anfrage im Arbeitsspeicher. Sie werden als JPEG auf höchstens 1.280 Pixel Kantenlänge verkleinert und nicht als Datei gespeichert.": "Las capturas de pantalla permanecen en memoria solo durante la solicitud. Se reducen en formato JPEG a un máximo de 1280 píxeles en su lado más largo y no se guardan como archivos."
   }
 }
