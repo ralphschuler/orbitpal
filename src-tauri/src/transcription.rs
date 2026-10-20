@@ -13,37 +13,7 @@ fn field<'a>(config: &'a Value, name: &str, default: &'a str) -> &'a str {
     config[name].as_str().map(str::trim).filter(|value| !value.is_empty()).unwrap_or(default)
 }
 
-fn endpoint(config: &Value, provider: &str, whisper_cpp: bool) -> Result<Url, String> {
-    let default = match provider {
-        "whisper-local" if whisper_cpp => "http://127.0.0.1:8080",
-        "whisper-local" => "http://127.0.0.1:8080/v1",
-        "elevenlabs" => "https://api.elevenlabs.io/v1",
-        "openai" => "https://api.openai.com/v1",
-        _ => "http://127.0.0.1:8000/v1",
-    };
-    let mut url = Url::parse(field(config, "baseUrl", default)).map_err(|_| "Die Spracherkennungs-URL ist ungültig.".to_string())?;
-    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
-        || !url.username().is_empty() || url.password().is_some() || url.query().is_some() || url.fragment().is_some() {
-        return Err("Die Spracherkennungs-URL muss HTTP(S) verwenden und darf keine Zugangsdaten, Query oder Sprungmarke enthalten.".into());
-    }
-    if provider == "whisper-local" {
-        let local = match url.host() {
-            Some(url::Host::Ipv4(address)) => address.is_loopback(),
-            Some(url::Host::Ipv6(address)) => address.is_loopback(),
-            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-            None => false,
-        };
-        if !local { return Err("Lokales Whisper akzeptiert ausschließlich Loopback-Adressen: 127.0.0.1, ::1 oder localhost.".into()); }
-    }
-    let suffix = if whisper_cpp { "inference" } else if provider == "elevenlabs" { "speech-to-text" } else { "audio/transcriptions" };
-    let current = url.path().trim_end_matches('/');
-    // Also accept a full endpoint pasted into the base URL field without appending it twice.
-    if !current.ends_with(&format!("/{suffix}")) {
-        let prefix = if current.is_empty() && !whisper_cpp { "/v1" } else { current };
-        url.set_path(&format!("{prefix}/{suffix}"));
-    }
-    Ok(url)
-}
+fn endpoint(config:&Value,provider:&str,whisper_cpp:bool)->Result<Url,String>{crate::api_connections::transcription_endpoint(config,provider,whisper_cpp)}
 
 fn http_client(local: bool) -> Result<Client, String> {
     let mut builder = Client::builder().connect_timeout(Duration::from_secs(10))
@@ -179,3 +149,7 @@ pub async fn transcribe(config: &Value, audio_base64: &str, mime_type: &str, api
     })?;
     response_text(response, local, whisper_cpp).await
 }
+
+#[cfg(test)]
+#[path="transcription/tests.rs"]
+mod tests;

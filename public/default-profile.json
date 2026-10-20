@@ -3,12 +3,12 @@
   "id": "nova",
   "name": "Nova",
   "tagline": "Dein Gegenüber im Stream.",
-  "model": { "provider": "ollama", "baseUrl": "http://localhost:11434/v1", "model": "", "command": "", "apiKeyId": "llm", "temperature": 0.8, "maxTokens": 512, "toolsEnabled": true, "visionEnabled": true, "reasoningEffort": "default", "responseStyle": "default", "maxToolRounds": 4 },
-  "voice": { "provider": "system", "baseUrl": "", "voiceId": "", "model": "eleven_flash_v2_5", "apiKeyId": "tts", "rate": 1, "volume": 0.85, "language": "de-DE", "enabled": true },
+  "model": { "provider": "ollama", "baseUrl": "http://localhost:11434/v1", "model": "", "command": "", "apiKeyId": "", "temperature": 0.8, "maxTokens": 512, "toolsEnabled": true, "visionEnabled": true, "reasoningEffort": "default", "responseStyle": "default", "maxToolRounds": 4 },
+  "voice": { "provider": "system", "baseUrl": "", "voiceId": "", "model": "eleven_flash_v2_5", "apiKeyId": "", "rate": 1, "volume": 0.85, "language": "de-DE", "enabled": true },
   "stt": { "provider": "whisper-local", "localBackend": "whispercpp", "baseUrl": "http://127.0.0.1:8080", "model": "", "apiKeyId": "", "language": "de" },
   "avatar": { "assetPath": null, "accent": "#80b8e8", "scale": 1, "expression": "neutral", "autoBlink": true, "idle": true, "camera": "portrait" },
   "output": { "mode": "studio", "alwaysOnTop": false, "clickThrough": false, "showSubtitles": true, "fps": 60, "background": "studio" },
-  "chat": { "autoReply": false, "mode": "manual", "trigger": "@nova", "maxQueue": 40, "expirySeconds": 90, "twitch": { "clientId": "", "broadcasterId": "", "userId": "", "secretId": "twitch", "sendReplies": false }, "youtube": { "videoId": "", "apiKeyId": "youtube", "liveChatId": "", "sendReplies": false, "sendSecretId": "youtube-write" } },
+  "chat": { "autoReply": false, "mode": "manual", "trigger": "@nova", "maxQueue": 40, "expirySeconds": 90, "twitch": { "clientId": "", "broadcasterId": "", "userId": "", "secretId": "twitch", "sendReplies": false }, "youtube": { "videoId": "", "apiKeyId": "", "liveChatId": "", "sendReplies": false, "sendSecretId": "youtube-write" } },
   "emotes": [
     {"id":"winken","name":"Winken","action":"wave","duration":2.8,"intensity":1,"allowChat":true},
     {"id":"verstecken","name":"Verstecken","action":"hide","duration":3,"intensity":1,"allowChat":true},
@@ -20,6 +20,6 @@
   "mcpServers": [],
   "skillsEnabled": ["stream-begruessung"],
   "memory": { "enabled": true, "maxMessages": 30 },
-  "hindsight": { "enabled": false, "baseUrl": "http://127.0.0.1:8888", "bankId": "", "apiKeyId": "hindsight", "autoRecall": true, "autoRetain": true },
+  "hindsight": { "enabled": false, "baseUrl": "http://127.0.0.1:8888", "bankId": "", "apiKeyId": "", "autoRecall": true, "autoRetain": true },
   "wakeWord": { "enabled": false, "phrases": ["hey nova"] }
 }

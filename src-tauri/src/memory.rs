@@ -8,8 +8,8 @@ use std::{time::Duration,sync::{Arc,atomic::{AtomicBool,Ordering}}};
 const DEFAULT_URL:&str="http://127.0.0.1:8888";
 const MAX_RESPONSE:usize=2*1024*1024;
 
-pub fn default_config(bot_id:&str)->Value{
-    json!({"enabled":false,"baseUrl":DEFAULT_URL,"bankId":"","apiKeyId":format!("{bot_id}-hindsight"),"autoRecall":true,"autoRetain":true,"recallBudget":"low","maxRecallTokens":1024})
+pub fn default_config(_bot_id:&str)->Value{
+    json!({"enabled":false,"baseUrl":DEFAULT_URL,"bankId":"","apiKeyId":"","autoRecall":true,"autoRetain":true,"recallBudget":"low","maxRecallTokens":1024})
 }
 pub fn validate_config(config:&Value)->Result<(),String>{
     if !config.is_object(){return Err("Hindsight-Konfiguration muss ein JSON-Objekt sein".into());}
@@ -32,15 +32,8 @@ pub fn validate_config(config:&Value)->Result<(),String>{
     }
     Ok(())
 }
-fn base_url(config:&Value)->Result<reqwest::Url,String>{
-    let value=config["baseUrl"].as_str().filter(|value|!value.trim().is_empty()).unwrap_or(DEFAULT_URL).trim();
-    if value.len()>4096{return Err("Hindsight-Basis-URL ist zu lang".into());}
-    let url=reqwest::Url::parse(value).map_err(|_|"Hindsight-URL ist ungültig".to_owned())?;
-    if !["http","https"].contains(&url.scheme())||url.host_str().is_none()||!url.username().is_empty()||url.password().is_some()||url.query().is_some()||url.fragment().is_some(){
-        return Err("Hindsight benötigt eine HTTP(S)-Basis-URL ohne Zugangsdaten, Query oder Fragment".into());
-    }
-    Ok(url)
-}
+fn base_url(config:&Value)->Result<reqwest::Url,String>{crate::api_connections::hindsight_base(config)}
+
 fn bank_id(config:&Value,bot_id:&str)->String{
     config["bankId"].as_str().filter(|value|!value.trim().is_empty()).map(|value|value.trim().to_owned()).unwrap_or_else(||bot_id.to_owned())
 }
@@ -63,7 +56,7 @@ async fn request(store:&Store,config:&Value,bot_id:&str,recall:bool,body:Value,u
     if let Some(context)=usage{store.preflight_usage_cost(context,crate::usage_budget::Cost::memory(!recall))?;}
     // Keychain authorization can block. Resolve it before the UTC-day
     // reservation, then recheck cancellation before any metered HTTP work.
-    let key=store.key_for(config)?;
+    let key=store.api_key_for(config,crate::api_connections::Purpose::Hindsight)?;
     if cancel.as_ref().is_some_and(|flag|flag.load(Ordering::Relaxed)){return Err("Antwort abgebrochen".into());}
     require_current_destination(store,config,bot_id,recall)?;
     let permit=match authority{Some(authority)=>{if !usage.zip(cancel.as_ref()).is_some_and(|(context,cancel)|authority.matches(context,cancel)){return Err("Ungültige native Anfragefreigabe.".into());}Some(authority.admit().await?)},None=>None};
@@ -265,6 +258,17 @@ mod tests{
         let id=uuid::Uuid::new_v4().to_string();
         assert!(retain_started(fixture.store(),&snapshot,Conversation{id:&id,bot_id:"nova",user_text:"not sent",assistant_text:"not sent",source:"operator",user:"Streamer"}).await.unwrap().is_none());
     }
+    #[tokio::test]
+    async fn global_hindsight_connection_preserves_prefix_bank_and_bearer_on_actual_http(){
+        use crate::{api_connections::{AuthStyle,Service},storage::api_connection_store::NewConnection};
+        let(base,server)=mock_server(json!({"results":[]})).await;let fixture=LocalStore::new();let destination=format!("{base}/prefix");
+        fixture.store().set_secret("synthetic-hindsight-item","synthetic-hindsight-marker").unwrap();
+        let created=fixture.store().create_api_connection(0,NewConnection{label:"Memory fixture".into(),service:Service::Hindsight,destination:destination.clone(),auth_style:AuthStyle::Bearer,existing_secret_id:Some("synthetic-hindsight-item".into())}).unwrap();
+        let mut profile=fixture.configure(&format!("{destination}///"),true);profile["hindsight"]["apiKeyId"]=created["connectionId"].clone();profile["hindsight"]["bankId"]=json!("own-bank");let profile=fixture.store().save_profile(profile).unwrap();
+        recall(fixture.store(),&profile,"remember fixture").await.unwrap();let(headers,body)=server.await.unwrap();assert!(headers.starts_with("POST /prefix/v1/default/banks/own-bank/memories/recall HTTP/1.1"));assert!(headers.to_ascii_lowercase().contains("authorization: bearer synthetic-hindsight-marker"));assert!(body.to_string().contains("remember fixture"));
+        let target=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let mut wrong=profile.clone();wrong["hindsight"]["baseUrl"]=json!(format!("http://{}/prefix",target.local_addr().unwrap()));fixture.store().save_profile(wrong.clone()).unwrap();assert!(recall(fixture.store(),&wrong,"not sent").await.is_err());assert!(tokio::time::timeout(Duration::from_millis(50),target.accept()).await.is_err());
+    }
+
     #[tokio::test]
     async fn actual_local_recall_is_metered_and_delayed_automatic_retain_cannot_bypass_the_cap(){
         use crate::usage_budget::{Context,Origin,Limits};

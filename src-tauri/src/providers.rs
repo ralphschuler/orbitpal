@@ -19,20 +19,10 @@ fn client() -> Result<Client, String> {
 /// Coding CLIs accept their own default model when the selector is blank.
 pub fn dialog_model_ready(config:&Value)->bool{!config["model"].as_str().unwrap_or_default().trim().is_empty()||matches!(config["provider"].as_str(),Some("codex"|"claude-code"))}
 fn field<'a>(v: &'a Value, key: &str, fallback: &'a str) -> &'a str {
-    v.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty()).unwrap_or(fallback)
+    v.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).unwrap_or(fallback)
 }
-fn endpoint(config: &Value, path: &str) -> Result<String, String> {
-    let provider = field(config, "provider", "compatible");
-    let default = match provider { "ollama" => "http://localhost:11434/v1", "lmstudio" => "http://localhost:1234/v1", "anthropic" => "https://api.anthropic.com/v1", "elevenlabs" => "https://api.elevenlabs.io/v1", _ => "https://api.openai.com/v1" };
-    let mut base = Url::parse(field(config, "baseUrl", default)).map_err(|_| "Ungültige Anbieter-URL.".to_string())?;
-    if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() || !base.username().is_empty() || base.password().is_some() || base.query().is_some() || base.fragment().is_some() {
-        return Err("Anbieter-URL muss eine HTTP(S)-Basis-URL ohne Zugangsdaten oder Query sein.".into());
-    }
-    let prefix = if base.path().trim_matches('/').is_empty() { "/v1" } else { base.path().trim_end_matches('/') };
-    let joined = format!("{}/{}", prefix, path.trim_start_matches('/'));
-    base.set_path(&joined);
-    Ok(base.to_string())
-}
+fn endpoint(config:&Value,path:&str)->Result<String,String>{crate::api_connections::provider_endpoint(config,path)}
+
 fn authorize(request: RequestBuilder, key: &Option<String>, anthropic: bool) -> RequestBuilder {
     if let Some(key) = key.as_ref().filter(|key| !key.trim().is_empty()) {
         if anthropic { request.header("x-api-key", key) } else { request.bearer_auth(key) }
@@ -424,6 +414,19 @@ mod usage_tests {
         let first=dialog_cost(&config,&messages).unwrap();let second=dialog_cost(&config,&messages).unwrap();assert_eq!(first.images+second.images,2);assert_eq!(first.image_bytes,crate::vision::parse_data_uri(FIXTURE_IMAGE).unwrap().bytes as u64);assert!(first.direct_request);
         let cli=dialog_cost(&json!({"provider":"codex","model":"default","visionEnabled":true}),&messages).unwrap();assert!(!cli.direct_request);assert_eq!(cli.token_upper,None);assert_eq!(cli.images,1);
     }
+    #[tokio::test]
+    async fn global_model_catalogue_connection_uses_actual_custom_route_and_auth_header(){
+        use tokio::io::{AsyncReadExt,AsyncWriteExt};
+        use crate::{api_connections::{AuthStyle,Service},storage::api_connection_store::NewConnection};
+        for provider in ["compatible","anthropic"]{
+            let root=std::env::temp_dir().join(format!("orbitpal-global-models-{}",uuid::Uuid::new_v4()));let store=Store::new(root.clone()).unwrap();let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let base=format!("http://{}/tenant/v1",listener.local_addr().unwrap());
+            store.set_secret("synthetic-catalogue-item","synthetic-catalogue-marker").unwrap();let style=if provider=="anthropic"{AuthStyle::Anthropic}else{AuthStyle::Bearer};let created=store.create_api_connection(0,NewConnection{label:"Catalogue fixture".into(),service:Service::Compatible,destination:base.clone(),auth_style:style,existing_secret_id:Some("synthetic-catalogue-item".into())}).unwrap();
+            let config=json!({"provider":provider,"baseUrl":base,"apiKeyId":created["connectionId"]});let key=store.key_for_purpose(&config,crate::credential_policy::Purpose::ModelCatalogue).unwrap();
+            let server=tokio::spawn(async move{tokio::time::timeout(Duration::from_secs(3),async move{let(mut socket,_)=listener.accept().await.unwrap();let mut bytes=Vec::new();loop{let mut chunk=[0;2048];let n=socket.read(&mut chunk).await.unwrap();assert_ne!(n,0);bytes.extend_from_slice(&chunk[..n]);assert!(bytes.len()<8192);if bytes.windows(4).any(|w|w==b"\r\n\r\n"){break;}}let response=b"{\"data\":[{\"id\":\"fixture-model\"}]}";socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",response.len()).as_bytes()).await.unwrap();socket.write_all(response).await.unwrap();String::from_utf8(bytes).unwrap()}).await.unwrap()});
+            assert_eq!(models(&config,key).await.unwrap(),vec!["fixture-model"]);let request=server.await.unwrap().to_ascii_lowercase();assert!(request.starts_with("get /tenant/v1/models http/1.1"));let expected=if provider=="anthropic"{"x-api-key: synthetic-catalogue-marker"}else{"authorization: bearer synthetic-catalogue-marker"};assert!(request.contains(expected));if provider=="anthropic"{assert!(!request.contains("authorization:"));assert!(request.contains("anthropic-version: 2023-06-01"));}drop(store);std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn actual_local_tts_adapter_counts_exact_spoken_tags_and_blocks_second_http_send(){
         use tokio::io::{AsyncReadExt,AsyncWriteExt};
