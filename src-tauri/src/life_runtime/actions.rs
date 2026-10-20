@@ -125,7 +125,7 @@ impl Drop for IntentGuard<'_> {
         }
     }
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_life_actions(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,

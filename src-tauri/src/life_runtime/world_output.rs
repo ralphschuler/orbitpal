@@ -164,7 +164,7 @@ pub async fn register_world_output(
         )
         .map_err(safe)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn report_world_measurement(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -197,7 +197,7 @@ pub fn report_world_measurement(
     core.accept_world_measurement(&report, &source, received, admitted)
         .map_err(safe)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn unregister_world_output(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
@@ -227,7 +227,7 @@ pub fn unregister_world_output(
     actions::publish(&app);
     Ok(json!({"version":1,"removed":removed||revoked}))
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_world_output_status(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -243,7 +243,7 @@ pub fn get_world_output_status(
         json!({"version":1,"botId":bot_id,"output":core.world_outputs.status(&bot_id,now),"visualAvailable":core.world_output_current(&bot_id,now) && state.store.profile().ok().is_some_and(|p|p["id"]==bot_id)}),
     )
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn report_world_action(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,

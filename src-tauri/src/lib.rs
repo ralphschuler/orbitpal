@@ -71,20 +71,20 @@ pub struct AppState {
     screen_context:screen_context::ScreenState,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_app_state(window:tauri::WebviewWindow,state:State<'_,AppState>,app:tauri::AppHandle,bot_id:Option<String>)->Result<Value,String> {
     let id=bot_id.unwrap_or_else(||state.store.profile().ok().and_then(|p|p["id"].as_str().map(str::to_owned)).unwrap_or("nova".into()));
     let store=state.store.scoped(&id)?;let profile=store.profile()?;let presentation=state.presentation.snapshot(&profile);
     Ok(json!({"profile":profile,"presentation":presentation,"bots":bot_summaries(&state,&app)?,"documents":store.documents()?,"skills":store.skills()?,"library":store.extension_library()?,"knowledge":store.knowledge()?,"history":store.history()?,"secretIds":store.secret_ids()?,"overlayUrl":state.overlay.url_for_bot(&id),"overlayActive":overlay::is_open(&app,&id),"appDataDir":store.root.to_string_lossy(),"autopilot":state.autopilot.all()?.into_iter().map(|runtime|state.life_runtime.present(runtime)).collect::<Vec<_>>(),"lifeRuntime":state.life_runtime.snapshot_for(&state.autopilot)?,"world":if window.label()=="main"{Some(state.world.snapshot()?)}else if window.label().strip_prefix("avatar-")==Some(id.as_str()){state.world.snapshot_for(&id)}else{None}}))
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn get_emote_capabilities(state:State<'_,AppState>,bot_id:String)->Result<Value,String>{
     let profile=state.store.bot_profile(&bot_id)?;
     Ok(emote_capabilities::configured(&emote_capabilities::inspect(&state.store.root,&profile)?,&profile))
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn get_extension_library(state:State<'_,AppState>)->Result<Value,String>{state.store.extension_library()}
-#[tauri::command]
+#[tauri::command(async)]
 fn get_library_skill(state:State<'_,AppState>,id:String)->Result<Value,String>{skill_library::SkillLibrary::new(&state.store.root)?.read(&id)}
 #[tauri::command]
 fn install_control_extension(state:State<'_,AppState>,app:tauri::AppHandle,window:tauri::WebviewWindow)->Result<Value,String>{
@@ -93,7 +93,7 @@ fn install_control_extension(state:State<'_,AppState>,app:tauri::AppHandle,windo
     let installed=state.store.install_control_extension(control_mcp::CONTROL_SKILL)?;
     let _=app.emit("cohost://library-changed",json!({"kind":"control"}));Ok(installed)
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn get_control_mcp_config(app:tauri::AppHandle,window:tauri::WebviewWindow)->Result<Value,String>{if window.label()!="main"{return Err("Die Control-Verbindungskonfiguration ist nur für den Streamer im Studio verfügbar".into());}app.state::<AppState>().control_mcp.client_config(&app)}
 #[tauri::command]
 async fn save_library_mcp(state:State<'_,AppState>,app:tauri::AppHandle,server:Value)->Result<Value,String>{
@@ -113,7 +113,7 @@ fn bot_summaries(state:&AppState,app:&tauri::AppHandle)->Result<Vec<Value>,Strin
     for bot in &mut bots{let id=bot["id"].as_str().unwrap_or_default().to_owned();bot["live"]=json!(live.contains(&id));bot["overlayUrl"]=json!(state.overlay.url_for_bot(&id));}
     Ok(bots)
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn list_bots(state:State<'_,AppState>,app:tauri::AppHandle)->Result<Vec<Value>,String>{bot_summaries(&state,&app)}
 #[tauri::command]
 async fn create_bot(state:State<'_,AppState>,app:tauri::AppHandle,name:String,copy_current:bool)->Result<Value,String>{
@@ -266,14 +266,14 @@ async fn connect_platform(state:State<'_,AppState>,app:tauri::AppHandle,platform
 }
 #[tauri::command]
 async fn disconnect_platform(state:State<'_,AppState>,platform:String)->Result<(),String>{state.chat.disconnect(&platform).await}
-#[tauri::command]
+#[tauri::command(async)]
 fn report_playback(app:tauri::AppHandle,id:String,bot_id:String,speaking:bool,error:Option<String>)->Result<Value,String>{overlay::report_playback(&app,&id,&bot_id,speaking,error.as_deref())}
-#[tauri::command]
+#[tauri::command(async)]
 fn cancel_speech_job(app:tauri::AppHandle,window:tauri::WebviewWindow,id:String,bot_id:String)->Result<Value,String>{
     if window.label()!="main"{return Err("Ausstehende Wiedergaben werden ausschließlich im Studio abgebrochen".into());}
     overlay::cancel_playback(&app,&id,&bot_id,Some("Keine Abschlussmeldung der Sprachausgabe. Automatische Antworten pausiert."))
 }
-#[tauri::command]
+#[tauri::command(async)]
 fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:String,playing:bool,activity:Option<String>,speech_id:Option<String>)->Result<Value,String>{overlay::report_emote_playback(&app,&bot_id,&output,&id,playing,activity.as_deref(),speech_id.as_deref())}
 #[tauri::command]
 async fn get_speech_audio(app:tauri::AppHandle,id:String,bot_id:String)->Result<Value,String>{overlay::speech_audio(&app,&id,&bot_id).await}

@@ -770,7 +770,7 @@ pub struct UiReport {
     blocked: bool,
     activity: bool,
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_life_runtime(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -778,7 +778,7 @@ pub fn get_life_runtime(
     main_only(window.label())?;
     state.life_runtime.snapshot_for(&state.autopilot)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn connect_life_ui(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -794,7 +794,7 @@ pub fn connect_life_ui(
         .connect_ui(id.clone(), state.life_runtime.now());
     Ok(UiConnection { connection_id: id })
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn disconnect_life_ui(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -810,7 +810,7 @@ pub fn disconnect_life_ui(
         .disconnect_ui(&connection_id, state.life_runtime.now());
     Ok(())
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn report_life_ui(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
@@ -837,7 +837,7 @@ pub fn report_life_ui(
             state.life_runtime.now(),
         ))
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn get_life_bot(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, crate::AppState>,
