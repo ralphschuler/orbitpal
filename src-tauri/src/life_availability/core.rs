@@ -211,13 +211,23 @@ impl AvailabilityGate {
         });
         if state.stopped
             || state.snapshot.state != Availability::AwakeUnlocked
-            || state.watchers.len() >= MAX_WATCHERS
             || cancel.load(Ordering::SeqCst)
         {
             cancel.store(true, Ordering::SeqCst);
             return None;
         }
-        state.watchers.push(Arc::downgrade(cancel));
+        let weak = Arc::downgrade(cancel);
+        if !state
+            .watchers
+            .iter()
+            .any(|registered| registered.ptr_eq(&weak))
+        {
+            if state.watchers.len() >= MAX_WATCHERS {
+                cancel.store(true, Ordering::SeqCst);
+                return None;
+            }
+            state.watchers.push(weak);
+        }
         Some(Lease {
             generation: state.snapshot.generation,
         })
@@ -303,5 +313,31 @@ mod tests {
         );
         assert_eq!(gate.snapshot().state, Availability::Unknown);
         assert!(cancels.iter().all(|cancel| cancel.load(Ordering::SeqCst)));
+    }
+    #[test]
+    fn repeated_checks_of_one_live_job_do_not_consume_distinct_watcher_slots() {
+        let gate = AvailabilityGate::new(Source::MacosCgSessionCompatibility);
+        gate.apply_sample(gate.sample_fence(), Observation::ready());
+        let first = Arc::new(AtomicBool::new(false));
+        for _ in 0..4096 {
+            assert!(gate.watch(&first).is_some());
+        }
+        let rest = (1..MAX_WATCHERS)
+            .map(|_| Arc::new(AtomicBool::new(false)))
+            .collect::<Vec<_>>();
+        for cancel in &rest {
+            assert!(gate.watch(cancel).is_some());
+        }
+        assert!(
+            gate.watch(&first).is_some(),
+            "already registered job remains valid at capacity"
+        );
+        let excess = Arc::new(AtomicBool::new(false));
+        assert!(gate.watch(&excess).is_none());
+        assert!(excess.load(Ordering::SeqCst));
+        assert!(!first.load(Ordering::SeqCst));
+        gate.block(Reason::Locked);
+        assert!(first.load(Ordering::SeqCst));
+        assert!(rest.iter().all(|cancel| cancel.load(Ordering::SeqCst)));
     }
 }

@@ -108,7 +108,20 @@ unsafe fn boolean(dict: CFDictionaryRef, key: &CStr) -> Option<bool> {
     }
 }
 unsafe fn lock_flag(dict: CFDictionaryRef) -> LockFlag {
-    let raw = unsafe { value(dict, c"CGSSessionScreenIsLocked") };
+    // Failure to construct the fixed lookup key is not evidence that the
+    // session omitted its SPI lock flag.
+    let key = unsafe {
+        CFStringCreateWithCString(
+            std::ptr::null(),
+            c"CGSSessionScreenIsLocked".as_ptr(),
+            kCFStringEncodingUTF8,
+        )
+    };
+    if key.is_null() {
+        return LockFlag::Invalid;
+    }
+    let raw = unsafe { CFDictionaryGetValue(dict, key.cast()) };
+    unsafe { CFRelease(key.cast()) };
     if raw.is_null() {
         LockFlag::Absent
     } else if unsafe { CFGetTypeID(raw) } != unsafe { CFBooleanGetTypeID() } {
