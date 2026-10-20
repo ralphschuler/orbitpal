@@ -16,7 +16,7 @@
   import ScreenContextPanel from './components/ScreenContextPanel.svelte';
   import { prepareScreenSession } from './lib/screen-session';
   import { LifeUI } from './lib/life-ui';
-  import { LifeSnapshots, parseLifeBot, parseLifeTurn, nativeSchedule, currentLifeTurn, sameLifeTurn, type LifeSnapshot, type LifeMode, type LifeBot, type LifeTurn } from './lib/life-runtime';
+  import { LifeTurnAdmissions, LifeSnapshots, parseLifeBot, parseLifeTurn, nativeSchedule, currentLifeTurn, sameLifeTurn, type LifeSnapshot, type LifeMode, type LifeBot, type LifeTurn } from './lib/life-runtime';
   import { ChatScheduler, appendChatMessage, chatPriority, chatParticipants, type ChatClaim } from './lib/chat-scheduler';
   import { speechBlocker, speechStatus } from './lib/autopilot-status';
   import { AutopilotRuntimeVersions, mayUpdateAutopilot, type AutopilotRuntime } from './lib/autopilot-runtime';
@@ -82,6 +82,7 @@
   let nativeOperatorPending = $state(false);
   let lifeUi: LifeUI;
   const lifeSnapshots = new LifeSnapshots();
+  const lifeAdmissions = new LifeTurnAdmissions();
   const chatScheduler = new ChatScheduler();
   let silentAutopilots = $state<Record<string, string>>({});
   function acceptAutopilot(runtime:AutopilotRuntime,allowStart=false){
@@ -100,7 +101,8 @@
     clearEmotes();autopilotPreview={botId:profile.id,active:true,wander:!!profile.autopilot.wander,gestures:!!profile.autopilot.gestures,startedAt:Date.now(),seed:crypto.randomUUID(),revision:0};
     void tick().then(()=>document.querySelector('.autopilot-stage')?.scrollIntoView({block:'center',behavior:'smooth'}));
   }
-  function invalidateNativePlayback(botId?: string, nativeFinished=false) {
+  function invalidateNativePlayback(botId?: string, nativeFinished=false, keepAdmission=false) {
+    if(!keepAdmission)lifeAdmissions.cancel(botId);
     const previous=nativeLifeTurn;
     if(!previous||botId&&previous.botId!==botId)return;
     nativeLifeTurn=undefined;nativeReplyId='';
@@ -115,7 +117,7 @@
   }
   function acceptLifeRuntime(value:unknown) {
     if(lifeStopping)return;
-    try{const next=lifeSnapshots.accept(value);if(!next)return;lifeRuntime=next;lifeError='';if(nativeLifeTurn&&!currentLifeTurn(nativeLifeTurn,next))invalidateNativePlayback(undefined,true);}
+    try{const next=lifeSnapshots.accept(value);if(!next)return;lifeRuntime=next;lifeError='';if(nativeLifeTurn&&!currentLifeTurn(nativeLifeTurn,next))invalidateNativePlayback(undefined,true,true);}
     catch(error){lifeRuntime=undefined;lifeError=prettyError(error);invalidateNativePlayback();}
   }
   async function refreshLifeBot(target=profile.id) {
@@ -682,7 +684,7 @@
     if (!await ensureScreenFor(participants, true, crewCurrent) || !crewCurrent()) return;
     if(await persist(true)&&crewCurrent()){running=true;log(translate("Cohost gestartet."));}
   }
-  async function stopAll(){systemPermission.cancel();chatScheduler.cancel();++autopilotStartRevision;autopilots={};autopilotPreview=undefined;nativeLifeTurn=undefined;nativeReplyId='';lifeStopping=true;lifeRuntime=undefined;externalEmotes?.clear();turnEpoch++;wakeStopSignal++;subtitleLifetime?.cancel();running=false;busy=false;speechPreparing=false;partial='';queue=[];clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}microphoneStream?.getTracks().forEach(t=>t.stop());microphone=false;transcribing=false;player?.stop();clearEmotes();finishPlayback();answeringSpeechId='';answeringBotId='';answeringAutopilot=false;speaking=false;level=0;try{await call('stop_generation');lifeStopping=false;await refreshLifeRuntime();}catch(e){if(native)notify(prettyError(e),true);}finally{lifeStopping=false;}log(translate("Sprache und ausstehende Antworten gestoppt."));}
+  async function stopAll(){lifeAdmissions.cancel();systemPermission.cancel();chatScheduler.cancel();++autopilotStartRevision;autopilots={};autopilotPreview=undefined;nativeLifeTurn=undefined;nativeReplyId='';lifeStopping=true;lifeRuntime=undefined;externalEmotes?.clear();turnEpoch++;wakeStopSignal++;subtitleLifetime?.cancel();running=false;busy=false;speechPreparing=false;partial='';queue=[];clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}microphoneStream?.getTracks().forEach(t=>t.stop());microphone=false;transcribing=false;player?.stop();clearEmotes();finishPlayback();answeringSpeechId='';answeringBotId='';answeringAutopilot=false;speaking=false;level=0;try{await call('stop_generation');lifeStopping=false;await refreshLifeRuntime();}catch(e){if(native)notify(prettyError(e),true);}finally{lifeStopping=false;}log(translate("Sprache und ausstehende Antworten gestoppt."));}
   async function playReply(reply:any,botConfig:any,epoch:number,source:string) {
     const botId=botConfig.id;
     const nativeTurn=nativeLifeTurn?.turnId===reply.id?nativeLifeTurn:undefined;
@@ -722,21 +724,26 @@
     let event:LifeTurn;
     try{event=parseLifeTurn(value);}catch(error){lifeError=prettyError(error);return;}
     if(event.kind==='finished'){
-      if(sameLifeTurn(nativeLifeTurn,event))invalidateNativePlayback(undefined,true);
+      lifeAdmissions.finish(event);
+      if(sameLifeTurn(nativeLifeTurn,event))invalidateNativePlayback(undefined,true,true);
       return;
     }
     if(event.kind==='started'){
       if(sameLifeTurn(nativeLifeTurn,event))return;
-      const epoch=turnEpoch,revision=operatorRevision;
-      try{acceptLifeRuntime(await call('get_life_runtime'));}catch(error){lifeError=prettyError(error);return;}
-      if(!appAlive||epoch!==turnEpoch||revision!==operatorRevision||nativeOperatorPending||!currentLifeTurn(event,lifeRuntime)||autopilotBlocker)return;
-      const config=event.botId===profile.id?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===event.botId)?.profile);
-      if(!config)return;
-      invalidateNativePlayback();nativeLifeTurn=event;nativeLifeOutput=config.output.mode;nativeReplyId='';nativePlaybackCompleted='';++turnEpoch;
-      clearEmotes();automaticEmoteRevision=emoteRevision;emoteOutput={botId:event.botId,audio:config.output.mode==='studio'};
-      busy=true;answeringBotId=event.botId;answeringSpeechId=event.turnId;answeringAutopilot=true;speechPreparing=false;partial='';
+      await lifeAdmissions.start(event,async current=>{
+        const epoch=turnEpoch,revision=operatorRevision;
+        try{acceptLifeRuntime(await call('get_life_runtime'));}catch(error){lifeError=prettyError(error);return false;}
+        if(!current()||!appAlive||epoch!==turnEpoch||revision!==operatorRevision||nativeOperatorPending||!currentLifeTurn(event,lifeRuntime)||autopilotBlocker)return false;
+        const config=event.botId===profile.id?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===event.botId)?.profile);
+        if(!config)return false;
+        invalidateNativePlayback(undefined,false,true);nativeLifeTurn=event;nativeLifeOutput=config.output.mode;nativeReplyId='';nativePlaybackCompleted='';++turnEpoch;
+        clearEmotes();automaticEmoteRevision=emoteRevision;emoteOutput={botId:event.botId,audio:config.output.mode==='studio'};
+        busy=true;answeringBotId=event.botId;answeringSpeechId=event.turnId;answeringAutopilot=true;speechPreparing=false;partial='';
+        return true;
+      });
       return;
     }
+    if(!await lifeAdmissions.ready(event))return;
     if(!sameLifeTurn(nativeLifeTurn,event)||!currentLifeTurn(event,lifeRuntime)||!event.reply||nativeReplyId===event.turnId)return;
     nativeReplyId=event.turnId;
     const epoch=turnEpoch,botId=event.botId;
@@ -973,6 +980,7 @@
     subscribe('cohost://overlay',e=>{
       if(e.kind==='cancel-speech'){
         if(typeof e.id!=='string'||!e.id)return;
+        if(nativeLifeTurn?.turnId===e.id&&nativeLifeTurn.botId===e.botId)lifeAdmissions.finish(nativeLifeTurn);
         cancelPlaybackTurn(e,{id:answeringSpeechId,botId:answeringBotId,autopilot:answeringAutopilot},()=>{nativeLifeTurn=undefined;},()=>{
           ++turnEpoch;running=false;chatScheduler.cancel();player?.stop();clearEmotes();subtitleLifetime?.cancel(e.id);
           busy=false;speechPreparing=false;answeringBotId='';answeringSpeechId='';answeringAutopilot=false;speaking=false;level=0;
@@ -981,6 +989,7 @@
       }
       if(e.kind==='profile'&&e.profile?.id){bots=bots.map(bot=>bot.id===e.profile.id?{...bot,name:e.profile.name,profile:{...bot.profile,name:e.profile.name,tagline:e.profile.tagline,avatar:{...bot.profile.avatar,...e.profile.avatar},output:{...bot.profile.output,...e.profile.output},emotes:e.profile.emotes,motions:e.profile.motions}}:bot);}
       if(e.kind==='stop'){
+        lifeAdmissions.cancel(e.botId);
         if(e.botId&&e.botId!==profile.id&&e.botId!==answeringBotId)return;
         if(!e.botId||!answeringBotId||e.botId===answeringBotId){
           ++turnEpoch;chatScheduler.cancel(e.botId);player?.stop();finishPlayback();busy=false;speechPreparing=false;answeringBotId='';answeringSpeechId='';answeringAutopilot=false;speaking=false;level=0;
@@ -1006,7 +1015,7 @@
       }
 
     },1000);
-    return()=>{appAlive=false;lifeMounted=false;lifeUi.dispose();systemPermission.cancel();chatScheduler.cancel();disposed=true;turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
+    return()=>{appAlive=false;lifeAdmissions.cancel();lifeMounted=false;lifeUi.dispose();systemPermission.cancel();chatScheduler.cancel();disposed=true;turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
   });
 </script>
 

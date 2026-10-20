@@ -125,3 +125,28 @@ export class LifeSnapshots {
   private sequence = -1;
   accept(value: unknown): LifeSnapshot | undefined { const next = parseLifeSnapshot(value); if (next.sequence < this.sequence) return; this.sequence = next.sequence; return next; }
 }
+
+/** A reply may overtake the asynchronous fresh-snapshot check for its start.
+ * Wait only for that exact admission; never queue cancellation behind audio. */
+export class LifeTurnAdmissions {
+  private pending?: { turn: LifeTurn; ready: Promise<boolean> };
+  start(turn: LifeTurn, admission: (current: () => boolean) => Promise<boolean>): Promise<boolean> {
+    const previous = this.pending;
+    if (previous && sameLifeTurn(previous.turn, turn)) return previous.ready;
+    const record = { turn, ready: Promise.resolve(false) };
+    this.pending = record;
+    const current = () => this.pending === record;
+    record.ready = admission(current).then(accepted => accepted && current(), () => false);
+    return record.ready;
+  }
+  async ready(turn: LifeTurn): Promise<boolean> {
+    const record = this.pending;
+    return !!record && sameLifeTurn(record.turn, turn) && await record.ready && this.pending === record;
+  }
+  finish(turn: LifeTurn): void {
+    if (this.pending && sameLifeTurn(this.pending.turn, turn)) this.pending = undefined;
+  }
+  cancel(botId?: string): void {
+    if (!botId || this.pending?.turn.botId === botId) this.pending = undefined;
+  }
+}

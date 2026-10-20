@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import catalogue from './locales/life-runtime.json';
 import { readFileSync } from 'node:fs';
-import { lifeReasons, systemReasons, activityLabels, phaseLabels, currentLifeTurn, LifeSnapshots, nativeSchedule, parseLifeBot, parseLifeSnapshot, parseLifeTurn, publicActor } from './life-runtime';
+import { LifeTurnAdmissions, lifeReasons, systemReasons, activityLabels, phaseLabels, currentLifeTurn, LifeSnapshots, nativeSchedule, parseLifeBot, parseLifeSnapshot, parseLifeTurn, publicActor } from './life-runtime';
 
 const turnId = '12345678-1234-1234-1234-123456789abc';
 const actor = () => ({ schemaVersion: 1, actorId: '_nova', worldId: 'desktop', revision: 2, simulationTime: 50, activity: { id: { actorId: '_nova', worldId: 'desktop', ordinal: 1 }, activity: 'rest', phase: 'completed' } });
@@ -73,5 +73,35 @@ describe('Life controls and four-language operator guidance',()=>{
     expect(app).toContain("if(source==='autopilot'");
     expect(app).toContain('await ensureOperatorBarrier()');expect(app).toContain('beforeStart');
     for(const file of ['../App.svelte','../components/ExtensionsPanel.svelte'])expect(readFileSync(new URL(file,import.meta.url),'utf8')).not.toContain("from '@tauri-apps/plugin-dialog'");
+  });
+});
+
+
+describe('Native started admission ordering without serializing playback',()=>{
+  const held=()=>{let resolve!:(value:boolean)=>void;const promise=new Promise<boolean>(done=>resolve=done);return{promise,resolve};};
+  it('waits for the exact fresh-start check when a fast reply overtakes it',async()=>{
+    const admissions=new LifeTurnAdmissions(),check=held(),start=parseLifeTurn(event());let committed=false;
+    const pending=admissions.start(start,async current=>{await check.promise;if(!current())return false;committed=true;return true;});
+    let accepted=false;const reply=admissions.ready(parseLifeTurn({...event('reply'),reply:{skipped:true}})).then(value=>accepted=value);
+    await Promise.resolve();expect(accepted).toBe(false);expect(committed).toBe(false);
+    check.resolve(true);await pending;await reply;expect(accepted).toBe(true);expect(committed).toBe(true);
+    expect(await admissions.ready({...start,turnId:'other'})).toBe(false);
+  });
+  it.each(['stop','finished','newer'] as const)('fences a pending started check after %s without waiting for audio',async reason=>{
+    const admissions=new LifeTurnAdmissions(),check=held(),start=parseLifeTurn(event());let committed=false;
+    const pending=admissions.start(start,async current=>{await check.promise;if(!current())return false;committed=true;return true;});
+    const reply=admissions.ready(start);
+    if(reason==='stop')admissions.cancel();
+    else if(reason==='finished')admissions.finish({...start,kind:'finished'});
+    else await admissions.start({...start,turnId:'newer'},async()=>true);
+    check.resolve(true);expect(await pending).toBe(false);expect(await reply).toBe(false);expect(committed).toBe(false);
+  });
+  it('rejects failed start admission and ignores an unrelated old finish',async()=>{
+    const admissions=new LifeTurnAdmissions(),start=parseLifeTurn(event());
+    await expect(admissions.start(start,async()=>{throw Error('synthetic failure');})).resolves.toBe(false);
+    expect(await admissions.ready(start)).toBe(false);
+    const newer={...start,turnId:'newer'};expect(await admissions.start(newer,async()=>true)).toBe(true);
+    admissions.finish(start);expect(await admissions.ready(newer)).toBe(true);
+    admissions.finish(newer);expect(await admissions.ready(newer)).toBe(false);
   });
 });
