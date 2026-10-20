@@ -66,9 +66,17 @@ for _ in {1..100}; do
 done
 [[ ${#devices[@]} == 1 && -c "${devices[0]}" && ! -L "${devices[0]}" ]]
 device="${devices[0]}"
+# Device-node creation can precede udev's owner/mode rules. Wait for the actual
+# add event before granting this one new node; never trigger/rewrite other GPUs.
+# https://www.freedesktop.org/software/systemd/man/latest/udevadm.html
+sudo udevadm info --wait-for-initialization=10 --query=path "$device" >/dev/null
+sudo udevadm settle --timeout=10
 sudo chown "$account" "$device"
 sudo chmod 0600 "$device"
-printf 'genuine isolated software DRM device: %s\nmodule: vgem\n' "$device" | sudo tee "$root/vgem.txt" >/dev/null
+{
+  printf 'genuine isolated software DRM device: %s\nmodule: vgem\n' "$device"
+  sudo stat --format='owner uid: %u; group gid: %g; mode: %a; device: %t:%T' "$device"
+} | sudo tee "$root/vgem.txt" >/dev/null
 if [[ "$desktop" == kde ]]; then
   pointer="$RUNNER_TEMP/orbitpal-wayland-pointer"
   [[ -f "$pointer" && -x "$pointer" && ! -L "$pointer" ]]

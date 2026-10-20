@@ -39,6 +39,48 @@ class HarnessSafety(unittest.TestCase):
             self.assertNotEqual(self.parser([]).returncode, 0)
             self.assertNotEqual(self.parser([event, {**event, "executable": "/different"}]).returncode, 0)
 
+    def test_readiness_requires_our_real_service_pid_not_an_early_activated_owner(self):
+        def check(result, expected="31180"):
+            return subprocess.run([sys.executable, str(DIRECTORY / "service-owner.py"), expected],
+                                  input=result, text=True, capture_output=True, timeout=5)
+        self.assertEqual(check("(uint32 31180,)\n").returncode, 0)
+        # Both names may be available, but the stale daemon has the wrong
+        # activation environment and must never satisfy our readiness barrier.
+        self.assertNotEqual(check("(uint32 31045,)\n").returncode, 0)
+        for result in ("(true,)\n", "(uint32 31180, uint32 31045)", "(31180,)",
+                       "(uint32 -1,)", "(uint32 0,)", "(uint32 2147483648,)",
+                       "(uint32 31180,)\nextra", "x" * 1025, "\N{LATIN SMALL LETTER E WITH ACUTE}"):
+            with self.subTest(result=result[:80]):
+                self.assertNotEqual(check(result).returncode, 0)
+        for expected in ("0", "-1", "true", "2147483648", "31180\n"):
+            with self.subTest(expected=expected):
+                self.assertNotEqual(check("(uint32 31180,)", expected).returncode, 0)
+
+    def test_session_refuses_a_foreign_bus_before_invoking_any_device_probe(self):
+        with tempfile.TemporaryDirectory(prefix="orbitpal-wayland.") as directory:
+            root = Path(directory).resolve()
+            sentinel = root / "probe-was-called"
+            (root / "render-probe").write_text('#!/bin/sh\nprintf x >"$ORBITPAL_PROBE_SENTINEL"\nexit 73\n', encoding="utf-8")
+            (root / "render-probe").chmod(0o700)
+            expected = f"unix:path={root}/runtime/session-bus"
+            base = {"PATH": os.defpath, "ORBITPAL_ACCEPTANCE_ROOT": str(root), "ORBITPAL_ACCEPTANCE_DESKTOP": "gnome",
+                    "ORBITPAL_WAYLAND_ACCEPTANCE": "synthetic-desktop-only", "RUNNER_ENVIRONMENT": "github-hosted",
+                    "RUNNER_OS": "Linux", "GITHUB_ACTIONS": "true", "ORBITPAL_ACCEPTANCE_DRM": "/never-opened",
+                    "ORBITPAL_PROBE_SENTINEL": str(sentinel)}
+            for bus in ("", "unix:path=/host/session-bus", expected + "-other", expected + ",guid=wrong"):
+                with self.subTest(bus=bus):
+                    completed = subprocess.run(["bash", str(DIRECTORY / "session.sh")],
+                                               env={**base, "DBUS_SESSION_BUS_ADDRESS": bus}, capture_output=True, timeout=5)
+                    self.assertNotEqual(completed.returncode, 73)
+                    self.assertFalse(sentinel.exists())
+            for bus in (expected, expected + ",guid=" + "a" * 32):
+                with self.subTest(bus=bus):
+                    completed = subprocess.run(["bash", str(DIRECTORY / "session.sh")],
+                                               env={**base, "DBUS_SESSION_BUS_ADDRESS": bus}, capture_output=True, timeout=5)
+                    self.assertEqual(completed.returncode, 73, completed.stderr)
+                    self.assertTrue(sentinel.exists())
+                    sentinel.unlink()
+
     def test_runtime_refuses_missing_or_nonhosted_platform_markers_before_provisioning(self):
         # Each case fails at the first condition, before mktemp/useradd/sudo.
         hosted = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Linux"}

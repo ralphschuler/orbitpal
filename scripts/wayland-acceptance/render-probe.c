@@ -7,6 +7,8 @@
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <inttypes.h>
 #include <gbm.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -43,9 +45,19 @@ int main(int argc, char **argv)
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLContext context = EGL_NO_CONTEXT;
     GLuint texture = 0, framebuffer = 0;
-    if (fd < 0 || fstat(fd, &metadata) != 0 || !S_ISCHR(metadata.st_mode)
-        || metadata.st_uid != geteuid() || (metadata.st_mode & 0777) != 0600) {
-        fputs("Render probe requires the private owned vgem device\n", stderr);
+    if (fd < 0) {
+        fprintf(stderr, "Cannot open the private vgem node (errno %d)\n", errno);
+        goto cleanup;
+    }
+    if (fstat(fd, &metadata) != 0) {
+        fprintf(stderr, "Cannot inspect the private vgem node (errno %d)\n", errno);
+        goto cleanup;
+    }
+    if (!S_ISCHR(metadata.st_mode) || metadata.st_uid != geteuid()
+        || (metadata.st_mode & 0777) != 0600) {
+        fprintf(stderr, "Render probe requires the private owned vgem device: char=%d, uid=%" PRIuMAX ", expected uid=%" PRIuMAX ", mode=%03o\n",
+                S_ISCHR(metadata.st_mode) ? 1 : 0, (uintmax_t)metadata.st_uid,
+                (uintmax_t)geteuid(), (unsigned)(metadata.st_mode & 0777));
         goto cleanup;
     }
     drmVersionPtr version = drmGetVersion(fd);
