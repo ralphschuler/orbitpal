@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add optional macOS reuse of successfully retrieved keys during the current app session, shared across bots and off by default. Provide explicit Lock/resume controls, reject late reads after session changes, invalidate copies on writes/deletes, and retain permanent credentials only in the OS store.
+
 - Distribute automatic chat turns fairly across eligible bots within each priority class, even while the queue keeps filling. Preserve direct-address and manual priority, reserve asynchronous preflight, and invalidate exact claims on Stop without replaying late work.
 - Name the Autopilot hourly limit as contribution attempts in all four interface languages. Explain text-only, silent and failed attempts and distinguish the per-bot rolling limit from provider requests or monetary limits; preserve the existing counter and stored configuration.
 
