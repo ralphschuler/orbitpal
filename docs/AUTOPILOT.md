@@ -52,6 +52,8 @@ Bewegungen lösen keine KI-Anfragen aus. Eigene Beiträge verwenden den gewählt
 
 Text, Stimme und eingeplante Emotes verwenden denselben Wiedergabeablauf wie normale Antworten. Ein stummer Versuch erzeugt keine künstliche Nutzernachricht oder Sprachausgabe. Autopilot-Beiträge werden nicht automatisch in Twitch oder YouTube gepostet.
 
+Eine leere Modellantwort oder eine Antwort nur mit Emotions- beziehungsweise Stimm-Tags wird als Fehler angezeigt. Nur das ausdrückliche Schweigesignal des Modells gilt als erfolgreicher stummer Versuch. Danach beginnt wie üblich der nächste eingestellte Ruheabstand; es wird kein zusätzlicher Versuch erzwungen.
+
 ## Optionaler Bildschirmkontext
 
 Unter **Bildschirm als Kontext** lässt sich die eingebaute Bildschirmaufnahme dieses Bots einschalten. Dafür sind weder MCP-Server noch Skills oder Werkzeugfreigaben nötig. Ein bildfähiges Modell, die allgemeine Bildfreigabe und passende Betriebssystemrechte werden benötigt. Dieselbe Einstellung steht unter **Modelle** und gilt auch für normale Gespräche.
