@@ -29,7 +29,11 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 rusqlite = { version = "0.40", features = ["bundled"] }
 axum = "0.8"
 tokio-stream = { version = "0.1", features = ["sync", "net"] }
-tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+# Supply the same Mozilla trust store explicitly: the upstream bundled-root
+# feature still pins the audited webpki-roots 0.26 compatibility wrapper.
+tokio-tungstenite = { version = "0.28", features = ["__rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1.0.10"
 futures-util = "0.3"
 base64 = "0.23"
 uuid = { version = "1", features = ["v4", "serde"] }
