@@ -355,7 +355,7 @@ pub async fn speech_audio(app:&tauri::AppHandle,id:&str,bot_id:&str)->Result<Val
     if let Some(audio)=state.overlay.audio.lock().map_err(|_|"Audio-Cache nicht verfügbar")?.get(id){return Ok(audio);}
     let usage=crate::usage_budget::Context::new(&entry.bot_id,entry.usage_origin);
     state.store.preflight_usage_cost(&usage,crate::usage_budget::Cost::tts(entry.synthesis_text().chars().count() as u64))?;
-    let key=state.store.key_for(&entry.voice)?;
+    let key=state.store.key_for_purpose(&entry.voice,crate::credential_policy::Purpose::Speech)?;
     if entry.cancel.load(Ordering::Relaxed)||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
     let audio=crate::providers::synthesize_metered(&entry.voice,entry.synthesis_text(),key,&state.store,&usage,entry.cancel.clone()).await?;
     let entries=state.overlay.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;

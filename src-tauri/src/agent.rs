@@ -68,7 +68,7 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
     let docs=store.documents()?;
     let model=&profile["model"];
     if model["model"].as_str().unwrap_or_default().trim().is_empty(){return Err("Bitte zuerst ein Sprachmodell in den Einstellungen auswählen.".into());}
-    let key=store.key_for(model)?;
+    let key=store.key_for_purpose(model,crate::credential_policy::Purpose::Dialog)?;
     let all_skills=store.skills()?;
     let enabled:HashSet<String>=profile["skillsEnabled"].as_array().map(|a|a.iter().filter_map(|s|s.as_str().map(str::to_owned)).collect()).unwrap_or_default();
     if !viewer && selected.iter().any(|id|!enabled.contains(id)) {

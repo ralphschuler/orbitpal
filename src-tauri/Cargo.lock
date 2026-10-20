@@ -3130,6 +3130,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "x11rb",
  "zbus 6.0.0",
+ "zeroize",
 ]
 
 [[package]]
