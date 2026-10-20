@@ -137,7 +137,7 @@ fn members_exist(db: &Connection, config: &WorldConfig) -> Result<()> {
     }
     Ok(())
 }
-fn load(db: &Connection, check_members: bool) -> Result<Option<WorldRecord>> {
+pub(super) fn load(db: &Connection, check_members: bool) -> Result<Option<WorldRecord>> {
     schema(db)?;
     let count = db
         .query_row(

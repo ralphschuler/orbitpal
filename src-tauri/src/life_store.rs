@@ -626,6 +626,79 @@ impl Store {
             intents,
         })
     }
+    /// Native action admission linearizes at `authorize`, after acquiring the
+    /// IMMEDIATE transaction and loading the actual current validated snapshot.
+    /// The callback must be synchronous, with no Core/Hub/Store reentry or GUI.
+    /// Its opaque token never enters SQLite; a committed state remains final
+    /// even if later acknowledgement/publication fails. Existing event API stays
+    /// unchanged for ticks/manual compatibility.
+    pub(crate) fn apply_life_action_checked<T>(
+        &self,
+        bot_id: &str,
+        now_ms: u64,
+        authorize: impl FnOnce(
+            &LifeSnapshot,
+            &Connection,
+        ) -> Result<(LifeEvent, u64, T), LifeStoreError>,
+    ) -> Result<(LifeCommit, T), LifeStoreError> {
+        self.life_scope(bot_id)?;
+        self.life_ready(bot_id)?;
+        validate_time(now_ms)?;
+        let mut db = self
+            .db
+            .lock()
+            .map_err(|_| LifeStoreError::StorageUnavailable)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(database)?;
+        check_bot(&tx, bot_id)?;
+        let mut snapshot = read(&tx, bot_id)?.ok_or(LifeStoreError::MissingState)?;
+        // Do not move this callback before the potentially blocking DB acquire.
+        let (event, expected_revision, permit) = authorize(&snapshot, &tx)?;
+        if expected_revision > life_domain::MAX_COUNTER
+            || !matches!(
+                &event,
+                LifeEvent::Plan { .. }
+                    | LifeEvent::Start { .. }
+                    | LifeEvent::Complete { .. }
+                    | LifeEvent::Cancel { .. }
+            )
+            || matches!(
+                &event,
+                LifeEvent::Cancel {
+                    reason: CancelReason::Restart,
+                    ..
+                }
+            )
+        {
+            return Err(LifeStoreError::InvalidInput);
+        }
+        if snapshot.state.revision() != expected_revision {
+            return Err(LifeStoreError::RevisionConflict);
+        }
+        let transition = life_domain::reduce(&snapshot.state, 0, snapshot.random, event)?;
+        let intents = transition.intents.clone();
+        let outcome = match transition.outcome {
+            Outcome::Applied => WriteOutcome::Applied,
+            Outcome::NoChange => WriteOutcome::NoChange,
+            Outcome::Duplicate => WriteOutcome::Duplicate,
+            Outcome::Stale => WriteOutcome::Stale,
+        };
+        if transition.outcome == Outcome::Applied {
+            append_transition(&mut snapshot, transition, EventOrigin::Live)?;
+            snapshot.saved_at_ms = now_ms;
+            save(&tx, bot_id, expected_revision, &snapshot)?;
+        }
+        tx.commit().map_err(database)?;
+        Ok((
+            LifeCommit {
+                snapshot,
+                outcome,
+                intents,
+            },
+            permit,
+        ))
+    }
     pub(super) fn recover_life_after_restart(&self, now_ms: u64) {
         let schema_error = match self.life_recovery.lock() {
             Ok(status) => status.schema_error,

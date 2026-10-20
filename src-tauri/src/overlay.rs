@@ -490,6 +490,7 @@ pub fn open_for_bot(app:&tauri::AppHandle,bot_id:&str)->Result<(),String>{
     window.set_ignore_cursor_events(profile["output"]["clickThrough"].as_bool().unwrap_or(false)).map_err(|error|error.to_string())?;window.show().map_err(|error|error.to_string())?;
     let handle=app.clone();let bot_id=bot_id.to_owned();let measured=window.clone();let revision=Arc::new(std::sync::atomic::AtomicU64::new(0));
     window.on_window_event(move|event|{
+        if matches!(event,tauri::WindowEvent::Destroyed|tauri::WindowEvent::CloseRequested{..}){handle.state::<crate::AppState>().life_runtime.output_window_lost(&format!("avatar-{bot_id}"));}
         match event {
             tauri::WindowEvent::Moved(position)=>signals.observe_move(position.x,position.y),
             tauri::WindowEvent::Resized(size)=>signals.observe_resize(size.width,size.height),

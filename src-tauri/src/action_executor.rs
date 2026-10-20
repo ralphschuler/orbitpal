@@ -1448,6 +1448,26 @@ impl Executor {
     pub fn take_invalidated_output(&mut self) -> Option<OutputStamp> {
         self.invalidated_outputs.pop_first()
     }
+    /// Native host only, after exact Core/session, World and internal timer
+    /// output revocation. This retires failed runtime authority, NEVER Life
+    /// history/ordinals. No renderer/API boolean reaches this method. Old keys
+    /// and permits fail missing-job lookup; queued terminal tombstones survive.
+    pub fn retire_uncommitted_native_rest(
+        &mut self,
+        authority: &NativeAuthority,
+        key: &JobKey,
+    ) -> Result<(), ActionError> {
+        let job = self.job(authority, key)?;
+        if job.policy.presentation != Presentation::NativeRestDwell
+            || !matches!(job.status, Status::Cancelled | Status::Failed)
+            || job.terminal_committed
+            || self.cleanup.iter().any(|item| item.key == *key)
+        {
+            return Err(ActionError::InvalidState);
+        }
+        self.jobs.remove(key.actor.as_str());
+        Ok(())
+    }
     /// Membership removal may forget only terminal work after native cleanup;
     /// queued terminal tombstones remain ordered until dispatched.
     pub fn forget_terminal(&mut self, actor: &ActorId) -> bool {

@@ -137,6 +137,9 @@ impl Default for Operator {
     }
 }
 pub struct Core {
+    pub(crate) actions: Option<super::action_state::NativeActions>,
+    rest_intents: BTreeMap<String, super::action_state::RestIntent>,
+    next_rest_intent: u64,
     pub sessions: BTreeMap<String, Session>,
     starts: BTreeMap<String, String>,
     sequence: u64,
@@ -169,6 +172,9 @@ fn due(session: &mut Session, now: u64) -> u64 {
 impl Core {
     pub fn new(system: SystemSnapshot) -> Self {
         Self {
+            actions: Some(super::action_state::NativeActions::new()),
+            rest_intents: BTreeMap::new(),
+            next_rest_intent: 1,
             sessions: BTreeMap::new(),
             starts: BTreeMap::new(),
             sequence: 1,
@@ -209,14 +215,191 @@ impl Core {
             }
         }
     }
+    pub(crate) fn local_actions_busy(&self) -> bool {
+        self.actions.as_ref().is_some_and(|a| a.busy()) || !self.rest_intents.is_empty()
+    }
+    pub(crate) fn interrupt_actions(
+        &mut self,
+        bot: Option<&str>,
+        reason: crate::life_domain::CancelReason,
+        raw: u64,
+    ) {
+        self.rest_intents
+            .retain(|id, _| bot.is_some_and(|bot| bot != id));
+        if let Some(actions) = &mut self.actions {
+            actions.interrupt(bot, None, reason, raw.min(MAX_COUNTER));
+        }
+    }
+    pub(crate) fn local_action_reason(&self, bot: &str, raw: u64) -> Option<&'static str> {
+        let Some(session) = self.sessions.get(bot).filter(|s| s.mode == Mode::Life) else {
+            return Some("life_not_active");
+        };
+        if session.storage_failed {
+            return Some("storage_unavailable");
+        }
+        if self.system.state != Availability::AwakeUnlocked {
+            return Some("system_unavailable");
+        }
+        if !self.ui_clear(raw.max(self.last_time)) {
+            return Some("ui_unavailable");
+        }
+        if !session.output {
+            return Some("output_unavailable");
+        }
+        if self.pending.is_some()
+            || self.actions.as_ref().is_some_and(|a| a.actor_busy(bot))
+            || self.rest_intents.contains_key(bot)
+        {
+            return Some("busy");
+        }
+        None
+    }
+    pub(crate) fn local_fence(
+        &self,
+        bot: &str,
+        raw: u64,
+    ) -> Option<super::action_state::LocalFence> {
+        let now = raw.max(self.last_time);
+        if self.shutdown
+            || self.system.state != Availability::AwakeUnlocked
+            || !self.ui_clear(now)
+            || self.pending.is_some()
+        {
+            return None;
+        }
+        let session = self.sessions.get(bot)?;
+        if session.mode != Mode::Life
+            || session.storage_failed
+            || !session.output
+            || session.state.is_none()
+        {
+            return None;
+        }
+        Some(super::action_state::LocalFence {
+            session: session.session_id.clone(),
+            revision: session.revision,
+            system_generation: self.system.generation,
+            ui_generation: self.ui.generation,
+        })
+    }
+    pub(crate) fn local_current(
+        &self,
+        bot: &str,
+        fence: &super::action_state::LocalFence,
+        raw: u64,
+    ) -> bool {
+        self.local_fence(bot, raw).as_ref() == Some(fence)
+    }
+    /// Captures an exact truthful UI proof BEFORE this command's ordinary
+    /// operator revocation. Only this one synthetic block may be recognized.
+    pub(crate) fn prepare_rest_intent(
+        &mut self,
+        bot: &str,
+        profile: serde_json::Value,
+        proof: &super::action_state::UiProof,
+        raw: u64,
+    ) {
+        let now = self.clock(raw);
+        let candidate = self.local_fence(bot, now).and_then(|fence| {
+            if self.ui.hidden
+                || self.ui.connection.as_deref() != Some(&proof.connection_id)
+                || self.ui.sequence != proof.sequence
+                || self.local_actions_busy()
+            {
+                return None;
+            }
+            Some((fence, self.ui.reported_at?))
+        });
+        self.operator_activity(now);
+        let Some((fence, reported_at)) = candidate else {
+            return;
+        };
+        if self.next_rest_intent >= MAX_COUNTER || self.rest_intents.len() >= MAX_SESSIONS {
+            return;
+        }
+        let serial = self.next_rest_intent;
+        self.next_rest_intent += 1;
+        self.rest_intents.insert(
+            bot.into(),
+            super::action_state::RestIntent {
+                serial,
+                bot: bot.into(),
+                session: fence.session,
+                revision: fence.revision,
+                profile,
+                connection: proof.connection_id.clone(),
+                report_sequence: proof.sequence,
+                reported_at,
+                issued_at: now,
+                own_ui_generation: self.ui.generation,
+            },
+        );
+    }
+    pub(crate) fn rest_intent(
+        &self,
+        bot: &str,
+        proof: &super::action_state::UiProof,
+    ) -> Option<super::action_state::RestIntent> {
+        self.rest_intents
+            .get(bot)
+            .filter(|i| i.connection == proof.connection_id && i.report_sequence == proof.sequence)
+            .cloned()
+    }
+    pub(crate) fn abandon_rest_intent(&mut self, bot: &str, serial: u64) {
+        if self
+            .rest_intents
+            .get(bot)
+            .is_some_and(|i| i.serial == serial)
+        {
+            self.rest_intents.remove(bot);
+        }
+    }
+    pub(crate) fn consume_rest_intent(
+        &mut self,
+        intent: &super::action_state::RestIntent,
+        profile: &serde_json::Value,
+        raw: u64,
+    ) -> Option<super::action_state::LocalFence> {
+        let now = self.clock(raw);
+        if self
+            .rest_intents
+            .get(&intent.bot)
+            .is_none_or(|i| i.serial != intent.serial)
+            || now.saturating_sub(intent.issued_at) >= UI_TTL_MS
+            || now.saturating_sub(intent.reported_at) > UI_TTL_MS
+            || profile != &intent.profile
+            || self.ui.connection.as_ref() != Some(&intent.connection)
+            || self.ui.hidden
+            || self
+                .sessions
+                .get(&intent.bot)
+                .is_none_or(|s| s.session_id != intent.session || s.revision != intent.revision)
+        {
+            return None;
+        }
+        if self.ui.generation == intent.own_ui_generation
+            && self.ui.reported_at.is_none()
+            && self.ui.blocked
+        {
+            self.ui.reported_at = Some(intent.reported_at);
+            self.ui.blocked = false;
+        }
+        let fence = self.local_fence(&intent.bot, now)?;
+        self.rest_intents.remove(&intent.bot);
+        Some(fence)
+    }
     pub fn activity(&mut self, raw: u64) {
         let now = self.clock(raw);
+        self.interrupt_actions(None, crate::life_domain::CancelReason::Interrupted, now);
         self.cancel_pending();
         self.postpone(now);
         self.changed();
     }
     pub fn any_active(&self) -> bool {
-        !self.sessions.is_empty() || !self.starts.is_empty()
+        !self.sessions.is_empty()
+            || !self.starts.is_empty()
+            || !self.rest_intents.is_empty()
+            || self.local_actions_busy()
     }
     pub fn begin_start(&mut self, bot: &str, intent: String) -> Result<(), &'static str> {
         if self.shutdown
@@ -240,6 +423,7 @@ impl Core {
     }
     pub fn invalidate_bot(&mut self, bot: &str, raw: u64) {
         let now = self.clock(raw);
+        self.interrupt_actions(Some(bot), crate::life_domain::CancelReason::Operator, now);
         self.starts.remove(bot);
         if self
             .pending
@@ -318,6 +502,7 @@ impl Core {
     }
     pub fn take_session(&mut self, bot: &str, raw: u64) -> Option<Session> {
         let now = self.clock(raw);
+        self.interrupt_actions(Some(bot), crate::life_domain::CancelReason::Operator, now);
         if self
             .pending
             .as_ref()
@@ -334,6 +519,7 @@ impl Core {
     }
     pub fn stop(&mut self, bot: &str, raw: u64) -> Option<Session> {
         let now = self.clock(raw);
+        self.interrupt_actions(Some(bot), crate::life_domain::CancelReason::Operator, now);
         if self
             .pending
             .as_ref()
@@ -351,6 +537,11 @@ impl Core {
     }
     pub fn stop_all(&mut self, raw: u64) -> Vec<(String, Session)> {
         self.clock(raw);
+        self.interrupt_actions(
+            None,
+            crate::life_domain::CancelReason::Operator,
+            self.last_time,
+        );
         self.cancel_pending();
         self.starts.clear();
         let removed = std::mem::take(&mut self.sessions).into_iter().collect();
@@ -374,6 +565,11 @@ impl Core {
         }
         self.starts.remove(bot);
         let now = self.clock(raw);
+        self.interrupt_actions(
+            Some(bot),
+            crate::life_domain::CancelReason::Interrupted,
+            now,
+        );
         if self
             .pending
             .as_ref()
@@ -394,6 +590,7 @@ impl Core {
     pub fn connect_ui(&mut self, id: String, raw: u64) {
         let now = self.clock(raw);
         self.cancel_pending();
+        self.interrupt_actions(None, crate::life_domain::CancelReason::Interrupted, now);
         self.ui.connection = Some(id);
         self.ui.sequence = 0;
         self.ui.generation = self.ui.generation.saturating_add(1).min(MAX_COUNTER);
@@ -409,6 +606,7 @@ impl Core {
         }
         let now = self.clock(raw);
         self.cancel_pending();
+        self.interrupt_actions(None, crate::life_domain::CancelReason::Interrupted, now);
         self.ui.connection = None;
         self.ui.reported_at = None;
         self.ui.hidden_clean = false;
@@ -445,6 +643,9 @@ impl Core {
                 self.operator_activity(now);
             }
             return false;
+        }
+        if blocked || activity {
+            self.interrupt_actions(None, crate::life_domain::CancelReason::Interrupted, now);
         }
         let was_clear = self.ui_clear(now);
         self.ui.reported_at = Some(now);
@@ -493,6 +694,7 @@ impl Core {
         self.ui.hidden_clean = clean;
         self.ui.reported_at = None;
         if !clean {
+            self.interrupt_actions(None, crate::life_domain::CancelReason::Interrupted, now);
             self.cancel_pending();
         }
         self.postpone(now);
@@ -500,6 +702,7 @@ impl Core {
     }
     pub fn shown(&mut self, raw: u64) {
         let now = self.clock(raw);
+        self.interrupt_actions(None, crate::life_domain::CancelReason::Interrupted, now);
         self.ui.hidden = false;
         self.ui.hidden_clean = false;
         self.ui.reported_at = None;
@@ -511,6 +714,7 @@ impl Core {
     }
     pub fn operator_activity(&mut self, raw: u64) {
         let now = self.clock(raw);
+        self.interrupt_actions(None, crate::life_domain::CancelReason::Operator, now);
         self.ui.hidden_clean = false;
         self.ui.reported_at = None;
         self.ui.blocked = true;
@@ -522,6 +726,7 @@ impl Core {
     pub fn observe_system(&mut self, system: SystemSnapshot, raw: u64) {
         let now = self.clock(raw);
         if self.system.generation != system.generation || self.system.state != system.state {
+            self.interrupt_actions(None, crate::life_domain::CancelReason::Interrupted, now);
             self.cancel_pending();
             self.postpone(now);
             for session in self.sessions.values_mut() {
@@ -554,6 +759,11 @@ impl Core {
             return;
         }
         let now = self.clock(raw);
+        self.interrupt_actions(
+            Some(bot),
+            crate::life_domain::CancelReason::Interrupted,
+            now,
+        );
         if !output
             && self
                 .pending
@@ -571,6 +781,11 @@ impl Core {
     }
     pub fn mark_storage_failure(&mut self, bot: &str, raw: u64) {
         let now = self.clock(raw);
+        self.interrupt_actions(
+            Some(bot),
+            crate::life_domain::CancelReason::Unavailable,
+            now,
+        );
         if self
             .pending
             .as_ref()
@@ -672,6 +887,9 @@ impl Core {
                 self.cancel_pending();
                 self.postpone(now);
             }
+            return None;
+        }
+        if self.local_actions_busy() {
             return None;
         }
         let bot = self

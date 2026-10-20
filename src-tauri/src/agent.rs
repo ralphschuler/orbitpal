@@ -26,7 +26,7 @@ async fn send_with_origin(app:tauri::AppHandle,text:String,source:String,user:St
     if text.len()>20_000{return Err("Nachricht ist zu lang (maximal 20.000 Bytes)".into());}
     if !public_source(&source){return Err("Ungültige Nachrichtenquelle".into());}
     let viewer=!["operator","microphone"].contains(&source.as_str());
-    let state=app.state::<crate::AppState>();state.life_runtime.activity();
+    let state=app.state::<crate::AppState>();state.life_runtime.before_dialog(&app,origin)?;
     state.updater.ensure_idle()?;
     let _turn=state.generation.try_lock().map_err(|_|"Der Co-Host verarbeitet bereits eine Nachricht. Bitte warten oder abbrechen.".to_owned())?;
     let id=reply_id(&state,request_id.as_deref())?;

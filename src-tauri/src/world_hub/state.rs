@@ -82,6 +82,7 @@ struct Hub {
     topology: Option<TopologySample>,
     topology_revision: u64,
 }
+pub(crate) use crate::life_runtime::action_state::WorldActionFence as ActionContext;
 pub struct WorldHub {
     inner: Mutex<Hub>,
     pub(super) sample_ticket: AtomicU64,
@@ -520,6 +521,104 @@ impl WorldHub {
     }
     /// Core-held native bridge used by the runtime and the bounded fixture.
     /// Derive the current session only after entering the Core critical section.
+    pub(crate) fn action_context(
+        &self,
+        store: &Store,
+        sessions: &[NativeActor],
+        bot: &str,
+        now: u64,
+    ) -> Result<ActionContext, String> {
+        self.synchronize(store, sessions, None, now)?;
+        let hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        let native = sessions
+            .iter()
+            .find(|s| s.stamp.actor_id().as_str() == bot)
+            .ok_or(UNAVAILABLE)?;
+        let world = hub.world.as_ref().ok_or(UNAVAILABLE)?;
+        if hub.unavailable.contains(bot)
+            || hub.bound.get(bot) != Some(&native.stamp)
+            || hub.topology_revision == 0
+            || hub
+                .topology
+                .as_ref()
+                .is_none_or(|t| t.observed.elapsed() > Duration::from_secs(5))
+        {
+            return Err(UNAVAILABLE.into());
+        }
+        let position = world
+            .snapshot()
+            .actors
+            .into_iter()
+            .find(|a| a.actor_id.as_str() == bot)
+            .ok_or(UNAVAILABLE)?
+            .position;
+        Ok(ActionContext {
+            session: native.stamp.clone(),
+            source_world: native.lineage.clone().ok_or(UNAVAILABLE)?,
+            stage: world.config().stage_id().clone(),
+            config_revision: world.config().revision(),
+            topology_revision: hub.topology_revision,
+            position,
+            instance_id: hub.instance_id.clone(),
+            record: serde_json::to_value(hub.record.as_ref().ok_or(UNAVAILABLE)?)
+                .map_err(|_| UNAVAILABLE)?,
+        })
+    }
+    /// Caller holds Core. The closure may enter Store only; no Core/WorldHub
+    /// reentry, GUI getter, await or publication while this guard is held.
+    pub(crate) fn with_action_context<T>(
+        &self,
+        store: &Store,
+        expected: &ActionContext,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        Self::refresh_record(&mut hub, store)?;
+        let world = hub.world.as_ref().ok_or(UNAVAILABLE)?;
+        let bot = expected.session.actor_id().as_str();
+        if hub.instance_id != expected.instance_id
+            || hub.bound.get(bot) != Some(&expected.session)
+            || hub.unavailable.contains(bot)
+            || world.config().stage_id() != &expected.stage
+            || world.config().revision() != expected.config_revision
+            || hub.topology_revision != expected.topology_revision
+            || hub
+                .topology
+                .as_ref()
+                .is_none_or(|t| t.observed.elapsed() > Duration::from_secs(5))
+            || world
+                .snapshot()
+                .actors
+                .iter()
+                .find(|a| a.actor_id.as_str() == bot)
+                .is_none_or(|a| {
+                    a.position != expected.position
+                        || a.life
+                            .as_ref()
+                            .is_none_or(|life| life.world_id() != &expected.source_world)
+                })
+        {
+            return Err(UNAVAILABLE.into());
+        }
+        operation()
+    }
+    /// Exact native revocation proof for failed local work. A new session is
+    /// untouched. Pure unbind atomically removes its old session's every lease.
+    pub(crate) fn revoke_action_context(&self, expected: &ActionContext) -> Result<(), String> {
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        let bot = expected.session.actor_id().as_str();
+        if hub.bound.get(bot) == Some(&expected.session) {
+            hub.bound.remove(bot);
+            if let Some(world) = &mut hub.world {
+                world.unbind_session(&expected.session);
+            }
+        }
+        if hub.bound.get(bot) == Some(&expected.session) {
+            Err(UNAVAILABLE.into())
+        } else {
+            Ok(())
+        }
+    }
     pub(crate) fn reserve_current(
         &self,
         core: &crate::life_runtime::core::Core,
