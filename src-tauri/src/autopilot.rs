@@ -128,7 +128,7 @@ pub async fn set_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_
     let state=app.state::<crate::AppState>();let profile=state.store.bot_profile(&bot_id)?;Ok(state.life_runtime.present(state.autopilot.runtime(&bot_id,&config(&profile)?)))
 }
 #[tauri::command]
-pub async fn send_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,request_id:Option<String>)->Result<Value,String>{main_only(window.label())?;let _=(app,bot_id,request_id);Err("Spontaneous turns are scheduled by the native runtime.".into())}
+pub async fn send_autopilot(window:tauri::WebviewWindow,app:tauri::AppHandle,bot_id:String,request_id:Option<String>)->Result<Value,String>{main_only(window.label())?;let _=(app,bot_id,request_id);Err("Spontane Beiträge werden von der nativen Laufzeit geplant.".into())}
 
 #[cfg(test)]
 mod tests{
@@ -138,6 +138,14 @@ mod tests{
         for bad in [json!({"active":true}),json!({"enabled":true}),json!({"minSeconds":14}),json!({"maxSeconds":59}),json!({"maxTurnsPerHour":121})]{assert!(config(&json!({"autopilot":bad})).is_err(),"{bad}");}
         assert!(config(&json!({"autopilot":{"instructions":"x".repeat(4001)}})).is_err());
         assert_eq!(config(&json!({"autopilot":{"screenContext":true,"screenToolArguments":"old legacy data"}})).unwrap(),Config::default());
+    }
+    #[test]fn speech_projection_uses_actual_rolling_attempts_and_spacing_without_mutation(){
+        let hub=AutopilotHub::default();let start=Instant::now();let config=Config{min_seconds:15,max_seconds:30,max_turns_per_hour:2,..Config::default()};
+        hub.set_at("nova",true,config.clone(),start).unwrap();let initial=hub.speech_budget_at("nova",start).unwrap();assert_eq!((initial.attempts,initial.limit,initial.remaining_seconds),(0,2,15));assert!(!initial.budget_limited);
+        hub.admit_at("nova",&config,start+Duration::from_secs(15)).unwrap();hub.admit_at("nova",&config,start+Duration::from_secs(30)).unwrap();
+        let full=hub.speech_budget_at("nova",start+Duration::from_secs(45)).unwrap();assert_eq!((full.attempts,full.limit,full.remaining_seconds),(2,2,3570));assert!(full.budget_limited);
+        let expired=hub.speech_budget_at("nova",start+Duration::from_secs(3615)).unwrap();assert_eq!((expired.attempts,expired.remaining_seconds),(1,0));assert!(!expired.budget_limited);
+        assert_eq!(hub.speech_budget_at("nova",start+Duration::from_secs(45)).unwrap().attempts,2,"read-only projection does not erase actual attempts");
     }
     #[test]fn admission_enforces_start_spacing_hour_cap_and_keeps_failed_attempts(){
         let hub=AutopilotHub::default();let start=Instant::now();let config=Config{min_seconds:15,max_seconds:30,max_turns_per_hour:2,..Config::default()};

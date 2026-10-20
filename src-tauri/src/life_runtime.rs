@@ -1,4 +1,6 @@
 //! One application-owned native autonomy loop. Restart never restores activation.
+#[path = "life_runtime/cloud.rs"]
+pub(crate) mod cloud;
 #[path = "life_runtime/core.rs"]
 pub(crate) mod core;
 use self::core::{Claim, Core, Mode, RuntimeSnapshot, SpeechConfig};
@@ -22,7 +24,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager};
-const UNAVAILABLE: &str = "Native Autonomie ist nicht verfügbar. Lokales Life und Stop bleiben verfügbar.";
+const UNAVAILABLE: &str =
+    "Native Autonomie ist nicht verfügbar. Lokales Life und Stop bleiben verfügbar.";
 fn wall_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -37,10 +40,20 @@ fn speech_config(config: &crate::autopilot::Config) -> SpeechConfig {
         max_ms: config.max_seconds * 1000,
     }
 }
-fn has_model(profile:&Value)->bool{crate::providers::dialog_model_ready(&profile["model"])}
+fn has_model(profile: &Value) -> bool {
+    crate::providers::dialog_model_ready(&profile["model"])
+}
 fn output_available(app: &tauri::AppHandle, profile: &Value) -> bool {
     match profile["output"]["mode"].as_str().unwrap_or("studio") {
-        "studio" => app.get_webview_window("main").is_some(),
+        "studio" => {
+            app.get_webview_window("main").is_some()
+                && app
+                    .state::<crate::AppState>()
+                    .store
+                    .profile()
+                    .ok()
+                    .is_some_and(|selected| selected["id"] == profile["id"])
+        }
         "overlay" => crate::overlay::is_open(app, profile["id"].as_str().unwrap_or_default()),
         "obs" => profile["output"]["streamingEnabled"].as_bool() == Some(true),
         _ => false,
@@ -63,13 +76,50 @@ fn main_only(label: &str) -> Result<(), String> {
 /// revokes the clean hidden barrier before its handler executes. Runtime status,
 /// playback acknowledgements and the runtime-owned audio path never revoke
 /// their own claim. These exemptions grant no session or OS authority.
-pub fn operator_command(command:&str)->bool{!matches!(command,
- "get_app_state"|"get_life_runtime"|"get_life_bot"|"connect_life_ui"|"disconnect_life_ui"|"report_life_ui"|"set_life_mode"|"set_autopilot"|
- "send_automatic_message"|"get_speech_audio"|"report_playback"|"cancel_speech_job"|"get_emote_sound"|"report_emote_playback"|
- "get_emote_capabilities"|"get_extension_library"|"get_library_skill"|"get_control_mcp_config"|"list_bots"|"get_avatar_info"|
- "get_ui_locale"|"get_credential_session"|"get_update_settings"|"get_usage_budget"|"get_screen_session"|"get_screen_capture_permission"|"get_microphone_permission"|
- "list_output_displays"|"list_capture_displays"|"save_profile"|"save_document")}
-pub fn operator_invoke<R:tauri::Runtime>(invoke:&tauri::ipc::Invoke<R>){let webview=invoke.message.webview_ref();if webview.label()=="main"&&operator_command(invoke.message.command()){if let Some(state)=webview.try_state::<crate::AppState>(){state.life_runtime.operator_activity();}}}
+pub fn operator_command(command: &str) -> bool {
+    !matches!(
+        command,
+        "get_app_state"
+            | "get_life_runtime"
+            | "get_life_bot"
+            | "connect_life_ui"
+            | "disconnect_life_ui"
+            | "report_life_ui"
+            | "set_life_mode"
+            | "set_autopilot"
+            | "send_automatic_message"
+            | "get_speech_audio"
+            | "report_playback"
+            | "cancel_speech_job"
+            | "get_emote_sound"
+            | "report_emote_playback"
+            | "get_emote_capabilities"
+            | "get_extension_library"
+            | "get_library_skill"
+            | "get_control_mcp_config"
+            | "list_bots"
+            | "get_avatar_info"
+            | "get_ui_locale"
+            | "get_credential_session"
+            | "get_update_settings"
+            | "get_usage_budget"
+            | "get_screen_session"
+            | "get_screen_capture_permission"
+            | "get_microphone_permission"
+            | "list_output_displays"
+            | "list_capture_displays"
+            | "save_profile"
+            | "save_document"
+    )
+}
+pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
+    let webview = invoke.message.webview_ref();
+    if webview.label() == "main" && operator_command(invoke.message.command()) {
+        if let Some(state) = webview.try_state::<crate::AppState>() {
+            state.life_runtime.operator_activity();
+        }
+    }
+}
 
 pub struct LifeRuntime {
     core: Mutex<Core>,
@@ -101,14 +151,27 @@ impl LifeRuntime {
             .as_millis()
             .min(crate::life_domain::MAX_COUNTER as u128) as u64
     }
-    pub fn snapshot(&self) -> Result<RuntimeSnapshot, String> {
-        Ok(self
-            .core
-            .lock()
-            .map_err(|_| UNAVAILABLE)?
-            .snapshot(self.now()))
+    pub fn snapshot_for(
+        &self,
+        hub: &crate::autopilot::AutopilotHub,
+    ) -> Result<RuntimeSnapshot, String> {
+        let core = self.core.lock().map_err(|_| UNAVAILABLE)?;
+        let mut snapshot = core.snapshot(self.now());
+        for session in &mut snapshot.sessions {
+            let budget = hub.speech_budget(&session.bot_id)?;
+            session.speech.attempts = budget.attempts;
+            session.speech.limit = budget.limit;
+            session.speech.budget_limited = budget.budget_limited;
+            session.speech.remaining_seconds = session
+                .speech
+                .remaining_seconds
+                .max(budget.remaining_seconds);
+            if budget.budget_limited {
+                session.speech.eligible = false;
+            }
+        }
+        Ok(snapshot)
     }
-    pub fn snapshot_for(&self,hub:&crate::autopilot::AutopilotHub)->Result<RuntimeSnapshot,String>{let core=self.core.lock().map_err(|_|UNAVAILABLE)?;let mut snapshot=core.snapshot(self.now());for session in &mut snapshot.sessions{let budget=hub.speech_budget(&session.bot_id)?;session.speech.attempts=budget.attempts;session.speech.limit=budget.limit;session.speech.budget_limited=budget.budget_limited;session.speech.remaining_seconds=session.speech.remaining_seconds.max(budget.remaining_seconds);if budget.budget_limited{session.speech.eligible=false;}}Ok(snapshot)}
     pub fn any_active(&self) -> bool {
         self.core
             .lock()
@@ -146,7 +209,12 @@ impl LifeRuntime {
         }
         runtime
     }
-    pub fn invalidate_bot(&self,bot:&str){if let Ok(mut core)=self.core.lock(){core.invalidate_bot(bot,self.now());core.operator_activity(self.now());}}
+    pub fn invalidate_bot(&self, bot: &str) {
+        if let Ok(mut core) = self.core.lock() {
+            core.invalidate_bot(bot, self.now());
+            core.operator_activity(self.now());
+        }
+    }
     pub fn current(&self, claim: &Claim) -> bool {
         self.core
             .lock()
@@ -170,35 +238,12 @@ impl LifeRuntime {
     }
     pub async fn check_cloud(&self, app: &tauri::AppHandle, claim: &Claim) -> Result<(), String> {
         let system = self.monitor.get().ok_or(UNAVAILABLE)?.refresh().await;
-        let is_visible=visible(app);
+        let is_visible = visible(app);
         let mut core = self.core.lock().map_err(|_| UNAVAILABLE)?;
         let now = self.now();
         core.observe_system(system, now);
         core.reconcile_visibility(is_visible, now);
         if !core.current(claim, now) {
-            return Err(UNAVAILABLE.into());
-        }
-        app.state::<crate::AppState>().updater.ensure_idle()?;
-        Ok(())
-    }
-    /// Queue follow-up work must still belong to this live session, even after the
-    /// dialog claim itself completed. External OS state is sampled again.
-    pub async fn check_session_cloud(
-        &self,
-        app: &tauri::AppHandle,
-        claim: &Claim,
-        cancel: &AtomicBool,
-    ) -> Result<(), String> {
-        let system = self.monitor.get().ok_or(UNAVAILABLE)?.refresh().await;
-        let is_visible=visible(app);
-        let mut core = self.core.lock().map_err(|_| UNAVAILABLE)?;
-        let now = self.now();
-        core.observe_system(system, now);
-        core.reconcile_visibility(is_visible, now);
-        if cancel.load(Ordering::SeqCst)
-            || system.state != Availability::AwakeUnlocked
-            || !core.session_current(claim)
-        {
             return Err(UNAVAILABLE.into());
         }
         app.state::<crate::AppState>().updater.ensure_idle()?;
@@ -222,7 +267,7 @@ impl LifeRuntime {
         write: impl FnOnce() -> Result<Value, String>,
     ) -> Result<(Value, Option<crate::autopilot::Runtime>), String> {
         let mut core = self.core.lock().map_err(|_| UNAVAILABLE)?;
-        core.invalidate_bot(bot,self.now());
+        core.invalidate_bot(bot, self.now());
         core.operator_activity(self.now());
         let result = app
             .state::<crate::AppState>()
@@ -311,6 +356,11 @@ impl LifeRuntime {
             return;
         }
         let _ = self.monitor.set(NativeMonitor::start(app.clone()));
+        if let Some(monitor) = self.monitor.get() {
+            if let Ok(mut core) = self.core.lock() {
+                core.observe_system(monitor.gate.snapshot(), self.now());
+            }
+        }
         let handle = app.clone();
         tauri::async_runtime::spawn(async move {
             let mut timer = tokio::time::interval(Duration::from_secs(1));
@@ -335,10 +385,46 @@ impl LifeRuntime {
         let system = monitor.refresh().await;
         let state = app.state::<crate::AppState>();
         let now = self.now();
-        let is_visible=visible(app);
+        let is_visible = visible(app);
         if let Ok(mut core) = self.core.lock() {
             core.observe_system(system, now);
             core.reconcile_visibility(is_visible, now);
+        }
+        let routes = self
+            .core
+            .lock()
+            .map(|core| {
+                core.sessions
+                    .iter()
+                    .map(|(bot, session)| {
+                        (bot.clone(), session.session_id.clone(), session.revision)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(bot, id, revision)| {
+                let available = state
+                    .store
+                    .bot_profile(&bot)
+                    .ok()
+                    .is_some_and(|profile| output_available(app, &profile));
+                (bot, id, revision, available)
+            })
+            .collect::<Vec<_>>();
+        if let Ok(mut core) = self.core.lock() {
+            for (bot, id, revision, available) in routes {
+                core.set_output_available(&bot, &id, revision, available, now);
+            }
+        }
+        // Core may have revoked a claim before this tick (operator activity,
+        // system event or edit). Sweep identity-bound queued jobs independently
+        // of the current pending slot so browser/overlay audio is stopped too.
+        for claim in state.overlay.native_claims() {
+            if !self.current(&claim) {
+                let _ = crate::overlay::cancel_claim_playback(app, &claim, Some(UNAVAILABLE));
+                turn_event(app, "finished", &claim, None);
+            }
         }
         // Native owner alone advances persisted simulation. Deferred writes never
         // move the checkpoint; storage errors pause only their own session.
@@ -395,12 +481,7 @@ impl LifeRuntime {
         let pending = self.core.lock().ok().and_then(|core| core.pending());
         if let Some((claim, generating)) = pending {
             if !self.current(&claim) {
-                let _ = crate::overlay::cancel_playback(
-                    app,
-                    &claim.turn_id,
-                    &claim.bot_id,
-                    Some(UNAVAILABLE),
-                );
+                let _ = crate::overlay::cancel_claim_playback(app, &claim, Some(UNAVAILABLE));
                 if let Ok(mut core) = self.core.lock() {
                     core.finish(&claim, self.now());
                 }
@@ -412,7 +493,14 @@ impl LifeRuntime {
                 turn_event(app, "finished", &claim, None);
             }
         }
-        if let Ok(mut core)=self.core.lock(){let bots=core.sessions.keys().cloned().collect::<Vec<_>>();for bot in bots{if let Ok(budget)=state.autopilot.speech_budget(&bot){core.defer_speech(&bot,budget.remaining_seconds,self.now());}}}
+        if let Ok(mut core) = self.core.lock() {
+            let bots = core.sessions.keys().cloned().collect::<Vec<_>>();
+            for bot in bots {
+                if let Ok(budget) = state.autopilot.speech_budget(&bot) {
+                    core.defer_speech(&bot, budget.remaining_seconds, self.now());
+                }
+            }
+        }
         let has_pending = self
             .core
             .lock()
@@ -431,6 +519,7 @@ impl LifeRuntime {
                         core.finish(&claim, self.now());
                     }
                 } else {
+                    publish(app);
                     turn_event(app, "started", &claim, None);
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
@@ -444,6 +533,13 @@ impl LifeRuntime {
                             if let Ok(mut core) = state.life_runtime.core.lock() {
                                 core.generated(&claim, state.life_runtime.now());
                             }
+                        } else {
+                            let _ = crate::overlay::cancel_claim_playback(
+                                &app,
+                                &claim,
+                                Some(UNAVAILABLE),
+                            );
+                            turn_event(&app, "finished", &claim, None);
                         }
                     });
                 }
@@ -452,9 +548,65 @@ impl LifeRuntime {
         publish(app);
     }
 }
-fn cancel_saved_action(store:&Store,bot:&str,state:Option<&crate::life_domain::LifeState>){let _=cancel_saved_action_checked(store,bot,state);}
-fn cancel_saved_action_checked(store:&Store,bot:&str,state:Option<&crate::life_domain::LifeState>)->Result<(),String>{let Some(state)=state else{return Ok(());};if let Some(action)=state.current_action().filter(|action|!matches!(action.phase(),ActionPhase::Completed|ActionPhase::Cancelled)){store.apply_life_event(bot,state.revision(),0,LifeEvent::Cancel{action_id:action.intent().id().clone(),reason:CancelReason::Operator},wall_ms()).map_err(|_|UNAVAILABLE)?;}Ok(())}
-fn cancel_orphaned_action(store:&Store,bot:&str,snapshot:LifeSnapshot)->Result<LifeSnapshot,String>{if let Some(action)=snapshot.state().current_action().filter(|action|!matches!(action.phase(),ActionPhase::Completed|ActionPhase::Cancelled)){return store.apply_life_event(bot,snapshot.state().revision(),0,LifeEvent::Cancel{action_id:action.intent().id().clone(),reason:CancelReason::Interrupted},wall_ms()).map(|commit|commit.snapshot).map_err(|_|UNAVAILABLE.into());}Ok(snapshot)}
+fn cancel_saved_action(store: &Store, bot: &str, state: Option<&crate::life_domain::LifeState>) {
+    let _ = cancel_saved_action_checked(store, bot, state);
+}
+fn cancel_saved_action_checked(
+    store: &Store,
+    bot: &str,
+    state: Option<&crate::life_domain::LifeState>,
+) -> Result<(), String> {
+    let Some(state) = state else {
+        return Ok(());
+    };
+    if let Some(action) = state.current_action().filter(|action| {
+        !matches!(
+            action.phase(),
+            ActionPhase::Completed | ActionPhase::Cancelled
+        )
+    }) {
+        store
+            .apply_life_event(
+                bot,
+                state.revision(),
+                0,
+                LifeEvent::Cancel {
+                    action_id: action.intent().id().clone(),
+                    reason: CancelReason::Operator,
+                },
+                wall_ms(),
+            )
+            .map_err(|_| UNAVAILABLE)?;
+    }
+    Ok(())
+}
+fn cancel_orphaned_action(
+    store: &Store,
+    bot: &str,
+    snapshot: LifeSnapshot,
+) -> Result<LifeSnapshot, String> {
+    if let Some(action) = snapshot.state().current_action().filter(|action| {
+        !matches!(
+            action.phase(),
+            ActionPhase::Completed | ActionPhase::Cancelled
+        )
+    }) {
+        return store
+            .apply_life_event(
+                bot,
+                snapshot.state().revision(),
+                0,
+                LifeEvent::Cancel {
+                    action_id: action.intent().id().clone(),
+                    reason: CancelReason::Interrupted,
+                },
+                wall_ms(),
+            )
+            .map(|commit| commit.snapshot)
+            .map_err(|_| UNAVAILABLE.into());
+    }
+    Ok(snapshot)
+}
 
 fn turn_event(app: &tauri::AppHandle, kind: &str, claim: &Claim, reply: Option<Value>) {
     let _=app.emit_to("main","cohost://life-turn",json!({"kind":kind,"botId":claim.bot_id,"sessionId":claim.session_id,"revision":claim.revision,"turnId":claim.turn_id,"reply":reply}));
@@ -526,7 +678,7 @@ pub fn report_life_ui(
     report: UiReport,
 ) -> Result<bool, String> {
     main_only(window.label())?;
-    let is_visible=window.is_visible().unwrap_or(false);
+    let is_visible = window.is_visible().unwrap_or(false);
     Ok(state
         .life_runtime
         .core
@@ -548,19 +700,17 @@ pub fn get_life_bot(
     bot_id: String,
 ) -> Result<Value, String> {
     main_only(window.label())?;
-    Ok(
-        match state
-            .store
-            .life_availability(&bot_id)
-            .map_err(|_| UNAVAILABLE)?
-        {
-            LifeAvailability::Ready => {
-                json!({"availability":"ready","actor":state.store.load_life(&bot_id).map_err(|_|UNAVAILABLE)?.map(|snapshot|snapshot.state().public_projection())})
+    Ok(match state.store.life_availability(&bot_id) {
+        Ok(LifeAvailability::Ready) => match state.store.load_life(&bot_id) {
+            Ok(Some(snapshot)) => {
+                json!({"availability":"ready","actor":snapshot.state().public_projection()})
             }
-            LifeAvailability::NotInitialized => json!({"availability":"not_initialized"}),
-            LifeAvailability::Unavailable(_) => json!({"availability":"unavailable"}),
+            Ok(None) => json!({"availability":"not_initialized"}),
+            Err(_) => json!({"availability":"unavailable"}),
         },
-    )
+        Ok(LifeAvailability::NotInitialized) => json!({"availability":"not_initialized"}),
+        Ok(LifeAvailability::Unavailable(_)) | Err(_) => json!({"availability":"unavailable"}),
+    })
 }
 #[tauri::command]
 pub async fn set_life_mode(
@@ -574,14 +724,22 @@ pub async fn set_life_mode(
     main_only(window.label())?;
     set_mode(&app, &bot_id, mode, active, initialize == Some(true)).await
 }
-struct StartIntentGuard<'a> { runtime:&'a LifeRuntime, bot:String, intent:String }
+struct StartIntentGuard<'a> {
+    runtime: &'a LifeRuntime,
+    bot: String,
+    intent: String,
+}
 impl Drop for StartIntentGuard<'_> {
     fn drop(&mut self) {
         // A cancelled command future must not leave a phantom active start.
         // finish_start holds no Core guard across an await; its local guards
         // are destroyed before this outer guard on cancellation/error.
-        let mut core=self.runtime.core.lock().unwrap_or_else(|error|error.into_inner());
-        core.cancel_start(&self.bot,&self.intent);
+        let mut core = self
+            .runtime
+            .core
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        core.cancel_start(&self.bot, &self.intent);
     }
 }
 pub async fn set_mode(
@@ -593,23 +751,28 @@ pub async fn set_mode(
 ) -> Result<RuntimeSnapshot, String> {
     let state = app.state::<crate::AppState>();
     if !active {
-        state.overlay.publish(app,json!({"kind":"stop","botId":bot}));
+        state
+            .overlay
+            .publish(app, json!({"kind":"stop","botId":bot}));
         publish(app);
         return state.life_runtime.snapshot_for(&state.autopilot);
     }
     state.life_runtime.operator_activity();
     state.updater.ensure_idle()?;
-    let _idle = state
-        .generation
-        .try_lock()
-        .map_err(|_| "Bitte die laufende Antwort oder Aktualisierung vor dem Start von Life beenden.")?;
+    let _idle = state.generation.try_lock().map_err(|_| {
+        "Bitte die laufende Antwort oder Aktualisierung vor dem Start von Life beenden."
+    })?;
     if state.overlay.has_any_pending_speech() {
-        return Err("Bitte vorbereitete oder laufende Ausgaben vor dem Start von Life beenden.".into());
+        return Err(
+            "Bitte vorbereitete oder laufende Ausgaben vor dem Start von Life beenden.".into(),
+        );
     }
     let profile = state.store.bot_profile(bot)?;
     let config = crate::autopilot::config(&profile)?;
     if mode == Mode::Ambient && config.speak && !has_model(&profile) {
-        return Err("Bitte vor dem Start von Ambient mit Sprache ein Dialogmodell auswählen.".into());
+        return Err(
+            "Bitte vor dem Start von Ambient mit Sprache ein Dialogmodell auswählen.".into(),
+        );
     }
     let intent = uuid::Uuid::new_v4().to_string();
     state
@@ -619,11 +782,47 @@ pub async fn set_mode(
         .map_err(|_| UNAVAILABLE)?
         .begin_start(bot, intent.clone())
         .map_err(str::to_owned)?;
-    let _intent_guard=StartIntentGuard{runtime:&state.life_runtime,bot:bot.to_owned(),intent:intent.clone()};
-    finish_start(app,bot,mode,initialize,&intent,&profile).await
+    let _intent_guard = StartIntentGuard {
+        runtime: &state.life_runtime,
+        bot: bot.to_owned(),
+        intent: intent.clone(),
+    };
+    finish_start(app, bot, mode, initialize, &intent, &profile).await
 }
-async fn finish_start(app:&tauri::AppHandle,bot:&str,mode:Mode,initialize:bool,intent:&str,expected_profile:&Value)->Result<RuntimeSnapshot,String>{
-    let state=app.state::<crate::AppState>();
+fn confirmed_start_state(
+    store: &Store,
+    bot: &str,
+    mode: Mode,
+    initialize: bool,
+) -> Result<Option<LifeSnapshot>, String> {
+    if mode != Mode::Life {
+        return Ok(None);
+    }
+    match store.load_life(bot).map_err(|_| UNAVAILABLE)? {
+        Some(snapshot) => Ok(Some(cancel_orphaned_action(store, bot, snapshot)?)),
+        None if initialize => store
+            .initialize_life(
+                bot,
+                WorldId::new(format!("world_{}", uuid::Uuid::new_v4().simple()))
+                    .map_err(|_| UNAVAILABLE)?,
+                Needs::new(5000, 5000, 5000, 5000).map_err(|_| UNAVAILABLE)?,
+                RandomState::seeded(wall_ms()),
+                wall_ms(),
+            )
+            .map(Some)
+            .map_err(|_| UNAVAILABLE.into()),
+        None => Err("Der Life-Zustand muss im Studio ausdrücklich initialisiert werden.".into()),
+    }
+}
+async fn finish_start(
+    app: &tauri::AppHandle,
+    bot: &str,
+    mode: Mode,
+    initialize: bool,
+    intent: &str,
+    expected_profile: &Value,
+) -> Result<RuntimeSnapshot, String> {
+    let state = app.state::<crate::AppState>();
     if let Some(monitor) = state.life_runtime.monitor.get() {
         let system = monitor.refresh().await;
         state
@@ -637,41 +836,25 @@ async fn finish_start(app:&tauri::AppHandle,bot:&str,mode:Mode,initialize:bool,i
     if !core.start_current(bot, intent) {
         return Err("Der Start von Life wurde abgebrochen.".into());
     }
-    let profile=state.store.bot_profile(bot)?;
-    if &profile!=expected_profile{return Err("Der Start von Life wurde abgebrochen.".into());}
-    let config=crate::autopilot::config(&profile)?;
+    let profile = state.store.bot_profile(bot)?;
+    if &profile != expected_profile {
+        return Err("Der Start von Life wurde abgebrochen.".into());
+    }
+    let config = crate::autopilot::config(&profile)?;
     // Repeated identical starts do not replace a running local activity or
     // reset session identity/rate windows. A deliberate mode switch first
     // cancels the previous confirmed action without granting completion credit.
-    if core.sessions.get(bot).is_some_and(|session|session.mode==mode&&session.config==speech_config(&config)&&!session.storage_failed){drop(core);return state.life_runtime.snapshot_for(&state.autopilot);}
-    if let Some(previous)=core.take_session(bot,state.life_runtime.now()){
-        state.autopilot.set(bot,false,config.clone())?;
-        cancel_saved_action_checked(&state.store,bot,previous.state.as_ref())?;
+    if core.sessions.get(bot).is_some_and(|session| {
+        session.mode == mode && session.config == speech_config(&config) && !session.storage_failed
+    }) {
+        drop(core);
+        return state.life_runtime.snapshot_for(&state.autopilot);
     }
-    let confirmed: Option<LifeSnapshot> = if mode == Mode::Life {
-        match state.store.load_life(bot).map_err(|_| UNAVAILABLE)? {
-            Some(snapshot) => Some(cancel_orphaned_action(&state.store,bot,snapshot)?),
-            None if initialize => Some(
-                state
-                    .store
-                    .initialize_life(
-                        bot,
-                        WorldId::new(format!("world_{}", uuid::Uuid::new_v4().simple()))
-                            .map_err(|_| UNAVAILABLE)?,
-                        Needs::new(5000, 5000, 5000, 5000).map_err(|_| UNAVAILABLE)?,
-                        RandomState::seeded(wall_ms()),
-                        wall_ms(),
-                    )
-                    .map_err(|_| UNAVAILABLE)?,
-            ),
-            None => {
-                core.stop(bot, state.life_runtime.now());
-                return Err("Der Life-Zustand muss im Studio ausdrücklich initialisiert werden.".into());
-            }
-        }
-    } else {
-        None
-    };
+    if let Some(previous) = core.take_session(bot, state.life_runtime.now()) {
+        state.autopilot.set(bot, false, config.clone())?;
+        cancel_saved_action_checked(&state.store, bot, previous.state.as_ref())?;
+    }
+    let confirmed = confirmed_start_state(&state.store, bot, mode, initialize)?;
     let session = uuid::Uuid::new_v4();
     let seed = u64::from_le_bytes(
         session.as_bytes()[..8]
@@ -690,10 +873,170 @@ async fn finish_start(app:&tauri::AppHandle,bot:&str,mode:Mode,initialize:bool,i
         state.life_runtime.now(),
     )
     .map_err(str::to_owned)?;
-    if let Err(error)=state.autopilot.set(bot,true,config){core.stop(bot,state.life_runtime.now());return Err(error);}
-    let runtime=match state.autopilot.refresh_runtime(bot){Ok(runtime)=>runtime,Err(error)=>{core.stop(bot,state.life_runtime.now());return Err(error);}};
+    if let Err(error) = state.autopilot.set(bot, true, config) {
+        core.stop(bot, state.life_runtime.now());
+        return Err(error);
+    }
+    let runtime = match state.autopilot.refresh_runtime(bot) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            core.stop(bot, state.life_runtime.now());
+            return Err(error);
+        }
+    };
     drop(core);
     crate::autopilot::publish(app, runtime);
     publish(app);
     state.life_runtime.snapshot_for(&state.autopilot)
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+    struct Fixture(std::path::PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let root =
+                std::env::temp_dir().join(format!("orbitpal-life-start-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    #[test]
+    fn actual_corrupt_life_load_and_abandoned_start_remove_only_their_intent() {
+        let fixture = Fixture::new();
+        let store = Store::new(fixture.0.clone()).unwrap();
+        confirmed_start_state(&store, "nova", Mode::Life, true).unwrap();
+        let db = rusqlite::Connection::open(fixture.0.join("cohost.sqlite3")).unwrap();
+        db.execute(
+            "UPDATE bot_life_states SET state_json='{}' WHERE bot_id='nova'",
+            [],
+        )
+        .unwrap();
+        let runtime = LifeRuntime::default();
+        runtime
+            .core
+            .lock()
+            .unwrap()
+            .begin_start("nova", "broken".into())
+            .unwrap();
+        let guard = StartIntentGuard {
+            runtime: &runtime,
+            bot: "nova".into(),
+            intent: "broken".into(),
+        };
+        assert!(confirmed_start_state(&store, "nova", Mode::Life, false).is_err());
+        drop(guard);
+        assert!(!runtime.any_active());
+        assert!(runtime.core.lock().unwrap().snapshot(0).sessions.is_empty());
+        runtime
+            .core
+            .lock()
+            .unwrap()
+            .begin_start("nova", "old".into())
+            .unwrap();
+        let abandoned = StartIntentGuard {
+            runtime: &runtime,
+            bot: "nova".into(),
+            intent: "old".into(),
+        };
+        runtime
+            .core
+            .lock()
+            .unwrap()
+            .begin_start("nova", "new".into())
+            .unwrap();
+        drop(abandoned);
+        assert!(runtime.core.lock().unwrap().start_current("nova", "new"));
+    }
+    #[test]
+    fn actual_mode_replacement_and_restart_cancel_nonterminal_actions_without_credit() {
+        use crate::life_domain::{Activity, NeedEffect};
+        for restart in [false, true] {
+            let fixture = Fixture::new();
+            let store = Store::new(fixture.0.clone()).unwrap();
+            let initial = confirmed_start_state(&store, "nova", Mode::Life, true)
+                .unwrap()
+                .unwrap();
+            let planned = store
+                .apply_life_event(
+                    "nova",
+                    initial.state().revision(),
+                    0,
+                    LifeEvent::Plan {
+                        activity: Activity::Rest,
+                        completion_effect: NeedEffect::new(1000, 0, 0, 0).unwrap(),
+                    },
+                    wall_ms(),
+                )
+                .unwrap()
+                .snapshot;
+            let action = planned
+                .state()
+                .current_action()
+                .unwrap()
+                .intent()
+                .id()
+                .clone();
+            let running = store
+                .apply_life_event(
+                    "nova",
+                    planned.state().revision(),
+                    0,
+                    LifeEvent::Start { action_id: action },
+                    wall_ms(),
+                )
+                .unwrap()
+                .snapshot;
+            if restart {
+                confirmed_start_state(&store, "nova", Mode::Life, false).unwrap();
+            } else {
+                cancel_saved_action_checked(&store, "nova", Some(running.state())).unwrap();
+            }
+            let confirmed = store.load_life("nova").unwrap().unwrap();
+            let action = confirmed.state().current_action().unwrap();
+            assert_eq!(action.phase(), ActionPhase::Cancelled);
+            assert_eq!(
+                action.cancellation(),
+                Some(if restart {
+                    CancelReason::Interrupted
+                } else {
+                    CancelReason::Operator
+                })
+            );
+            assert_eq!(confirmed.state().needs(), initial.state().needs());
+        }
+    }
+    #[test]
+    fn operator_commands_block_dialogs_but_never_their_own_playback_or_status() {
+        for command in [
+            "get_speech_audio",
+            "report_playback",
+            "cancel_speech_job",
+            "get_emote_sound",
+            "report_emote_playback",
+            "report_life_ui",
+            "get_life_runtime",
+            "get_usage_budget",
+        ] {
+            assert!(!operator_command(command), "{command}");
+        }
+        for command in [
+            "import_avatar",
+            "import_motion",
+            "list_models",
+            "request_screen_capture_permission",
+            "send_message",
+            "set_secret",
+            "set_usage_limits",
+            "unknown_future_mutation",
+        ] {
+            assert!(operator_command(command), "{command}");
+        }
+    }
 }

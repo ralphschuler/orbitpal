@@ -67,6 +67,8 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
     if origin==crate::usage_budget::Origin::AutomaticChat&&!automatic_chat_enabled(&profile){return Err("Die automatische Chatantwort ist für diesen Bot nicht aktiviert.".into());}
     let usage=crate::usage_budget::Context::new(profile["id"].as_str().ok_or("Bot-ID fehlt")?,origin);
     crate::providers::preflight_budget(&store,&usage,&profile["model"])?;
+    let authority=crate::life_runtime::cloud::CloudAuthority::native(app,&usage,cancel.clone(),runtime_claim.cloned());
+    authority.admit().await?.check()?;
     let chat_route=if matches!(source,"twitch"|"youtube") {Some(state.chat.resolve_route(source,reply_route_id,&profile).await?)} else {None};
     let screen_ticket=state.screen_context.ticket(profile["id"].as_str().ok_or("Bot-ID fehlt")?,cancel.clone())?;
     let docs=store.documents()?;
@@ -110,7 +112,7 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
         _=>(),
     }
     if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
-    let recalled=crate::memory::recall_metered(&store,&profile,text,&usage,cancel.clone()).await;
+    let recalled=crate::memory::recall_guarded(&store,&profile,text,&usage,cancel.clone(),&authority).await;
     if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
     match recalled{
         Ok(context) if !context.is_empty()=>messages.push(json!({"role":"system","content":context})),
@@ -186,12 +188,13 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
         // call gets fresh pixels, without retaining old frames in messages.
         if crate::screen_context::config(&profile)?.enabled{event(app,id,"status","Aktuellen Bildschirm für die Anfrage aufnehmen");}
         if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;}
+        authority.admit().await?.check()?;
         let request=state.screen_context.prepare_request(&screen_ticket,&profile,&store,&messages).await?;
         state.screen_context.check(&screen_ticket)?;
         crate::screen_context::current_grant(&profile,&store.profile()?)?;
         if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;}
         if origin==crate::usage_budget::Origin::AutomaticChat&&!automatic_chat_enabled(&store.profile()?){return Err("Die automatische Chatantwort ist für diesen Bot nicht aktiviert.".into());}
-        let completion=crate::providers::complete(model,request,offered,key.clone(),app.clone(),id.to_owned(),cancel.clone(),(&store,&usage)).await?;
+        let completion=crate::providers::complete(model,request,offered,key.clone(),app.clone(),id.to_owned(),cancel.clone(),(&store,&usage),&authority).await?;
         if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;}
         state.screen_context.check(&screen_ticket)?;
         crate::screen_context::current_grant(&profile,&store.profile()?)?;
@@ -280,6 +283,7 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
         state.overlay.say_profile(app,&profile,id,&text,&speech_text,&emotion,source,user,user_text,&queued_emotes,cancel.clone(),chat_route.clone(),runtime_claim.cloned(),origin)?;
         Ok(json!({"id":id,"text":text,"speechText":speech_text,"voice":crate::overlay::public_voice(&profile["voice"]),"emotion":emotion,"emotes":queued_emotes,"source":source,"user":user,"botId":profile["id"]}))
     };
+    authority.admit().await?.check()?;
     let commit_autopilot=||{if let Some(ticket)=autopilot{state.autopilot.commit(profile["id"].as_str().ok_or("Bot-ID fehlt")?,ticket,commit)}else{commit()}};
     if let Some(claim)=runtime_claim{state.life_runtime.check_cloud(app,claim).await?;state.life_runtime.commit(claim,commit_autopilot)}else{commit_autopilot()}
 }

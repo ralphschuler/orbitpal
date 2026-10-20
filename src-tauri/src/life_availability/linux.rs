@@ -249,8 +249,9 @@ mod tests {
         // The counterpart was deliberately closed first. macOS reports
         // ENOTCONN for a second shutdown of that already disconnected socket.
         match server.close().await {
-            Ok(()) => {},
-            Err(zbus::Error::InputOutput(error)) if error.kind() == std::io::ErrorKind::NotConnected => {},
+            Ok(()) => {}
+            Err(zbus::Error::InputOutput(error))
+                if error.kind() == std::io::ErrorKind::NotConnected => {}
             Err(error) => panic!("Synthetic peer cleanup failed: {error}"),
         }
     }

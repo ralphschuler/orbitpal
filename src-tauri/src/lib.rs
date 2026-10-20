@@ -178,8 +178,8 @@ fn get_emote_sound(state:State<'_,AppState>,sound_id:String,bot_id:String)->Resu
 }
 #[tauri::command]
 async fn import_motion(window:tauri::Window,state:State<'_,AppState>,source_path:String,bot_id:String)->Result<motions::Motion,String>{
-    state.life_runtime.invalidate_bot(&bot_id);
     if window.label()!="main"{return Err("VRMA-Import ist nur im Steuerungsfenster verfügbar.".into());}
+    state.life_runtime.invalidate_bot(&bot_id);
     state.updater.ensure_idle()?;
     let profile=state.store.bot_profile(&bot_id)?;
     if profile["motions"].as_array().is_some_and(|motions|motions.len()>=motions::MAX_MOTIONS){return Err("Maximal 32 Bewegungsdateien pro Bot.".into());}
@@ -267,7 +267,7 @@ fn cancel_speech_job(app:tauri::AppHandle,window:tauri::WebviewWindow,id:String,
     overlay::cancel_playback(&app,&id,&bot_id,Some("Keine Abschlussmeldung der Sprachausgabe. Automatische Antworten pausiert."))
 }
 #[tauri::command]
-fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:String,playing:bool,activity:Option<String>)->Result<Value,String>{overlay::report_emote_playback(&app,&bot_id,&output,&id,playing,activity.as_deref())}
+fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:String,playing:bool,activity:Option<String>,speech_id:Option<String>)->Result<Value,String>{overlay::report_emote_playback(&app,&bot_id,&output,&id,playing,activity.as_deref(),speech_id.as_deref())}
 #[tauri::command]
 async fn get_speech_audio(app:tauri::AppHandle,id:String,bot_id:String)->Result<Value,String>{overlay::speech_audio(&app,&id,&bot_id).await}
 #[tauri::command]

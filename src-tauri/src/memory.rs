@@ -53,7 +53,11 @@ fn endpoint(config:&Value,bot_id:&str,recall:bool)->Result<reqwest::Url,String>{
 fn same_destination(snapshot:&Value,current:&Value,bot_id:&str)->bool{
     base_url(snapshot).ok()==base_url(current).ok()&&bank_id(snapshot,bot_id)==bank_id(current,bot_id)&&snapshot["apiKeyId"]==current["apiKeyId"]
 }
-async fn request(store:&Store,config:&Value,bot_id:&str,recall:bool,body:Value,usage:Option<&crate::usage_budget::Context>,cancel:Option<Arc<AtomicBool>>)->Result<Value,String>{
+fn require_current_destination(store:&Store,config:&Value,bot_id:&str,recall:bool)->Result<(),String>{
+    let current=store.bot_profile(bot_id)?;let current=&current["hindsight"];
+    if current["enabled"].as_bool()!=Some(true)||current[if recall{"autoRecall"}else{"autoRetain"}].as_bool()==Some(false)||!same_destination(config,current,bot_id){return Err("Antwort abgebrochen".into());}Ok(())
+}
+async fn request(store:&Store,config:&Value,bot_id:&str,recall:bool,body:Value,usage:Option<&crate::usage_budget::Context>,cancel:Option<Arc<AtomicBool>>,authority:Option<&crate::life_runtime::cloud::CloudAuthority>)->Result<Value,String>{
     validate_config(config)?;
     if cancel.as_ref().is_some_and(|flag|flag.load(Ordering::Relaxed)){return Err("Antwort abgebrochen".into());}
     if let Some(context)=usage{store.preflight_usage_cost(context,crate::usage_budget::Cost::memory(!recall))?;}
@@ -61,10 +65,14 @@ async fn request(store:&Store,config:&Value,bot_id:&str,recall:bool,body:Value,u
     // reservation, then recheck cancellation before any metered HTTP work.
     let key=store.key_for(config)?;
     if cancel.as_ref().is_some_and(|flag|flag.load(Ordering::Relaxed)){return Err("Antwort abgebrochen".into());}
-    let current=store.bot_profile(bot_id)?;
-    let current=&current["hindsight"];
-    if current["enabled"].as_bool()!=Some(true)||current[if recall{"autoRecall"}else{"autoRetain"}].as_bool()==Some(false)||!same_destination(config,current,bot_id){return Err("Antwort abgebrochen".into());}
+    require_current_destination(store,config,bot_id,recall)?;
+    let permit=match authority{Some(authority)=>{if !usage.zip(cancel.as_ref()).is_some_and(|(context,cancel)|authority.matches(context,cancel)){return Err("Ungültige native Anfragefreigabe.".into());}Some(authority.admit().await?)},None=>None};
+    if cancel.as_ref().is_some_and(|flag|flag.load(Ordering::SeqCst)){return Err("Antwort abgebrochen".into());}
+    require_current_destination(store,config,bot_id,recall)?;
     let operation=async {
+    if let Some(permit)=&permit{permit.check()?;}
+    if cancel.as_ref().is_some_and(|flag|flag.load(Ordering::SeqCst)){return Err("Antwort abgebrochen".into());}
+    require_current_destination(store,config,bot_id,recall)?;
     let client=reqwest::Client::builder().retry(reqwest::retry::never()).connect_timeout(Duration::from_secs(2)).timeout(Duration::from_secs(if recall{5}else{20})).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"Hindsight-HTTP-Client konnte nicht erstellt werden")?;
     let mut request=client.post(endpoint(config,bot_id,recall)?).json(&body);
     if let Some(key)=key{request=request.bearer_auth(key);}
@@ -85,7 +93,7 @@ async fn request(store:&Store,config:&Value,bot_id:&str,recall:bool,body:Value,u
     }
     serde_json::from_slice(&bytes).map_err(|_|"Hindsight hat kein gültiges JSON geliefert".into())
     };
-    let guarded=async{let result=if let Some(cancel)=cancel {tokio::select!{result=operation=>result,_=async{while !cancel.load(Ordering::Relaxed){tokio::time::sleep(Duration::from_millis(75)).await;}}=>Err("Antwort abgebrochen".into())}}else{operation.await};(result,None)};
+    let guarded=async{let result=if let Some(cancel)=&cancel {tokio::select!{result=operation=>result,_=async{while !cancel.load(Ordering::Relaxed){tokio::time::sleep(Duration::from_millis(75)).await;}}=>Err("Antwort abgebrochen".into())}}else{operation.await};(result,None)};
     if let Some(context)=usage{store.metered_usage(context,crate::usage_budget::Cost::memory(!recall),guarded).await}else{guarded.await.0}
 }
 
@@ -93,19 +101,24 @@ async fn request(store:&Store,config:&Value,bot_id:&str,recall:bool,body:Value,u
 /// Errors are returned for the agent to log best effort, never as model context.
 #[cfg(test)]
 pub async fn recall(store:&Store,profile:&Value,query:&str)->Result<String,String>{
-    recall_with(store,profile,query,None,None).await
+    recall_with(store,profile,query,None,None,None).await
 }
+#[cfg(test)]
 pub async fn recall_metered(store:&Store,profile:&Value,query:&str,usage:&crate::usage_budget::Context,cancel:Arc<AtomicBool>)->Result<String,String>{
-    recall_with(store,profile,query,Some(usage),Some(cancel)).await
+    let authority=crate::life_runtime::cloud::CloudAuthority::fixture(usage,cancel.clone());
+    recall_guarded(store,profile,query,usage,cancel,&authority).await
 }
-async fn recall_with(store:&Store,profile:&Value,query:&str,usage:Option<&crate::usage_budget::Context>,cancel:Option<Arc<AtomicBool>>)->Result<String,String>{
+pub async fn recall_guarded(store:&Store,profile:&Value,query:&str,usage:&crate::usage_budget::Context,cancel:Arc<AtomicBool>,authority:&crate::life_runtime::cloud::CloudAuthority)->Result<String,String>{
+    recall_with(store,profile,query,Some(usage),Some(cancel),Some(authority)).await
+}
+async fn recall_with(store:&Store,profile:&Value,query:&str,usage:Option<&crate::usage_budget::Context>,cancel:Option<Arc<AtomicBool>>,authority:Option<&crate::life_runtime::cloud::CloudAuthority>)->Result<String,String>{
     let config=&profile["hindsight"];
     if config["enabled"].as_bool()!=Some(true)||config["autoRecall"].as_bool()==Some(false)||query.trim().is_empty(){return Ok(String::new());}
     let bot_id=profile["id"].as_str().ok_or("Bot-ID für Hindsight fehlt")?;
     let current=store.profile()?;
     if current["hindsight"]["enabled"].as_bool()!=Some(true)||current["hindsight"]["autoRecall"].as_bool()==Some(false)||!same_destination(config,&current["hindsight"],bot_id){return Ok(String::new());}
     let query=query.chars().take(1200).collect::<String>();
-    let response=request(store,config,bot_id,true,json!({"query":query,"budget":config["recallBudget"].as_str().unwrap_or("low"),"max_tokens":config["maxRecallTokens"].as_u64().unwrap_or(1024).clamp(128,4096)}),usage,cancel).await?;
+    let response=request(store,config,bot_id,true,json!({"query":query,"budget":config["recallBudget"].as_str().unwrap_or("low"),"max_tokens":config["maxRecallTokens"].as_u64().unwrap_or(1024).clamp(128,4096)}),usage,cancel,authority).await?;
     let results=response["results"].as_array().ok_or("Hindsight hat keine gültige Recall-Ergebnisliste geliefert")?;
     let mut remaining=6000usize;let mut selected=Vec::new();
     for result in results.iter().take(6){
@@ -126,12 +139,17 @@ pub struct Conversation<'a>{pub id:&'a str,pub bot_id:&'a str,pub user_text:&'a 
 /// no history, knowledge files, profile configuration or credentials are content.
 #[cfg(test)]
 pub async fn retain_started(store:&Store,snapshot:&Value,turn:Conversation<'_>)->Result<Option<String>,String>{
-    retain_with(store,snapshot,turn,None,None).await
+    retain_with(store,snapshot,turn,None,None,None).await
 }
+#[cfg(test)]
 pub async fn retain_metered(store:&Store,snapshot:&Value,turn:Conversation<'_>,usage:&crate::usage_budget::Context,cancel:Arc<AtomicBool>)->Result<Option<String>,String>{
-    retain_with(store,snapshot,turn,Some(usage),Some(cancel)).await
+    let authority=crate::life_runtime::cloud::CloudAuthority::fixture(usage,cancel.clone());
+    retain_guarded(store,snapshot,turn,usage,cancel,&authority).await
 }
-async fn retain_with(store:&Store,snapshot:&Value,turn:Conversation<'_>,usage:Option<&crate::usage_budget::Context>,cancel:Option<Arc<AtomicBool>>)->Result<Option<String>,String>{
+pub async fn retain_guarded(store:&Store,snapshot:&Value,turn:Conversation<'_>,usage:&crate::usage_budget::Context,cancel:Arc<AtomicBool>,authority:&crate::life_runtime::cloud::CloudAuthority)->Result<Option<String>,String>{
+    retain_with(store,snapshot,turn,Some(usage),Some(cancel),Some(authority)).await
+}
+async fn retain_with(store:&Store,snapshot:&Value,turn:Conversation<'_>,usage:Option<&crate::usage_budget::Context>,cancel:Option<Arc<AtomicBool>>,authority:Option<&crate::life_runtime::cloud::CloudAuthority>)->Result<Option<String>,String>{
     if snapshot["enabled"].as_bool()!=Some(true)||snapshot["autoRetain"].as_bool()==Some(false){return Ok(None);}
     let current=store.profile()?;
     let current=&current["hindsight"];
@@ -142,7 +160,7 @@ async fn retain_with(store:&Store,snapshot:&Value,turn:Conversation<'_>,usage:Op
     let content=format!("Nutzer: {user_text}\nCo-Host: {assistant_text}");
     // Context is a human-readable label. Keep the existing tag namespace for
     // operators' filters and previously retained memories across the rename.
-    let response=request(store,snapshot,turn.bot_id,false,json!({"items":[{"content":content,"document_id":operation_id,"context":"OrbitPal conversation","timestamp":chrono::Utc::now().to_rfc3339(),"tags":["streamer-ai-cohost",format!("source:{}",turn.source)],"metadata":{"bot_id":turn.bot_id,"source":turn.source,"user":turn.user.chars().take(160).collect::<String>()}}],"async":true,"operation_id":operation_id}),usage,cancel).await?;
+    let response=request(store,snapshot,turn.bot_id,false,json!({"items":[{"content":content,"document_id":operation_id,"context":"OrbitPal conversation","timestamp":chrono::Utc::now().to_rfc3339(),"tags":["streamer-ai-cohost",format!("source:{}",turn.source)],"metadata":{"bot_id":turn.bot_id,"source":turn.source,"user":turn.user.chars().take(160).collect::<String>()}}],"async":true,"operation_id":operation_id}),usage,cancel,authority).await?;
     if response["success"].as_bool()!=Some(true)||response["async"].as_bool()!=Some(true){return Err("Hindsight hat die asynchrone Verarbeitung nicht bestätigt".into());}
     let accepted=response["operation_id"].as_str().ok_or("Hindsight hat keine Operations-ID bestätigt")?;
     if accepted!=operation_id{return Err("Hindsight hat eine abweichende Operations-ID zurückgegeben; keine automatische Wiederholung".into());}
@@ -263,6 +281,20 @@ mod tests{
         use crate::usage_budget::{Context,Origin,Totals};
         let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let fixture=LocalStore::new();let profile=fixture.configure(&format!("http://{}",listener.local_addr().unwrap()),true);
         assert!(recall_metered(fixture.store(),&profile,"fixture",&Context::new("nova",Origin::Autopilot),Arc::new(AtomicBool::new(true))).await.is_err());assert_eq!(fixture.store().usage_snapshot().unwrap().total,Totals::default());assert!(tokio::time::timeout(Duration::from_millis(30),listener.accept()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn native_admission_wait_cannot_send_to_a_revoked_hindsight_destination(){
+        use crate::usage_budget::{Context,Origin,Totals};
+        for revoke in ["enabled","bankId","baseUrl","autoRecall"]{
+            let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let fixture=LocalStore::new();let profile=fixture.configure(&format!("http://{}",listener.local_addr().unwrap()),true);
+            let ctx=Context::new("nova",Origin::AutomaticChat);let cancel=Arc::new(AtomicBool::new(false));let(authority,entered,release)=crate::life_runtime::cloud::CloudAuthority::deferred_fixture(&ctx,cancel.clone());
+            let request=recall_guarded(fixture.store(),&profile,"not sent after revocation",&ctx,cancel,&authority);
+            let mutation=async{entered.notified().await;let mut current=fixture.store().profile().unwrap();current["hindsight"][revoke]=match revoke{"bankId"=>json!("another-bank"),"baseUrl"=>json!("http://127.0.0.1:1"),_=>json!(false)};fixture.store().save_profile(current).unwrap();release.notify_one();};
+            let(result,())=tokio::time::timeout(Duration::from_secs(3),async{tokio::join!(request,mutation)}).await.expect("synthetic admission release must be bounded");assert!(result.is_err(),"{revoke}");
+            assert_eq!(fixture.store().usage_snapshot().unwrap().total,Totals::default(),"revocation before transport must not charge");
+            assert!(tokio::time::timeout(Duration::from_millis(30),listener.accept()).await.is_err());
+        }
     }
 
 }

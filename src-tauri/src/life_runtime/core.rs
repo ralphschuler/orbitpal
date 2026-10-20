@@ -50,8 +50,12 @@ impl SpeechConfig {
 pub struct SpeechSnapshot {
     pub eligible: bool,
     pub in_flight: bool,
+    pub turn_id: Option<String>,
     pub remaining_seconds: u64,
-    pub attempts:usize, pub limit:usize, pub budget_limited:bool, pub waiting_for_bot:Option<String>,
+    pub attempts: usize,
+    pub limit: usize,
+    pub budget_limited: bool,
+    pub waiting_for_bot: Option<String>,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -228,8 +232,28 @@ impl Core {
     pub fn start_current(&self, bot: &str, intent: &str) -> bool {
         !self.shutdown && self.starts.get(bot).is_some_and(|value| value == intent)
     }
-    pub fn cancel_start(&mut self, bot:&str, intent:&str){if self.start_current(bot,intent){self.starts.remove(bot);self.changed();}}
-    pub fn invalidate_bot(&mut self, bot:&str, raw:u64){let now=self.clock(raw);self.starts.remove(bot);if self.pending.as_ref().is_some_and(|pending|pending.claim.bot_id==bot){self.cancel_pending();}if let Some(session)=self.sessions.get_mut(bot){session.revision=session.revision.saturating_add(1).min(MAX_COUNTER);session.due=due(session,now);}self.changed();}
+    pub fn cancel_start(&mut self, bot: &str, intent: &str) {
+        if self.start_current(bot, intent) {
+            self.starts.remove(bot);
+            self.changed();
+        }
+    }
+    pub fn invalidate_bot(&mut self, bot: &str, raw: u64) {
+        let now = self.clock(raw);
+        self.starts.remove(bot);
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.claim.bot_id == bot)
+        {
+            self.cancel_pending();
+        }
+        if let Some(session) = self.sessions.get_mut(bot) {
+            session.revision = session.revision.saturating_add(1).min(MAX_COUNTER);
+            session.due = due(session, now);
+        }
+        self.changed();
+    }
     pub fn session_current(&self, claim: &Claim) -> bool {
         !self.shutdown
             && self.sessions.get(&claim.bot_id).is_some_and(|session| {
@@ -237,6 +261,13 @@ impl Core {
                     && session.revision == claim.revision
                     && !session.storage_failed
             })
+    }
+    pub fn session_cloud_current(&self, claim: &Claim, now: u64) -> bool {
+        self.session_current(claim)
+            && !claim.cancel.load(Ordering::SeqCst)
+            && self.system.generation == claim.system_generation
+            && self.ui.generation == claim.ui_generation
+            && self.ui_clear(now)
     }
     pub fn start(
         &mut self,
@@ -285,7 +316,22 @@ impl Core {
         self.changed();
         Ok(())
     }
-    pub fn take_session(&mut self,bot:&str,raw:u64)->Option<Session>{let now=self.clock(raw);if self.pending.as_ref().is_some_and(|pending|pending.claim.bot_id==bot){self.cancel_pending();self.postpone(now);}let removed=self.sessions.remove(bot);if removed.is_some(){self.changed();}removed}
+    pub fn take_session(&mut self, bot: &str, raw: u64) -> Option<Session> {
+        let now = self.clock(raw);
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.claim.bot_id == bot)
+        {
+            self.cancel_pending();
+            self.postpone(now);
+        }
+        let removed = self.sessions.remove(bot);
+        if removed.is_some() {
+            self.changed();
+        }
+        removed
+    }
     pub fn stop(&mut self, bot: &str, raw: u64) -> Option<Session> {
         let now = self.clock(raw);
         if self
@@ -492,6 +538,36 @@ impl Core {
             self.hidden(None, true, raw);
         }
     }
+    pub fn set_output_available(
+        &mut self,
+        bot: &str,
+        session_id: &str,
+        revision: u64,
+        output: bool,
+        raw: u64,
+    ) {
+        if self.sessions.get(bot).is_none_or(|session| {
+            session.session_id != session_id
+                || session.revision != revision
+                || session.output == output
+        }) {
+            return;
+        }
+        let now = self.clock(raw);
+        if !output
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.claim.bot_id == bot)
+        {
+            self.cancel_pending();
+        }
+        if let Some(session) = self.sessions.get_mut(bot) {
+            session.output = output;
+            session.due = due(session, now);
+        }
+        self.changed();
+    }
     pub fn mark_storage_failure(&mut self, bot: &str, raw: u64) {
         let now = self.clock(raw);
         if self
@@ -651,14 +727,28 @@ impl Core {
             return false;
         }
         if let Some(pending) = self.pending.as_mut() {
-            if let Some(existing)=&pending.bound{if Arc::ptr_eq(existing,&cancel){return true;}cancel.store(true,Ordering::SeqCst);return false;}
+            if let Some(existing) = &pending.bound {
+                if Arc::ptr_eq(existing, &cancel) {
+                    return true;
+                }
+                cancel.store(true, Ordering::SeqCst);
+                return false;
+            }
             pending.bound = Some(cancel);
             true
         } else {
             false
         }
     }
-    pub fn defer_speech(&mut self,bot:&str,remaining_seconds:u64,raw:u64){let now=self.clock(raw);if let Some(session)=self.sessions.get_mut(bot){session.due=session.due.max(now.saturating_add(remaining_seconds.saturating_mul(1000)).min(MAX_COUNTER));}}
+    pub fn defer_speech(&mut self, bot: &str, remaining_seconds: u64, raw: u64) {
+        let now = self.clock(raw);
+        if let Some(session) = self.sessions.get_mut(bot) {
+            session.due = session.due.max(
+                now.saturating_add(remaining_seconds.saturating_mul(1000))
+                    .min(MAX_COUNTER),
+            );
+        }
+    }
     pub fn generated(&mut self, claim: &Claim, raw: u64) {
         if !self.current(claim, raw) {
             return;
@@ -712,8 +802,24 @@ impl Core {
                                 .pending
                                 .as_ref()
                                 .is_some_and(|pending| pending.claim.bot_id == *bot),
+                            turn_id: self
+                                .pending
+                                .as_ref()
+                                .filter(|pending| {
+                                    pending.claim.bot_id == *bot
+                                        && pending.claim.session_id == session.session_id
+                                        && pending.claim.revision == session.revision
+                                })
+                                .map(|pending| pending.claim.turn_id.clone()),
                             remaining_seconds: session.due.saturating_sub(now).div_ceil(1000),
-                        attempts:0,limit:0,budget_limited:false,waiting_for_bot:self.pending.as_ref().filter(|pending|pending.claim.bot_id!=*bot).map(|pending|pending.claim.bot_id.clone()),
+                            attempts: 0,
+                            limit: 0,
+                            budget_limited: false,
+                            waiting_for_bot: self
+                                .pending
+                                .as_ref()
+                                .filter(|pending| pending.claim.bot_id != *bot)
+                                .map(|pending| pending.claim.bot_id.clone()),
                         },
                         actor: session.state.as_ref().map(LifeState::public_projection),
                     }
@@ -968,5 +1074,161 @@ mod tests {
         ] {
             assert!(!text.contains(forbidden));
         }
+    }
+    #[test]
+    fn invalid_reconfigure_is_atomic_and_pending_start_changes_are_revoked() {
+        let mut core = runtime();
+        start(&mut core, "nova", Mode::Ambient, true);
+        hidden_clear(&mut core);
+        let current = claim(&mut core, 15_000);
+        let before = core.sessions["nova"].revision;
+        let invalid = SpeechConfig {
+            speak: true,
+            min_ms: 0,
+            max_ms: u64::MAX,
+        };
+        assert!(core
+            .reconfigure("nova", invalid, true, true, 15_000)
+            .is_err());
+        assert_eq!(core.sessions["nova"].revision, before);
+        assert!(core.current(&current, 15_000));
+        core.begin_start("other", "pending-before-profile-await".into())
+            .unwrap();
+        core.invalidate_bot("other", 15_001);
+        assert!(!core.start_current("other", "pending-before-profile-await"));
+        core.begin_start("other", "new".into()).unwrap();
+        core.cancel_start("other", "old");
+        assert!(core.start_current("other", "new"));
+    }
+    #[test]
+    fn binding_is_single_assignment_and_snapshot_exposes_only_current_turn() {
+        let mut core = runtime();
+        start(&mut core, "nova", Mode::Ambient, true);
+        start(&mut core, "other", Mode::Ambient, true);
+        hidden_clear(&mut core);
+        let current = claim(&mut core, 15_000);
+        let first = Arc::new(AtomicBool::new(false));
+        let replacement = Arc::new(AtomicBool::new(false));
+        assert!(core.bind(&current, first.clone(), 15_000));
+        assert!(core.bind(&current, first.clone(), 15_000));
+        assert!(!core.bind(&current, replacement.clone(), 15_000));
+        assert!(replacement.load(Ordering::SeqCst));
+        for session in core.snapshot(15_000).sessions {
+            assert_eq!(
+                session.speech.turn_id.as_deref(),
+                if session.bot_id == current.bot_id {
+                    Some(current.turn_id.as_str())
+                } else {
+                    None
+                }
+            );
+        }
+        assert!(core.session_cloud_current(&current, 15_000));
+        core.operator_activity(15_001);
+        assert!(first.load(Ordering::SeqCst));
+        assert!(!core.session_cloud_current(&current, 15_001));
+    }
+    #[test]
+    fn taking_session_for_mode_switch_keeps_only_new_start_intent() {
+        let mut core = runtime();
+        start(&mut core, "nova", Mode::Life, true);
+        hidden_clear(&mut core);
+        let previous = claim(&mut core, 15_000);
+        core.begin_start("nova", "new-mode".into()).unwrap();
+        let removed = core.take_session("nova", 15_001).unwrap();
+        assert_eq!(removed.mode, Mode::Life);
+        assert!(previous.cancel.load(Ordering::SeqCst));
+        assert!(core.start_current("nova", "new-mode"));
+        assert!(core.sessions.is_empty());
+    }
+    #[test]
+    fn final_session_network_check_rejects_naturally_expired_ui_lease() {
+        let mut core = runtime();
+        start(&mut core, "nova", Mode::Ambient, true);
+        core.connect_ui("studio".into(), 0);
+        for (sequence, at) in [(1, 0), (2, 5_000), (3, 10_000), (4, 15_000)] {
+            core.report_ui("studio", sequence, false, false, true, at);
+        }
+        let current = claim(&mut core, 15_000);
+        assert!(core.session_cloud_current(&current, 20_000));
+        assert!(!core.session_cloud_current(&current, 20_001));
+    }
+    #[tokio::test]
+    async fn held_initial_probe_cannot_restore_profile_changed_or_stopped_start() {
+        use std::sync::Mutex;
+        for change in ["profile", "stop"] {
+            let core = Arc::new(Mutex::new(runtime()));
+            core.lock()
+                .unwrap()
+                .begin_start("nova", "old-intent".into())
+                .unwrap();
+            let (entered, wait) = tokio::sync::oneshot::channel();
+            let (release, resume) = tokio::sync::oneshot::channel();
+            let actor = core.clone();
+            let task = tokio::spawn(async move {
+                entered.send(()).unwrap();
+                resume.await.unwrap();
+                actor.lock().unwrap().start_current("nova", "old-intent")
+            });
+            wait.await.unwrap();
+            {
+                let mut core = core.lock().unwrap();
+                if change == "profile" {
+                    core.reconfigure(
+                        "nova",
+                        SpeechConfig {
+                            speak: true,
+                            min_ms: 15_000,
+                            max_ms: 15_000,
+                        },
+                        true,
+                        true,
+                        1,
+                    )
+                    .unwrap();
+                } else {
+                    core.stop("nova", 1);
+                }
+                core.begin_start("nova", "new-intent".into()).unwrap();
+            }
+            release.send(()).unwrap();
+            assert!(!task.await.unwrap(), "{change}");
+            assert!(core.lock().unwrap().start_current("nova", "new-intent"));
+        }
+    }
+    #[test]
+    fn lost_output_revokes_only_that_claim_and_recovery_starts_fresh_quiet() {
+        let mut core = runtime();
+        start(&mut core, "nova", Mode::Ambient, true);
+        start(&mut core, "other", Mode::Ambient, true);
+        hidden_clear(&mut core);
+        let current = claim(&mut core, 15_000);
+        assert_eq!(current.bot_id, "nova");
+        core.set_output_available("nova", &current.session_id, current.revision, false, 15_001);
+        assert!(current.cancel.load(Ordering::SeqCst));
+        assert!(core.pending().is_none());
+        assert!(core.sessions["other"].output);
+        core.set_output_available("nova", &current.session_id, current.revision, true, 15_002);
+        assert_eq!(core.sessions["nova"].due, 30_002);
+        let other = claim(&mut core, 15_002);
+        assert_eq!(other.bot_id, "other");
+        assert_eq!(core.snapshot(15_002).sessions.len(), 2);
+    }
+    #[test]
+    fn stale_output_observation_cannot_overwrite_replacement_session_route() {
+        let mut core = runtime();
+        start(&mut core, "nova", Mode::Ambient, true);
+        let old_id = core.sessions["nova"].session_id.clone();
+        let old_revision = core.sessions["nova"].revision;
+        core.stop("nova", 1);
+        start(&mut core, "nova", Mode::Ambient, true);
+        let new_id = core.sessions["nova"].session_id.clone();
+        let new_revision = core.sessions["nova"].revision;
+        core.set_output_available("nova", &new_id, new_revision, false, 2);
+        assert!(!core.sessions["nova"].output);
+        core.set_output_available("nova", &old_id, old_revision, true, 3);
+        assert!(!core.sessions["nova"].output);
+        core.set_output_available("nova", &new_id, new_revision, true, 4);
+        assert!(core.sessions["nova"].output);
     }
 }

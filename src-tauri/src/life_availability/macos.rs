@@ -2,7 +2,7 @@
 //! is public; CGSSessionScreenIsLocked is a source-backed PRIVATE key, not an
 //! Apple screen-lock guarantee. No session dictionary or identity is retained.
 use super::{
-    macos_state::{self, SessionSample},
+    macos_state::{self, LockFlag, SessionSample},
     AvailabilityGate, Observation, Reason,
 };
 use block2::RcBlock;
@@ -51,6 +51,7 @@ unsafe extern "C" {
 }
 #[derive(Clone, Copy, Default)]
 struct Blockers {
+    locked: bool,
     sleeping: bool,
     inactive: bool,
     protected: bool,
@@ -106,6 +107,16 @@ unsafe fn boolean(dict: CFDictionaryRef, key: &CStr) -> Option<bool> {
         Some(unsafe { CFBooleanGetValue(value.cast()) })
     }
 }
+unsafe fn lock_flag(dict: CFDictionaryRef) -> LockFlag {
+    let raw = unsafe { value(dict, c"CGSSessionScreenIsLocked") };
+    if raw.is_null() {
+        LockFlag::Absent
+    } else if unsafe { CFGetTypeID(raw) } != unsafe { CFBooleanGetTypeID() } {
+        LockFlag::Invalid
+    } else {
+        LockFlag::Boolean(unsafe { CFBooleanGetValue(raw.cast()) })
+    }
+}
 unsafe fn user_id(dict: CFDictionaryRef) -> Option<u32> {
     let value = unsafe { value(dict, c"kCGSSessionUserIDKey") };
     if value.is_null() || unsafe { CFGetTypeID(value) } != unsafe { CFNumberGetTypeID() } {
@@ -155,7 +166,8 @@ fn sample_now(blockers: &Mutex<Blockers>) -> Observation {
             process_uid: libc::getuid(),
             on_console: boolean(dict, c"kCGSSessionOnConsoleKey"),
             login_done: boolean(dict, c"kCGSessionLoginDoneKey"),
-            locked: boolean(dict, c"CGSSessionScreenIsLocked"),
+            locked: lock_flag(dict),
+            lock_event: flags.locked,
             protected_data: protected,
             sleeping: flags.sleeping,
             inactive: flags.inactive,
@@ -194,7 +206,10 @@ fn observer(
                 flags.protected = true;
                 Reason::ProtectedDataUnavailable
             }
-            Event::Lock => Reason::Locked,
+            Event::Lock => {
+                flags.locked = true;
+                Reason::Locked
+            }
             Event::Wake => {
                 flags.sleeping = false;
                 Reason::Initializing
@@ -207,7 +222,10 @@ fn observer(
                 flags.protected = false;
                 Reason::Initializing
             }
-            Event::Unlock => Reason::Initializing,
+            Event::Unlock => {
+                flags.locked = false;
+                Reason::Initializing
+            }
         };
         drop(flags);
         gate.block(reason);

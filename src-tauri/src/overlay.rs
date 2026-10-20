@@ -44,7 +44,13 @@ struct SpeechEntry {
     usage_origin:crate::usage_budget::Origin,
 }
 impl SpeechEntry{
-    fn requires_playback_watchdog(&self)->bool{matches!(self.output.as_str(),"overlay"|"obs")||self.runtime_claim.is_some()}
+    fn requires_playback_watchdog(&self)->bool{matches!(self.output.as_str(),"overlay"|"obs")||self.runtime_claim.is_some()||self.usage_origin.autonomous()}
+    fn claim_matches(&self,claim:&crate::life_runtime::core::Claim)->bool{self.id==claim.turn_id&&self.bot_id==claim.bot_id&&self.runtime_claim.as_ref().is_some_and(|current|current.session_id==claim.session_id&&current.revision==claim.revision&&Arc::ptr_eq(&current.cancel,&claim.cancel))}
+    fn native_parent(&self,bot_id:&str,output:&str,speech_id:&str)->Option<crate::life_runtime::core::Claim>{
+        let parsed=uuid::Uuid::parse_str(speech_id).ok()?;
+        if parsed.to_string()!=speech_id||self.id!=speech_id||self.bot_id!=bot_id||self.output!=output||self.finished||self.cancel.load(Ordering::SeqCst){return None;}
+        self.runtime_claim.as_ref().filter(|claim|claim.bot_id==bot_id&&claim.turn_id==speech_id&&!claim.cancel.load(Ordering::SeqCst)).cloned()
+    }
     fn synthesis_text(&self)->&str{if self.voice["provider"]=="elevenlabs"{&self.speech_text}else{&self.text}}
     fn speech_event(&self)->Value{json!({"kind":"speech","botId":self.bot_id,"id":self.id,"text":self.text,"speechText":self.speech_text,"voice":public_voice(&self.voice),"emotion":self.emotion,"source":self.source,"user":self.user,"emotes":self.emotes})}
     fn presentation_event(&self)->Value{json!({"kind":"started","id":self.id,"botId":self.bot_id,"text":self.text,"emotion":self.emotion,"emotes":self.emotes,"source":self.source,"user":self.user})}
@@ -118,6 +124,7 @@ impl OverlayHub {
         entry.finished=true;if cancel||!entry.started{entry.cancel.store(true,Ordering::Relaxed);}
         self.audio.lock().map_err(|_|"Audio-Cache nicht verfügbar")?.remove(id);Ok(Some(entry))
     }
+    pub(crate) fn native_claims(&self)->Vec<crate::life_runtime::core::Claim>{self.speech.lock().map(|entries|entries.iter().filter_map(|entry|entry.runtime_claim.clone()).collect()).unwrap_or_default()}
     pub fn has_pending_speech(&self,bot_id:&str)->bool{
         // Fail closed if the in-memory queue is unavailable. The generation
         // lock alone no longer covers a reply once its audio is being prepared.
@@ -196,7 +203,7 @@ async fn emote_playback(State(app):State<tauri::AppHandle>,Query(q):Query<Access
     if body["botId"].as_str()!=Some(bot_id.as_str())||body["output"]!="obs"{return StatusCode::BAD_REQUEST.into_response();}
     let (Some(id),Some(playing))=(body["id"].as_str(),body["playing"].as_bool())else{return StatusCode::BAD_REQUEST.into_response();};
     let activity=match body.get("activity"){None=>None,Some(Value::String(value))=>Some(value.as_str()),_=>return StatusCode::BAD_REQUEST.into_response()};
-    match report_emote_playback(&app,&bot_id,"obs",id,playing,activity){Ok(result)=>Json(result).into_response(),Err(_)=>(StatusCode::CONFLICT,"Emote-Audiostatus ist für diesen Bot oder Ausgabemodus nicht gültig.").into_response()}
+    match report_emote_playback(&app,&bot_id,"obs",id,playing,activity,body["speechId"].as_str()){Ok(result)=>Json(result).into_response(),Err(_)=>(StatusCode::CONFLICT,"Emote-Audiostatus ist für diesen Bot oder Ausgabemodus nicht gültig.").into_response()}
 }
 fn emote_playback_event(profile:&Value,output:&str,id:&str,playing:bool,activity:Option<&str>)->Result<Value,String>{
     let activity=activity.unwrap_or("foreground");
@@ -210,9 +217,13 @@ fn emote_playback_event(profile:&Value,output:&str,id:&str,playing:bool,activity
     if playing&&profile["output"]["mode"].as_str()!=Some(output){return Err("Diese Emote-Audioausgabe ist für den Bot nicht mehr ausgewählt".into());}
     Ok(json!({"botId":bot_id,"output":output,"id":id,"playing":playing,"activity":activity}))
 }
-pub fn report_emote_playback(app:&tauri::AppHandle,bot_id:&str,output:&str,id:&str,playing:bool,activity:Option<&str>)->Result<Value,String>{
+pub fn report_emote_playback(app:&tauri::AppHandle,bot_id:&str,output:&str,id:&str,playing:bool,activity:Option<&str>,speech_id:Option<&str>)->Result<Value,String>{
     let profile=app.state::<crate::AppState>().store.bot_profile(bot_id)?;
-    let event=emote_playback_event(&profile,output,id,playing,activity)?;
+    let mut event=emote_playback_event(&profile,output,id,playing,activity)?;
+    let state=app.state::<crate::AppState>();
+    // Drop the queue lock before Core (the commit lock order is Core -> queue).
+    let parent=speech_id.and_then(|parent|state.overlay.speech.lock().ok()?.iter().find_map(|entry|entry.native_parent(bot_id,output,parent)));
+    if let Some(parent)=parent.filter(|claim|state.life_runtime.current(claim)){event["speechId"]=json!(parent.turn_id);}
     app.emit("cohost://emote-playback",event).map_err(|_|"Emote-Audiostatus konnte nicht übermittelt werden".to_owned())?;
     Ok(json!({"accepted":true}))
 }
@@ -251,7 +262,8 @@ pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,e
             let result=async{
                 let store=state.store.scoped(&entry.bot_id)?;
                 let usage=crate::usage_budget::Context::new(&entry.bot_id,entry.usage_origin);
-                crate::memory::retain_metered(&store,&entry.hindsight,crate::memory::Conversation{id:&entry.id,bot_id:&entry.bot_id,user_text:&entry.user_text,assistant_text:&entry.text,source:&entry.source,user:&entry.user},&usage,entry.cancel.clone()).await
+                let authority=crate::life_runtime::cloud::CloudAuthority::native(&handle,&usage,entry.cancel.clone(),entry.runtime_claim.clone());
+                crate::memory::retain_guarded(&store,&entry.hindsight,crate::memory::Conversation{id:&entry.id,bot_id:&entry.bot_id,user_text:&entry.user_text,assistant_text:&entry.text,source:&entry.source,user:&entry.user},&usage,entry.cancel.clone(),&authority).await
             }.await;
             match result{
                 Ok(Some(operation))=>{let _=handle.emit("cohost://memory",json!({"kind":"retain","status":"queued","id":entry.id,"botId":entry.bot_id,"operationId":operation}));},
@@ -277,6 +289,10 @@ pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,e
         });
     }
     Ok(json!({"accepted":true,"started":speaking}))
+}
+pub(crate) fn cancel_claim_playback(app:&tauri::AppHandle,claim:&crate::life_runtime::core::Claim,reason:Option<&str>)->Result<Value,String>{
+    let state=app.state::<crate::AppState>();let token=state.overlay.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?.iter().find(|entry|entry.claim_matches(claim)).map(|entry|entry.cancel.clone());
+    match token{Some(token)=>cancel_playback_if(app,&claim.turn_id,&claim.bot_id,Some(&token),reason),None=>Ok(json!({"cancelled":false}))}
 }
 pub fn cancel_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,reason:Option<&str>)->Result<Value,String>{
     cancel_playback_if(app,id,bot_id,None,reason)
@@ -358,7 +374,8 @@ pub async fn speech_audio(app:&tauri::AppHandle,id:&str,bot_id:&str)->Result<Val
     state.store.preflight_usage_cost(&usage,crate::usage_budget::Cost::tts(entry.synthesis_text().chars().count() as u64))?;
     let key=state.store.key_for_purpose(&entry.voice,crate::credential_policy::Purpose::Speech)?;
     if entry.cancel.load(Ordering::Relaxed)||!still_pending(){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
-    let audio=crate::providers::synthesize_metered(&entry.voice,entry.synthesis_text(),key,&state.store,&usage,entry.cancel.clone()).await?;
+    let authority=crate::life_runtime::cloud::CloudAuthority::native(app,&usage,entry.cancel.clone(),entry.runtime_claim.clone());
+    let audio=crate::providers::synthesize_guarded(&entry.voice,entry.synthesis_text(),key,&state.store,&usage,entry.cancel.clone(),&authority).await?;
     let entries=state.overlay.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
     if entry.cancel.load(Ordering::Relaxed)||!entries.iter().any(|current|current.id==id&&current.bot_id==bot_id&&!current.finished&&!current.cancel.load(Ordering::Relaxed)){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
     let protected=entries.iter().filter(|entry|entry.started&&!entry.finished).map(|entry|entry.id.clone()).collect();
@@ -709,6 +726,24 @@ mod tests{
         let event=prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",false).unwrap();assert_eq!(event["sound"],"builtin:wave");assert_eq!(event["soundVolume"],0.35);assert_eq!(event["botId"],"nova");
         profile["emotes"][0]["sound"]=json!("https://untrusted.invalid/sound.mp3");assert!(prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",false).is_err());
         profile["emotes"][0]["sound"]=json!("custom:../../../private.wav");assert!(prepare_emote_profile(std::path::Path::new("unused"),&profile,"wave",false).is_err());
+    }
+    #[test]
+    fn revoked_native_claim_cleanup_cannot_cancel_a_new_claim_with_reused_display_ids(){
+        let mut entry=speech("system");entry.id=uuid::Uuid::new_v4().to_string();let old=crate::life_runtime::core::Claim{bot_id:"nova".into(),session_id:"session".into(),revision:1,turn_id:entry.id.clone(),cancel:Arc::new(AtomicBool::new(false)),system_generation:1,ui_generation:1};entry.runtime_claim=Some(old.clone());
+        assert!(entry.claim_matches(&old));old.cancel.store(true,Ordering::SeqCst);assert!(entry.claim_matches(&old),"revoked job remains eligible for cleanup");
+        let mut newer=old.clone();newer.cancel=Arc::new(AtomicBool::new(false));entry.runtime_claim=Some(newer.clone());
+        assert!(!entry.claim_matches(&old));assert!(entry.claim_matches(&newer));
+    }
+    #[test]
+    fn native_emote_parent_requires_exact_live_host_job_and_native_claim(){
+        let mut entry=speech("system");entry.id=uuid::Uuid::new_v4().to_string();entry.output="overlay".into();
+        let claim=crate::life_runtime::core::Claim{bot_id:"nova".into(),session_id:"session".into(),revision:1,turn_id:entry.id.clone(),cancel:entry.cancel.clone(),system_generation:1,ui_generation:1};
+        assert!(entry.native_parent("nova","overlay",&entry.id).is_none(),"manual speech is not a native-turn exemption");
+        entry.runtime_claim=Some(claim);
+        assert!(entry.native_parent("nova","overlay",&entry.id).is_some());
+        for (bot,output,parent) in [("other","overlay",entry.id.clone()),("nova","obs",entry.id.clone()),("nova","overlay",uuid::Uuid::new_v4().to_string()),("nova","overlay","not-a-uuid".into())]{assert!(entry.native_parent(bot,output,&parent).is_none());}
+        entry.finished=true;assert!(entry.native_parent("nova","overlay",&entry.id).is_none());entry.finished=false;
+        entry.cancel.store(true,Ordering::SeqCst);assert!(entry.native_parent("nova","overlay",&entry.id).is_none());
     }
     #[test]
     fn external_emote_playback_rejects_invalid_ids_and_output_modes(){
