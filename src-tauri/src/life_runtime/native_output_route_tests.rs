@@ -290,3 +290,160 @@ fn actual_runtime_hooks_use_the_exact_registry_and_presentation_invalidation_lat
     runtime.output_window_lost("main");
     assert!(third.cancel.load(Ordering::SeqCst));
 }
+
+fn output_ui(runtime: &super::super::LifeRuntime) {
+    runtime.outputs.ui_connect("native-output-fixture");
+    runtime.outputs.ui_report("native-output-fixture", 1, false);
+}
+fn output_watch(runtime: &super::super::LifeRuntime, bot: &str) -> Arc<AtomicBool> {
+    let cancel = Arc::new(AtomicBool::new(false));
+    assert!(runtime.outputs.watch(
+        runtime.outputs.ticket().unwrap(), bot, &format!("avatar-{bot}"),
+        &cancel, ("native-output-fixture", 1),
+    ));
+    cancel
+}
+
+#[test]
+fn real_runtime_replacement_revokes_old_jobs_and_retired_events_cannot_touch_new_jobs_or_tickets() {
+    let runtime = super::super::LifeRuntime::default();
+    output_ui(&runtime);
+    let a = Arc::new(WindowSignals::default());
+    assert!(runtime.native_output_window_registered("a", "avatar-a", &a));
+    let old_job = output_watch(&runtime, "a");
+    let first = begin(&runtime.native_routes, "a", &a, 0);
+    let unchanged = runtime.outputs.ticket();
+    assert!(runtime.native_output_window_registered("a", "avatar-a", &a));
+    assert_eq!(runtime.outputs.ticket(), unchanged);
+    assert!(!old_job.load(Ordering::SeqCst));
+    assert!(!first.cancel.load(Ordering::SeqCst));
+
+    let b = Arc::new(WindowSignals::default());
+    assert!(runtime.native_output_window_registered("a", "avatar-a", &b));
+    assert!(old_job.load(Ordering::SeqCst));
+    assert!(first.cancel.load(Ordering::SeqCst));
+    let new_job = output_watch(&runtime, "a");
+    let other_job = output_watch(&runtime, "other");
+    let current = begin(&runtime.native_routes, "a", &b, 0);
+    let ticket = runtime.outputs.ticket();
+    for change in [NativeWindowChange::Closing, NativeWindowChange::Destroyed,
+        NativeWindowChange::Geometry, NativeWindowChange::Scale, NativeWindowChange::Hidden] {
+        assert!(!runtime.native_output_window_changed("a", &a, change));
+        assert_eq!(runtime.outputs.ticket(), ticket);
+        assert!(!new_job.load(Ordering::SeqCst));
+        assert!(!other_job.load(Ordering::SeqCst));
+        assert!(!current.cancel.load(Ordering::SeqCst));
+    }
+    let foreign = Arc::new(WindowSignals::default());
+    assert!(!runtime.native_output_window_changed("a", &foreign, NativeWindowChange::Destroyed));
+    assert_eq!(runtime.outputs.ticket(), ticket);
+    assert!(runtime.native_output_window_changed("a", &b, NativeWindowChange::Closing));
+    assert!(new_job.load(Ordering::SeqCst));
+    assert!(current.cancel.load(Ordering::SeqCst));
+    assert!(!other_job.load(Ordering::SeqCst));
+    assert_ne!(runtime.outputs.ticket(), ticket);
+    runtime.output_window_lost("main");
+    assert!(other_job.load(Ordering::SeqCst));
+}
+
+#[test]
+fn competing_close_or_missing_destroy_and_constructor_preserve_the_successor_watch() {
+    // Both orders must work, including the missing-record path after Close.
+    // Threads use the same production runtime entrypoints as the constructor
+    // and native callback; no test hook can split classification/revocation.
+    for close_first in [false, true] {
+        for _ in 0..16 {
+            let runtime = super::super::LifeRuntime::default();
+            output_ui(&runtime);
+            let old = Arc::new(WindowSignals::default());
+            assert!(runtime.native_output_window_registered("a", "avatar-a", &old));
+            if close_first {
+                assert!(runtime.native_output_window_changed("a", &old, NativeWindowChange::Closing));
+            }
+            let old_job = output_watch(&runtime, "a");
+            let replacement = Arc::new(WindowSignals::default());
+            let successor_job = std::thread::scope(|scope| {
+                let barrier = Arc::new(std::sync::Barrier::new(3));
+                let event_barrier = barrier.clone();
+                let old = old.clone();
+                let event_runtime = &runtime;
+                let event = scope.spawn(move || {
+                    event_barrier.wait();
+                    event_runtime.native_output_window_changed("a", &old, NativeWindowChange::Destroyed)
+                });
+                let constructor_barrier = barrier.clone();
+                let constructor_runtime = &runtime;
+                let constructor_replacement = replacement.clone();
+                let constructor = scope.spawn(move || {
+                    constructor_barrier.wait();
+                    assert!(constructor_runtime.native_output_window_registered("a", "avatar-a", &constructor_replacement));
+                    output_watch(constructor_runtime, "a")
+                });
+                barrier.wait();
+                event.join().unwrap();
+                constructor.join().unwrap()
+            });
+            assert!(old_job.load(Ordering::SeqCst));
+            let current = runtime.native_routes.witness("a", "avatar-a", &replacement, runtime.now()).unwrap();
+            assert!(!current.cancel.load(Ordering::SeqCst));
+            assert!(!successor_job.load(Ordering::SeqCst));
+        }
+    }
+}
+
+#[test]
+fn missing_reaped_and_capacity_failed_tracking_preserve_conservative_loss_cancellation() {
+    let runtime = super::super::LifeRuntime::default();
+    output_ui(&runtime);
+    let old = Arc::new(WindowSignals::default());
+    assert!(runtime.native_output_window_registered("a", "avatar-a", &old));
+    let old_job = output_watch(&runtime, "a");
+    drop(old); // reap must not erase the old label's loss cancellation.
+    let replacement = Arc::new(WindowSignals::default());
+    assert!(runtime.native_output_window_registered("a", "avatar-a", &replacement));
+    assert!(old_job.load(Ordering::SeqCst));
+    let job = output_watch(&runtime, "a");
+    assert!(runtime.native_output_window_changed("a", &replacement, NativeWindowChange::Closing));
+    assert!(job.load(Ordering::SeqCst));
+    let untracked_job = output_watch(&runtime, "a");
+    assert!(!runtime.native_output_window_changed("a", &replacement, NativeWindowChange::Destroyed));
+    assert!(untracked_job.load(Ordering::SeqCst));
+
+    let signals: Vec<_> = (0..MAX_WINDOWS).map(|i| {
+        let bot = format!("b{i}");
+        let signals = Arc::new(WindowSignals::default());
+        assert!(runtime.native_output_window_registered(&bot, &format!("avatar-{bot}"), &signals));
+        signals
+    }).collect();
+    let unknown = Arc::new(WindowSignals::default());
+    let job = output_watch(&runtime, "overflow");
+    assert!(!runtime.native_output_window_registered("overflow", "avatar-overflow", &unknown));
+    assert!(job.load(Ordering::SeqCst));
+    let job = output_watch(&runtime, "overflow");
+    assert!(!runtime.native_output_window_changed("overflow", &unknown, NativeWindowChange::Destroyed));
+    assert!(job.load(Ordering::SeqCst));
+    assert_eq!(signals.len(), MAX_WINDOWS);
+}
+
+#[test]
+fn poisoned_native_lifecycle_stays_unavailable_and_conservatively_cancels_output() {
+    let runtime = super::super::LifeRuntime::default();
+    output_ui(&runtime);
+    let signals = Arc::new(WindowSignals::default());
+    assert!(runtime.native_output_window_registered("a", "avatar-a", &signals));
+    let pending = begin(&runtime.native_routes, "a", &signals, 0);
+    let job = output_watch(&runtime, "a");
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = runtime.native_routes.state.lock().unwrap();
+        panic!("synthetic native route poison");
+    })).is_err());
+    assert!(!runtime.native_output_window_changed("a", &signals, NativeWindowChange::Destroyed));
+    assert!(job.load(Ordering::SeqCst));
+    assert!(pending.cancel.load(Ordering::SeqCst));
+    assert!(pending.window.cancel.load(Ordering::SeqCst));
+    let job = output_watch(&runtime, "a");
+    assert!(!runtime.native_output_window_registered("a", "avatar-a", &signals));
+    assert!(job.load(Ordering::SeqCst));
+    assert!(runtime.native_routes.state.is_poisoned());
+    assert!(matches!(runtime.native_routes.witness("a", "avatar-a", &signals, 1), Err(RouteError::Unavailable)));
+}

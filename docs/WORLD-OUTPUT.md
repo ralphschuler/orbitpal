@@ -145,11 +145,18 @@ exhaustion and registry poison cancel retained tokens and grant no successors.
 This native-window foundation exposes no avatar registration IPC, prepared-layout
 promotion or rendering capability. It is not a native-window adapter for the
 Studio bridge. Its Hidden event is currently a synthetic/API seam, not
-an exercised avatar-hide callback. The legacy label-scoped output cancellation
-path is unchanged; whole-host replacement isolation must be reconciled before
-native visual actions. Confirmed native-window layout/DPI/restoration, its own
-renderer measurement and speech ownership handoff remain separate implementation
-and platform work.
+an exercised avatar-hide callback. Native constructor and close callbacks use
+the same registry lock to fence legacy output cancellation with replacement.
+A new window cancels prior jobs for its label before its route is published;
+repeated registration of the same instance is idempotent. A proven retired
+callback changes neither the successor's jobs nor the output admission counter.
+Current and missing-instance close events retain conservative cancellation under
+that same lock. Registry poison and failed tracking remain unavailable and
+conservative; they establish no whole-host replacement-isolation guarantee.
+The main-window loss path and deferred exact-instance speech cleanup retain
+their existing behavior. These host checks are not real OS event-timing proof.
+Confirmed native-window layout/DPI/restoration, its own renderer measurement
+and speech ownership handoff remain separate implementation and platform work.
 
 ## Validation status
 

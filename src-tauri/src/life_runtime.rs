@@ -458,7 +458,7 @@ impl LifeRuntime {
         label: &str,
         signals: &Arc<crate::window_signals::WindowSignals>,
     ) -> bool {
-        self.native_routes.track_window(bot, label, signals, self.now()).is_ok()
+        self.native_routes.track_window_with_output(bot, label, signals, self.now(), &self.outputs).is_ok()
     }
     /// Short cancellation latch, called before native callbacks can wait for
     /// Core, persistence, presentation transitions or any GUI getter.
@@ -468,7 +468,7 @@ impl LifeRuntime {
         signals: &Arc<crate::window_signals::WindowSignals>,
         change: NativeWindowChange,
     ) -> bool {
-        self.native_routes.window_changed(bot, signals, change)
+        self.native_routes.window_changed_with_output(bot, signals, change, &self.outputs)
     }
     pub fn output_window_lost(&self, label: &str) {
         if label == "main" {
