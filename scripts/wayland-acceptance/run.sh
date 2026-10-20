@@ -2,7 +2,12 @@
 # Provision only a disposable GitHub-hosted Linux VM; never a developer desktop.
 set -euo pipefail
 [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted && "${RUNNER_OS:-}" == Linux ]]
-[[ $(uname -s) == Linux && $# == 2 && ( "$1" == gnome || "$1" == kde ) && -f "$2" && -x "$2" ]]
+[[ $(uname -s) == Linux && ( $# == 2 || $# == 3 ) && ( "$1" == gnome || "$1" == kde ) && -f "$2" && -x "$2" ]]
+mode=prototype
+if [[ $# == 3 ]]; then
+  [[ -f "$3" && -x "$3" && ! -L "$3" ]]
+  mode=app
+fi
 : "${RUNNER_TEMP:?}" "${GITHUB_RUN_ID:?}" "${GITHUB_RUN_ATTEMPT:?}"
 umask 077
 desktop="$1"
@@ -21,11 +26,17 @@ cleanup() {
     if ! sudo userdel "$account"; then printf 'Failed to remove the isolated test account\n' >&2; result=1; fi
   fi
   diagnostic="$RUNNER_TEMP/wayland-acceptance-$desktop"
+  if [[ "$mode" == app ]]; then diagnostic="$RUNNER_TEMP/wayland-app-$desktop"; fi
   mkdir -p "$diagnostic"
   # Exact text-only files; never recursively collect a home, screenshot or frame.
   for name in compositor pipewire wireplumber portal portal-backend session desktop chooser-tree portal-interfaces kde-cache versions vgem render-capability compositor-capability; do
     if sudo test -f "$root/$name.txt" && ! sudo test -L "$root/$name.txt"; then sudo head -c 65536 "$root/$name.txt" >"$diagnostic/$name.txt"; fi
   done
+  if [[ "$mode" == app ]]; then
+    for name in app-controller app-result app-binary; do
+      if sudo test -f "$root/$name.txt" && ! sudo test -L "$root/$name.txt"; then sudo head -c 65536 "$root/$name.txt" >"$diagnostic/$name.txt"; fi
+    done
+  fi
   if ! sudo rm -rf -- "$root"; then printf 'Failed to remove the private test root\n' >&2; result=1; fi
   # Only unload the software device this invocation itself loaded. No existing
   # Hyper-V/physical device permissions, module or host desktop are changed.
@@ -43,6 +54,11 @@ sudo install -d -m 0700 "$root/runtime" "$root/control" "$root/config" "$root/ca
 sudo cp -R scripts/wayland-acceptance "$root/harness"
 sudo cp "$2" "$root/acceptance-test"
 sudo chmod 0700 "$root/acceptance-test"
+if [[ "$mode" == app ]]; then
+  sudo cp "$3" "$root/acceptance-app"
+  sudo chmod 0700 "$root/acceptance-app"
+  sha256sum "$3" | cut -d ' ' -f 1 | sudo tee "$root/app-binary.txt" >/dev/null
+fi
 probe="$RUNNER_TEMP/orbitpal-wayland-render-probe"
 [[ -f "$probe" && -x "$probe" && ! -L "$probe" ]]
 sudo cp "$probe" "$root/render-probe"
@@ -106,5 +122,5 @@ EOF
 sudo chown -R "$account" "$root"
 sudo -H -u "$account" env -i PATH=/usr/bin:/bin HOME="$root/home" USER="$account" LOGNAME="$account" \
   GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted RUNNER_OS=Linux \
-  ORBITPAL_WAYLAND_ACCEPTANCE=synthetic-desktop-only ORBITPAL_ACCEPTANCE_ROOT="$root" ORBITPAL_ACCEPTANCE_DESKTOP="$desktop" ORBITPAL_ACCEPTANCE_DRM="$device" \
+  ORBITPAL_WAYLAND_ACCEPTANCE=synthetic-desktop-only ORBITPAL_ACCEPTANCE_ROOT="$root" ORBITPAL_ACCEPTANCE_DESKTOP="$desktop" ORBITPAL_ACCEPTANCE_DRM="$device" ORBITPAL_ACCEPTANCE_MODE="$mode" \
   bash -c 'exec timeout --signal=TERM --kill-after=10s 240s dbus-run-session --config-file="$ORBITPAL_ACCEPTANCE_ROOT/bus.conf" -- bash "$ORBITPAL_ACCEPTANCE_ROOT/harness/session.sh" >"$ORBITPAL_ACCEPTANCE_ROOT/session.txt" 2>&1'
