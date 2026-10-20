@@ -1,0 +1,64 @@
+# Temporary diagnostics on this exact probe branch only; do not merge.
+name: Disposable Wayland render capability probe
+on:
+  push:
+    branches: [test/wayland-render-capabilities]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  inventory:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Inspect genuine hosted VM render capabilities without changing them
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == Linux ]]
+          [[ $(uname -s) == Linux ]]
+          # Explicitly record unsupported probes instead of treating absence as success.
+          inspect() {
+            local code=0
+            printf '\nProbe:'
+            printf ' %q' "$@"
+            printf '\n'
+            "$@" || code=$?
+            printf 'Probe exit status: %s\n' "$code"
+          }
+          inspect uname -a
+          inspect cat /etc/os-release
+          inspect id
+          inspect ls -ld /dev/dri /sys/class/drm
+          if [[ -d /dev/dri ]]; then
+            inspect find /dev/dri -maxdepth 1 -type c -exec stat -c '%n mode=%a owner=%U group=%G major=%t minor=%T' '{}' +
+            for node in /dev/dri/*; do
+              [[ -e "$node" ]] || continue
+              inspect getfacl -p "$node"
+              if [[ -r "$node" && -w "$node" ]]; then
+                printf 'Runner has read/write node access: %s\n' "$node"
+              else
+                printf 'Runner lacks read/write node access: %s\n' "$node"
+              fi
+            done
+          fi
+          if [[ -d /sys/class/drm ]]; then
+            for device in /sys/class/drm/*/device/driver; do
+              [[ -e "$device" || -L "$device" ]] || continue
+              inspect readlink -f "$device"
+            done
+          fi
+          for module in vgem vkms virtio_gpu; do
+            inspect modinfo "$module"
+            # Dry run only: do not load any module in this inventory.
+            inspect sudo modprobe --dry-run --verbose "$module"
+          done
+          config="/boot/config-$(uname -r)"
+          if [[ -f "$config" ]]; then
+            inspect grep -E '^CONFIG_(DRM|DRM_VGEM|DRM_VKMS|DRM_VIRTIO_GPU|IKCONFIG|IKCONFIG_PROC)=' "$config"
+          elif [[ -f /proc/config.gz ]]; then
+            inspect zgrep -E '^CONFIG_(DRM|DRM_VGEM|DRM_VKMS|DRM_VIRTIO_GPU|IKCONFIG|IKCONFIG_PROC)=' /proc/config.gz
+          else
+            printf 'Kernel build configuration unavailable; module absence is not inferred from it.\n'
+          fi
+          inspect dpkg-query -W 'linux-image*' 'linux-modules*' 'kwin*' 'xdg-desktop-portal*' 'pipewire*' 'wireplumber*' 'libdrm*' 'libegl*' 'libgbm*' 'libgl1-mesa-dri'
+          printf '\nInventory complete. This is not compositor or screen-capture acceptance.\n'
