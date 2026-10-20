@@ -381,9 +381,18 @@ def pointer_escape(dialog):
     if snapshot.get("nonce") != nonce or isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) \
             or not math.isfinite(timestamp) or not 0 <= time.time() * 1000 - timestamp <= 5000:
         raise RuntimeError("Cancel requires fresh private chooser metadata")
-    if snapshot.get("count") != 1 or len(snapshot.get("matches", [])) != 1 \
-            or snapshot["matches"][0].get("pid") != pid or snapshot["matches"][0].get("active") is not True:
+    count, matches = snapshot.get("count"), snapshot.get("matches")
+    if isinstance(count, bool) or not isinstance(count, int) or not isinstance(matches, list):
+        raise RuntimeError("Cancel requires valid private chooser metadata")
+    # AT-SPI can expose the dialog before KWin has mapped/activated it. Wait
+    # within the existing action deadline; do not send input or acknowledge it.
+    if count == 0 and matches == []:
+        return False
+    if count != 1 or len(matches) != 1 or matches[0].get("pid") != pid \
+            or not isinstance(matches[0].get("active"), bool):
         raise RuntimeError("Cancel requires the real private chooser to have focus")
+    if not matches[0]["active"]:
+        return False
     completed = subprocess.run([str(helper), "--escape"], capture_output=True, timeout=6, check=False)
     if completed.returncode != 0:
         raise RuntimeError("Private compositor rejected genuine Escape input")
@@ -478,8 +487,7 @@ class Desktop:
                     if DESKTOP == "kde" and KDE6:
                         if self.pending == "cancel":
                             if not self.consent_attempted:
-                                self.consent_attempted = True
-                                pointer_escape(dialog)
+                                self.consent_attempted = pointer_escape(dialog)
                         else:
                             target = kde6_monitor(dialog)
                             if target is not None:

@@ -163,7 +163,7 @@ class ControllerConsent(unittest.TestCase):
         module = ast.Module(body=[item for item in tree.body if isinstance(item, (ast.FunctionDef, ast.ClassDef)) and item.name in wanted], type_ignores=[])
         self.api = SimpleNamespace(STATE_SENSITIVE="sensitive", STATE_ENABLED="enabled", STATE_PRESSED="pressed", STATE_CHECKED="checked", STATE_SELECTED="selected", ROLE_LIST_ITEM="card", ROLE_TOGGLE_BUTTON="toggle", ROLE_PUSH_BUTTON="button")
         self.namespace = {"CONTROL": self.root, "ROOT": self.root, "DESKTOP": "kde", "KDE6": False, "TITLES": {"gnome": "Share Screen", "kde": "Screen Sharing"}, "json": json,
-                          "time": SimpleNamespace(monotonic=lambda: 0, time=lambda: 10), "pyatspi": self.api, "math": math, "re": re, "stat": stat,
+                          "time": SimpleNamespace(monotonic=lambda: 0, time=lambda: 10), "pyatspi": self.api, "math": math, "re": re, "stat": stat, "sys": sys,
                           "TRACE": SimpleNamespace(log=lambda *args, **kwargs: None, begin=lambda *args: None, finish=lambda: None),
                           "action": Mock(return_value=True), "pointer_click": Mock(return_value=True),
                           "visible": lambda node: True, "walk": lambda node, *args: [node]}
@@ -410,11 +410,42 @@ class ControllerConsent(unittest.TestCase):
         dialog = SimpleNamespace(name="Share screen with the requesting application", get_process_id=lambda: 42)
         self.assertTrue(self.namespace["pointer_escape"](dialog))
         self.namespace["subprocess"].run.assert_called_once_with([str(self.root / "pointer"), "--escape"], capture_output=True, timeout=6, check=False)
-        for override in ({"timestamp": 0}, {"nonce": "wrong"}, {"count": 2}, {"matches": [{"pid": 43, "active": True}]}, {"matches": [{"pid": 42, "active": False}]}):
+        for override in ({"timestamp": 0}, {"nonce": "wrong"}, {"count": 2}, {"count": True}, {"matches": [{"pid": 43, "active": True}]}, {"matches": [{"pid": 42, "active": "true"}]}):
             self.namespace["kwin_geometry"].return_value = ({**snapshot, **override}, "test")
             self.namespace["subprocess"].run.reset_mock()
             with self.assertRaises(RuntimeError): self.namespace["pointer_escape"](dialog)
             self.namespace["subprocess"].run.assert_not_called()
+        for override in ({"count": 0, "matches": []}, {"matches": [{"pid": 42, "active": False}]}):
+            self.namespace["kwin_geometry"].return_value = ({**snapshot, **override}, "test")
+            self.namespace["subprocess"].run.reset_mock()
+            self.assertFalse(self.namespace["pointer_escape"](dialog))
+            self.namespace["subprocess"].run.assert_not_called()
+
+    def test_kde6_cancel_waits_for_mapping_and_focus_without_claiming_consent(self):
+        self.namespace["KDE6"] = True
+        self.namespace["pointer_escape"] = Mock(side_effect=[False, False, True])
+        controller = self.controller("cancel")
+        for _ in range(2):
+            self.assertTrue(controller.poll())
+            self.assertFalse(controller.consent_attempted)
+            self.assertFalse((self.root / "ack.json").exists())
+        controller.poll()
+        self.assertTrue(controller.consent_attempted)
+        self.assertFalse((self.root / "ack.json").exists())
+        self.namespace["chooser"].return_value = None
+        controller.poll()
+        self.assertTrue(json.loads((self.root / "ack.json").read_text())["ok"])
+
+    def test_kde6_cancel_focus_wait_uses_existing_action_deadline(self):
+        self.namespace["KDE6"] = True
+        self.namespace["pointer_escape"] = Mock(return_value=False)
+        self.namespace["text_tree"] = Mock(return_value="synthetic timeout metadata")
+        controller = self.controller("cancel")
+        controller.poll()
+        controller.deadline = 0
+        controller.poll()
+        self.assertFalse(controller.consent_attempted)
+        self.assertFalse(json.loads((self.root / "ack.json").read_text())["ok"])
 
     def test_kde6_cancel_uses_escape_and_waits_for_actual_dismissal(self):
         self.namespace["KDE6"] = True
