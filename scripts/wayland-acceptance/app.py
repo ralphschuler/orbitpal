@@ -17,6 +17,99 @@ import uuid
 from provider import Receiver, Refusal
 
 
+PHASES = frozenset((
+    "controller_entry", "validate_private_environment", "studio_construct",
+    "studio_import_accessibility", "studio_read_pid", "studio_verify_process",
+    "studio_verify_executable", "studio_wait_cold_start", "studio_registry_query",
+    "studio_read_initial_state", "actual_studio_coldstart", "configure_real_voice_off",
+    "configure_real_model_and_grants", "actual_portal_ready", "fresh_red_presented",
+    "fresh_blue_presented", "held_stop_received", "held_stop_cancelled",
+    "held_images_off_received", "held_disable_received",
+))
+TRACEBACK_METADATA_LIMIT = 32
+OWNED_SOURCES = {
+    str(Path(__file__).resolve()): "app.py",
+    str(Path(__file__).with_name("provider.py").resolve()): "provider.py",
+}
+EXCEPTION_TYPES = (
+    (Refusal, "Refusal"), (FileNotFoundError, "FileNotFoundError"),
+    (ProcessLookupError, "ProcessLookupError"), (PermissionError, "PermissionError"),
+    (OSError, "OSError"), (RuntimeError, "RuntimeError"),
+    (AttributeError, "AttributeError"), (TypeError, "TypeError"),
+    (ValueError, "ValueError"), (NotImplementedError, "NotImplementedError"),
+    (TimeoutError, "TimeoutError"), (ImportError, "ImportError"),
+    (ModuleNotFoundError, "ModuleNotFoundError"),
+    (sqlite3.OperationalError, "SqliteOperationalError"),
+    (sqlite3.DatabaseError, "SqliteDatabaseError"), (sqlite3.Error, "SqliteError"),
+)
+REFUSAL_CODES = frozenset((
+    'actual_reply_not_visible', 'actual_studio_cold_start_failed', 'ambiguous_app_control',
+    'ambiguous_app_window', 'app_accessibility_unavailable', 'app_action_refused',
+    'app_action_unavailable', 'app_control_disabled', 'app_control_missing',
+    'app_data_unavailable', 'app_entry_not_editable', 'app_entry_write_failed',
+    'app_executable_not_ready', 'app_pid_not_ready', 'app_process_exited',
+    'app_profile_unavailable', 'app_save_not_committed', 'app_switch_not_changed',
+    'app_window_not_active', 'app_window_outside_private_monitor', 'body_limit',
+    'cancelled_response_presented', 'disable_not_observed', 'disabled_response_presented',
+    'foreign_display', 'foreign_process', 'foreign_session_bus', 'fresh_marker_mismatch',
+    'header_limit', 'held_response_deadline', 'image_limit', 'inference_before_explicit_send',
+    'inference_not_received', 'invalid_app_pid', 'invalid_block', 'invalid_desktop_action',
+    'invalid_diagnostic_phase', 'invalid_fixture_nonce', 'invalid_fixture_plan', 'invalid_headers',
+    'invalid_image_role', 'invalid_json', 'invalid_length', 'invalid_message',
+    'invalid_private_owner', 'invalid_private_root', 'invalid_process_metadata',
+    'jpeg_decode_failed', 'jpeg_dimensions', 'message_limit', 'not_disposable_app_job',
+    'not_production_jpeg', 'previous_presentation_not_finished',
+    'private_chooser_or_pattern_failed', 'private_desktop_action_timeout',
+    'private_desktop_not_ready', 'process_metadata_limit', 'real_session_not_ready',
+    'receiver_case_failed', 'receiver_cleanup_failed', 'receiver_closed', 'receiver_failed',
+    'reply_not_presented', 'request_deadline', 'request_incomplete', 'request_scope',
+    'response_not_released', 'save_revocation_not_observed', 'stale_or_repeated_screen',
+    'stop_did_not_close_session', 'stop_not_observed', 'synthetic_marker_covered',
+    'tools_must_be_disabled', 'unexpected_app_executable', 'unexpected_auth_or_transport',
+    'unexpected_content_type', 'unexpected_saved_app_state', 'unexpected_selected_bot',
+    'unsolicited_inference', 'wrong_model_or_stream', 'wrong_release', 'wrong_turn_or_image_count',
+))
+_current_phase = "controller_entry"
+_emitted_phases = set()
+
+
+def phase(code):
+    """Finite authored progress only; never use UI/exception text as a code."""
+    global _current_phase
+    if code not in PHASES:
+        raise Refusal("invalid_diagnostic_phase")
+    _current_phase = code
+    if code not in _emitted_phases:
+        _emitted_phases.add(code)
+        print("app-phase: " + code, flush=True)
+
+
+def failure_diagnostic(error):
+    """Read bounded traceback METADATA, never format frames/values or causes."""
+    kind = next((name for exact, name in EXCEPTION_TYPES if type(error) is exact), "other")
+    # Use the built-in descriptor, not a subclass's custom attribute access.
+    trace = BaseException.__traceback__.__get__(error)
+    source, line, count = None, None, 0
+    while trace is not None and count < TRACEBACK_METADATA_LIMIT:
+        candidate = OWNED_SOURCES.get(trace.tb_frame.f_code.co_filename)
+        if candidate is not None and 0 < trace.tb_lineno <= 1_000_000:
+            source, line = candidate, trace.tb_lineno
+        trace = trace.tb_next
+        count += 1
+    return {"stage": _current_phase if _current_phase in PHASES else "controller_entry",
+            "exceptionType": kind, "source": source, "line": line,
+            "metadataFrames": count, "metadataTruncated": trace is not None}
+
+
+def refusal_code(error):
+    # Only exact authored code strings survive; no generic exception payload.
+    if type(error) is Refusal and type(error.code) is str:
+        for code in REFUSAL_CODES:
+            if error.code == code:
+                return code
+    return "controller_refused"
+
+
 def isolated_root():
     for key, expected in (("ORBITPAL_WAYLAND_ACCEPTANCE", "synthetic-desktop-only"),
                           ("ORBITPAL_ACCEPTANCE_MODE", "app"), ("GITHUB_ACTIONS", "true"),
@@ -43,11 +136,16 @@ def process_parent(pid):
     if not isinstance(pid, int) or not 1 <= pid <= 2**31 - 1:
         raise Refusal("invalid_app_pid")
     path = Path("/proc") / str(pid)
-    if path.stat().st_uid != os.getuid():
-        raise Refusal("foreign_process")
-    data = (path / "status").read_bytes()
+    try:
+        if path.stat().st_uid != os.getuid():
+            raise Refusal("foreign_process")
+        data = (path / "status").read_bytes()
+    except (FileNotFoundError, ProcessLookupError):
+        raise Refusal("app_process_exited") from None
     if len(data) > 16384:
         raise Refusal("process_metadata_limit")
+    if re.search(rb"^State:\s*[ZX](?:\s|$)", data, re.M):
+        raise Refusal("app_process_exited")
     found = re.search(rb"^PPid:\s*([0-9]+)$", data, re.M)
     if found is None:
         raise Refusal("invalid_process_metadata")
@@ -88,24 +186,37 @@ def walk(root, limit=1200):
 
 class Studio:
     def __init__(self, root):
+        phase("studio_import_accessibility")
         try:
             import pyatspi
         except Exception:
             raise Refusal("app_accessibility_unavailable") from None
         self.a = pyatspi
         self.root = root
-        raw = (root / "control/app-pid").read_text().strip()
+        phase("studio_read_pid")
+        try:
+            raw = (root / "control/app-pid").read_text().strip()
+        except FileNotFoundError:
+            raise Refusal("app_pid_not_ready") from None
         if not re.fullmatch(r"[0-9]{1,10}", raw):
             raise Refusal("invalid_app_pid")
         self.pid = int(raw)
+        phase("studio_verify_process")
         process_parent(self.pid)
-        if (Path("/proc") / raw / "exe").resolve() != root / "acceptance-app":
+        phase("studio_verify_executable")
+        try:
+            executable = (Path("/proc") / raw / "exe").resolve(strict=True)
+        except (FileNotFoundError, ProcessLookupError):
+            process_parent(self.pid)  # A terminal exit must not be retried.
+            raise Refusal("app_executable_not_ready") from None
+        if executable != root / "acceptance-app":
             raise Refusal("unexpected_app_executable")
         self.sequence = 0
         self.database = root / "data/studio.streamer-ai.cohost/cohost.sqlite3"
         self.frame = None
 
     def nodes(self):
+        phase("studio_registry_query")
         desktop = self.a.Registry.getDesktop(0)
         verified = {}  # One traversal only; no stale PID ownership cache.
         for node in walk(desktop):
@@ -319,21 +430,24 @@ class Studio:
 
 
 def run(root):
+    phase("studio_construct")
     studio = Studio(root)
+    phase("studio_wait_cold_start")
     studio.wait(lambda: studio.find("Control room", {studio.a.ROLE_PUSH_BUTTON}), "actual_studio_cold_start_failed", 40)
+    phase("studio_read_initial_state")
     initial = studio.profile()
     if initial.get("screenContext", {}).get("enabled") is not False or studio.assistant_count() != 0:
         raise Refusal("unexpected_saved_app_state")
     checks = ["actual_pid_owned_studio_coldstart"]
-    print("app-phase: actual_studio_coldstart", flush=True)
+    phase("actual_studio_coldstart")
     nonce = uuid.uuid4().hex[:16]
     with Receiver(nonce) as receiver:
-        print("app-phase: configure_real_voice_off", flush=True)
+        phase("configure_real_voice_off")
         studio.button("Character & voice")
         studio.switch("Enable speech output", False)
         studio.save(lambda value: value["voice"]["enabled"] is False)
         studio.button("Models")
-        print("app-phase: configure_real_model_and_grants", flush=True)
+        phase("configure_real_model_and_grants")
         studio.compatible()
         studio.entry("API base URL", receiver.base_url)
         studio.entry("Model", "orbitpal-wayland-fixture")
@@ -350,23 +464,23 @@ def run(root):
         if receiver.state.records:
             raise Refusal("inference_before_explicit_send")
         studio.choose()
-        print("app-phase: actual_portal_ready", flush=True)
+        phase("actual_portal_ready")
         checks.append("real_ui_grant_and_portal_selection")
         red = studio.send(receiver, nonce, "fresh_red", "red")
-        print("app-phase: fresh_red_presented", flush=True)
+        phase("fresh_red_presented")
         blue = studio.send(receiver, nonce, "fresh_blue", "blue", True)
         # Positive control for the SAME normal held SSE contribution/config.
         # Releasing without an operator mutation MUST visibly commit.
         receiver.state.release("fresh_blue")
         receiver.state.wait_finished("fresh_blue")
         studio.presented(nonce, "fresh_blue")
-        print("app-phase: fresh_blue_presented", flush=True)
+        phase("fresh_blue_presented")
         if red["digest"] == blue["digest"] or len(receiver.state.records) != 2:
             raise Refusal("stale_or_repeated_screen")
         checks.append("two_fresh_real_jpegs_through_agent_provider")
         checks.append("held_positive_reply_commits_history_and_subtitle")
         studio.send(receiver, nonce, "held_stop", "red", True)
-        print("app-phase: held_stop_received", flush=True)
+        phase("held_stop_received")
         studio.button("Stop")
         studio.wait(lambda: studio.enabled(studio.one("Message to your cohost", {studio.a.ROLE_ENTRY, studio.a.ROLE_TEXT})), "stop_not_observed")
         receiver.state.release("held_stop")
@@ -375,10 +489,10 @@ def run(root):
         studio.button("Models")
         studio.wait(lambda: studio.text_visible("No Wayland source connected. Requests with screen context are rejected; the app does not use another screen."), "stop_did_not_close_session")
         checks.append("held_provider_stop_rejects_late_reply")
-        print("app-phase: held_stop_cancelled", flush=True)
+        phase("held_stop_cancelled")
         studio.choose()  # Explicit real reconnect; Stop never restores a lease.
         studio.send(receiver, nonce, "held_images_off", "red", True)
-        print("app-phase: held_images_off_received", flush=True)
+        phase("held_images_off_received")
         studio.button("Models")
         # Unlike the screen switch, this switch does NOT call Disconnect.
         # The real same-bot save must revoke the model/image grant itself.
@@ -395,7 +509,7 @@ def run(root):
         studio.save(lambda value: value["model"]["visionEnabled"] is True)
         studio.choose()  # A saved model grant change also needs a new selection.
         studio.send(receiver, nonce, "held_disable", "blue", True)
-        print("app-phase: held_disable_received", flush=True)
+        phase("held_disable_received")
         studio.button("Models")
         studio.switch("Include the screen with every request", False)
         studio.save(lambda value: value["screenContext"]["enabled"] is False)
@@ -419,13 +533,21 @@ def run(root):
     print("real-app-initial-subset-complete", flush=True)
 
 
-if __name__ == "__main__":
+def main():
     try:
+        phase("validate_private_environment")
         run(isolated_root())
     except Refusal as error:
         # Codes are authored fixed strings; never dump exceptions/tree/profile.
-        print("app-acceptance-failed: " + error.code, file=sys.stderr, flush=True)
-        raise SystemExit(1)
-    except Exception:
+        print("app-diagnostic: " + json.dumps(failure_diagnostic(error), sort_keys=True), file=sys.stderr, flush=True)
+        print("app-acceptance-failed: " + refusal_code(error), file=sys.stderr, flush=True)
+        return 1
+    except Exception as error:
+        print("app-diagnostic: " + json.dumps(failure_diagnostic(error), sort_keys=True), file=sys.stderr, flush=True)
         print("app-acceptance-failed: controller_failed", file=sys.stderr, flush=True)
-        raise SystemExit(1)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -365,5 +365,136 @@ class ConsentScopeTests(unittest.TestCase):
         self.assertIs(self.actual_chooser("gnome", [node], environment={}, app_mode=False)(), node)
 
 
+class DiagnosticTests(unittest.TestCase):
+    def test_known_owned_frame_reports_only_fixed_basename_and_actual_line(self):
+        with patch.dict(app.os.environ, {}, clear=True):
+            try:
+                app.isolated_root()
+            except provider.Refusal as error:
+                expected_line = error.__traceback__.tb_next.tb_lineno
+                result = app.failure_diagnostic(error)
+        self.assertEqual(result["source"], "app.py")
+        self.assertEqual(result["line"], expected_line)
+        self.assertEqual(result["exceptionType"], "Refusal")
+        self.assertFalse(result["metadataTruncated"])
+        self.assertEqual(set(result), {"stage", "exceptionType", "source", "line", "metadataFrames", "metadataTruncated"})
+
+    def test_hostile_message_repr_cause_and_local_values_are_never_read_or_emitted(self):
+        class Hostile(Exception):
+            def __str__(self):
+                raise AssertionError("exception string must not be used")
+            def __repr__(self):
+                raise AssertionError("exception repr must not be used")
+            def __getattribute__(self, name):
+                if name in ("args", "__cause__", "__context__", "__traceback__"):
+                    raise AssertionError("exception values must not be read")
+                return super().__getattribute__(name)
+        private = "PRIVATE_TOKEN_https://secret.invalid/account_/Users/private/path"
+        try:
+            raise Hostile(private, {"secret": private}) from RuntimeError(private)
+        except Hostile as error:
+            result = app.failure_diagnostic(error)
+        output = json.dumps(result)
+        self.assertNotIn(private, output)
+        self.assertEqual(result["exceptionType"], "other")
+        self.assertIsNone(result["source"])
+        self.assertIsNone(result["line"])
+
+    def test_foreign_provider_basename_cannot_become_an_owned_source(self):
+        namespace = {}
+        exec(compile("def fail():\n    raise ValueError('sensitive_foreign_message')\n", "/private/account/provider.py", "exec"), namespace)
+        try:
+            namespace["fail"]()
+        except ValueError as error:
+            result = app.failure_diagnostic(error)
+        self.assertEqual(result["exceptionType"], "ValueError")
+        self.assertIsNone(result["source"])
+        self.assertIsNone(result["line"])
+        self.assertNotIn("sensitive_foreign_message", json.dumps(result))
+        self.assertNotIn("/private/account", json.dumps(result))
+
+    def test_traceback_metadata_has_a_fixed_scan_cap(self):
+        def nested(depth):
+            if depth:
+                return nested(depth - 1)
+            raise ValueError("not emitted")
+        try:
+            nested(app.TRACEBACK_METADATA_LIMIT + 10)
+        except ValueError as error:
+            result = app.failure_diagnostic(error)
+        self.assertEqual(result["metadataFrames"], app.TRACEBACK_METADATA_LIMIT)
+        self.assertTrue(result["metadataTruncated"])
+        self.assertIsNone(result["source"])
+
+    def test_finite_progress_is_emitted_once_and_unknown_stage_is_never_logged(self):
+        output = io.StringIO()
+        with patch.object(app, "_emitted_phases", set()), patch.object(app, "_current_phase", "controller_entry"), patch.object(app.sys, "stdout", output):
+            for _ in range(100):
+                app.phase("studio_construct")
+            with self.assertRaises(provider.Refusal):
+                app.phase("private_untrusted_stage")
+            with patch.object(app, "_current_phase", "private_untrusted_stage"):
+                result = app.failure_diagnostic(ValueError("private_message"))
+        self.assertEqual(output.getvalue(), "app-phase: studio_construct\n")
+        self.assertEqual(result["stage"], "controller_entry")
+        self.assertNotIn("private", json.dumps(result))
+
+    def test_main_does_not_catch_system_exit_or_claim_success(self):
+        for failure in (SystemExit(7), KeyboardInterrupt()):
+            output, errors = io.StringIO(), io.StringIO()
+            with self.subTest(kind=type(failure).__name__), patch.object(app, "isolated_root", return_value=object()), patch.object(app, "run", side_effect=failure), patch.object(app, "_emitted_phases", set()), patch.object(app.sys, "stdout", output), patch.object(app.sys, "stderr", errors):
+                with self.assertRaises(type(failure)) as found:
+                    app.main()
+            if isinstance(failure, SystemExit):
+                self.assertEqual(found.exception.code, 7)
+            self.assertEqual(errors.getvalue(), "")
+            self.assertNotIn("complete", output.getvalue())
+
+    def test_unknown_refusal_or_subclass_payload_cannot_escape_in_failure_footer(self):
+        class Derived(provider.Refusal):
+            pass
+        private = "PRIVATE_REFUSAL_VALUE"
+        for failure in (provider.Refusal(private), Derived(private), RuntimeError(private)):
+            output, errors = io.StringIO(), io.StringIO()
+            with self.subTest(kind=type(failure).__name__), patch.object(app, "isolated_root", return_value=object()), patch.object(app, "run", side_effect=failure), patch.object(app, "_emitted_phases", set()), patch.object(app.sys, "stdout", output), patch.object(app.sys, "stderr", errors):
+                self.assertEqual(app.main(), 1)
+            self.assertNotIn(private, errors.getvalue())
+            self.assertNotIn(private, output.getvalue())
+            self.assertIn("app-diagnostic: ", errors.getvalue())
+        self.assertEqual(app.refusal_code(provider.Refusal("app_process_exited")), "app_process_exited")
+
+    def test_missing_process_is_terminal_and_has_a_fixed_code(self):
+        with patch.object(app.Path, "stat", side_effect=FileNotFoundError("sensitive proc path")), patch.object(app.time, "sleep") as sleep:
+            with self.assertRaisesRegex(provider.Refusal, "^app_process_exited$"):
+                app.process_parent(42)
+            sleep.assert_not_called()
+
+    def test_zombie_process_cannot_be_treated_as_ready(self):
+        metadata = b"State:\tZ (zombie)\nPPid:\t1\n"
+        with patch.object(app.Path, "stat", return_value=SimpleNamespace(st_uid=app.os.getuid())), patch.object(app.Path, "read_bytes", return_value=metadata):
+            with self.assertRaisesRegex(provider.Refusal, "^app_process_exited$"):
+                app.process_parent(42)
+
+    def test_missing_pid_file_is_not_a_registry_or_capture_failure(self):
+        output = io.StringIO()
+        with patch.dict(app.sys.modules, {"pyatspi": SimpleNamespace()}), patch.object(app.Path, "read_text", side_effect=FileNotFoundError("sensitive path")), patch.object(app.sys, "stdout", output):
+            with self.assertRaisesRegex(provider.Refusal, "^app_pid_not_ready$"):
+                app.Studio(Path("/disposable"))
+
+    def test_missing_executable_is_distinguished_from_terminal_exit_without_retry(self):
+        for state in (1, provider.Refusal("app_process_exited")):
+            expected = "app_executable_not_ready" if state == 1 else "app_process_exited"
+            with self.subTest(expected=expected), patch.dict(app.sys.modules, {"pyatspi": SimpleNamespace()}), patch.object(app.Path, "read_text", return_value="42\n"), patch.object(app.Path, "resolve", side_effect=FileNotFoundError("sensitive executable path")), patch.object(app, "process_parent", side_effect=[1, state]) as process, patch.object(app.time, "sleep") as sleep, patch.object(app.sys, "stdout", io.StringIO()):
+                with self.assertRaisesRegex(provider.Refusal, "^" + expected + "$"):
+                    app.Studio(Path("/disposable"))
+                self.assertEqual(process.call_count, 2)
+                sleep.assert_not_called()
+
+    def test_unexpected_executable_still_fails_closed(self):
+        with patch.dict(app.sys.modules, {"pyatspi": SimpleNamespace()}), patch.object(app.Path, "read_text", return_value="42\n"), patch.object(app.Path, "resolve", return_value=Path("/foreign/binary")), patch.object(app, "process_parent", return_value=1), patch.object(app.sys, "stdout", io.StringIO()):
+            with self.assertRaisesRegex(provider.Refusal, "^unexpected_app_executable$"):
+                app.Studio(Path("/disposable"))
+
+
 if __name__ == "__main__":
     unittest.main()
