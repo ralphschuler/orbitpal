@@ -38,6 +38,20 @@ For each real desktop, record distro, desktop/compositor, portal/PipeWire versio
 
 Keep issue #26 open until both desktop rows and the applicable lifecycle cases have actual evidence. Do not replace pending rows with inferred success from compile logs or fixtures.
 
+### Prepared initial actual-app subset
+
+The optional `full_app` manual workflow input is off by default. Its
+[application harness](../scripts/wayland-acceptance/APP-ACCEPTANCE.md) is source
+prepared but has not yet passed real desktop execution. It launches the actual
+embedded Tauri/WebKit Studio in a fresh isolated account, selects a real portal
+source through the UI and sends fresh JPEGs only to a bounded loopback SSE
+receiver. Normal and held positive replies must actually enter assistant history
+and appear as subtitles before late-response cancellation cases can pass.
+Stop, a saved image-grant change, and immediate UI disconnect plus saved capture
+disable are distinct cases. This does not replace the existing portal baseline
+or the remaining two-bot, compositor-revocation, display, resource and physical
+lifecycle matrix. No production grant bypass or mock capture is introduced.
+
 
 ## Experimental desktop evidence
 

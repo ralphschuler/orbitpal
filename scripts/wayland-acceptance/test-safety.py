@@ -162,7 +162,7 @@ class ControllerConsent(unittest.TestCase):
         wanted = {"atomic_json", "children", "sensitive", "chooser_title", "kde6_monitor", "pointer_escape", "select_single_monitor", "translated_pointer", "kwin_geometry", "Desktop"}
         module = ast.Module(body=[item for item in tree.body if isinstance(item, (ast.FunctionDef, ast.ClassDef)) and item.name in wanted], type_ignores=[])
         self.api = SimpleNamespace(STATE_SENSITIVE="sensitive", STATE_ENABLED="enabled", STATE_PRESSED="pressed", STATE_CHECKED="checked", STATE_SELECTED="selected", ROLE_LIST_ITEM="card", ROLE_TOGGLE_BUTTON="toggle", ROLE_PUSH_BUTTON="button")
-        self.namespace = {"CONTROL": self.root, "ROOT": self.root, "DESKTOP": "kde", "KDE6": False, "TITLES": {"gnome": "Share Screen", "kde": "Screen Sharing"}, "json": json,
+        self.namespace = {"CONTROL": self.root, "ROOT": self.root, "DESKTOP": "kde", "KDE6": False, "APP_MODE": False, "TITLES": {"gnome": "Share Screen", "kde": "Screen Sharing"}, "json": json,
                           "time": SimpleNamespace(monotonic=lambda: 0, time=lambda: 10), "pyatspi": self.api, "math": math, "re": re, "stat": stat, "sys": sys,
                           "TRACE": SimpleNamespace(log=lambda *args, **kwargs: None, begin=lambda *args: None, finish=lambda: None),
                           "action": Mock(return_value=True), "pointer_click": Mock(return_value=True),
