@@ -7,6 +7,12 @@ It consumes native-authorized **local CSS** coordinates. Native output code must
 validate canonical targets, slot leases, measured footprint, safe region, monitor
 origins/DPI and selected confirmation owner before constructing these inputs.
 
+The repository also contains the separate [native output foundation](WORLD-OUTPUT.md).
+No bridge connects their wire versions: the stable reference revision, native
+receipt ordering and actual exposed-frame observations must be reconciled before
+mounting an adapter. The normal App/Avatar/overlay and all current controls remain
+unchanged; including this helper does not enable a 3D World view or MoveTo button.
+
 ## Binding and ordering
 
 One follower owns one explicit actor attachment. A binding contains its public
@@ -117,3 +123,6 @@ The focused pure suite passed 29 tests with one worker. These use synthetic
 after-render observations. No source fixture can establish actual WebGL measurement,
 delivery, real OS windows, Studio/OBS ownership, native arrival or full issue #72
 acceptance. Those integrations and exact combined checks remain required.
+An experimental actual-renderer integration failed its acceptance exercise and
+is excluded from this foundation packet; synthetic motion results do not repair
+or supersede that result. Issue #72 remains open.

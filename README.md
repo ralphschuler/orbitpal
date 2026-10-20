@@ -35,6 +35,8 @@ The [shared stage editor](docs/WORLD-STATE.md) lets you explicitly select partic
 
 [Local Life actions](docs/ACTION-EXECUTOR.md) run independently of dialog and voice. In an already started Life session, explicitly request one ten-second quiet rest from Studio and inspect its saved result separately from its current execution. This first local rest has no animation or need reward. It requires a valid stage and visible native output; OBS and visual world actions remain unavailable until their renderer adapters are connected. Stop cancels the rest without starting a successor. Ordinary Studio interaction currently interrupts local actions globally.
 
+Developer foundations for [native World output](docs/WORLD-OUTPUT.md), [pure movement](docs/WORLD-MOTION.md) and [submitted-frame geometry](docs/WORLD-RENDER-GEOMETRY.md) are included. They add no mounted 3D World view or movement control; the normal character UI stays unchanged and unregistered visual output remains unavailable. The renderer bridge, native overlay/OBS execution and actual-renderer acceptance are still follow-up work under #72.
+
 [Autonomous usage budgets](docs/USAGE-BUDGETS.md) add shared installation-wide UTC-day limits for dialog dispatches, spoken characters, Hindsight requests and image data, with per-bot reporting and optional conservative hard tokens. Direct-request mode excludes opaque CLI jobs; the default counts OrbitPal calls/CLI jobs and does not claim provider-internal billing limits. Manual Studio actions remain available.
 
 

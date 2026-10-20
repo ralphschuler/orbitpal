@@ -4,6 +4,11 @@
 OBS, native output registration and arrival admission are untouched. This code
 cannot make a character move or certify a completed native action on its own.
 
+The separate [native output foundation](WORLD-OUTPUT.md) is also present, but no
+bridge or 3D World view is mounted in the normal App. Reference revision/anchor
+semantics, renderer lifecycle and native receipt ordering must be reconciled
+before these independent contracts can form an executable adapter.
+
 ## Why the existing caption bounds are insufficient
 
 At pinned Three.js **0.186.1**, `Mesh.getVertexPosition` evaluates current morph
@@ -159,5 +164,11 @@ Their draw port is deliberately synthetic; they create no WebGL context, native
 window or arrival proof. Broad frontend/build/native checks were not run for this
 isolated follow-up. Actual render acceptance and the final combined checks remain
 required before integration.
+
+A separate experimental actual-renderer integration failed its acceptance
+exercise and is excluded from this foundation packet. The synthetic draw port
+does not repair that failure or establish real-frame performance. Successful
+mounted rendering, calibration, speech ownership and platform/OBS acceptance
+remain follow-up work; issue #72 stays open.
 
 Substantial AI assistance was used in preparing this source slice and fixtures.

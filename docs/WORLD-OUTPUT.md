@@ -1,13 +1,18 @@
-# World output authority — first Studio slice (#72)
+# World output authority foundation (#72, still open)
 
-The first visual action is an explicitly requested `MoveTo` for the selected
-bot in the Studio. Life must already be active, the bot must explicitly belong
-to the shared stage, and the current bundled Studio renderer must register and
-report a successful exposed frame. Registration starts no session or action.
-Other visible participants are mirrors. Native overlay and OBS action execution,
-nonselected Studio execution and other visual activities remain unsupported in
-this slice. These are remaining #72 integration/acceptance requirements, not
-implemented capabilities. The existing explicit quiet-rest path is unchanged.
+This packet provides native registration, receipt validation and checked storage
+for a future selected-bot Studio `MoveTo` adapter. It adds no mounted 3D World
+view, movement control, Avatar adapter or renderer bridge. The ordinary App,
+character view and overlay rendering are unchanged. With no registered renderer,
+normal application flows keep `visualAvailable:false` and cannot plan a visual
+action. The existing explicit quiet-rest path is unchanged.
+
+The protocol below describes requirements for that future adapter. Life must
+already be active, the bot must explicitly belong to the shared stage, and the
+bundled renderer must register and report a successful exposed frame. Registration
+starts no session or action. Other visible participants would be mirrors. Native
+overlay/OBS execution, nonselected Studio execution and other visual activities
+remain unsupported. Issue #72 remains open.
 
 ## Ownership and protocol
 
@@ -100,11 +105,38 @@ fails; that position is not a claim of a committed Life reward. Failure and Stop
 cancel the exact action, release resources, retain bounded terminal tombstones
 and reject old permits/receipts. Restart has no registrations or action authority.
 
+## Native window route foundation
+
+A separate private registry tracks each real native avatar window by its exact
+`WindowSignals` instance and host-issued generation. Its bounded preparatory
+tickets expire after five seconds; Stop, profile/presentation changes and native
+geometry/close events invalidate retained tokens before Core waits. Retired
+window callbacks cannot revoke a replacement in this new registry. Counter
+exhaustion and registry poison cancel retained tokens and grant no successors.
+
+This foundation exposes no native registration IPC, prepared-layout promotion or
+rendering capability. Its Hidden event is currently a synthetic/API seam, not
+an exercised avatar-hide callback. The legacy label-scoped output cancellation
+path is unchanged; whole-host replacement isolation must be reconciled before
+native visual actions. Confirmed layout/DPI/restoration, renderer measurement and
+speech ownership handoff remain separate implementation and platform work.
+
 ## Validation status
 
-The native packet includes synthetic registry/geometry/arrival cases and actual
-Core/WorldHub/SQLite lifecycle and held-write-lock cases. At source freeze these
-new cases are not yet executed. They do not establish successful WebGL rendering,
-real motion quality, native/OBS capability or the remaining multi-actor scope.
-The composed build, real Avatar bridge, eight-direction gait/scale/topology
-exercises and platform/output acceptance remain required before #72 can close.
+The actual production Tauri/Store suite passed **549 tests**, including native
+registry/geometry/arrival, real Core/WorldHub/SQLite lifecycle and held-write-lock
+cases, plus all 15 native-route regressions. That gate ran on source checkpoint
+`cfe752f`. Follow-up `c1b31f4` only removed one terminal newline byte from each
+of the two new route files; byte comparison verified
+`final == tested.rstrip(b'\n') + b'\n'`. The suite was not rerun for that
+whitespace-only change. The foundation composition preserves those native bytes;
+its combined checks are a separate gate.
+
+These results do not establish successful WebGL rendering, real motion quality,
+native/OBS execution or multi-actor authority. A separate experimental actual-
+renderer integration failed its acceptance exercise and is excluded from this
+packet; its repair and rerun remain integration work. The pure helpers are also
+unmounted and need explicit wire reconciliation with this native protocol. The
+real Avatar bridge, eight-direction gait/scale/topology exercises, renderer
+performance and platform/output acceptance (#75) remain required before #72 can
+close. No 3D view or successful visible MoveTo is claimed by this foundation.

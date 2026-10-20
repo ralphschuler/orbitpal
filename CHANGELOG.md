@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add developer foundations for native World render registration, ordered MoveTo receipts and checked Life/World/SQLite admission, plus private native-window identity and cancellation tracking. No 3D World view or movement control is mounted; ordinary unregistered flows keep visual actions unavailable.
+- Add unwired deterministic motion and bounded submitted-frame geometry helpers with synthetic fixtures. Actual renderer integration, native overlay/OBS execution and real rendering/performance acceptance remain open under #72; this foundation does not claim successful visible movement.
+
 - Manage API credentials centrally for the installation, with named accounts, exact destination bindings and explicit shared defaults. Select connections per bot for dialog, voice, transcription, Hindsight and YouTube Data; retain per-bot model, voice and memory settings and separate OAuth/MCP permissions.
 - Adopt existing credential references without reading or copying their OS-store values, preserve distinct accounts, and leave imported profiles unbound. Add the shared manager and per-bot selectors in all four interface languages with guarded drafts, keyboard access and honest partial-save errors.
 
