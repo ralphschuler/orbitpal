@@ -5,10 +5,10 @@ membership, canonical positions, safe regions, rest/meeting/play anchors and
 exclusive fixed slots. It does not inspect the desktop or call capture,
 permissions, network, Tauri, storage or rendering APIs.
 
-This is the foundation for issue #70. It is not connected to a native WorldHub,
-Store, operator IPC or the UI yet. It is not registered in the application crate
-until native LifeRuntime integration is ready. No running character acquires a
-new behavior from these files alone.
+This documents the pure foundation for issue #70. Native WorldHub, Store,
+operator IPC and UI adapters are separate integration responsibilities. The
+standalone fixture imports the actual pure sources without those adapters.
+No running character acquires authority from these types alone.
 
 ## Stage identity and existing Life state
 
@@ -25,6 +25,8 @@ unknown fields, unsupported versions, invalid identifiers, duplicate members or
 resources, out-of-region targets and excessive entries. Limits are 64 members,
 64 anchors and 128 total slots. Config edits require the current expected
 revision and advance it; a caller cannot reset it with a draft revision.
+`with_revision` constructs validated confirmed config for the Store adapter;
+it grants no write permission and does not replace its atomic database CAS.
 
 `WorldState` is session-only and has no deserializer. The native owner must mint
 a fresh `RuntimeEpoch` on every restart. New state restores no memberships with
@@ -80,6 +82,15 @@ Store compare-and-swap reducer. Persistence failure grants no reward. Sequence
 or identity exhaustion fails closed and revokes runtime authority rather than
 wrapping/reusing an identifier.
 
+`observe_actor` accepts a validated native Store observation for an explicit
+participant even before first activation or after Stop. It updates public
+activity and removes obsolete Life-action leases without minting a session.
+Revision rollback fails. Unexpected source-world replacement revokes that
+actor's authority and projection while retaining the source-world fence; an
+observation cannot silently reset it. Explicit operator placement is a separate
+`place_actor` path: it checks the config revision/member/safe region, invalidates
+that actor's arrival leases and never starts a session or Life action.
+
 The intended lock order is Core → WorldHub → Store, extended consistently where
 the existing AutopilotHub/ScreenContext are also involved. Never call Core from a
 WorldHub-held callback, wait for a native GUI getter or emit/await providers under
@@ -116,8 +127,8 @@ and lease capabilities, expiry/serial internals, RNG, needs, reward policy,
 history, private instructions and credentials. Nonparticipants are absent.
 Public snapshots have no authority-restoring deserializer.
 
-Native persistence remains to be implemented as a separate optional versioned
-subsystem. It must save only validated WorldConfig under an atomic CAS, keep
+Native persistence belongs to a separate optional versioned subsystem. It must
+save only validated WorldConfig under an atomic CAS, keep
 ordinary profile/manual repair usable on unsupported/corrupt world data and never
 reset existing per-bot Life storage. Ordinary bot export/copy/import must not
 inherit global membership, runtime state or reservations. Rehydration requires
@@ -132,7 +143,9 @@ clock behavior, actor removal/rebinding, reload without authority, geometry
 invalidation, typed/bounded deserialization, counter exhaustion, public projection
 privacy, negative origins, DPI conversion and deterministic monitor fallback.
 
-The initial foundation has not yet been compiled while the shared native
-LifeRuntime suite owns the resource slot. Full native registration, Store/Hub/API
-integration, four-locale UI, exact combined frontend/native checks and supported
-OS presentation acceptance remain required before closing issue #70.
+The standalone actual-source fixture passed all 40 tests (21 world cases and 19
+imported Life-domain tests), offline with one build job and no OS calls. Source
+hashes were captured before the run and verified unchanged afterward. This
+establishes the pure module's behavior only. Store/Hub/API integration,
+four-locale UI, exact combined frontend/native checks and supported OS
+presentation acceptance remain required before closing issue #70.

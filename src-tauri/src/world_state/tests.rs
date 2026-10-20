@@ -495,6 +495,134 @@ fn initializing_life_needs_a_new_native_session_binding() {
 }
 
 #[test]
+fn operator_placement_clears_only_affected_arrivals_without_minting_or_replacing_sessions() {
+    let mut world = stage();
+    let n = bind(&mut world, "nova", "n");
+    let j = bind(&mut world, "james", "j");
+    let old = reserve(&mut world, &n, "rest", 0);
+    let other = reserve(&mut world, &j, "play", 0);
+    world
+        .place_actor(0, &actor("nova"), point(300_000, 500_000))
+        .unwrap();
+    assert_eq!(world.member_handle(&actor("nova")), Some(n.clone()));
+    assert_eq!(
+        world.validate_reservation(&old, &n, 1),
+        Err(WorldError::Expired)
+    );
+    assert!(world.validate_reservation(&other, &j, 1).is_ok());
+    assert_eq!(
+        world.place_actor(1, &actor("nova"), point(0, 0)),
+        Err(WorldError::StaleRevision)
+    );
+    assert_eq!(
+        world.place_actor(0, &actor("hidden"), point(0, 0)),
+        Err(WorldError::InvalidOwner)
+    );
+    world.stop_all_sessions();
+    assert!(world.snapshot().occupied.is_empty());
+    assert_eq!(world.member_handle(&actor("nova")), None);
+    world
+        .place_actor(0, &actor("nova"), point(400_000, 500_000))
+        .unwrap();
+    assert_eq!(
+        world.member_handle(&actor("nova")),
+        None,
+        "manual placement cannot activate"
+    );
+    assert_eq!(
+        serde_json::to_value(world.snapshot_for_actor(&actor("nova")).unwrap()).unwrap(),
+        serde_json::to_value(world.snapshot_for_actor(&actor("james")).unwrap()).unwrap()
+    );
+    assert!(world.snapshot_for_actor(&actor("hidden")).is_err());
+}
+
+#[test]
+fn confirmed_config_revision_is_bounded_and_cannot_reset_runtime_cas() {
+    let configured = config(&["nova"], 800_000).with_revision(8).unwrap();
+    assert_eq!(configured.revision(), 8);
+    assert_eq!(
+        configured.with_revision(MAX_COUNTER + 1),
+        Err(WorldError::InvalidConfig)
+    );
+    let mut world = WorldState::new(configured, RuntimeEpoch::new("boot").unwrap()).unwrap();
+    world.replace_config(8, config(&["nova"], 800_000)).unwrap();
+    assert_eq!(world.config().revision(), 9);
+    assert_eq!(
+        world.replace_config(0, config(&["nova"], 800_000)),
+        Err(WorldError::StaleRevision)
+    );
+}
+
+#[test]
+fn inactive_and_stopped_actor_observations_update_without_reviving_authority() {
+    let planned = planned(&life("nova", "stored-source"));
+    let mut world = stage();
+    world.observe_actor(&actor("nova"), &planned).unwrap();
+    assert!(world.member_handle(&actor("nova")).is_none());
+    assert!(world
+        .snapshot()
+        .actors
+        .iter()
+        .find(|a| a.actor_id == actor("nova"))
+        .unwrap()
+        .life
+        .is_some());
+    let stamp = session("nova", "native");
+    let handle = world.bind_actor(stamp.clone(), Some(&planned), 0).unwrap();
+    let lease = world
+        .reserve(
+            0,
+            &handle,
+            WorkIdentity::Life(action(&planned)),
+            &slot("rest"),
+            1000,
+            0,
+        )
+        .unwrap();
+    let cancelled = reduce(
+        &planned,
+        0,
+        RandomState::seeded(7),
+        LifeEvent::Cancel {
+            action_id: action(&planned),
+            reason: CancelReason::Operator,
+        },
+    )
+    .unwrap()
+    .state;
+    world.unbind_session(&stamp);
+    world.observe_actor(&actor("nova"), &cancelled).unwrap();
+    assert!(world.member_handle(&actor("nova")).is_none());
+    assert!(world.snapshot().occupied.is_empty());
+    assert_eq!(
+        world.validate_reservation(&lease, &handle, 1),
+        Err(WorldError::InvalidOwner)
+    );
+    assert_eq!(
+        world.observe_actor(&actor("nova"), &planned),
+        Err(WorldError::StaleRevision)
+    );
+    let other = life("nova", "wrong-source");
+    assert_eq!(
+        world.observe_actor(&actor("nova"), &other),
+        Err(WorldError::WrongLineage)
+    );
+    assert_eq!(
+        world.observe_actor(&actor("nova"), &other),
+        Err(WorldError::WrongLineage),
+        "rejected lineage cannot erase the source-world fence"
+    );
+    assert_eq!(
+        world.observe_actor(&actor("hidden"), &life("hidden", "source")),
+        Err(WorldError::InvalidOwner)
+    );
+    assert_eq!(
+        world.observe_actor(&actor("james"), &cancelled),
+        Err(WorldError::WrongLineage)
+    );
+}
+
+#[test]
 fn validated_persistent_schema_rejects_unknown_fields_duplicates_ranges_and_capacities() {
     let original = serde_json::to_value(config(&["nova", "james"], 800_000)).unwrap();
     assert_eq!(

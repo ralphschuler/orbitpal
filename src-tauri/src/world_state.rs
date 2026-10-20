@@ -273,6 +273,14 @@ impl WorldConfig {
     pub fn safe_region(&self) -> Rect {
         self.0.safe_region
     }
+    /// Native storage construction only. The Store must perform its own atomic
+    /// expected-revision CAS; this validated value grants no write authority.
+    pub fn with_revision(&self, revision: u64) -> Result<Self, WorldError> {
+        let mut config = self.clone();
+        config.0.revision = revision;
+        config.validate()?;
+        Ok(config)
+    }
     pub fn validate(&self) -> Result<(), WorldError> {
         let wire = &self.0;
         if wire.schema_version != SCHEMA_VERSION {
@@ -342,6 +350,7 @@ struct Participant {
     handle: Option<MemberHandle>,
     last_session: Option<SessionStamp>,
     public: Option<PublicActor>,
+    observed_world: Option<WorldId>,
     life_revision: Option<u64>,
     action: Option<ActionId>,
 }
@@ -417,6 +426,7 @@ impl WorldState {
                     handle: None,
                     last_session: None,
                     public: None,
+                    observed_world: None,
                     life_revision: None,
                     action: None,
                 },
@@ -427,6 +437,16 @@ impl WorldState {
     }
     pub fn config(&self) -> &WorldConfig {
         &self.config
+    }
+    pub fn is_participant(&self, actor: &ActorId) -> bool {
+        self.actors.contains_key(actor.as_str())
+    }
+    /// Native-only lookup. Caller must still hold/check actual Core authority;
+    /// the opaque returned handle must never be exposed through IPC.
+    pub fn member_handle(&self, actor: &ActorId) -> Option<MemberHandle> {
+        self.actors
+            .get(actor.as_str())
+            .and_then(|actor| actor.handle.clone())
     }
     fn identity(&mut self) -> Result<u64, WorldError> {
         let id = self.next_identity;
@@ -563,6 +583,7 @@ impl WorldState {
                         handle: None,
                         last_session: None,
                         public: None,
+                        observed_world: None,
                         life_revision: None,
                         action: None,
                     });
@@ -599,7 +620,7 @@ impl WorldState {
                 return Err(WorldError::InvalidOwner);
             }
             if last == &session {
-                let old_source = previous.public.as_ref().map(|public| public.world_id());
+                let old_source = previous.observed_world.as_ref();
                 if old_source != source_world.as_ref() {
                     return Err(WorldError::WrongLineage);
                 }
@@ -608,14 +629,11 @@ impl WorldState {
                 }
             }
         }
-        if previous.public.is_some() && life.is_none() {
+        if previous.observed_world.is_some() && life.is_none() {
             return Err(WorldError::WrongLineage);
         }
         if let Some(life) = life {
-            if previous
-                .public
-                .as_ref()
-                .is_some_and(|public| public.world_id() == life.world_id())
+            if previous.observed_world.as_ref() == Some(life.world_id())
                 && previous
                     .life_revision
                     .is_some_and(|revision| life.revision() < revision)
@@ -686,6 +704,47 @@ impl WorldState {
             next.changed()
         })
     }
+    /// Fresh validated Store observation, including inactive actors and a Stop's
+    /// committed cancellation. It never binds a session or grants a place.
+    pub fn observe_actor(
+        &mut self,
+        actor_id: &ActorId,
+        life: &LifeState,
+    ) -> Result<(), WorldError> {
+        let source = validate_life(actor_id, Some(life))?;
+        let previous = self
+            .actors
+            .get(actor_id.as_str())
+            .ok_or(WorldError::InvalidOwner)?;
+        if previous.observed_world.is_some() && previous.observed_world != source {
+            let actor = self
+                .actors
+                .get_mut(actor_id.as_str())
+                .ok_or(WorldError::InvalidOwner)?;
+            actor.handle = None;
+            actor.public = None;
+            actor.action = None;
+            self.reservations
+                .retain(|_, r| r.lease.member.session.actor != *actor_id);
+            if self.changed().is_err() {
+                self.revoke_all();
+                self.exhausted = true;
+            }
+            return Err(WorldError::WrongLineage);
+        }
+        if previous
+            .life_revision
+            .is_some_and(|revision| life.revision() < revision)
+        {
+            return Err(WorldError::StaleRevision);
+        }
+        self.transaction(|next| {
+            let actor = next.actors.get_mut(actor_id.as_str()).ok_or(WorldError::InvalidOwner)?;
+            set_life(actor, Some(life)); let action = actor.action.clone();
+            next.reservations.retain(|_, r| r.lease.member.session.actor != *actor_id || !matches!(&r.lease.work, WorkIdentity::Life(id) if Some(id) != action.as_ref()));
+            next.changed()
+        })
+    }
     pub fn move_actor(&mut self, handle: &MemberHandle, position: Point) -> Result<(), WorldError> {
         self.member(handle)?;
         if !self.config.safe_region().contains(position) {
@@ -696,6 +755,34 @@ impl WorldState {
                 .get_mut(handle.session.actor.as_str())
                 .ok_or(WorldError::InvalidOwner)?
                 .position = position;
+            next.changed()
+        })
+    }
+    /// Explicit main-window placement is separate from autonomous session
+    /// movement. It invalidates that actor's arrival leases, grants no session
+    /// or action, and never mutates the actor's LifeState.
+    pub fn place_actor(
+        &mut self,
+        expected: u64,
+        actor: &ActorId,
+        position: Point,
+    ) -> Result<(), WorldError> {
+        if expected != self.config.revision() {
+            return Err(WorldError::StaleRevision);
+        }
+        if !self.is_participant(actor) {
+            return Err(WorldError::InvalidOwner);
+        }
+        if !self.config.safe_region().contains(position) {
+            return Err(WorldError::InvalidGeometry);
+        }
+        self.transaction(|next| {
+            next.actors
+                .get_mut(actor.as_str())
+                .ok_or(WorldError::InvalidOwner)?
+                .position = position;
+            next.reservations
+                .retain(|_, reservation| reservation.lease.member.session.actor != *actor);
             next.changed()
         })
     }
@@ -847,6 +934,14 @@ impl WorldState {
         }
         true
     }
+    pub fn stop_all_sessions(&mut self) {
+        let changed = !self.reservations.is_empty()
+            || self.actors.values().any(|actor| actor.handle.is_some());
+        self.revoke_all();
+        if changed && self.changed().is_err() {
+            self.exhausted = true;
+        }
+    }
     /// Native output geometry changed. Old arrival/release callbacks cannot
     /// reuse a slot on its new mapping, even when canonical anchors stay put.
     pub fn invalidate_geometry(&mut self) -> Result<(), WorldError> {
@@ -891,6 +986,14 @@ impl WorldState {
                 .collect(),
         }
     }
+    /// An output only gets the common scene if its own actor explicitly
+    /// participates. Other selected actors contribute public observations only.
+    pub fn snapshot_for_actor(&self, actor: &ActorId) -> Result<WorldSnapshot, WorldError> {
+        if !self.is_participant(actor) {
+            return Err(WorldError::InvalidOwner);
+        }
+        Ok(self.snapshot())
+    }
 }
 fn validate_life(actor: &ActorId, life: Option<&LifeState>) -> Result<Option<WorldId>, WorldError> {
     match life {
@@ -906,6 +1009,7 @@ fn validate_life(actor: &ActorId, life: Option<&LifeState>) -> Result<Option<Wor
 }
 fn set_life(actor: &mut Participant, life: Option<&LifeState>) {
     actor.public = life.map(LifeState::public_projection);
+    actor.observed_world = life.map(|life| life.world_id().clone());
     actor.life_revision = life.map(LifeState::revision);
     actor.action = life
         .and_then(|life| life.current_action())
