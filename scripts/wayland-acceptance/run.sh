@@ -6,7 +6,7 @@ set -euo pipefail
 : "${RUNNER_TEMP:?}" "${GITHUB_RUN_ID:?}" "${GITHUB_RUN_ATTEMPT:?}"
 umask 077
 desktop="$1"
-root=$(mktemp -d "$RUNNER_TEMP/orbitpal-wayland.XXXXXXXX")
+root=$(mktemp -d /tmp/orbitpal-wayland.XXXXXXXX)
 account="opw${GITHUB_RUN_ID: -9}${GITHUB_RUN_ATTEMPT}"
 [[ "$account" =~ ^opw[0-9]+$ ]]
 if id "$account" >/dev/null 2>&1; then printf 'Refusing to reuse an existing account\n' >&2; exit 1; fi
