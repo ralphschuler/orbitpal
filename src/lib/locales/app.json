@@ -506,7 +506,20 @@
     "CLI-Anbieter": "CLI provider",
     "{count} Charaktere sind bereits dabei. Weitere VRM-, GLB- und glTF-Figuren kannst du importieren.": "{count} characters are included. You can import more VRM, GLB and glTF characters.",
     "Oder importiere deine eigene VRM-, GLB- oder glTF-Datei.": "Or import your own VRM, GLB or glTF file.",
-    "Bei glTF das vollständige Paket zuerst entpacken. BIN-Dateien und PNG/JPEG-Texturen bleiben im Modellordner; die App bündelt sie beim Import.": "For glTF, unpack the complete package first. Keep BIN files and PNG/JPEG textures in the model folder; the app bundles them during import."
+    "Bei glTF das vollständige Paket zuerst entpacken. BIN-Dateien und PNG/JPEG-Texturen bleiben im Modellordner; die App bündelt sie beim Import.": "For glTF, unpack the complete package first. Keep BIN files and PNG/JPEG textures in the model folder; the app bundles them during import.",
+    "Zum Inhalt springen": "Skip to content",
+    "Bot auswählen: {name}": "Select bot: {name}",
+    "Nicht gespeicherte Änderungen": "Unsaved changes",
+    "Entwurf verwerfen?": "Discard draft?",
+    "Deine Änderungen in der Bibliothek wurden noch nicht gespeichert. Beim Fortfahren gehen sie verloren.": "Your library changes have not been saved. Continuing will discard them.",
+    "Entwurf verwerfen": "Discard draft",
+    "Wissensdatei entfernen?": "Remove knowledge file?",
+    "„{name}“ wird aus der Wissensbibliothek dieses Bots entfernt. Die ursprüngliche Datei bleibt erhalten.": "“{name}” will be removed from this bot’s knowledge library. The original file is kept.",
+    "Datei entfernen": "Remove file",
+    "Gesprächsverlauf leeren?": "Clear conversation history?",
+    "Der lokale Gesprächsverlauf von {name} wird gelöscht. Hindsight-Erinnerungen und Wissensdateien bleiben erhalten.": "The local conversation history for {name} will be deleted. Hindsight memories and knowledge files are kept.",
+    "Wird ausgeführt …": "Working…",
+    "Die Bibliothek wird gerade aktualisiert. Bitte kurz warten.": "The library is being updated. Please wait a moment."
   },
   "fr": {
     "{count} Bot · Auswahl": "{count} bot · Sélection",
@@ -1015,7 +1028,20 @@
     "CLI-Anbieter": "Fournisseur CLI",
     "{count} Charaktere sind bereits dabei. Weitere VRM-, GLB- und glTF-Figuren kannst du importieren.": "{count} personnages sont inclus. Tu peux importer d’autres personnages VRM, GLB et glTF.",
     "Oder importiere deine eigene VRM-, GLB- oder glTF-Datei.": "Ou importe ton propre fichier VRM, GLB ou glTF.",
-    "Bei glTF das vollständige Paket zuerst entpacken. BIN-Dateien und PNG/JPEG-Texturen bleiben im Modellordner; die App bündelt sie beim Import.": "Pour glTF, décompresse d’abord le paquet complet. Garde les fichiers BIN et les textures PNG/JPEG dans le dossier du modèle ; l’app les regroupe à l’import."
+    "Bei glTF das vollständige Paket zuerst entpacken. BIN-Dateien und PNG/JPEG-Texturen bleiben im Modellordner; die App bündelt sie beim Import.": "Pour glTF, décompresse d’abord le paquet complet. Garde les fichiers BIN et les textures PNG/JPEG dans le dossier du modèle ; l’app les regroupe à l’import.",
+    "Zum Inhalt springen": "Aller au contenu",
+    "Bot auswählen: {name}": "Choisir le bot : {name}",
+    "Nicht gespeicherte Änderungen": "Modifications non enregistrées",
+    "Entwurf verwerfen?": "Abandonner le brouillon ?",
+    "Deine Änderungen in der Bibliothek wurden noch nicht gespeichert. Beim Fortfahren gehen sie verloren.": "Vos modifications dans la bibliothèque ne sont pas enregistrées. Continuer les supprimera.",
+    "Entwurf verwerfen": "Abandonner le brouillon",
+    "Wissensdatei entfernen?": "Supprimer ce document ?",
+    "„{name}“ wird aus der Wissensbibliothek dieses Bots entfernt. Die ursprüngliche Datei bleibt erhalten.": "« {name} » sera supprimé de la bibliothèque de ce bot. Le fichier d’origine sera conservé.",
+    "Datei entfernen": "Supprimer le fichier",
+    "Gesprächsverlauf leeren?": "Effacer l’historique ?",
+    "Der lokale Gesprächsverlauf von {name} wird gelöscht. Hindsight-Erinnerungen und Wissensdateien bleiben erhalten.": "L’historique local de {name} sera supprimé. Les souvenirs Hindsight et les documents seront conservés.",
+    "Wird ausgeführt …": "Opération en cours…",
+    "Die Bibliothek wird gerade aktualisiert. Bitte kurz warten.": "La bibliothèque est en cours de mise à jour. Veuillez patienter."
   },
   "es": {
     "{count} Bot · Auswahl": "{count} bot · Seleccionar",
@@ -1524,6 +1550,19 @@
     "CLI-Anbieter": "Proveedor de CLI",
     "{count} Charaktere sind bereits dabei. Weitere VRM-, GLB- und glTF-Figuren kannst du importieren.": "Se incluyen {count} personajes. Puedes importar más personajes VRM, GLB y glTF.",
     "Oder importiere deine eigene VRM-, GLB- oder glTF-Datei.": "O importa tu propio archivo VRM, GLB o glTF.",
-    "Bei glTF das vollständige Paket zuerst entpacken. BIN-Dateien und PNG/JPEG-Texturen bleiben im Modellordner; die App bündelt sie beim Import.": "Para glTF, descomprime primero el paquete completo. Mantén los archivos BIN y las texturas PNG/JPEG en la carpeta del modelo; la app los agrupa al importar."
+    "Bei glTF das vollständige Paket zuerst entpacken. BIN-Dateien und PNG/JPEG-Texturen bleiben im Modellordner; die App bündelt sie beim Import.": "Para glTF, descomprime primero el paquete completo. Mantén los archivos BIN y las texturas PNG/JPEG en la carpeta del modelo; la app los agrupa al importar.",
+    "Zum Inhalt springen": "Saltar al contenido",
+    "Bot auswählen: {name}": "Seleccionar bot: {name}",
+    "Nicht gespeicherte Änderungen": "Cambios sin guardar",
+    "Entwurf verwerfen?": "¿Descartar borrador?",
+    "Deine Änderungen in der Bibliothek wurden noch nicht gespeichert. Beim Fortfahren gehen sie verloren.": "Los cambios de la biblioteca no se han guardado. Si continúas, se perderán.",
+    "Entwurf verwerfen": "Descartar borrador",
+    "Wissensdatei entfernen?": "¿Eliminar archivo de conocimiento?",
+    "„{name}“ wird aus der Wissensbibliothek dieses Bots entfernt. Die ursprüngliche Datei bleibt erhalten.": "«{name}» se eliminará de la biblioteca de este bot. El archivo original se conservará.",
+    "Datei entfernen": "Eliminar archivo",
+    "Gesprächsverlauf leeren?": "¿Borrar el historial?",
+    "Der lokale Gesprächsverlauf von {name} wird gelöscht. Hindsight-Erinnerungen und Wissensdateien bleiben erhalten.": "Se borrará el historial local de {name}. Los recuerdos de Hindsight y los archivos de conocimiento se conservarán.",
+    "Wird ausgeführt …": "Procesando…",
+    "Die Bibliothek wird gerade aktualisiert. Bitte kurz warten.": "La biblioteca se está actualizando. Espera un momento."
   }
 }

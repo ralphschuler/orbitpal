@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as THREE from 'three';
 import { AvatarStage } from './avatar';
+import { DistanceWalkClock } from './avatar-locomotion';
 import { avatarBinding } from './emote-capabilities';
 import { sampleAmbientMotion } from './autopilot-motion';
 import { renderedModelSoundActivity } from './sound-playback';
@@ -145,7 +146,7 @@ describe('model audio presentation ownership and lifetime',()=>{
     const stage=Object.create(AvatarStage.prototype) as any;
     Object.assign(stage,{options:{profile,speaking:false,autopilot:config},asset:'fixture',emoteReady:true,loadedEmoteBinding:JSON.stringify(avatarBinding(profile)),robot:{root},imported:gltf.scene,travel:new THREE.Group(),
       mixer:new THREE.AnimationMixer(gltf.scene),clips:gltf.animations,modelAudio:{stop:vi.fn()},humanoidPose:new Map(),humanoidBasis:new THREE.Quaternion(),
-      camera,controls:{target:new THREE.Vector3()},contentWidth:1,contentDepth:1,contentHeight:1,travelFraction:0,walkStrength:0,walking:false,
+      camera,controls:{target:new THREE.Vector3()},contentWidth:1,contentDepth:1,contentHeight:1,travelFraction:0,walkStrength:0,walking:false,walkClock:new DistanceWalkClock(),walkingCycleDistance:1,
       time:0,ambientSession:'',ambientGesture:'',ambientActions:['Wave']});
     expect(stage.getModelInfo()).toMatchObject({status:'ready',actions:expect.arrayContaining([expect.objectContaining({action:'Wave',kind:'clip'})])});
     const clock=vi.spyOn(Date,'now').mockImplementation(()=>now);

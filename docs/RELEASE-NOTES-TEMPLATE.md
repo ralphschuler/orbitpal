@@ -1,19 +1,17 @@
-## Fixed in 0.10.1
+## New in 0.11.1
 
-- Existing provider credentials retain their IDs and native storage mappings while the app switches to explicit native credential-store adapters. Credential errors show translated categories without exposing secret values or backend messages.
-- Wayland source selection first saves the current bot/model settings. If settings or bots change while the chooser is open, a discarded result closes only its own sharing session, preserving newer selections and other bots. Save again after selecting the new source.
-- Remove three legacy maintenance-warning package versions from the production dependency graph; the remaining warnings and the separately audited legacy test fixture remain documented.
-
-Isolated GNOME 46 and KDE Plasma 5.27 checks exercise real portal consent and fresh in-memory captures on synthetic desktops. Wayland remains experimental pending full desktop, provider and lifecycle acceptance.
+- Fix desktop Autopilot walking in vertical and diagonal directions. Characters turn upright along their actual path; a slightly elevated desktop view makes depth steps visible. Preserve offscreen excursions, visible returns before speech/emotes, live size changes and embedded idle poses.
+- Match embedded and procedural walking to actual traveled distance instead of elapsed session time. Calibrate authored strides once from bounded root/foot sampling and account for figure size, acceleration and projected depth. Keep walking sound rate synchronized. Unusual rigs use a body-height approximation; this is not inverse-kinematic foot locking.
+- Report empty, whitespace-only and emotion-only Autopilot responses as errors. Only an explicit model silence signal counts as a successful quiet turn. Deliberate silence, configured intervals and hourly budgets remain supported without forced extra attempts.
 
 ## Downloads and updates
 
-The release pipeline builds Windows x64 NSIS/MSI installers, macOS Apple Silicon and Intel ZIPs/DMGs, and Linux x64 AppImage/DEB packages. It requires platform checks, build-provenance verification and cryptographic verification of all five updater payloads before publication. Release files include dependency inventories, source code and SHA256SUMS.
+Windows x64 includes NSIS and MSI installers. macOS includes Apple Silicon and Intel ZIPs/DMGs. Linux x64 includes AppImage and DEB packages. The pipeline requires platform checks, build-provenance verification and cryptographic verification of all five updater payloads before publication. Dependency inventories, source code and SHA256SUMS are included.
 
-macOS retains the persistent self-signed identity introduced in 0.10.0 and is not Apple-notarized. Windows installers have no Authenticode signature. Permission retention through installed updates remains unverified; upgrading from ad-hoc releases through 0.9.0 may require renewed microphone/screen approval.
+In-app updates require explicit confirmation. Linux in-app installation uses AppImage; DEB packages update manually. Existing profiles, bot grants, credential IDs, installed app identity and updater trust key stay compatible.
 
-In-app updates require explicit confirmation. Linux in-app installation uses AppImage; DEB packages update manually. Existing profiles, bot grants, credential IDs, the installed app ID and updater trust key remain unchanged.
+macOS retains the pinned persistent self-signed identity and is **not Apple-notarized**. Windows installers have **no Authenticode signature**. Real installed-update and microphone/screen permission retention remain unverified; updating from ad-hoc releases through 0.9.0 can require renewed grants.
 
-Issues [#17](https://github.com/ralphschuler/orbitpal/issues/17), [#19](https://github.com/ralphschuler/orbitpal/issues/19) and [#26](https://github.com/ralphschuler/orbitpal/issues/26) remain open for signing/recovery and installed-update acceptance, remaining upstream dependency migrations, and full Wayland desktop/provider/lifecycle acceptance.
+Local validation uses fixture data: 436 frontend tests, 260 Rust unit tests and an offline Chromium review of nine characters, 72 directional states and nine settled idle poses. Browser checks use synthetic controller travel with the real renderer; they do not establish native overlays, operating-system permission retention, real audio playback or live-provider acceptance. Wayland remains experimental; unfinished desktop acceptance stays in draft PR #56 and issue #26. Signing/recovery/installed-update acceptance (#17) and remaining upstream dependency migrations (#19) also remain open.
 
-See the [changelog](https://github.com/ralphschuler/orbitpal/blob/v0.10.1/CHANGELOG.md), [credential compatibility scope](https://github.com/ralphschuler/orbitpal/blob/v0.10.1/scripts/fixtures/keyring-compat/README.md), [Wayland validation](https://github.com/ralphschuler/orbitpal/blob/v0.10.1/docs/WAYLAND-VALIDATION.md) and [release trust](https://github.com/ralphschuler/orbitpal/blob/v0.10.1/docs/RELEASE-TRUST.md).
+See the [changelog](https://github.com/ralphschuler/orbitpal/blob/v0.11.1/CHANGELOG.md), [Autopilot guide](https://github.com/ralphschuler/orbitpal/blob/v0.11.1/docs/AUTOPILOT.md), [Wayland validation](https://github.com/ralphschuler/orbitpal/blob/v0.11.1/docs/WAYLAND-VALIDATION.md) and [release trust](https://github.com/ralphschuler/orbitpal/blob/v0.11.1/docs/RELEASE-TRUST.md).

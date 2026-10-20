@@ -1,10 +1,24 @@
 # Changelog
 
+## 0.11.1 — 2026-10-20
+
+- Fix desktop Autopilot facing for vertical and diagonal paths with an elevated orthographic view and upright turns. Keep the full projected turning hull inside safe bounds and retain offscreen excursions, visible returns and live figure sizing.
+- Drive embedded and procedural walking from actual traveled distance instead of session age. Calibrate imported walk strides from bounded root/foot sampling, account for live scale and projected depth, preserve phase across pauses, and synchronize embedded walking sound rate. Unknown clips use a body-height approximation rather than promising exact foot locking.
+- Report empty, whitespace-only and emotion-only Autopilot responses as invalid output. Only an explicit silence signal is a successful quiet turn; preserve deliberate silence, existing intervals and hourly budgets without forcing extra attempts.
+
+## 0.11.0 — 2026-10-20
+
+- Redesign the Studio with consistent dark surfaces, readable typography and controls, one header save/status area and persistent selected-bot context. Move the composer directly below the character and keep the crew in a compact scrolling roster. Preserve full text navigation at smaller widths.
+- Separate shared Skill/MCP installations from per-bot grants more clearly. Present Autopilot, screen permissions and updates with consistent sections and expandable technical details while keeping grants, costs, errors and pending actions visible. Retain all four interface languages independently of bot content.
+- Confirm before discarding changed library drafts or deleting knowledge/history. Preserve unchanged drafts without unnecessary prompts, retain shared drafts across bot switches and keep errors/drafts when a save fails. Hold the same editor through compound profile/document/library saves so delayed completion cannot save a replacement draft.
+- Fix Escape ordering for the bot picker, tooltips, keyboard help and editors. Keep global save/send/navigation shortcuts behind confirmations, preserve IME composition, restore focus after local discard and associate all edited form labels explicitly. Keep the narrow-window bot menu above the sticky header and prevent crew labels from collapsing into vertical text.
+- Preserve installed identities, provider/permission behavior, updater trust and the persistent self-signed macOS certificate. Local UI validation covers 96 page views across four languages and three sizes, plus keyboard/dialog and transparent-overlay fixtures; these browser fixtures do not establish native installation, privacy retention or live provider acceptance. Existing signing/install, upstream maintenance and Wayland acceptance work remains tracked in #17, #19 and #26.
+
 ## 0.10.1 — 2026-10-20
 
 - Replace the monolithic keyring dependency with supported explicit native stores while preserving the legacy service, credential IDs, macOS User Keychain, Windows credential encoding/target and Linux persistent Secret Service `target=default` attributes. Construct stores directly without a process-global default. Return fixed, localized credential error categories without backend payloads or malformed secret bytes.
 - Save current bot/model settings before Wayland source selection and reject stale preparation/results after a bot, draft or panel change. Close a discarded result by its exact bot/session lease so cleanup cannot disconnect a newer selection or another bot. Surface cleanup failures even after leaving the panel. The new source display ID still requires an explicit save.
-- Add a disposable three-OS old/new credential compatibility fixture and an isolated real GNOME/KDE ScreenCast/PipeWire prototype with actual chooser interaction and in-memory image assertions. Wayland remains experimental pending the full acceptance matrix in #26; harness presence does not establish a passing desktop result.
+- Add a disposable three-OS old/new credential compatibility fixture. Keep the separate real-desktop ScreenCast/PipeWire prototype in draft PR #56 while its KDE test-compositor limitation is unresolved. Wayland remains experimental pending the full acceptance matrix in #26; a successful GNOME prototype does not establish KDE or full application acceptance.
 - Remove three old optional keyring/zbus maintenance-warning package versions from the production lockfile through the supported credential-store migration. Five production maintenance warnings and the separately audited legacy fixture warnings remain documented in #19; no advisory exclusions are introduced.
 - Record v0.10.0 production signing/provenance evidence and activate future release asset immutability plus version-tag update/deletion protection. Preserve the persistent self-signed macOS identity, updater key and installed compatibility identities. Native install/privacy acceptance and protected signing custody remain open in #17.
 

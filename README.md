@@ -10,7 +10,7 @@ Your own animated AI cohost for Twitch and YouTube. A native **Tauri 2 + Rust** 
 
 **Early release:** expect rough edges and review provider settings before going live. Model runtimes, accounts, API keys and voices are supplied by you.
 
-The current source version is **0.10.1**. Consult the release notes for the version included in each published package.
+The current source version is **0.11.1**. Consult the release notes for the version included in each published package.
 
 ## What it does
 
@@ -40,7 +40,9 @@ Get published packages from the [latest release](https://github.com/ralphschuler
 
 The app opens without an AI account. Nova and the included models work without downloading assets. Dialog and voice services require their respective configuration. CLI integrations usually use cloud inference; installing a CLI does not make its model local.
 
-Press **?** or **F1** for keyboard help. **Ctrl/Cmd+S** saves, **Ctrl/Cmd+K** focuses the composer, **Ctrl/Cmd+Enter** sends from the studio, and **Alt/Option+1–8** switches sections. **Esc** dismisses visible help or a dialog first; otherwise it stops output. Inline information buttons explain settings on hover or keyboard focus.
+The Studio keeps the selected bot visible in the sidebar and the save state in one header. Character, voice, models and personal instructions belong to that bot; Skills & MCP is the shared installation library with separate per-bot grants. The chat composer sits directly below the character. Advanced setup details expand when needed, and the navigation keeps its text labels in smaller windows. Unsaved library drafts and destructive knowledge/history actions require confirmation.
+
+Press **?** or **F1** for keyboard help. **Ctrl/Cmd+S** saves, **Ctrl/Cmd+K** focuses the composer, **Ctrl/Cmd+Enter** sends from the studio, and **Alt/Option+1–8** switches sections. **Esc** dismisses visible help or a dialog first; otherwise it stops output. Inline information buttons explain settings on hover or keyboard focus. See the [Studio UI acceptance checks](docs/STUDIO-UI.md) for the layout and draft/deletion regression scenarios.
 
 From version 0.6.0, **Updates & Version** checks the stable GitHub release channel shortly after startup and every six hours. You may disable automatic checks, check manually or choose **Later**. The app downloads and installs only after **Confirm & install**; save edits and stop ongoing output/microphone use first. Linux in-app installation requires an AppImage; Debian packages update manually. Earlier versions require one manual upgrade. See [updates](docs/UPDATING.md).
 

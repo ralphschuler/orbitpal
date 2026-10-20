@@ -18,6 +18,8 @@ Im **Studio und in OBS** bewegt sich die Figur mit Ruhepausen innerhalb ihrer vo
 
 Im **nativen transparenten Figurenfenster** erweitert aktives **Herumlaufen** die Ausgabe dagegen auf die Fläche eines Monitors. Es entsteht kein eigener macOS-Vollbildbereich. Die Figur betritt die Fläche von links oder rechts und besucht mit Pausen Punkte in beiden Bildschirmrichtungen. Sprache und Emotes halten den Lauf an. Ohne geeignete Laufanimation beziehungsweise unterstütztes Geh-Rig bleibt sie stehen.
 
+Die Figur richtet sich nach ihrem tatsächlichen Weg aus, einschließlich oben, unten und aller diagonalen Richtungen. Eine leicht erhöhte Desktopkamera macht auch Schritte in die Tiefe sichtbar; der Körper bleibt aufrecht. Das Schritttempo folgt der zurückgelegten Strecke und der aktuellen Figurgröße, auch beim Beschleunigen, Bremsen, Betreten und Verlassen des Bildes. Pausen spulen die Laufanimation nicht im Hintergrund vor. Bei eingebetteten Laufclips wird die Schrittlänge einmal aus der Rootbewegung oder den Fußbewegungen bestimmt; bei unvollständigen Daten dient die Körperhöhe als Näherung. Das ist keine inverse Kinematik und garantiert keine exakte Fußbindung für jeden fremden Clip.
+
 Nach mehreren sichtbaren Wegpunkten darf sie seitlich ganz aus dem Bild laufen, drei bis acht aktive Sekunden außerhalb bleiben und anschließend wieder hereinkommen. Eine anstehende Sprachausgabe oder ausdrücklich ausgelöste Geste hat Vorrang: Sobald ihr Audio vorbereitet ist, läuft sie zum nächsten vollständig sichtbaren Punkt zurück und kommt zum Stehen. Erst ein bestätigter Darstellungsframe gibt Stimme, Untertitel, Emote und dessen Sound frei. Textausgaben bei ausgeschalteter Stimme warten ebenfalls auf diese Rückkehr. Die Figur bleibt für laufende Sprache, Gesten und deren Soundende sichtbar. Kleine zufällige Gesten außerhalb des Bildes werden übersprungen.
 
 Stop, Profil-/Assetwechsel und das Schließen der Ausgabe verwerfen eine wartende Präsentation; eine verspätete Rückkehr startet keine abgebrochene Antwort. Wird die Figur nicht innerhalb von 20 Sekunden darstellungsbereit, fällt die Ausgabe mit einem Hinweis aus, statt unsichtbar zu sprechen. Für die Seiten-Ausflüge wird das native Fenster nicht über den gewählten Monitor hinaus erweitert. Studio und OBS behalten ihre begrenzte Bühne.
@@ -51,6 +53,8 @@ Auch ausgeschaltetes Sprechen, ein fehlendes Dialogmodell, eine inaktive Ausgabe
 Bewegungen lösen keine KI-Anfragen aus. Eigene Beiträge verwenden den gewählten Anbieter und können dessen übliche Kosten für Dialog, Stimme und Hindsight verursachen. Die Intervalle sind zwischen 15 und 3600 Sekunden und das Stundenbudget zwischen 1 und 120 Versuchen einstellbar. Das Budget begrenzt die Anzahl der Gesprächsversuche, keinen Geldbetrag und keine internen Werkzeugrunden.
 
 Text, Stimme und eingeplante Emotes verwenden denselben Wiedergabeablauf wie normale Antworten. Ein stummer Versuch erzeugt keine künstliche Nutzernachricht oder Sprachausgabe. Autopilot-Beiträge werden nicht automatisch in Twitch oder YouTube gepostet.
+
+Eine leere Modellantwort oder eine Antwort nur mit Emotions- beziehungsweise Stimm-Tags wird als Fehler angezeigt. Nur das ausdrückliche Schweigesignal des Modells gilt als erfolgreicher stummer Versuch. Danach beginnt wie üblich der nächste eingestellte Ruheabstand; es wird kein zusätzlicher Versuch erzwungen.
 
 ## Optionaler Bildschirmkontext
 

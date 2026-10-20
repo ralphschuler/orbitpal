@@ -193,37 +193,37 @@
 </section>
 
 <style>
-  .wake-word { margin: 0 0 20px; border: 1px solid #e1e5eb; background: #ffffffb8; border-radius: 13px; overflow: hidden; color: #3c485c; }
+  .wake-word { margin: 0 0 20px; border: 1px solid var(--line); background: var(--panel); border-radius: 10px; overflow: hidden; color: var(--text); }
   .wake-bar { display: flex; align-items: center; gap: 11px; padding: 12px 15px; min-height: 58px; }
-  .wake-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; color: #8390a3; background: #edf0f4; flex: 0 0 auto; }
-  .listening .wake-icon { background: #e4f0e9; color: #53816b; }
+  .wake-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; color: var(--muted); background: var(--surface-raised); flex: 0 0 auto; }
+  .listening .wake-icon { background: #233c40; color: var(--accent); }
   .wake-copy { min-width: 120px; flex: 1; display: flex; flex-direction: column; gap: 3px; }
   .wake-copy strong { font-size: 12px; font-weight: 650; }
-  .wake-copy strong span { font-weight: 450; color: #8992a0; }
-  .wake-status { font-size: 11px; color: #7d8797; line-height: 1.4; }
-  .provider-badge { background: #f2edf9; color: #87749d; font-size: 10px; padding: 5px 8px; border-radius: 7px; white-space: nowrap; }
-  .provider-badge.local { background: #edf1f6; color: #7c8a9e; }
-  .wake-button, .wake-settings { display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-family: inherit; font-size: 11px; font-weight: 600; border: 1px solid #dfe4ec; background: #fff; border-radius: 8px; color: #65758b; min-height: 32px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
-  .wake-button:hover, .wake-settings:hover { background: #f5f7fa; }
+  .wake-copy strong span { font-weight: 450; color: var(--muted); }
+  .wake-status { font-size:12.5px; color: var(--muted); line-height: 1.4; }
+  .provider-badge { background: var(--surface-raised); color: var(--muted); font-size:12px; padding: 5px 8px; border-radius: 7px; white-space: nowrap; }
+  .provider-badge.local { background: var(--surface-raised); color: var(--muted); }
+  .wake-button, .wake-settings { display: inline-flex; align-items: center; justify-content: center; gap: 7px; font-family: inherit; font-size:12.5px; font-weight: 600; border: 1px solid var(--line); background: var(--surface-raised); border-radius: 8px; color: var(--text); min-height: 32px; padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+  .wake-button:hover, .wake-settings:hover { background: #2c404a; }
   .wake-button:disabled { opacity: 0.5; cursor: default; }
-  .wake-button.start { background: #edf2fb; border-color: #dce4f3; color: #6b80aa; }
-  .wake-button.stop { color: #8c6d60; background: #faf4ef; border-color: #eee1d7; }
-  .wake-settings { border-color: transparent; padding: 7px; color: #8b95a4; }
-  .wake-settings.open { background: #f0f3f8; }
-  .wake-disclosure, .wake-error { margin: 0; padding: 0 16px 12px 58px; color: #8c739b; font-size: 11px; line-height: 1.6; }
-  .wake-error { color: #ab665b; }
-  .wake-details { border-top: 1px solid #e8ebf0; padding: 17px 18px; background: #fbfcfe; }
+  .wake-button.start { background: #233c40; border-color: #426b66; color: var(--accent); }
+  .wake-button.stop { color: var(--danger); background: #30242c; border-color: #69404b; }
+  .wake-settings { border-color: transparent; padding: 7px; color: var(--muted); }
+  .wake-settings.open { background: var(--surface-raised); }
+  .wake-disclosure, .wake-error { margin: 0; padding: 0 16px 12px 58px; color: var(--warning); font-size:12.5px; line-height: 1.6; }
+  .wake-error { color: var(--danger); }
+  .wake-details { border-top: 1px solid var(--line); padding: 17px 18px; background: var(--input-bg); }
   .wake-toggle { display: flex; align-items: center; gap: 9px; font-size: 12px; font-weight: 550; margin-bottom: 16px; }
-  .wake-toggle input { width: 15px; height: 15px; margin: 0; accent-color: #839ac2; }
+  .wake-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
   .wake-config { display: grid; grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1.3fr); gap: 25px; }
-  .wake-phrases { display: flex; flex-direction: column; gap: 6px; font-size: 11px; font-weight: 600; }
-  .wake-phrases > span { font-size: 10px; font-weight: 450; color: #97a0ad; }
-  .wake-phrases textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; min-height: 76px; resize: vertical; font: inherit; font-size: 12px; line-height: 1.6; color: #56657a; background: #fff; border: 1px solid #dfe5ed; border-radius: 9px; outline: none; }
+  .wake-phrases { display: flex; flex-direction: column; gap: 6px; font-size:12.5px; font-weight: 600; }
+  .wake-phrases > span { font-size:12px; font-weight: 450; color: var(--muted); }
+  .wake-phrases textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; min-height: 76px; resize: vertical; font: inherit; font-size: 12px; line-height: 1.6; color: var(--text); background: var(--surface-raised); border: 1px solid var(--line); border-radius: 9px; outline-offset: 3px; }
   .wake-phrases textarea:focus { border-color: #a4b5d0; box-shadow: 0 0 0 3px #8ea5c219; }
-  .wake-explanation p { font-size: 11px; line-height: 1.7; color: #8791a0; margin: 0 0 8px; }
-  .wake-explanation strong { color: #6e7c90; font-weight: 600; }
+  .wake-explanation p { font-size:12.5px; line-height: 1.7; color: var(--muted); margin: 0 0 8px; }
+  .wake-explanation strong { color: var(--text); font-weight: 600; }
   .wake-footer { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding-top: 12px; }
-  .wake-footer > span { font-size: 10px; color: #99a1ae; }
+  .wake-footer > span { font-size:12px; color: var(--muted); }
   @media (max-width: 1000px) { .provider-badge { display: none; } .wake-config { grid-template-columns: 1fr; gap: 16px; } }
   @media (max-width: 680px) { .wake-bar { flex-wrap: wrap; } .wake-copy { flex-basis: calc(100% - 55px); } .wake-button { margin-left: 43px; } .wake-settings { margin-left: auto; } .wake-footer .wake-button { margin-left: 0; } .wake-disclosure, .wake-error { padding-left: 15px; } }
 </style>

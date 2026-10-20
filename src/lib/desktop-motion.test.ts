@@ -54,6 +54,24 @@ describe('Local logical-pixel desktop wandering',()=>{
     }
     for(const delta of [0,-1,NaN,Infinity]){options.now+=1000;const frame=controller.sample({...options,delta});expect(distance(frame,previous)).toBe(0);previous=frame;}
   });
+  it('reports the actual two-axis step rather than only horizontal facing, with no motion during pauses or stalls',()=>{
+    const controller=new DesktopMotionController(),options=input({viewport:{width:1200,height:1200},figure:{width:180,height:180}});let previous=controller.sample(options);
+    expect(previous.travel).toEqual({x:0,y:0});
+    const directions=new Set<number>();
+    for(let index=0;index<30_000;index++){
+      options.now+=index%117===0?60_000:16;
+      const paused=index%91===0;
+      const frame=controller.sample({...options,paused,delta:index%117===0?60:.016});
+      expect(frame.travel.x).toBeCloseTo(frame.x-previous.x,8);
+      expect(frame.travel.y).toBeCloseTo(frame.y-previous.y,8);
+      expect(Math.hypot(frame.travel.x,frame.travel.y)).toBeLessThanOrEqual(DESKTOP_MAX_SPEED*DESKTOP_MAX_DELTA+1e-8);
+      if(paused)expect(frame.travel).toEqual({x:0,y:0});
+      if(frame.walking)directions.add((Math.round(Math.atan2(frame.travel.y,frame.travel.x)/(Math.PI/4))+8)%8);
+      previous=frame;
+    }
+    expect([...directions].sort()).toEqual([0,1,2,3,4,5,6,7]);
+    expect(controller.sample({...options,viewport:{width:0,height:0}}).travel).toEqual({x:0,y:0});
+  });
   it('freezes during speech/emotes and resumes the same waypoint smoothly without wall-clock catch-up',()=>{
     const controller=new DesktopMotionController(),options=input();let frame=run(controller,options,1200);const before={x:frame.x,y:frame.y};
     for(let index=0;index<300;index++){options.now+=1000;frame=controller.sample({...options,paused:true,delta:1});expect(frame.phase).toBe('paused');expect(frame.walking).toBe(false);expect({x:frame.x,y:frame.y}).toEqual(before);}

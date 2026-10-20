@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { DesktopMotionController } from './desktop-motion';
 import { AvatarPresentationGate, presentationAbortError, type PresentationRelease } from './avatar-presentation';
-import { desktopFraming, measureDesktopModel } from './desktop-framing';
+import { configureDesktopCamera, desktopFraming, desktopTravelVector, measureDesktopModel } from './desktop-framing';
+import { DistanceWalkClock, estimateWalkingCycleDistance, proceduralCycleDistance } from './avatar-locomotion';
 import type { DesktopLayout } from './output-presentation';
 export type DesktopAnchor={x:number;y:number;width:number;height:number;visible:boolean;viewport:{width:number;height:number}};
 import { availableActions, clipHasTarget, avatarBinding, currentEmotePayload, resolveAvailableAction, unavailableEmote, type AvailableAction } from './emote-capabilities';
@@ -118,6 +119,9 @@ export class AvatarStage {
   private walkingAction?: THREE.AnimationAction;
   private walking = false;
   private walkingPhase = 0;
+  private walkClock = new DistanceWalkClock();
+  private walkingCycleDistance = proceduralCycleDistance(2.9);
+  private walkingAudioRate = 0;
   private walkAnchor?: THREE.Object3D;
   private walkAnchorRest = new THREE.Vector3();
   private modelForwardYaw = 0;
@@ -232,7 +236,7 @@ export class AvatarStage {
     const avatar = options.profile?.avatar ?? {};
     this.ground.visible = !options.transparent;
     let scale = THREE.MathUtils.clamp(Number(avatar.scale) || 1, 0.3, 2.5);
-    if(this.desktopActive){const frame=this.desktopFrame(scale);scale=frame.scale;this.desktopCamera.left=-frame.worldWidth/2;this.desktopCamera.right=frame.worldWidth/2;this.desktopCamera.top=frame.worldHeight/2;this.desktopCamera.bottom=-frame.worldHeight/2;this.desktopCamera.position.set(0,0,20);this.desktopCamera.lookAt(0,0,0);this.desktopCamera.updateProjectionMatrix();this.desktopCamera.updateMatrixWorld();}
+    if(this.desktopActive){const frame=this.desktopFrame(scale);scale=frame.scale;this.desktopCamera.left=-frame.worldWidth/2;this.desktopCamera.right=frame.worldWidth/2;this.desktopCamera.top=frame.worldHeight/2;this.desktopCamera.bottom=-frame.worldHeight/2;configureDesktopCamera(this.desktopCamera);}
     this.robot.root.scale.setScalar(scale);
     this.imported.scale.setScalar(scale);
     const accent = new THREE.Color();
@@ -423,6 +427,9 @@ export class AvatarStage {
         }
       }
       this.desktopModelBounds=measureDesktopModel(this.imported);
+      this.walkingCycleDistance = this.walkingClip
+        ? estimateWalkingCycleDistance(this.imported, this.walkingClip, this.contentHeight).cycleDistance
+        : proceduralCycleDistance(this.contentHeight);
       this.emoteReady = true;
       this.loadedEmoteBinding = emoteBinding;
       this.ambientActions = ambientGestureActions(this.clips.filter(clip=>this.getModelInfo().actions?.some(action=>action.action===clip.name)), this.getModelInfo().proceduralGestures);
@@ -552,6 +559,8 @@ export class AvatarStage {
       if (this.emoteSource === 'ambient') this.finishEmote();
       this.setWalking(false, true);
       this.ambientSession = session; this.ambientGesture = ''; this.travelFraction = 0;
+      this.walkClock.reset(session);
+      this.walkingPhase = 0;
     }
     const presenting = this.presentation?.requested ?? false;
     const blocked = this.options.speaking || this.emoteSource === 'manual' || Boolean(this.asset && this.robot.root.visible);
@@ -575,21 +584,23 @@ export class AvatarStage {
       }
     }
     let moving=false;
+    let walkedDistance=0;
     if(this.desktopActive){
       const width=Math.max(1,this.host.clientWidth),height=Math.max(1,this.host.clientHeight);
       const scale=this.robot.root.scale.x;
       const units=height/(this.desktopCamera.top-this.desktopCamera.bottom);
-      this.desktopFigure={width:Math.hypot(this.desktopModelBounds.size.x,this.desktopModelBounds.size.z)*scale*units,height:this.desktopModelBounds.size.y*scale*units};
+      this.desktopFigure=this.desktopFrame(scale).figure;
       const movable=Boolean(config?.active&&config.wander&&this.canWalk());
       if(!movable)this.desktopMotion.reset();
-      const position=(reduced||!movable)?{x:width/2,y:height/2,walking:false,facing:1,presentationReady:this.desktopFigure.width<=width-48&&this.desktopFigure.height<=height-48}:this.desktopMotion.sample({seed:config!.seed,startedAt:config!.startedAt,viewport:{width,height},figure:this.desktopFigure,margin:24,now:Date.now(),delta,paused:ambientBlocked||Boolean(this.emote),presentationRequested:presenting});
+      const position=(reduced||!movable)?{x:width/2,y:height/2,walking:false,travel:{x:0,y:0},presentationReady:this.desktopFigure.width<=width-48&&this.desktopFigure.height<=height-48}:this.desktopMotion.sample({seed:config!.seed,startedAt:config!.startedAt,viewport:{width,height},figure:this.desktopFigure,margin:24,now:Date.now(),delta,paused:ambientBlocked||Boolean(this.emote),presentationRequested:presenting});
       this.desktopPresentationReady=position.presentationReady;
       moving=movable&&position.walking&&(presenting||!blocked&&!this.emote);
-      this.setWalking(moving,!moving&&(blocked||presenting));this.walkStrength=moving?THREE.MathUtils.damp(this.walkStrength,1,14,delta):0;this.walkingPhase=frame.ageSeconds;
-      const right=new THREE.Vector3(1,0,0),up=new THREE.Vector3(0,1,0);
+      this.setWalking(moving,!moving&&(blocked||presenting));this.walkStrength=moving?THREE.MathUtils.damp(this.walkStrength,1,14,delta):0;
+      const right=new THREE.Vector3(1,0,0).applyQuaternion(this.desktopCamera.quaternion),up=new THREE.Vector3(0,1,0).applyQuaternion(this.desktopCamera.quaternion);
       this.travel.position.set(0,0,0).addScaledVector(right,(position.x-width/2)/units).addScaledVector(up,(height/2-position.y)/units);
-
-      const heading=moving?Math.atan2(right.x*position.facing,right.z*position.facing)-this.modelForwardYaw:0;
+      const groundTravel=desktopTravelVector(position.travel.x,position.travel.y);
+      if(moving)walkedDistance=groundTravel.length()/(units*scale);
+      const heading=moving?Math.atan2(groundTravel.x,groundTravel.z)-this.modelForwardYaw:0;
       const angle=Math.atan2(Math.sin(heading-this.travel.rotation.y),Math.cos(heading-this.travel.rotation.y));this.travel.rotation.y+=angle*(1-Math.exp(-delta*9));
       this.travel.position.sub(this.desktopModelBounds.center.clone().multiplyScalar(scale).applyQuaternion(this.travel.quaternion));
     }else{
@@ -602,7 +613,7 @@ export class AvatarStage {
     moving = capable && Math.abs(this.travelFraction - previous) > 0.00001;
     this.setWalking(moving && !ambientBlocked, ambientBlocked);
     this.walkStrength = ambientBlocked ? 0 : THREE.MathUtils.damp(this.walkStrength, moving ? 1 : 0, 14, delta);
-    this.walkingPhase = frame.ageSeconds;
+    if(moving&&!ambientBlocked)walkedDistance=Math.abs(this.travelFraction-previous)*lane/scale;
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion); right.y = 0; right.normalize();
     this.travel.position.copy(right).multiplyScalar(this.travelFraction * lane);
     const direction = this.travelFraction >= previous ? 1 : -1;
@@ -612,7 +623,10 @@ export class AvatarStage {
     if (this.contactShadow) { this.contactShadow.position.x = this.travel.position.x; this.contactShadow.position.z = this.travel.position.z; }
     }
     if (this.desktopActive && !this.desktopPresentationReady && frame.gesture) this.ambientGesture = frame.gesture.key;
-    if (this.walkingAction && this.walkingClip && this.walkingAction.enabled && this.walkingAction.isScheduled()) this.walkingAction.time = (frame.ageSeconds * 0.8) % this.walkingClip.duration;
+    const cycles=this.walkClock.advance(walkedDistance,this.walkingCycleDistance,session);
+    this.walkingPhase=cycles/.65;
+    this.walkingAudioRate=delta>0&&this.walkingClip?walkedDistance/this.walkingCycleDistance*this.walkingClip.duration/delta:0;
+    if (this.walkingAction && this.walkingClip && this.walkingAction.enabled && this.walkingAction.isScheduled()) this.walkingAction.time = (cycles%1)*this.walkingClip.duration;
     if (!ambientBlocked && (!this.desktopActive || this.desktopPresentationReady) && !moving && frame.gesture && frame.gesture.key !== this.ambientGesture && this.ambientActions.length) {
       this.ambientGesture = frame.gesture.key;
       const action = this.ambientActions[Math.min(this.ambientActions.length - 1, Math.floor(frame.gesture.choice * this.ambientActions.length))];
@@ -998,14 +1012,18 @@ export class AvatarStage {
     if (!this.desktopActive || !this.emote || this.emoteSource === 'ambient' || this.emote.action === 'hide') return;
     const root = this.asset ? this.imported : this.robot.root;
     root.updateWorldMatrix(true, true);
-    const bounds = new THREE.Box3().setFromCenterAndSize(this.desktopModelBounds.center, this.desktopModelBounds.size).applyMatrix4(root.matrixWorld);
+    // Clamp in camera space: the desktop camera is elevated so world Y alone
+    // cannot describe the top/bottom of a turning or jumping character.
+    const bounds = new THREE.Box3().setFromCenterAndSize(this.desktopModelBounds.center, this.desktopModelBounds.size)
+      .applyMatrix4(new THREE.Matrix4().multiplyMatrices(this.desktopCamera.matrixWorldInverse,root.matrixWorld));
     const units = this.host.clientHeight / (this.desktopCamera.top - this.desktopCamera.bottom);
     const margin = 24 / units;
     const minX = this.desktopCamera.left + margin, maxX = this.desktopCamera.right - margin;
     const minY = this.desktopCamera.bottom + margin, maxY = this.desktopCamera.top - margin;
     const shift = (low: number, high: number, min: number, max: number) => high-low > max-min ? (min+max-low-high)/2 : low < min ? min-low : high > max ? max-high : 0;
-    this.travel.position.x += shift(bounds.min.x, bounds.max.x, minX, maxX);
-    this.travel.position.y += shift(bounds.min.y, bounds.max.y, minY, maxY);
+    this.travel.position.add(new THREE.Vector3(
+      shift(bounds.min.x, bounds.max.x, minX, maxX),
+      shift(bounds.min.y, bounds.max.y, minY, maxY),0).applyQuaternion(this.desktopCamera.quaternion));
     root.updateWorldMatrix(true, true);
   }
 
@@ -1155,7 +1173,7 @@ export class AvatarStage {
         token: emote ? `emote:${this.emoteSource === 'ambient' ? this.ambientSession + ':' + this.ambientGesture : this.emoteNonce}` : `walk:${this.ambientSession}`,
         animation: emote ? this.clips.indexOf(action.getClip()) : this.walkingAudioIndex,
         time: action.time, loop: !emote,
-        rate: emote && this.emote ? action.getClip().duration / this.emote.duration : 0.8,
+        rate: emote && this.emote ? action.getClip().duration / this.emote.duration : this.walkingAudioRate,
       } : undefined, Number(this.options.profile?.voice?.volume ?? 1));
     } catch (error) { this.modelAudio?.stop(); this.presentation.fail(error); }
   };
@@ -1180,6 +1198,10 @@ export class AvatarStage {
     this.walkingAction = undefined;
     this.walking = false;
     this.walkStrength = 0;
+    this.walkClock.reset();
+    this.walkingPhase = 0;
+    this.walkingAudioRate = 0;
+    this.walkingCycleDistance = proceduralCycleDistance(2.9);
     this.walkingLegs = undefined;
     this.walkAnchor = undefined;
     this.walkAnchorRest.set(0, 0, 0);
