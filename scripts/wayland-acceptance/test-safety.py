@@ -159,7 +159,7 @@ class ControllerConsent(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name).resolve()
         tree = ast.parse((DIRECTORY / "desktop.py").read_text(encoding="utf-8"))
-        wanted = {"atomic_json", "sensitive", "chooser_title", "kde6_monitor", "pointer_escape", "select_single_monitor", "translated_pointer", "kwin_geometry", "Desktop"}
+        wanted = {"atomic_json", "children", "sensitive", "chooser_title", "kde6_monitor", "pointer_escape", "select_single_monitor", "translated_pointer", "kwin_geometry", "Desktop"}
         module = ast.Module(body=[item for item in tree.body if isinstance(item, (ast.FunctionDef, ast.ClassDef)) and item.name in wanted], type_ignores=[])
         self.api = SimpleNamespace(STATE_SENSITIVE="sensitive", STATE_ENABLED="enabled", STATE_PRESSED="pressed", STATE_CHECKED="checked", STATE_SELECTED="selected", ROLE_LIST_ITEM="card", ROLE_TOGGLE_BUTTON="toggle", ROLE_PUSH_BUTTON="button")
         self.namespace = {"CONTROL": self.root, "ROOT": self.root, "DESKTOP": "kde", "KDE6": False, "TITLES": {"gnome": "Share Screen", "kde": "Screen Sharing"}, "json": json,
@@ -171,6 +171,35 @@ class ControllerConsent(unittest.TestCase):
 
     def node(self, states):
         return SimpleNamespace(name="Virtual-1", getRole=lambda: "card", getState=lambda: SimpleNamespace(contains=lambda state: state in states))
+
+    def test_children_do_not_consult_stale_negative_length_hints(self):
+        class StaleLength:
+            def __len__(self):
+                raise ValueError("__len__() should return >= 0")
+            def __iter__(self):
+                return iter(["synthetic child"])
+        self.assertEqual(self.namespace["children"](StaleLength()), ["synthetic child"])
+
+        class StaleIterator:
+            def __iter__(self):
+                raise ValueError("defunct accessible")
+        self.assertEqual(self.namespace["children"](StaleIterator()), [])
+
+    def test_children_bound_an_untrusted_infinite_accessibility_sequence(self):
+        class Infinite:
+            def __iter__(self):
+                return iter(lambda: "synthetic child", None)
+            def __len__(self):
+                raise AssertionError("No length hint is allowed")
+        self.assertEqual(len(self.namespace["children"](Infinite())), 1200)
+
+    def test_dense_walk_preserves_bfs_prefix_without_enumerating_over_budget(self):
+        tree = ast.parse((DIRECTORY / "desktop.py").read_text(encoding="utf-8"))
+        function = next(item for item in tree.body if isinstance(item, ast.FunctionDef) and item.name == "walk")
+        namespace = {"children": Mock(return_value=list(range(1200)))}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "actual-walk-fixture", "exec"), namespace)
+        self.assertEqual(list(namespace["walk"]("root", 7)), ["root", 0, 1, 2, 3, 4, 5])
+        namespace["children"].assert_called_once_with("root")
 
     def controller(self, action="allow"):
         controller = self.namespace["Desktop"].__new__(self.namespace["Desktop"])

@@ -80,8 +80,16 @@ def atomic_json(path, value):
 
 def children(node):
     try:
-        return list(node)
-    except (RuntimeError, TypeError, NotImplementedError):
+        # A stale AT-SPI node may expose a negative __len__ during teardown.
+        # Do not ask list() for that length hint or allocate an unbounded tree.
+        iterator, result = iter(node), []
+        for _ in range(1200):
+            try:
+                result.append(next(iterator))
+            except StopIteration:
+                break
+        return result
+    except (RuntimeError, TypeError, ValueError, NotImplementedError):
         return []
 
 
@@ -92,7 +100,9 @@ def walk(root, limit=1200):
         node = pending.pop(0)
         seen += 1
         yield node
-        pending.extend(children(node))
+        remaining = limit - seen - len(pending)
+        if remaining > 0:
+            pending.extend(children(node)[:remaining])
 
 
 def visible(node):
