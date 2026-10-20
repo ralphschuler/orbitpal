@@ -49,11 +49,11 @@
     "Aktuelle Aktivität": "Current activity",
     "Aktive Dauer: {seconds} s.": "Active duration: {seconds} s.",
     "Gerade keine Aktivität.": "No current activity.",
-    "Startet eine einmalige Pause von 10 aktiven Sekunden. Life muss bereits laufen. Die Pause hat keine eigene Animation und füllt keine Bedürfnisse auf. Sie benötigt weder KI-Modell noch Stimme. Mit Stop brichst du sie ab. Danach startet nichts automatisch.": "Starts a single rest lasting 10 active seconds. Life must already be running. Rest has no animation of its own and does not refill needs. It needs no AI model or voice. Stop cancels it. Nothing starts automatically afterwards.",
     "Gehen, Aufladen, Spielen, Umschauen und Winken lassen sich hier noch nicht als eigene Aktivitäten starten. Nicht verfügbare Bewegungen werden nicht als Erfolg angezeigt.": "Walking, recharging, playing, looking and waving cannot yet be started here as separate activities. Unavailable movements are not shown as successful.",
     "Der Aktivitätsstatus ist noch nicht bestätigt. Angezeigt wird der letzte bekannte Stand. Neue Aktivitäten bleiben gesperrt.": "Activity status is not yet confirmed. The last known state is shown. New activities remain blocked.",
     "Aktivitäten für {name}": "Activities for {name}",
-    "Aktivität {number} · gespeicherter Stand {revision}": "Activity {number} · saved version {revision}"
+    "Aktivität {number} · gespeicherter Stand {revision}": "Activity {number} · saved version {revision}",
+    "Startet eine einmalige Pause von 10 aktiven Sekunden. Life muss bereits laufen. Die Pause hat keine eigene Animation und füllt keine Bedürfnisse auf. Sie benötigt weder KI-Modell noch Stimme. Mit Stop brichst du sie ab. Die Pause startet keine Folgeaktivität.": "Starts a single rest lasting 10 active seconds. Life must already be running. Rest has no animation of its own and does not refill needs. It needs no AI model or voice. Stop cancels it. This rest starts no further activity."
   },
   "fr": {
     "Für diesen Bot ist noch kein lokaler Life-Zustand angelegt.": "Ce bot n’a pas encore d’état Life local.",
@@ -105,11 +105,11 @@
     "Aktuelle Aktivität": "Activité actuelle",
     "Aktive Dauer: {seconds} s.": "Durée active : {seconds} s.",
     "Gerade keine Aktivität.": "Aucune activité en cours.",
-    "Startet eine einmalige Pause von 10 aktiven Sekunden. Life muss bereits laufen. Die Pause hat keine eigene Animation und füllt keine Bedürfnisse auf. Sie benötigt weder KI-Modell noch Stimme. Mit Stop brichst du sie ab. Danach startet nichts automatisch.": "Lance une pause unique de 10 secondes actives. Life doit déjà fonctionner. La pause n’a pas d’animation propre et ne remplit pas les besoins. Aucun modèle d’IA ni voix n’est nécessaire. Stop l’annule. Rien ne démarre automatiquement ensuite.",
     "Gehen, Aufladen, Spielen, Umschauen und Winken lassen sich hier noch nicht als eigene Aktivitäten starten. Nicht verfügbare Bewegungen werden nicht als Erfolg angezeigt.": "Marcher, recharger, jouer, regarder et saluer ne peuvent pas encore être lancés ici comme activités distinctes. Un mouvement indisponible n’est pas présenté comme réussi.",
     "Der Aktivitätsstatus ist noch nicht bestätigt. Angezeigt wird der letzte bekannte Stand. Neue Aktivitäten bleiben gesperrt.": "L’état des activités n’est pas encore confirmé. Le dernier état connu est affiché. Les nouvelles activités restent bloquées.",
     "Aktivitäten für {name}": "Activités de {name}",
-    "Aktivität {number} · gespeicherter Stand {revision}": "Activité {number} · version enregistrée {revision}"
+    "Aktivität {number} · gespeicherter Stand {revision}": "Activité {number} · version enregistrée {revision}",
+    "Startet eine einmalige Pause von 10 aktiven Sekunden. Life muss bereits laufen. Die Pause hat keine eigene Animation und füllt keine Bedürfnisse auf. Sie benötigt weder KI-Modell noch Stimme. Mit Stop brichst du sie ab. Die Pause startet keine Folgeaktivität.": "Lance une pause unique de 10 secondes actives. Life doit déjà fonctionner. La pause n’a pas d’animation propre et ne remplit pas les besoins. Aucun modèle d’IA ni voix n’est nécessaire. Stop l’annule. Cette pause ne lance pas d’activité suivante."
   },
   "es": {
     "Für diesen Bot ist noch kein lokaler Life-Zustand angelegt.": "Este bot aún no tiene un estado Life local.",
@@ -161,10 +161,10 @@
     "Aktuelle Aktivität": "Actividad actual",
     "Aktive Dauer: {seconds} s.": "Duración activa: {seconds} s.",
     "Gerade keine Aktivität.": "No hay actividad en curso.",
-    "Startet eine einmalige Pause von 10 aktiven Sekunden. Life muss bereits laufen. Die Pause hat keine eigene Animation und füllt keine Bedürfnisse auf. Sie benötigt weder KI-Modell noch Stimme. Mit Stop brichst du sie ab. Danach startet nichts automatisch.": "Inicia una sola pausa de 10 segundos activos. Life ya debe estar en marcha. La pausa no tiene animación propia ni recarga necesidades. No necesita modelo de IA ni voz. Stop la cancela. Después no se inicia nada automáticamente.",
     "Gehen, Aufladen, Spielen, Umschauen und Winken lassen sich hier noch nicht als eigene Aktivitäten starten. Nicht verfügbare Bewegungen werden nicht als Erfolg angezeigt.": "Caminar, recargar, jugar, mirar y saludar aún no se pueden iniciar aquí como actividades independientes. Los movimientos no disponibles no se muestran como realizados.",
     "Der Aktivitätsstatus ist noch nicht bestätigt. Angezeigt wird der letzte bekannte Stand. Neue Aktivitäten bleiben gesperrt.": "El estado de las actividades aún no está confirmado. Se muestra el último estado conocido. Las actividades nuevas siguen bloqueadas.",
     "Aktivitäten für {name}": "Actividades de {name}",
-    "Aktivität {number} · gespeicherter Stand {revision}": "Actividad {number} · versión guardada {revision}"
+    "Aktivität {number} · gespeicherter Stand {revision}": "Actividad {number} · versión guardada {revision}",
+    "Startet eine einmalige Pause von 10 aktiven Sekunden. Life muss bereits laufen. Die Pause hat keine eigene Animation und füllt keine Bedürfnisse auf. Sie benötigt weder KI-Modell noch Stimme. Mit Stop brichst du sie ab. Die Pause startet keine Folgeaktivität.": "Inicia una sola pausa de 10 segundos activos. Life ya debe estar en marcha. La pausa no tiene animación propia ni recarga necesidades. No necesita modelo de IA ni voz. Stop la cancela. La pausa no inicia otra actividad después."
   }
 }
