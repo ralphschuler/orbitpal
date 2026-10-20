@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Move spontaneous scheduling into one native runtime with explicit Ambient/Life sessions, confirmed local Life checkpoints, fresh Studio status and exact cancellation identities. Preserve existing playback timing and show native status in all four interface languages.
+- Pause autonomous dialog, speech synthesis and memory dispatch while native session availability is blocked or unknown. Add platform observers, clean hidden-Studio handling and conservative reconnect behavior; document macOS compatibility limits and the remaining real-device acceptance matrix.
+
 - Add durable installation-wide UTC budgets for autonomous dialog dispatches, speech characters, Hindsight requests and image transfers, with per-bot breakdowns and controls in all four interface languages. Preserve charges across restarts, cancellation and settings changes; unavailable accounting blocks autonomous work while manual use and Stop remain available.
 - Distinguish direct HTTP counting from opaque coding-CLI jobs. Offer conservative hard token limits only for audited official OpenAI snapshots, reject unsupported or unknown same-day history, and show missing receipts honestly. Explicit settings repair retains recorded usage; no invoice or monetary limit is claimed.
 

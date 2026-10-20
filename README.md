@@ -29,6 +29,8 @@ The current source version is **0.11.1**. Consult the release notes for the vers
 
 Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, silent gestures and occasional spontaneous speech, with quiet periods and a rolling hourly limit. Native character windows can roam across a selected monitor and briefly leave the visible stage. Prepared speech or explicit gestures wait for a fully visible, stationary return and a confirmed render frame; Stop cancels pending presentation and restores the fixed window position. Character size previews update Studio, desktop and OBS immediately. Built-in [screen context](docs/SCREEN-CONTEXT.md) can attach a fresh native screenshot before every dialog-model call, including normal chats and Autopilot, without MCP or Skills. Autonomous turns receive no general MCP control or Skill-script execution.
 
+[Native Ambient and Life sessions](docs/LIFE-RUNTIME.md) share one scheduler across Studio reloads and reconnects. Start each bot explicitly for the current app session. Ambient keeps roaming and gestures; Life maintains its confirmed local state without requiring a dialog model. World-object activities and social scenes remain tracked follow-up work. Native lock/sleep availability gates autonomous network work, with platform compatibility limits documented in the guide.
+
 [Autonomous usage budgets](docs/USAGE-BUDGETS.md) add shared installation-wide UTC-day limits for dialog dispatches, spoken characters, Hindsight requests and image data, with per-bot reporting and optional conservative hard tokens. Direct-request mode excludes opaque CLI jobs; the default counts OrbitPal calls/CLI jobs and does not claim provider-internal billing limits. Manual Studio actions remain available.
 
 
