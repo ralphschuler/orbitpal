@@ -49,7 +49,8 @@ matrix changes between submitted groups or before publication reject the result.
 A throwing enclosing render, lost context, replaced binding/frame, changed actual
 viewport/clip, unsupported deformation or invalid/empty/clipped geometry publishes
 nothing. The failed frame sequence is consumed so a late callback cannot replay
-it. A full onscreen viewport is required; scissor/sub-viewport/render-target
+it. Fresh surface observations compare their known dimensions, clip and visibility
+fields, independent of JavaScript property insertion order. A full onscreen viewport is required; scissor/sub-viewport/render-target
 surfaces need a separate contract. Surface width/height/clip must come from the
 actual mounted element and clipping ancestors; stored profile output dimensions
 and a boolean guess do not establish them. There are no DOM/OS/DPI queries here.
@@ -89,7 +90,10 @@ to local CSS exactly and rejects a target that would need clamping. It does not
 change the target, reserve a slot, grant authority, report arrival, emit Complete
 or change WorldState. Native must independently validate the current registration,
 canonical target, mapping, object/slot and full action fence. The helper is not a
-replacement for that check and cannot make stale measurements current.
+replacement for that check and cannot make stale measurements current. After the
+posed footprint and padding are applied, both safe-centre intervals must have
+strictly positive extent, matching the motion binding. An exact fit with only one
+possible centre is unavailable, even if that centre matches the requested target.
 
 ## Bounded support and limitations
 
@@ -98,7 +102,31 @@ produced by embedded animation/VRM updates **when their actual draw uses these
 known paths**. MToon body material uses those positions. MToon outline expands
 positions in its shader, so an active outline material is explicitly unsupported
 until an independently bounded outline contract exists. This slice does not
-claim every VRM works. Unknown ShaderMaterial, custom vertex hooks/onBeforeCompile,
+claim every VRM works.
+
+The pinned **three-vrm 3.5.5** MToon constructor installs its own `onBeforeCompile`
+arrow callback. That stock callback prepends the library defines and supports
+older Three fragment color conversion; it does not add a body vertex displacement.
+The compatibility exception requires the exact installed MToon prototype,
+unchanged bundled vertex/fragment shaders, stock define generator, stock compile
+and program-cache callback implementations, no custom defines, no material render
+hook and `isOutline === false`. Ordinary texture, UV, shading, copied material and
+CPU morph/skin changes remain supported. A shader flag alone grants no exception:
+subclasses, replaced callbacks/shaders/generators, macro overrides (including
+`OUTLINE`), displacement and wireframe remain unavailable. The per-instance arrow
+implementations are compared through intrinsic `Function.prototype.toString`
+against a private stock instance, without invoking candidate hooks. This is a
+trusted application/pinned dependency compatibility check, not a sandbox for
+hostile JavaScript. A dependency upgrade requires reviewing this shader contract.
+
+Ordinary Three materials likewise accept only their stock define tags: empty for
+Basic and the standard no-tag paths, `STANDARD` for Standard, `STANDARD`/`PHYSICAL`
+for Physical, `TOON` for Toon and `MATCAP` for Matcap, with their stock empty values.
+Additional, changed or inherited defines are rejected for both ordinary and MToon
+materials: Three's WebGLProgram uses `for-in`, so an inherited custom macro can
+change a shader even when the compile hook itself is unchanged.
+
+Unknown ShaderMaterial, custom vertex hooks/onBeforeCompile,
 GPU displacement, wireframe, instanced/batched geometry, sprites/points/lines and
 perspective views likewise fail honestly instead of receiving guessed bounds.
 Alpha-cutout bounds stay conservative; they do not prove visible body pixels.
@@ -117,9 +145,19 @@ choose a bounded cadence, invalidate stale geometry and preserve action liveness
 Fixtures are written against actual Three CPU meshes, relative morphs, a real
 AnimationMixer/bone pose, stale cached bounds, material groups/ranges/layers,
 MToon body versus outline, frame/binding changes, failed/context-lost rendering,
-clipping/empty/nonfinite geometry, bounded work and no-clamp target mapping.
-Their draw port is deliberately synthetic: **tests are not yet run**, and they
-create no WebGL context, native window or arrival proof. Typecheck, actual render
-acceptance and the final combined checks remain required before integration.
+clipping/empty/nonfinite geometry, bounded work and no-clamp target mapping. The
+original focused run passed **28 of 29** fixtures and failed the real stock MToon
+body positive because its own compile callback was rejected. That failure remains
+recorded; the positive assertion has not been weakened. The follow-up adds stock
+MToon morph/skin/copy and stock Three material positives, custom-material negatives,
+reordered surface and collapsed-interval regressions. All **57 geometry fixtures
+pass**; the combined focused gate passes **86 fixtures** with the 29 pure motion
+fixtures. Current Svelte/TypeScript checking reports **zero errors and warnings**.
+The first typecheck exposed two implicit fixture/hook types; explicit annotations
+fixed them without changing behavior, and the failure log is retained.
+Their draw port is deliberately synthetic; they create no WebGL context, native
+window or arrival proof. Broad frontend/build/native checks were not run for this
+isolated follow-up. Actual render acceptance and the final combined checks remain
+required before integration.
 
 Substantial AI assistance was used in preparing this source slice and fixtures.

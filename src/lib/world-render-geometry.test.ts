@@ -34,7 +34,7 @@ function fixture(mesh: THREE.Object3D = new THREE.Mesh(triangle(), new THREE.Mes
           if (node instanceof THREE.Mesh && c.layers.test(node.layers)) {
             const materials = node.material;
             const entries = Array.isArray(materials)
-              ? node.geometry.groups.map(group => ({ material: materials[group.materialIndex!], group }))
+              ? node.geometry.groups.map((group: THREE.GeometryGroup) => ({ material: materials[group.materialIndex!], group }))
               : [{ material: materials, group: null }];
             for (const { material, group } of entries) if (material?.visible) {
               node.onAfterRender(port as unknown as THREE.WebGLRenderer, s as THREE.Scene, c, node.geometry, material, group as unknown as Parameters<THREE.Mesh['onAfterRender']>[5]);
@@ -71,12 +71,12 @@ describe('post-draw posed geometry (synthetic render port)', () => {
     expect(absent.run()).toEqual({ available: false, reason: 'empty_geometry' });
   });
 
-  it('reads current morph and skeletal animation, ignoring stale cached neutral boxes', () => {
+  it.each(['basic', 'MToon'] as const)('reads current %s morph and skeletal animation, ignoring stale cached neutral boxes', kind => {
     const geometry = triangle(); geometry.morphTargetsRelative = true;
     geometry.morphAttributes.position = [new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0, 0, 1, 0], 3)];
     geometry.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(new Array(12).fill(0), 4));
     geometry.setAttribute('skinWeight', new THREE.Float32BufferAttribute([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], 4));
-    const mesh = new THREE.SkinnedMesh(geometry, new THREE.MeshBasicMaterial());
+    const mesh = new THREE.SkinnedMesh(geometry, kind === 'MToon' ? new MToonMaterial() : new THREE.MeshBasicMaterial());
     const bone = new THREE.Bone(); bone.name = 'movingBone'; mesh.add(bone); mesh.bind(new THREE.Skeleton([bone]));
     mesh.computeBoundingBox(); const oldBox = mesh.boundingBox!.clone();
     const f = fixture(mesh); const before = measurement(f.run());
@@ -128,6 +128,16 @@ describe('post-draw posed geometry (synthetic render port)', () => {
     expect((f.mesh as THREE.Mesh).onAfterRender).toBe(THREE.Object3D.prototype.onAfterRender);
   });
 
+  it('accepts equivalent fresh surface observations regardless of property insertion order', () => {
+    const f = fixture();
+    f.state.afterDraw = () => f.setSurface({ clip: { bottom: 100, right: 200, top: 0, left: 0 },
+      viewport: { height: 100, width: 200 }, visible: true, connected: true });
+    expect(measurement(f.run()).maximumFootprint.width).toBeCloseTo(10);
+    f.setFrame({ ...f.frame(), frameSequence: 2 });
+    f.state.afterDraw = () => f.setSurface({ ...f.surface(), clip: { ...f.surface().clip, right: 199 } });
+    expect(f.run()).toEqual({ available: false, reason: 'invalid_surface' });
+  });
+
   it('consumes failed frame sequences and rejects stale source/layout registration', () => {
     const f = fixture(); const old = f.frame(); f.state.throwAfterDraw = true; expect(f.run().available).toBe(false);
     f.state.throwAfterDraw = false; expect(f.run()).toEqual({ available: false, reason: 'stale_frame' });
@@ -153,6 +163,55 @@ describe('post-draw posed geometry (synthetic render port)', () => {
   it('supports current MToon body morph/skin geometry, without promising outline support', () => {
     const material = new MToonMaterial(); material.isOutline = false;
     expect(measurement(fixture(new THREE.Mesh(triangle(), material)).run()).vertices).toBe(3);
+  });
+
+  it('supports stock copied MToon bodies with texture, UV and shading options', () => {
+    const source = new MToonMaterial(); source.map = new THREE.Texture(); source.normalMap = new THREE.Texture();
+    source.outlineWidthMode = 'worldCoordinates'; source.outlineWidthFactor = .4;
+    source.v0CompatShade = true; source.uvAnimationScrollXSpeedFactor = .2;
+    const material = source.clone(); material.update(.1);
+    expect(measurement(fixture(new THREE.Mesh(triangle(), material)).run()).vertices).toBe(3);
+  });
+
+  it.each(['basic', 'standard', 'physical', 'toon', 'matcap'] as const)('preserves stock Three %s material defines', kind => {
+    const material = kind === 'standard' ? new THREE.MeshStandardMaterial()
+      : kind === 'physical' ? new THREE.MeshPhysicalMaterial()
+        : kind === 'toon' ? new THREE.MeshToonMaterial()
+          : kind === 'matcap' ? new THREE.MeshMatcapMaterial() : new THREE.MeshBasicMaterial();
+    expect(measurement(fixture(new THREE.Mesh(triangle(), material)).run()).vertices).toBe(3);
+  });
+
+  it.each(['basic macro', 'standard macro', 'changed stock tag', 'inherited macro', 'inherited stock tag'] as const)
+  ('rejects ordinary-material %s that bypasses the default compile hook', mode => {
+    const material = mode === 'basic macro' ? new THREE.MeshBasicMaterial() : new THREE.MeshStandardMaterial();
+    const stock = material instanceof THREE.MeshStandardMaterial ? { STANDARD: '' } : {};
+    const defines = mode === 'inherited macro' ? Object.assign(Object.create({ transformed: 'position + vec3(100.0)' }), stock)
+      : mode === 'inherited stock tag' ? Object.create({ STANDARD: '' })
+        : mode === 'changed stock tag' ? { STANDARD: '\n#define transformed position + vec3(100.0)' }
+          : { ...stock, transformed: 'position + vec3(100.0)' };
+    Object.assign(material, { defines });
+    expect(fixture(new THREE.Mesh(triangle(), material)).run()).toEqual({ available: false, reason: 'unsupported_deformation' });
+  });
+
+  it.each(['subclass', 'compile hook', 'render hook', 'vertex shader', 'fragment shader', 'defines generator',
+    'outline define', 'custom macro', 'inherited outline', 'program key', 'displacement', 'wireframe', 'boolean spoof'] as const)
+  ('rejects MToon compatibility exceptions for customized %s', mode => {
+    let material = new MToonMaterial();
+    if (mode === 'subclass') { class CustomMToon extends MToonMaterial {} material = new CustomMToon(); }
+    if (mode === 'compile hook') material.onBeforeCompile = shader => { shader.vertexShader += '\n// custom vertex path'; };
+    if (mode === 'render hook') material.onBeforeRender = () => {};
+    if (mode === 'vertex shader') material.vertexShader += '\n// custom vertex path';
+    if (mode === 'fragment shader') material.fragmentShader += '\n// custom fragment path';
+    if (mode === 'defines generator') Object.defineProperty(material, '_generateDefines', { value: () => ({ OUTLINE: true }) });
+    if (mode === 'outline define') material.defines.OUTLINE = true;
+    if (mode === 'custom macro') material.defines.transformed = 'position + vec3(100.0)';
+    if (mode === 'inherited outline') material.defines = Object.create({ OUTLINE: true });
+    if (mode === 'program key') material.customProgramCacheKey = () => 'custom-program';
+    if (mode === 'displacement') Object.assign(material, { displacementMap: new THREE.Texture() });
+    if (mode === 'wireframe') material.wireframe = true;
+    const candidate = mode === 'boolean spoof'
+      ? Object.assign(new THREE.ShaderMaterial(), { isMToonMaterial: true, isOutline: false }) : material;
+    expect(fixture(new THREE.Mesh(triangle(), candidate)).run()).toEqual({ available: false, reason: 'unsupported_deformation' });
   });
 
   it.each(['empty', 'nonfinite', 'offscreen', 'depth', 'hidden', 'zero viewport', 'scissor', 'offscreen target'] as const)('rejects %s without a placeholder footprint', mode => {
@@ -192,5 +251,13 @@ describe('post-draw posed geometry (synthetic render port)', () => {
     expect(mapReachableCanonical({ x: NaN, y: 500_000 }, safe, m, 8)).toBeNull();
     expect(mapReachableCanonical({ x: 500_000, y: 500_000 }, { min: { x: 490_000, y: 490_000 }, max: { x: 510_000, y: 510_000 } }, m, 8)).toBeNull();
     expect(Object.hasOwn(m, 'complete')).toBe(false);
+  });
+
+  it.each(['width', 'height'] as const)('rejects a collapsed %s centre interval even for an exactly fitting target', axis => {
+    const m = measurement(fixture().run()); const safe = { min: { x: 0, y: 0 }, max: { x: 1_000_000, y: 1_000_000 } };
+    const exactFit = { ...m, maximumFootprint: { ...m.maximumFootprint, [axis]: m.viewport[axis] - 16 } };
+    expect(mapReachableCanonical({ x: 500_000, y: 500_000 }, safe, exactFit, 8)).toBeNull();
+    const corridor = { ...m, maximumFootprint: { ...exactFit.maximumFootprint, [axis]: m.viewport[axis] - 17 } };
+    expect(mapReachableCanonical({ x: 500_000, y: 500_000 }, safe, corridor, 8)).not.toBeNull();
   });
 });

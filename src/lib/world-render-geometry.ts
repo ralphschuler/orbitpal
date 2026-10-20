@@ -2,6 +2,7 @@
 /** Unwired geometry adapter. Only synchronous successful render callbacks can
  * contribute posed geometry; these observations are never native arrival. */
 import * as THREE from 'three';
+import { MToonMaterial } from '@pixiv/three-vrm';
 import type { CssPoint, CssRect, CssSize, GroundBasis, MotionBinding } from './world-motion';
 
 export type GeometryBinding = Readonly<Pick<MotionBinding, 'actorId' | 'sourceWorldId'
@@ -59,6 +60,12 @@ function validSurface(value: SurfaceObservation): boolean {
     && [r.left, r.top, r.right, r.bottom].every(n => finite(n) && n >= 0)
     && r.left < r.right && r.top < r.bottom && r.right <= s.width && r.bottom <= s.height;
 }
+function sameSurface(a: SurfaceObservation, b: SurfaceObservation): boolean {
+  return a.connected === b.connected && a.visible === b.visible
+    && a.viewport.width === b.viewport.width && a.viewport.height === b.viewport.height
+    && a.clip.left === b.clip.left && a.clip.top === b.clip.top
+    && a.clip.right === b.clip.right && a.clip.bottom === b.clip.bottom;
+}
 function matrixValid(matrix: THREE.Matrix4): boolean {
   return matrix.elements.every(finite) && Math.abs(matrix.determinant()) > 1e-12;
 }
@@ -66,13 +73,57 @@ function boundedRange(start: number, count: number): boolean {
   return Number.isSafeInteger(start) && start >= 0
     && (count === Infinity || Number.isSafeInteger(count) && count >= 0);
 }
+function stockDefines(value: unknown, expected: readonly string[]): boolean {
+  if (value === undefined) return expected.length === 0;
+  if (!value || typeof value !== 'object') return false;
+  const defines = value as Record<string, unknown>;
+  let count = 0;
+  // WebGLProgram uses for-in, so inherited macros must be rejected as well.
+  // Stop on the first addition; do not enumerate a large custom macro map.
+  for (const name in defines) {
+    if (++count > expected.length || !expected.includes(name)
+      || !Object.hasOwn(defines, name) || defines[name] !== '') return false;
+  }
+  return count === expected.length;
+}
+function ordinaryDefines(material: THREE.Material): boolean {
+  const expected = material instanceof THREE.MeshPhysicalMaterial ? ['STANDARD', 'PHYSICAL']
+    : material instanceof THREE.MeshStandardMaterial ? ['STANDARD']
+      : material instanceof THREE.MeshToonMaterial ? ['TOON']
+        : material instanceof THREE.MeshMatcapMaterial ? ['MATCAP'] : [];
+  return stockDefines((material as THREE.Material & { defines?: unknown }).defines, expected);
+}
+// Pinned three-vrm 3.5.5 installs an own arrow callback per MToon instance.
+// Its stock callback only adds the stock defines and color compatibility; its
+// body shader uses Three's ordinary morph/skin/project path. Compare that
+// library implementation without invoking a potentially customized callback.
+// This is trusted-app compatibility checking, not a hostile-JavaScript sandbox.
+const mtoonBodyContract = (() => {
+  const stock = new MToonMaterial();
+  return Object.freeze({ vertexShader: stock.vertexShader, fragmentShader: stock.fragmentShader,
+    beforeCompile: Function.prototype.toString.call(stock.onBeforeCompile),
+    programKey: Function.prototype.toString.call(stock.customProgramCacheKey),
+    generateDefines: Object.getOwnPropertyDescriptor(MToonMaterial.prototype, '_generateDefines')?.value });
+})();
+function stockMToonBody(material: THREE.Material): boolean {
+  if (!(material instanceof MToonMaterial) || Object.getPrototypeOf(material) !== MToonMaterial.prototype
+    || material.isOutline !== false || material.vertexShader !== mtoonBodyContract.vertexShader
+    || material.fragmentShader !== mtoonBodyContract.fragmentShader
+    || typeof material.onBeforeCompile !== 'function' || typeof material.customProgramCacheKey !== 'function'
+    || Function.prototype.toString.call(material.onBeforeCompile) !== mtoonBodyContract.beforeCompile
+    || Function.prototype.toString.call(material.customProgramCacheKey) !== mtoonBodyContract.programKey
+    || typeof mtoonBodyContract.generateDefines !== 'function'
+    || (material as unknown as { _generateDefines: unknown })._generateDefines !== mtoonBodyContract.generateDefines
+    || !stockDefines(material.defines, [])) return false;
+  return true;
+}
 function materialSupported(material: THREE.Material): boolean {
-  const value = material as THREE.Material & { isMToonMaterial?: boolean; isOutline?: boolean;
-    isShaderMaterial?: boolean; isRawShaderMaterial?: boolean; displacementMap?: unknown; wireframe?: boolean };
+  const value = material as THREE.Material & { isShaderMaterial?: boolean;
+    isRawShaderMaterial?: boolean; displacementMap?: unknown; wireframe?: boolean };
   return !value.displacementMap && value.wireframe !== true
-    && material.onBeforeCompile === THREE.Material.prototype.onBeforeCompile
     && material.onBeforeRender === THREE.Material.prototype.onBeforeRender
-    && (!value.isShaderMaterial && !value.isRawShaderMaterial || value.isMToonMaterial === true && value.isOutline === false);
+    && (material instanceof MToonMaterial ? stockMToonBody(material) : !value.isShaderMaterial && !value.isRawShaderMaterial
+      && material.onBeforeCompile === THREE.Material.prototype.onBeforeCompile && ordinaryDefines(material));
 }
 function groundBasis(camera: THREE.Camera, view: CssSize, at: CssPoint, frame: THREE.Matrix4): GroundBasis | null {
   const inverse = frame.clone().invert();
@@ -247,7 +298,7 @@ export class WorldRenderGeometry {
           if (hooks.length >= GEOMETRY_MAX_MESHES || node.onBeforeRender !== THREE.Object3D.prototype.onBeforeRender
             || node.onAfterRender !== THREE.Object3D.prototype.onAfterRender) return fail('unsupported_deformation');
           const original = node.onAfterRender;
-          const installed: Hook = function (r, s, c, g, m, group) {
+          const installed: Hook = function (this: THREE.Object3D, r, s, c, g, m, group) {
             if (s !== scene || c !== camera) { reason = 'stale_frame'; return; }
             // @types/three names Object3D Group here; runtime passes a geometry range.
             measure(node, g, m, group as unknown as { start: number; count: number } | null);
@@ -265,7 +316,7 @@ export class WorldRenderGeometry {
       if (!current()) return fail('stale_frame');
       if (!sameMatrices()) return fail('invalid_geometry');
       const after = observeSurface();
-      if (!validSurface(after) || JSON.stringify(after) !== JSON.stringify(surface) || renderer.getContext().isContextLost()) return fail('invalid_surface');
+      if (!validSurface(after) || !sameSurface(after, surface) || renderer.getContext().isContextLost()) return fail('invalid_surface');
       renderer.getSize(viewport); renderer.getViewport(glViewport);
       if (renderer.getScissorTest() || renderer.getRenderTarget() !== null || viewport.x !== surface.viewport.width || viewport.y !== surface.viewport.height
         || glViewport.x !== 0 || glViewport.y !== 0 || glViewport.z !== viewport.x || glViewport.w !== viewport.y) return fail('invalid_surface');
@@ -318,7 +369,7 @@ export function mapReachableCanonical(target: CssPoint, safe: Readonly<{ min: Cs
     bottom: Math.min(safe.max.y / LIMIT * view.height, clip.bottom) - size.height / 2 - padding };
   const point = { x: target.x / LIMIT * view.width, y: target.y / LIMIT * view.height };
   if (![safeCenters.left, safeCenters.right, safeCenters.top, safeCenters.bottom, point.x, point.y].every(finite)
-    || safeCenters.left > safeCenters.right || safeCenters.top > safeCenters.bottom
+    || safeCenters.left >= safeCenters.right || safeCenters.top >= safeCenters.bottom
     || point.x < safeCenters.left || point.x > safeCenters.right || point.y < safeCenters.top || point.y > safeCenters.bottom) return null;
   return Object.freeze({ target: Object.freeze(point), safeCenters: Object.freeze(safeCenters) });
 }
