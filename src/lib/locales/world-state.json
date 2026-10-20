@@ -23,7 +23,6 @@
     "Gespeicherter Monitor · derzeit nicht verfügbar": "Saved display · currently unavailable",
     "Die Monitorauswahl bleibt lokal. Entfernte oder ungültige Monitore verwenden nativ einen sicheren Ersatzbereich. Es werden keine Fenster oder Bildschirminhalte erkannt.": "Display selection stays local. Missing or invalid displays use a safe native fallback area. No windows or screen content are detected.",
     "Bewegungsbereich": "Movement area",
-    "Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Der native Ausgang berücksichtigt Monitorursprung, Skalierung und Figurengröße.": "Percentages refer to the shared stage: top left is 0% / 0%, bottom right is 100% / 100%. Native output accounts for display origin, scaling and character size.",
     "Linker Rand": "Left edge",
     "Oberer Rand": "Top edge",
     "Rechter Rand": "Right edge",
@@ -83,7 +82,8 @@
     "Gemeinsamer Bühnenentwurf wartet auf Speichern oder Verwerfen.": "A shared stage draft is waiting to be saved or discarded.",
     "Zum Bühnenentwurf": "Open stage draft",
     "Anker {anchor}, Platz {slot}, X in Prozent": "Anchor {anchor}, slot {slot}, X percentage",
-    "Anker {anchor}, Platz {slot}, Y in Prozent": "Anchor {anchor}, slot {slot}, Y percentage"
+    "Anker {anchor}, Platz {slot}, Y in Prozent": "Anchor {anchor}, slot {slot}, Y percentage",
+    "Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die Anbindung an sichtbare Figuren mit Monitorursprung, Skalierung und Figurengröße folgt separat.": "Percentages refer to the shared stage: top left is 0% / 0%, bottom right is 100% / 100%. Connecting visible characters with display origin, scaling and character size follows separately."
   },
   "fr": {
     "Gemeinsame Bühne": "Scène commune",
@@ -109,7 +109,6 @@
     "Gespeicherter Monitor · derzeit nicht verfügbar": "Écran enregistré · actuellement indisponible",
     "Die Monitorauswahl bleibt lokal. Entfernte oder ungültige Monitore verwenden nativ einen sicheren Ersatzbereich. Es werden keine Fenster oder Bildschirminhalte erkannt.": "Le choix d’écran reste local. Un écran absent ou invalide utilise une zone native de secours sûre. Aucune fenêtre ni aucun contenu d’écran n’est détecté.",
     "Bewegungsbereich": "Zone de déplacement",
-    "Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Der native Ausgang berücksichtigt Monitorursprung, Skalierung und Figurengröße.": "Les pourcentages se rapportent à la scène commune : en haut à gauche 0 % / 0 %, en bas à droite 100 % / 100 %. La sortie native tient compte de l’origine, de l’échelle et de la taille du personnage.",
     "Linker Rand": "Bord gauche",
     "Oberer Rand": "Bord supérieur",
     "Rechter Rand": "Bord droit",
@@ -169,7 +168,8 @@
     "Gemeinsamer Bühnenentwurf wartet auf Speichern oder Verwerfen.": "Un brouillon de scène commune attend d’être enregistré ou abandonné.",
     "Zum Bühnenentwurf": "Ouvrir le brouillon de scène",
     "Anker {anchor}, Platz {slot}, X in Prozent": "Ancrage {anchor}, place {slot}, X en pourcentage",
-    "Anker {anchor}, Platz {slot}, Y in Prozent": "Ancrage {anchor}, place {slot}, Y en pourcentage"
+    "Anker {anchor}, Platz {slot}, Y in Prozent": "Ancrage {anchor}, place {slot}, Y en pourcentage",
+    "Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die Anbindung an sichtbare Figuren mit Monitorursprung, Skalierung und Figurengröße folgt separat.": "Les pourcentages se rapportent à la scène commune : en haut à gauche 0 % / 0 %, en bas à droite 100 % / 100 %. L’intégration des personnages visibles avec l’origine de l’écran, l’échelle et leur taille viendra séparément."
   },
   "es": {
     "Gemeinsame Bühne": "Escenario compartido",
@@ -195,7 +195,6 @@
     "Gespeicherter Monitor · derzeit nicht verfügbar": "Monitor guardado · no disponible actualmente",
     "Die Monitorauswahl bleibt lokal. Entfernte oder ungültige Monitore verwenden nativ einen sicheren Ersatzbereich. Es werden keine Fenster oder Bildschirminhalte erkannt.": "La selección del monitor es local. Los monitores ausentes o no válidos usan una zona nativa alternativa segura. No se detectan ventanas ni contenido de pantalla.",
     "Bewegungsbereich": "Zona de movimiento",
-    "Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Der native Ausgang berücksichtigt Monitorursprung, Skalierung und Figurengröße.": "Los porcentajes se refieren al escenario: arriba a la izquierda es 0 % / 0 % y abajo a la derecha 100 % / 100 %. La salida nativa tiene en cuenta el origen, la escala y el tamaño del personaje.",
     "Linker Rand": "Borde izquierdo",
     "Oberer Rand": "Borde superior",
     "Rechter Rand": "Borde derecho",
@@ -255,6 +254,7 @@
     "Gemeinsamer Bühnenentwurf wartet auf Speichern oder Verwerfen.": "Hay un borrador del escenario compartido pendiente de guardar o descartar.",
     "Zum Bühnenentwurf": "Abrir borrador del escenario",
     "Anker {anchor}, Platz {slot}, X in Prozent": "Anclaje {anchor}, lugar {slot}, X en porcentaje",
-    "Anker {anchor}, Platz {slot}, Y in Prozent": "Anclaje {anchor}, lugar {slot}, Y en porcentaje"
+    "Anker {anchor}, Platz {slot}, Y in Prozent": "Anclaje {anchor}, lugar {slot}, Y en porcentaje",
+    "Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die Anbindung an sichtbare Figuren mit Monitorursprung, Skalierung und Figurengröße folgt separat.": "Los porcentajes se refieren al escenario: arriba a la izquierda es 0 % / 0 % y abajo a la derecha 100 % / 100 %. La integración de personajes visibles con el origen del monitor, la escala y su tamaño llegará por separado."
   }
 }
