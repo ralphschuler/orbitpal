@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a bounded native Life action executor with typed actions, distinct delivery/start/terminal states, exact session/output identities, checked storage commits and cancellation cleanup. Unsupported visual capabilities fail before planning instead of inventing a successful movement.
+- Add an explicit ten-second quiet rest and activity status in all four interface languages. It runs without a model or voice in an already active Life session, has no animation or need reward, and starts no successor. Keep saved outcomes separate from runtime observations and reject obsolete Studio reports and delayed results.
+
 - Add a shared native stage with explicit participants, versioned local anchors, canonical positions and exclusive session/action-bound reservations. Preserve individual Life histories, isolate invalid optional stage data and prevent imported bots from reviving old membership.
 - Add a shared stage editor in all four interface languages with percentage coordinates, a 2D draft preview and confirmed world data. Preserve drafts across navigation and bot changes. Character movement to shared objects and rendered arrival remain separate renderer/action work.
 

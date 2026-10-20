@@ -48,4 +48,30 @@ describe('Session-only Studio native blocker acknowledgements', () => {
   it('rejects malformed connection identities before sending any status', async () => {
     const invoke=vi.fn(async()=>({connectionId:'untrusted'}));const ui=new LifeUI(invoke,vi.fn());await expect(ui.connect()).rejects.toThrow();expect(invoke).toHaveBeenCalledTimes(1);ui.dispose();
   });
+  it('returns only an actual acknowledged proof and dispatches before queued heartbeats without holding blockers behind the command', async () => {
+    const slow=held<unknown>(),clear=held<unknown>();const order:string[]=[];let reports=0;
+    const invoke=vi.fn(async(command:string,args?:Record<string,unknown>)=>{
+      if(command==='connect_life_ui')return{connectionId:first};
+      if(command==='report_life_ui'){const report=args?.report as {sequence:number;blocked:boolean};order.push(`report:${report.sequence}:${report.blocked}`);return++reports===2?clear.promise:true;}
+      if(command==='start_life_rest'){order.push('start');return slow.promise;}
+      return true;
+    });
+    const ui=new LifeUI(invoke,vi.fn());await ui.connect();
+    const rest=ui.reportProof(false,true,proof=>{expect(proof).toEqual({connectionId:first,sequence:2});return invoke('start_life_rest',{botId:'nova',ui:proof});});
+    const blocker=ui.report(true,true);await flush();clear.resolve(true);await blocker;
+    expect(order).toEqual(['report:1:true','report:2:false','start','report:3:true']);
+    slow.resolve('confirmed');await expect(rest).resolves.toBe('confirmed');
+    await expect(ui.report(false,false)).resolves.toEqual({connectionId:first,sequence:4});ui.dispose();
+  });
+  it('never dispatches a proof callback after rejection or reporter disposal', async () => {
+    const clear=held<unknown>();let reports=0;const invoke=vi.fn(async(command:string)=>command==='connect_life_ui'?{connectionId:first}:command==='report_life_ui'&&++reports===2?clear.promise:true);
+    const ui=new LifeUI(invoke,vi.fn());await ui.connect();const dispatch=vi.fn(async()=>true);
+    const result=ui.reportProof(false,true,dispatch);const rejected=expect(result).rejects.toThrow();await flush();ui.dispose();clear.resolve(true);await rejected;expect(dispatch).not.toHaveBeenCalled();
+  });
+  it('keeps transport acknowledgement separate from a rejected operator command', async () => {
+    const invoke=vi.fn(async(command:string)=>command==='connect_life_ui'?{connectionId:first}:true);const ui=new LifeUI(invoke,vi.fn());await ui.connect();
+    await expect(ui.reportProof(false,true,async()=>{throw new Error('operator denied');})).rejects.toThrow('operator denied');
+    await expect(ui.report(true,true)).resolves.toEqual({connectionId:first,sequence:3});
+    expect(invoke.mock.calls.filter(call=>call[0]==='disconnect_life_ui')).toHaveLength(0);ui.dispose();
+  });
 });

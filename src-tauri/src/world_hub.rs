@@ -7,7 +7,7 @@ use crate::{
 };
 use serde_json::json;
 use state::DisplaySample;
-pub(crate) use state::{current_actors, output_window, NativeActor, TopologySample};
+pub(crate) use state::{current_actors, output_window, ActionContext, NativeActor, TopologySample};
 pub use state::{PublicWorld, WorldHub, WorldSettings};
 use std::{
     sync::atomic::Ordering,
@@ -172,4 +172,14 @@ pub fn place_world_actor(
         })?;
     publish(&app);
     Ok(result)
+}
+
+#[cfg(test)]
+pub(crate) fn action_fixture_topology(ticket: u64) -> state::TopologySample {
+    state::TopologySample {
+        ticket,
+        observed: std::time::Instant::now(),
+        displays: vec![],
+        fingerprint: vec![],
+    }
 }

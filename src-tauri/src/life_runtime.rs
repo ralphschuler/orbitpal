@@ -1,4 +1,12 @@
 //! One application-owned native autonomy loop. Restart never restores activation.
+#[path = "life_runtime/action_host.rs"]
+mod action_host;
+#[path = "life_runtime/action_output.rs"]
+mod action_output;
+#[path = "life_runtime/action_state.rs"]
+pub(crate) mod action_state;
+#[path = "life_runtime/actions.rs"]
+pub(crate) mod actions;
 #[path = "life_runtime/cloud.rs"]
 pub(crate) mod cloud;
 #[path = "life_runtime/core.rs"]
@@ -84,6 +92,7 @@ pub fn operator_command(command: &str) -> bool {
             | "get_world_settings"
             | "get_life_runtime"
             | "get_life_bot"
+            | "get_life_actions"
             | "connect_life_ui"
             | "disconnect_life_ui"
             | "report_life_ui"
@@ -118,12 +127,17 @@ pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
     let webview = invoke.message.webview_ref();
     if webview.label() == "main" && operator_command(invoke.message.command()) {
         if let Some(state) = webview.try_state::<crate::AppState>() {
-            state.life_runtime.operator_activity();
+            if invoke.message.command() == "start_life_rest" {
+                actions::prepare_operator(&state, invoke);
+            } else {
+                state.life_runtime.operator_activity();
+            }
         }
     }
 }
 
 pub struct LifeRuntime {
+    outputs: action_output::OutputGate,
     core: Mutex<Core>,
     monitor: OnceLock<NativeMonitor>,
     started: Instant,
@@ -133,6 +147,7 @@ pub struct LifeRuntime {
 impl Default for LifeRuntime {
     fn default() -> Self {
         Self {
+            outputs: action_output::OutputGate::default(),
             core: Mutex::new(Core::new(SystemSnapshot {
                 state: Availability::Unknown,
                 reason: SystemReason::Initializing,
@@ -251,6 +266,7 @@ impl LifeRuntime {
         }
     }
     pub fn operator_activity(&self) {
+        self.outputs.bot(None);
         if let Ok(mut core) = self.core.lock() {
             core.operator_activity(self.now());
         }
@@ -277,6 +293,7 @@ impl LifeRuntime {
         runtime
     }
     pub fn invalidate_bot(&self, app: &tauri::AppHandle, bot: &str) {
+        self.outputs.bot(Some(bot));
         if let Ok(mut core) = self.core.lock() {
             core.invalidate_bot(bot, self.now());
             core.operator_activity(self.now());
@@ -335,6 +352,7 @@ impl LifeRuntime {
         bot: &str,
         write: impl FnOnce() -> Result<Value, String>,
     ) -> Result<(Value, Option<crate::autopilot::Runtime>), String> {
+        self.outputs.bot(Some(bot));
         let mut core = self.core.lock().map_err(|_| UNAVAILABLE)?;
         core.invalidate_bot(bot, self.now());
         core.operator_activity(self.now());
@@ -358,6 +376,7 @@ impl LifeRuntime {
         result
     }
     pub fn stop(&self, app: &tauri::AppHandle, bot: Option<&str>) {
+        self.outputs.bot(bot);
         let state = app.state::<crate::AppState>();
         // Runtime -> AutopilotHub -> Store is the admitted mutation/commit order.
         // Keep Stop and a concurrent new Start indivisible; emit only after unlock.
@@ -392,13 +411,25 @@ impl LifeRuntime {
             publications.extend(state.autopilot.stop_all());
             state.world.stop_all();
         }
+        let _ = action_host::poll(
+            &mut core,
+            &state.store,
+            &state.world,
+            || self.now(),
+            wall_ms,
+        );
         drop(core);
         for runtime in publications {
             crate::autopilot::publish(app, runtime);
         }
+        actions::publish(app);
     }
 
+    pub fn output_window_lost(&self, label: &str) {
+        self.outputs.window(label);
+    }
     pub fn hide_main(&self, window: &tauri::WebviewWindow) {
+        self.outputs.window("main");
         let barrier = self
             .core
             .lock()
@@ -410,6 +441,7 @@ impl LifeRuntime {
         }
     }
     pub fn shown(&self) {
+        self.outputs.window("main");
         if let Ok(mut core) = self.core.lock() {
             core.shown(self.now());
         }
@@ -563,6 +595,10 @@ impl LifeRuntime {
                 }
             }
         }
+        let _ = self.with_world(app, |world, store, sessions, now| {
+            world.synchronize(store, &sessions, topology, now)
+        });
+        self.poll_actions(app);
         let pending = self.core.lock().ok().and_then(|core| core.pending());
         if let Some((claim, generating)) = pending {
             if !self.current(&claim) {
@@ -630,11 +666,7 @@ impl LifeRuntime {
                 }
             }
         }
-        if let Ok(()) = self.with_world(app, |world, store, sessions, now| {
-            world.synchronize(store, &sessions, topology, now)
-        }) {
-            crate::world_hub::publish(app);
-        }
+        crate::world_hub::publish(app);
         publish(app);
     }
 }
@@ -738,6 +770,7 @@ pub fn connect_life_ui(
 ) -> Result<UiConnection, String> {
     main_only(window.label())?;
     let id = uuid::Uuid::new_v4().to_string();
+    state.life_runtime.outputs.ui_connect(&id);
     state
         .life_runtime
         .core
@@ -753,6 +786,7 @@ pub fn disconnect_life_ui(
     connection_id: String,
 ) -> Result<(), String> {
     main_only(window.label())?;
+    state.life_runtime.outputs.ui_disconnect(&connection_id);
     state
         .life_runtime
         .core
@@ -768,6 +802,11 @@ pub fn report_life_ui(
     report: UiReport,
 ) -> Result<bool, String> {
     main_only(window.label())?;
+    state.life_runtime.outputs.ui_report(
+        &report.connection_id,
+        report.sequence,
+        report.blocked || report.activity,
+    );
     let is_visible = window.is_visible().unwrap_or(false);
     Ok(state
         .life_runtime

@@ -33,6 +33,8 @@ Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, sil
 
 The [shared stage editor](docs/WORLD-STATE.md) lets you explicitly select participants and save rest, meeting and play places independently of the selected bot. It shows a 2D draft and confirmed world positions while keeping each bot's Life history separate. Saving a stage starts no autonomous mode. Character movement to these places and their 3D scene presentation remain subsequent action/renderer work.
 
+[Local Life actions](docs/ACTION-EXECUTOR.md) run independently of dialog and voice. In an already started Life session, explicitly request one ten-second quiet rest from Studio and inspect its saved result separately from its current execution. This first local rest has no animation or need reward. It requires a valid stage and visible native output; OBS and visual world actions remain unavailable until their renderer adapters are connected. Stop cancels the rest without starting a successor. Ordinary Studio interaction currently interrupts local actions globally.
+
 [Autonomous usage budgets](docs/USAGE-BUDGETS.md) add shared installation-wide UTC-day limits for dialog dispatches, spoken characters, Hindsight requests and image data, with per-bot reporting and optional conservative hard tokens. Direct-request mode excludes opaque CLI jobs; the default counts OrbitPal calls/CLI jobs and does not claim provider-internal billing limits. Manual Studio actions remain available.
 
 

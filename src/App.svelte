@@ -12,11 +12,13 @@
   import ModelFeatures from './components/ModelFeatures.svelte';
   import AutopilotPanel from './components/AutopilotPanel.svelte';
   import LifeRuntimePanel from './components/LifeRuntimePanel.svelte';
+  import LifeActionsPanel from './components/LifeActionsPanel.svelte';
   import WorldStatePanel from './components/WorldStatePanel.svelte';
   import UsageBudgetPanel from './components/UsageBudgetPanel.svelte';
   import ScreenContextPanel from './components/ScreenContextPanel.svelte';
   import { prepareScreenSession } from './lib/screen-session';
   import { LifeUI } from './lib/life-ui';
+  import { actionChanged, requestQuietRest } from './lib/life-actions';
   import { LifeTurnAdmissions, LifeSnapshots, parseLifeBot, parseLifeTurn, nativeSchedule, currentLifeTurn, sameLifeTurn, type LifeSnapshot, type LifeMode, type LifeBot, type LifeTurn } from './lib/life-runtime';
   import { ChatScheduler, appendChatMessage, chatPriority, chatParticipants, type ChatClaim } from './lib/chat-scheduler';
   import { speechBlocker, speechStatus } from './lib/autopilot-status';
@@ -84,6 +86,7 @@
   let lifeActivity = false;
   let operatorRevision = 0;
   let nativeOperatorPending = $state(false);
+  let operatorBarriers = $state(0);
   let lifeUi: LifeUI;
   const lifeSnapshots = new LifeSnapshots();
   const lifeAdmissions = new LifeTurnAdmissions();
@@ -141,6 +144,8 @@
   }
   async function ensureOperatorBarrier() {
     if(!native)return;
+    ++operatorBarriers;
+    try{
     const revision=++operatorRevision;nativeOperatorPending=true;invalidateNativePlayback();
     try{if(!lifeUi)throw new Error('Studio unavailable');await lifeUi.report(true,true);if(revision===operatorRevision)nativeOperatorPending=false;}
     catch{
@@ -150,6 +155,7 @@
       if(revision===operatorRevision)nativeOperatorPending=false;
       notify(translate('Die native Autonomie wurde gestoppt, weil der Studio-Status nicht bestätigt werden konnte. Dein Auftrag kann fortfahren.'));
     }
+    }finally{--operatorBarriers;}
   }
   async function toggleLife(mode:LifeMode,active:boolean,initialize=false){
     if(active&&(autopilotPending||updateInstalling||worldBusy))return;
@@ -387,6 +393,17 @@
     blocked:autopilotBlocker, schedule:nativeSchedule(selectedLifeSession),
   }));
   const lifeBlocked = $derived(!!autopilotBlocker||!lifeRuntime||nativeOperatorPending);
+  // The click's transient nativeOperatorPending flag is acknowledged by the
+  // exact reportProof below. Real blockers and other operator barriers remain.
+  const quietRestBlocked = $derived(!!autopilotBlocker||!lifeConnected||!lifeRuntime||!selectedLifeSession?.active||selectedLifeSession.mode!=='life'||lifeRuntime.sessions.some(session=>session.speech.inFlight)||!!nativeLifeTurn||busy||speaking||speechPreparing||emoteSoundPlaying||externalEmotePlaying||wakeActive||operatorBarriers>0);
+  async function startQuietRest(){
+    if(quietRestBlocked||!lifeUi)throw new Error(translate('Beende zuerst Eingaben, Ausgaben und offene Änderungen. Eine stille Pause erfordert einen bereits gestarteten Life-Modus.'));
+    invalidateNativePlayback();
+    const target=profile.id,revision=operatorRevision,epoch=turnEpoch,reporter=lifeUi;
+    const current=()=>appAlive&&profile.id===target&&operatorRevision===revision&&turnEpoch===epoch&&lifeUi===reporter&&!quietRestBlocked;
+    if(!current())throw actionChanged();
+    return requestQuietRest(call,reporter,target,current,()=>{nativeOperatorPending=false;lifeActivity=false;});
+  }
   async function reportLife(activity=false) {
     if(!native||!lifeMounted||!lifeUi)return;
     const observedActivity=activity||lifeActivity,revision=operatorRevision;lifeActivity=false;
@@ -1068,6 +1085,7 @@
       {:else if page==='autopilot'}
         <section class="settings-panel"><OutputPreviewControls {profile} displays={outputDisplays} refreshDisplays={refreshOutputDisplays} monitor={true} disabled={saving||switchingBot||creatingBot||updateInstalling} preview={previewOutput}/></section>
         <LifeRuntimePanel botId={profile.id} botName={profile.name} session={selectedLifeSession} system={lifeRuntime?.system} bot={lifeBots[profile.id]} connected={lifeConnected} error={lifeError} pending={autopilotPending} disabled={busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing||updateInstalling} speechStatus={autopilotSpeechStatus} lastAttemptSilent={!!selectedAutopilot?.active&&silentAutopilots[profile.id]===selectedAutopilot.seed} previewing={autopilotPreview?.botId===profile.id} onPreview={previewAutopilot} onStart={(mode,initialize)=>void toggleLife(mode,true,initialize)} onStop={()=>void toggleLife(selectedLifeSession?.mode??'ambient',false)} onRefresh={()=>void refreshLifeRuntime()} onReconnect={()=>void reconnectLifeUI()}/>
+        <LifeActionsPanel botId={profile.id} botName={profile.name} disabled={quietRestBlocked} onQuietRest={startQuietRest}/>
         <AutopilotPanel showControls={false} bind:config={profile.autopilot} botName={profile.name} active={!!selectedAutopilot?.active} speechStatus={autopilotSpeechStatus} lastAttemptSilent={!!selectedAutopilot?.active&&silentAutopilots[profile.id]===selectedAutopilot.seed} disabled={busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing||updateInstalling} pending={autopilotPending} previewing={autopilotPreview?.botId===profile.id} onStart={()=>toggleAutopilot(true)} onStop={()=>toggleAutopilot(false)} onPreview={previewAutopilot}/>
         <UsageBudgetPanel {bots} disabled={updateInstalling||saving||switchingBot||creatingBot} onDirtyChange={value=>usageBudgetDirty=value}/>
         {#key profile.id}<ScreenContextPanel botId={profile.id} {permissionContext} prepareSelection={prepareScreenSource} onError={message=>notify(message,true)} bind:config={profile.screenContext} visionEnabled={profile.model.visionEnabled} disabled={updateInstalling}/>{/key}

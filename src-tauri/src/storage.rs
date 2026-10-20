@@ -15,6 +15,8 @@ mod usage_store;
 pub(crate) mod life_store;
 #[path="world_store.rs"]
 pub(crate) mod world_store;
+#[path="action_store.rs"]
+pub(crate) mod action_store;
 
 pub struct Store { pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>, credential_session:Arc<crate::credential_session::Session>, life_recovery:Arc<Mutex<life_store::RecoveryStatus>>,usage_error:Option<crate::usage_budget::Denial>,world_error:Option<world_store::WorldStoreError> }
 pub fn valid_id(id: &str) -> bool { !id.is_empty() && id.len() <= 96 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') }
