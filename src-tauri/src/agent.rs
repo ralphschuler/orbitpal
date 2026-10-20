@@ -263,7 +263,9 @@ async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewe
     };
     if let Some(ticket)=autopilot{state.autopilot.commit(profile["id"].as_str().ok_or("Bot-ID fehlt")?,ticket,commit)}else{commit()}
 }
-fn silent_autopilot(text:&str)->bool{let (text,_)=extract_emotion(text.trim());text.trim().is_empty()||text.trim().eq_ignore_ascii_case("[silent]")}
+// Only the explicit control signal is a successful quiet turn. Empty model
+// output, including an emotion without speech, must reach the errors above.
+fn silent_autopilot(text:&str)->bool{let (text,_)=extract_emotion(text.trim());text.trim().eq_ignore_ascii_case("[silent]")}
 fn extract_emotion(text:&str)->(String,String) {
     if let Some(end)=text.find(']'){if let Some(emotion)=text[..end].strip_prefix("[emotion:"){if ["happy","curious","thinking","sad","neutral"].contains(&emotion){return(text[end+1..].trim().into(),emotion.into());}}}
     (text.into(),"neutral".into())
@@ -324,7 +326,15 @@ mod permission_tests {
         assert!(!public_source("autopilot"));assert!(!public_source("Autopilot"));assert!(public_source("operator"));
         let catalog=["search_knowledge","perform_emote","load_skill","read_skill_resource","run_skill_script","mcp_screen_capture","cohost_start_autopilot","cohost_stop_output"];
         let offered:Vec<&str>=catalog.into_iter().filter(|name|autopilot_tool(name)).collect();assert_eq!(offered,["search_knowledge","perform_emote","load_skill","read_skill_resource"]);
-        assert!(silent_autopilot("[silent]"));assert!(silent_autopilot(" [emotion:happy] [silent] "));assert!(silent_autopilot(""));assert!(!silent_autopilot("Das Wort [silent] ist ein Signal."));
+    }
+    #[test]
+    fn autopilot_silence_requires_the_explicit_signal(){
+        for signal in ["[silent]"," \n[SILENT]\t"," [emotion:happy] [silent] "]{
+            assert!(silent_autopilot(signal),"{signal:?}");
+        }
+        for output in [""," \n\t ","[emotion:happy]"," [emotion:neutral]\n ","[whispering]","Das Wort [silent] ist ein Signal.","[silent] Noch etwas.","[emotion:happy] Hallo!"]{
+            assert!(!silent_autopilot(output),"{output:?}");
+        }
     }
     #[test]
     fn internal_control_gestures_are_scoped_and_queued_until_speech(){

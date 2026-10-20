@@ -10,7 +10,7 @@ Your own animated AI cohost for Twitch and YouTube. A native **Tauri 2 + Rust** 
 
 **Early release:** expect rough edges and review provider settings before going live. Model runtimes, accounts, API keys and voices are supplied by you.
 
-The current source version is **0.11.0**. Consult the release notes for the version included in each published package.
+The current source version is **0.11.1**. Consult the release notes for the version included in each published package.
 
 ## What it does
 

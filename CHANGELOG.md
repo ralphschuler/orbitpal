@@ -1,9 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.11.1 — 2026-10-20
 
 - Fix desktop Autopilot facing for vertical and diagonal paths with an elevated orthographic view and upright turns. Keep the full projected turning hull inside safe bounds and retain offscreen excursions, visible returns and live figure sizing.
 - Drive embedded and procedural walking from actual traveled distance instead of session age. Calibrate imported walk strides from bounded root/foot sampling, account for live scale and projected depth, preserve phase across pauses, and synchronize embedded walking sound rate. Unknown clips use a body-height approximation rather than promising exact foot locking.
+- Report empty, whitespace-only and emotion-only Autopilot responses as invalid output. Only an explicit silence signal is a successful quiet turn; preserve deliberate silence, existing intervals and hourly budgets without forcing extra attempts.
 
 ## 0.11.0 — 2026-10-20
 
