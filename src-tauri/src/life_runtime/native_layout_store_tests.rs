@@ -1,7 +1,7 @@
 //! Actual driver/Hub/Core/SQLite scenarios with controlled Main and WindowOps.
 //! No native monitor/session/window APIs, renderer, provider or real OS data.
 use super::Fixture;
-use crate::{life_runtime::{action_output::OutputGate,native_layout::{self,LayoutContext,LayoutHost,NativeLayoutIntent,NativeLayoutPrepared},native_output_route::{LayoutRoute,NativeOutputRoutes,PreparationTicket}},overlay_presentation::{Bounds,Display,LayoutError,LayoutHandle,LayoutMain,LayoutOwner,LayoutSample,LayoutWindow,PresentationHub},window_signals::WindowSignals};
+use crate::{life_runtime::{action_output::OutputGate,native_layout::{self,LayoutContext,LayoutHost,NativeLayoutIntent,NativeLayoutPrepared},native_output_route::{GeometryClassification,LayoutRoute,LayoutRouteState,NativeOutputRoutes,PreparationTicket}},overlay_presentation::{Bounds,Display,LayoutError,LayoutHandle,LayoutMain,LayoutOwner,LayoutSample,LayoutWindow,PresentationHub},window_signals::WindowSignals};
 use std::{collections::VecDeque,sync::{atomic::{AtomicBool,AtomicU64,Ordering},Arc,Mutex},time::Duration};
 type Task=Box<dyn FnOnce()+Send>;
 #[derive(Default)]struct Main{queue:Mutex<VecDeque<Task>>}
@@ -11,13 +11,13 @@ impl Main{fn step(&self)->bool{let task=self.queue.lock().unwrap().pop_front();i
 struct Window{
     bounds:Mutex<Bounds>,visible:AtomicBool,scale:Mutex<f64>,displays:Mutex<Vec<Display>>,calls:Mutex<Vec<&'static str>>,
     observer:Mutex<Option<Arc<dyn Fn(Geometry)+Send+Sync>>>,delayed:AtomicBool,pending:Mutex<VecDeque<Geometry>>,failure:Mutex<Option<&'static str>>,
-    policy_calls:Mutex<Vec<(&'static str,bool)>>,after_top:Mutex<Option<Box<dyn FnOnce()+Send>>>,
+    policy_calls:Mutex<Vec<(&'static str,bool)>>,after_top:Mutex<Option<Box<dyn FnOnce()+Send>>>,samples:AtomicU64,
 }
 fn normal()->Bounds{Bounds{x:-1300,y:100,width:520,height:720}}
 fn arena()->Bounds{Bounds{x:-1600,y:0,width:1600,height:1000}}
 fn displays()->Vec<Display>{vec![Display{id:"fixture-monitor".into(),name:"synthetic".into(),bounds:arena(),scale_factor:1.}]}
 impl Window{
-    fn new()->Self{Self{bounds:Mutex::new(normal()),visible:AtomicBool::new(true),scale:Mutex::new(1.),displays:Mutex::new(displays()),calls:Mutex::new(vec![]),observer:Mutex::new(None),delayed:AtomicBool::new(false),pending:Mutex::new(VecDeque::new()),failure:Mutex::new(None),policy_calls:Mutex::new(vec![]),after_top:Mutex::new(None)}}
+    fn new()->Self{Self{bounds:Mutex::new(normal()),visible:AtomicBool::new(true),scale:Mutex::new(1.),displays:Mutex::new(displays()),calls:Mutex::new(vec![]),observer:Mutex::new(None),delayed:AtomicBool::new(false),pending:Mutex::new(VecDeque::new()),failure:Mutex::new(None),policy_calls:Mutex::new(vec![]),after_top:Mutex::new(None),samples:AtomicU64::new(0)}}
     fn event(&self,event:Geometry){let mut bounds=self.bounds.lock().unwrap();match event{Geometry::Move(x,y)=>{bounds.x=x;bounds.y=y},Geometry::Size(w,h)=>{bounds.width=w;bounds.height=h}}drop(bounds);let callback=self.observer.lock().unwrap().clone();if let Some(callback)=callback{callback(event);}}
     fn signal_only(&self,event:Geometry){let callback=self.observer.lock().unwrap().clone();if let Some(callback)=callback{callback(event);}}
     fn issue(&self,name:&'static str,event:Geometry)->Result<(),LayoutError>{self.calls.lock().unwrap().push(name);if self.delayed.load(Ordering::SeqCst){self.pending.lock().unwrap().push_back(event);}else{self.event(event);}let mut failure=self.failure.lock().unwrap();if *failure==Some(name){failure.take();Err(LayoutError::Geometry)}else{Ok(())}}
@@ -25,7 +25,7 @@ impl Window{
     fn geometry_calls(&self)->usize{self.calls.lock().unwrap().iter().filter(|c|matches!(**c,"size"|"move")).count()}
 }
 impl LayoutWindow for Window{
-    fn sample(&self)->Result<LayoutSample,LayoutError>{let bounds=*self.bounds.lock().unwrap();Ok(LayoutSample{bounds,inner:bounds,outer:bounds,visible:self.visible.load(Ordering::SeqCst),scale:*self.scale.lock().unwrap(),monitor:"fixture-monitor".into(),displays:self.displays.lock().unwrap().clone()})}
+    fn sample(&self)->Result<LayoutSample,LayoutError>{self.samples.fetch_add(1,Ordering::SeqCst);let bounds=*self.bounds.lock().unwrap();Ok(LayoutSample{bounds,inner:bounds,outer:bounds,visible:self.visible.load(Ordering::SeqCst),scale:*self.scale.lock().unwrap(),monitor:"fixture-monitor".into(),displays:self.displays.lock().unwrap().clone()})}
     fn bounds(&self)->Result<Bounds,LayoutError>{Ok(*self.bounds.lock().unwrap())}
     fn size_direct(&self,b:Bounds)->Result<(),LayoutError>{self.issue("size",Geometry::Size(b.width,b.height))}
     fn position_direct(&self,b:Bounds)->Result<(),LayoutError>{self.issue("move",Geometry::Move(b.x,b.y))}
@@ -41,6 +41,9 @@ struct Host{
     policy_reads:AtomicU64,before_reserve:Mutex<Option<Box<dyn FnOnce(&Arc<AtomicBool>)+Send>>>,
     before_finish:Mutex<Option<Box<dyn FnOnce()+Send>>>,fail_finish:AtomicBool,
     fail_release:AtomicBool,finish_calls:AtomicU64,release_calls:AtomicU64,
+    owner:Mutex<Option<Arc<LayoutOwner>>>,hold_classification:AtomicBool,
+    classifications:Mutex<Vec<(GeometryClassification,bool)>>,classifying_reads:AtomicU64,
+    after_route_read:Mutex<Option<Box<dyn FnOnce()+Send>>>,
 }
 impl Host{
     fn new()->Arc<Self>{
@@ -51,8 +54,8 @@ impl Host{
         let hub=PresentationHub::default();let window=Arc::new(Window::new());let signals=Arc::new(WindowSignals::default());let outputs=OutputGate::default();
         hub.register_window("nova",signals.clone(),None).unwrap();routes.track_window_with_output("nova","avatar-nova",&signals,0,&outputs).unwrap();assert!(hub.retain_layout_window("nova",window.clone(),signals.clone(),true));
         let gate=crate::life_availability::AvailabilityGate::new(crate::life_availability::Source::Unsupported);gate.apply_sample(gate.sample_fence(),crate::life_availability::Observation::ready());
-        let host=Arc::new(Self{f:Mutex::new(f),hub,routes,outputs,main:Arc::new(Main::default()),window,signals,now:AtomicU64::new(0),expected,ui,persist_entered:AtomicBool::new(false),fail_persist:AtomicBool::new(false),before_persist:Mutex::new(None),gate,policy_reads:AtomicU64::new(0),before_reserve:Mutex::new(None),before_finish:Mutex::new(None),fail_finish:AtomicBool::new(false),fail_release:AtomicBool::new(false),finish_calls:AtomicU64::new(0),release_calls:AtomicU64::new(0)});
-        let weak=Arc::downgrade(&host);*host.window.observer.lock().unwrap()=Some(Arc::new(move|event|{let host=weak.upgrade().unwrap();let classification=host.routes.begin_geometry("nova",&host.signals,&host.outputs);let accepted=match event{Geometry::Move(x,y)=>host.hub.native_moved("nova",&host.signals,x,y),Geometry::Size(w,h)=>host.hub.native_resized("nova",&host.signals,w,h)};if let Some(classification)=classification{host.routes.finish_geometry(classification,accepted);}}));host
+        let host=Arc::new(Self{f:Mutex::new(f),hub,routes,outputs,main:Arc::new(Main::default()),window,signals,now:AtomicU64::new(0),expected,ui,persist_entered:AtomicBool::new(false),fail_persist:AtomicBool::new(false),before_persist:Mutex::new(None),gate,policy_reads:AtomicU64::new(0),before_reserve:Mutex::new(None),before_finish:Mutex::new(None),fail_finish:AtomicBool::new(false),fail_release:AtomicBool::new(false),finish_calls:AtomicU64::new(0),release_calls:AtomicU64::new(0),owner:Mutex::new(None),hold_classification:AtomicBool::new(false),classifications:Mutex::new(vec![]),classifying_reads:AtomicU64::new(0),after_route_read:Mutex::new(None)});
+        let weak=Arc::downgrade(&host);*host.window.observer.lock().unwrap()=Some(Arc::new(move|event|{let host=weak.upgrade().unwrap();let classification=host.routes.begin_geometry("nova",&host.signals,&host.outputs);let accepted=match event{Geometry::Move(x,y)=>host.hub.native_moved("nova",&host.signals,x,y),Geometry::Size(w,h)=>host.hub.native_resized("nova",&host.signals,w,h)};if let Some(classification)=classification{if host.hold_classification.load(Ordering::SeqCst){host.classifications.lock().unwrap().push((classification,accepted));}else{host.routes.finish_geometry(classification,accepted);}}}));host
     }
     fn intent(self:&Arc<Self>)->NativeLayoutIntent{let handle=self.hub.native_handle("nova").unwrap();let witness=self.routes.witness("nova","avatar-nova",&self.signals,self.now()).unwrap();let ticket=self.routes.begin_preparation(witness,self.now()).unwrap();NativeLayoutIntent::new(self.clone(),ticket,handle)}
     async fn pump_until(&self,mut predicate:impl FnMut()->bool){for _ in 0..3000{while self.main.step(){}if predicate(){return;}tokio::time::sleep(Duration::from_millis(1)).await;}panic!("controlled driver did not settle");}
@@ -61,18 +64,27 @@ impl Host{
     async fn prepared(self:&Arc<Self>)->NativeLayoutPrepared{let task=tokio::spawn(native_layout::run_driver(self.intent()));self.pump_until(||task.is_finished()).await;task.await.unwrap().unwrap()}
     async fn released(&self){self.pump_until(||!self.hub.any_native_work()).await;}
     fn stop(&self){self.routes.revoke(Some("nova"));self.f.lock().unwrap().core.stop("nova",self.now());}
+    fn finish_classification(&self,accepted:bool){self.hold_classification.store(false,Ordering::SeqCst);for (fact,observed) in self.classifications.lock().unwrap().drain(..){self.routes.finish_geometry(fact,accepted&&observed);}}
+    fn owned(&self)->Arc<LayoutOwner>{self.owner.lock().unwrap().as_ref().unwrap().clone()}
 }
 impl LayoutHost for Host{
     fn now(&self)->u64{self.now.load(Ordering::SeqCst)}
     fn main(&self)->Arc<dyn LayoutMain>{self.main.clone()}
     fn refresh(&self)->std::pin::Pin<Box<dyn std::future::Future<Output=Result<(),LayoutError>>+Send+'_>>{Box::pin(async{Ok(())})}
     fn validate(&self,cancel:&Arc<AtomicBool>)->Result<(),LayoutError>{let f=self.f.lock().unwrap();if cancel.load(Ordering::SeqCst)||!native_layout::context_current(&self.expected,&f.core,&f.store,&f.world,self.now()){Err(LayoutError::Stale)}else{Ok(())}}
-    fn reserve(&self,h:&LayoutHandle,s:&LayoutSample,i:u64,d:u64,c:Arc<AtomicBool>)->Result<Arc<LayoutOwner>,LayoutError>{let hook=self.before_reserve.lock().unwrap().take();if let Some(hook)=hook{hook(&c);}self.hub.reserve_native(h,s,i,d,c)}
+    fn reserve(&self,h:&LayoutHandle,s:&LayoutSample,i:u64,d:u64,c:Arc<AtomicBool>)->Result<Arc<LayoutOwner>,LayoutError>{let hook=self.before_reserve.lock().unwrap().take();if let Some(hook)=hook{hook(&c);}let owner=self.hub.reserve_native(h,s,i,d,c)?;*self.owner.lock().unwrap()=Some(owner.clone());Ok(owner)}
     fn persist(&self,b:Bounds,c:&Arc<AtomicBool>)->Result<(),LayoutError>{self.persist_entered.store(true,Ordering::SeqCst);if let Some(hook)=self.before_persist.lock().unwrap().take(){hook();}if self.fail_persist.load(Ordering::SeqCst){return Err(LayoutError::Persistence);}let f=self.f.lock().unwrap();f.store.save_window_bounds(&serde_json::to_value(b).unwrap()).map_err(|_|LayoutError::Persistence)?;drop(f);self.validate(c)}
     fn attach(&self,cancel:&Arc<AtomicBool>)->Result<(),LayoutError>{self.gate.watch(cancel).map(|_|()).ok_or(LayoutError::Unavailable)}
     fn retain(&self,t:&PreparationTicket,h:&LayoutHandle,c:&Arc<AtomicBool>)->Result<LayoutRoute,LayoutError>{self.routes.retain_preparation(t,h.signals(),c,&self.ui,self.now()).map_err(|_|LayoutError::Stale)}
     fn handoff(&self,t:&PreparationTicket,o:&Arc<LayoutOwner>)->Result<LayoutRoute,LayoutError>{self.routes.handoff_preparation(t,o.handle().signals(),&o.cancel,&self.ui,self.now()).map_err(|_|LayoutError::Stale)}
-    fn route_current(&self,r:&LayoutRoute)->bool{self.routes.layout_current(r,self.now())}
+    fn route_state(&self,r:&LayoutRoute)->LayoutRouteState{
+        let observed=self.routes.layout_state(r,self.now());
+        // Model a native callback beginning immediately AFTER the route read,
+        // before the driver acquires its getter fence. No production hook.
+        if observed==LayoutRouteState::Current{let hook=self.after_route_read.lock().unwrap().take();if let Some(hook)=hook{hook();}}
+        if observed==LayoutRouteState::Classifying{self.classifying_reads.fetch_add(1,Ordering::SeqCst);}
+        observed
+    }
     fn release_route(&self,r:&LayoutRoute)->bool{let released=if self.fail_release.load(Ordering::SeqCst){false}else{self.routes.release_layout(r)};self.release_calls.fetch_add(1,Ordering::SeqCst);released}
     fn finish(&self,o:&Arc<LayoutOwner>)->bool{self.finish_calls.fetch_add(1,Ordering::SeqCst);let hook=self.before_finish.lock().unwrap().take();if let Some(hook)=hook{hook();}if self.fail_finish.load(Ordering::SeqCst){return false;}assert!(self.hub.finish_native(o));true}
     fn policy(&self)->Option<crate::storage::profile_mutation::NativeLayoutPolicy>{let policy=self.f.lock().unwrap().store.native_layout_policy("nova");self.policy_reads.fetch_add(1,Ordering::SeqCst);policy}
@@ -234,4 +246,77 @@ async fn route_release_failure_keeps_only_unavailable_bookkeeping_and_never_refi
     h.wait_until(||h.release_calls.load(Ordering::SeqCst)>=2).await;assert_eq!(h.finish_calls.load(Ordering::SeqCst),1,"retirement retries only the retained route, never an already finished Hub owner");
     let signals=&held[7].0;let witness=h.routes.witness("remaining7","avatar-remaining7",signals,0).unwrap();let ticket=h.routes.begin_preparation(witness,0).unwrap();h.routes.cancel_preparation(&ticket);for (_,_,route) in held{if let Some(route)=route{assert!(h.routes.release_layout(&route));}}
     assert_eq!(result,native_layout::NativeLayoutRestoreOutcome::GuardedUnavailable,"later bookkeeping retirement does not rewrite the first unavailable result");
+}
+
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn held_owned_classification_before_getter_waits_in_both_event_orders(){
+    for reverse in [false,true]{
+        let h=Host::new();h.window.delayed.store(true,Ordering::SeqCst);
+        let task=tokio::spawn(native_layout::run_driver(h.intent()));
+        h.pump_until(||h.window.pending.lock().unwrap().len()==2).await;
+        let mut events=h.window.pending.lock().unwrap().drain(..).collect::<Vec<_>>();if reverse{events.reverse();}
+        h.window.event(events[0]);h.hold_classification.store(true,Ordering::SeqCst);h.window.event(events[1]);
+        h.pump_until(||h.classifying_reads.load(Ordering::SeqCst)>0).await;
+        assert_eq!(h.classifications.lock().unwrap().len(),1,"hold is after the genuine Hub field observation");
+        assert_eq!(h.owned().phase(),crate::overlay_presentation::LayoutPhase::Expanding);
+        assert!(!h.owned().cancel.load(Ordering::SeqCst));assert!(!task.is_finished(),"the real driver reached Classifying and must neither prepare nor abort");
+        assert!(!h.f.lock().unwrap().core.world_output_current("nova",0));
+        let samples=h.window.samples.load(Ordering::SeqCst);h.finish_classification(true);
+        h.wait_until(||!h.main.queue.lock().unwrap().is_empty()).await;
+        assert_eq!(h.window.samples.load(Ordering::SeqCst),samples,"finishing an event is not a getter");
+        assert!(!task.is_finished());h.pump_until(||task.is_finished()).await;
+        let p=task.await.unwrap().unwrap();assert!(h.window.samples.load(Ordering::SeqCst)>samples);assert!(p.current(0));
+        h.window.delayed.store(false,Ordering::SeqCst);drop(p);h.released().await;assert_eq!(h.window.bounds().unwrap(),normal());
+    }
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn classification_after_current_read_discards_sample_and_requires_later_getter(){
+    let h=Host::new();h.window.delayed.store(true,Ordering::SeqCst);
+    let task=tokio::spawn(native_layout::run_driver(h.intent()));
+    h.pump_until(||h.window.pending.lock().unwrap().len()==2).await;
+    let events=h.window.pending.lock().unwrap().drain(..).collect::<Vec<_>>();h.window.event(events[0]);
+    let weak=Arc::downgrade(&h);let last=events[1];
+    *h.after_route_read.lock().unwrap()=Some(Box::new(move||{let h=weak.upgrade().unwrap();h.hold_classification.store(true,Ordering::SeqCst);h.window.event(last);}));
+    let before=h.window.samples.load(Ordering::SeqCst);
+    h.pump_until(||h.classifying_reads.load(Ordering::SeqCst)>0).await;
+    assert!(h.window.samples.load(Ordering::SeqCst)>before,"the first getter actually ran before the post-getter Classifying check");
+    assert_eq!(h.owned().phase(),crate::overlay_presentation::LayoutPhase::Expanding);
+    assert!(!task.is_finished());assert!(!h.owned().cancel.load(Ordering::SeqCst));
+    let discarded=h.window.samples.load(Ordering::SeqCst);h.finish_classification(true);
+    h.wait_until(||!h.main.queue.lock().unwrap().is_empty()).await;
+    assert!(!task.is_finished(),"a held fresh Main getter prevents acceptance of the discarded sample");
+    assert_eq!(h.window.samples.load(Ordering::SeqCst),discarded);
+    h.pump_until(||task.is_finished()).await;let p=task.await.unwrap().unwrap();
+    assert!(h.window.samples.load(Ordering::SeqCst)>discarded);assert!(p.current(0));
+    h.window.delayed.store(false,Ordering::SeqCst);drop(p);h.released().await;assert_eq!(h.window.bounds().unwrap(),normal());
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn held_classification_rejection_stop_and_absolute_expiry_cannot_resume(){
+    for reason in ["rejected","stop","expired"]{
+        let h=Host::new();h.window.delayed.store(true,Ordering::SeqCst);
+        let task=tokio::spawn(native_layout::run_driver(h.intent()));
+        h.pump_until(||h.window.pending.lock().unwrap().len()==2).await;
+        let events=h.window.pending.lock().unwrap().drain(..).collect::<Vec<_>>();h.window.event(events[0]);
+        h.hold_classification.store(true,Ordering::SeqCst);h.window.event(events[1]);
+        h.pump_until(||h.classifying_reads.load(Ordering::SeqCst)>0).await;
+        assert!(!task.is_finished());assert!(!h.owned().cancel.load(Ordering::SeqCst));
+        match reason{"stop"=>h.stop(),"expired"=>h.now.store(5001,Ordering::SeqCst),_=>{}}
+        h.finish_classification(reason!="rejected");h.window.delayed.store(false,Ordering::SeqCst);
+        h.pump_until(||task.is_finished()).await;assert!(task.await.unwrap().is_err());
+        assert!(h.owned().cancel.load(Ordering::SeqCst));assert_ne!(h.owned().phase(),crate::overlay_presentation::LayoutPhase::Prepared);
+        h.released().await;assert_eq!(h.window.bounds().unwrap(),normal());
+    }
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn unmatched_geometry_is_terminal_even_if_classification_is_later_finished(){
+    let h=Host::new();h.window.delayed.store(true,Ordering::SeqCst);
+    let task=tokio::spawn(native_layout::run_driver(h.intent()));h.pump_until(||h.window.pending.lock().unwrap().len()==2).await;
+    h.hold_classification.store(true,Ordering::SeqCst);h.window.signal_only(Geometry::Move(arena().x+1,arena().y));
+    assert!(h.owned().cancel.load(Ordering::SeqCst));h.finish_classification(true);
+    h.pump_until(||task.is_finished()).await;assert!(task.await.unwrap().is_err());
+    assert!(h.owned().cancel.load(Ordering::SeqCst));h.window.delayed.store(false,Ordering::SeqCst);h.window.flush();h.released().await;
 }

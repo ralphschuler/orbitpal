@@ -67,6 +67,10 @@ pub(super) struct LayoutRoute {
     signals: Weak<WindowSignals>,
     cancel: Arc<AtomicBool>,
 }
+/// Only an exact live active layout may be temporarily Classifying. It is not
+/// current proof and cannot authorize Prepared/Ready while an event is open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LayoutRouteState { Current, Classifying, Revoked }
 pub(crate) struct GeometryClassification { id: u64, serial: u64, cancel: Arc<AtomicBool> }
 struct LayoutSlot {
     route: LayoutRoute,
@@ -419,12 +423,18 @@ impl NativeOutputRoutes {
         ticket.cancel.store(true, Ordering::SeqCst);
         Ok(route)
     }
-    pub(super) fn layout_current(&self, route: &LayoutRoute, now: u64) -> bool {
-        let Ok(mut state) = self.lock() else { return false; };
+    pub(super) fn layout_state(&self, route: &LayoutRoute, now: u64) -> LayoutRouteState {
+        let Ok(mut state) = self.lock() else { return LayoutRouteState::Revoked; };
         state.reap(now);
-        state.layouts.get(&route.id).is_some_and(|slot| slot.active && slot.route.matches(route) && slot.classifying.is_none()
+        let Some(slot) = state.layouts.get(&route.id).filter(|slot| slot.active && slot.route.matches(route)
             && !route.cancel.load(Ordering::SeqCst)
-            && state.windows.get(&route.bot).is_some_and(|window| window.instance == route.instance && Weak::ptr_eq(&window.signals, &route.signals)))
+            && state.windows.get(&route.bot).is_some_and(|window| window.instance == route.instance
+                && Weak::ptr_eq(&window.signals, &route.signals) && window.signals.strong_count() > 0))
+        else { return LayoutRouteState::Revoked; };
+        if slot.classifying.is_some() { LayoutRouteState::Classifying } else { LayoutRouteState::Current }
+    }
+    pub(super) fn layout_current(&self, route: &LayoutRoute, now: u64) -> bool {
+        self.layout_state(route, now) == LayoutRouteState::Current
     }
     pub(super) fn release_layout(&self, route: &LayoutRoute)->bool {
         route.cancel.store(true, Ordering::SeqCst);

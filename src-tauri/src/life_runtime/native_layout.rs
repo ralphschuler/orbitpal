@@ -1,7 +1,7 @@
 //! Private constructor-bound native layout driver. Preparation is not reachable
 //! from ordinary overlay opening, IPC, model tools or renderer messages. It is
 //! geometry observation only; no conversion to World Ready or action authority.
-use super::{action_state::LocalFence,core::Core,native_output_route::{LayoutRoute,LayoutUi,PreparationTicket},LifeRuntime};
+use super::{action_state::LocalFence,core::Core,native_output_route::{LayoutRoute,LayoutRouteState,LayoutUi,PreparationTicket},LifeRuntime};
 use crate::{overlay_presentation::{Bounds,LayoutError,LayoutHandle,LayoutMain,LayoutOwner,LayoutPhase,LayoutSample,NativeLayoutMain},storage::Store,world_hub::{ActionContext,WorldHub},world_state::SessionStamp};
 use serde_json::Value;
 use std::{sync::{atomic::{AtomicBool,Ordering},Arc},time::Duration};
@@ -65,7 +65,8 @@ pub(crate) trait LayoutHost:Send+Sync {
     fn attach(&self,cancel:&Arc<AtomicBool>)->Result<(),LayoutError>;
     fn retain(&self,ticket:&PreparationTicket,handle:&LayoutHandle,cancel:&Arc<AtomicBool>)->Result<LayoutRoute,LayoutError>;
     fn handoff(&self,ticket:&PreparationTicket,owner:&Arc<LayoutOwner>)->Result<LayoutRoute,LayoutError>;
-    fn route_current(&self,route:&LayoutRoute)->bool;
+    fn route_state(&self,route:&LayoutRoute)->LayoutRouteState;
+    fn route_current(&self,route:&LayoutRoute)->bool{self.route_state(route)==LayoutRouteState::Current}
     fn release_route(&self,route:&LayoutRoute)->bool;
     fn finish(&self,owner:&Arc<LayoutOwner>)->bool;
     fn policy(&self)->Option<crate::storage::profile_mutation::NativeLayoutPolicy>;
@@ -95,7 +96,7 @@ impl LayoutHost for NativeHost {
     fn attach(&self,cancel:&Arc<AtomicBool>)->Result<(),LayoutError>{self.app.state::<crate::AppState>().life_runtime.monitor.get().and_then(|monitor|monitor.gate.watch(cancel)).map(|_|()).ok_or(LayoutError::Unavailable)}
     fn retain(&self,ticket:&PreparationTicket,handle:&LayoutHandle,cancel:&Arc<AtomicBool>)->Result<LayoutRoute,LayoutError>{self.app.state::<crate::AppState>().life_runtime.native_routes.retain_preparation(ticket,handle.signals(),cancel,&self.expected.ui,self.now()).map_err(|_|LayoutError::Stale)}
     fn handoff(&self,ticket:&PreparationTicket,owner:&Arc<LayoutOwner>)->Result<LayoutRoute,LayoutError>{self.app.state::<crate::AppState>().life_runtime.native_routes.handoff_preparation(ticket,owner.handle().signals(),&owner.cancel,&self.expected.ui,self.now()).map_err(|_|LayoutError::Stale)}
-    fn route_current(&self,route:&LayoutRoute)->bool{self.app.state::<crate::AppState>().life_runtime.native_routes.layout_current(route,self.now())}
+    fn route_state(&self,route:&LayoutRoute)->LayoutRouteState{self.app.state::<crate::AppState>().life_runtime.native_routes.layout_state(route,self.now())}
     fn release_route(&self,route:&LayoutRoute)->bool{self.app.state::<crate::AppState>().life_runtime.native_routes.release_layout(route)}
     fn finish(&self,owner:&Arc<LayoutOwner>)->bool{let state=self.app.state::<crate::AppState>();let finished=state.presentation.finish_native(owner);if finished&&owner.handle().current(){crate::overlay::configure_after_native_release(&self.app,owner.handle().clone());crate::overlay_presentation::sync_after_native_release(&self.app,owner.handle().bot(),owner.handle().signals().clone());}finished}
     fn policy(&self)->Option<crate::storage::profile_mutation::NativeLayoutPolicy>{self.app.state::<crate::AppState>().store.native_layout_policy(&self.expected.bot)}
@@ -171,22 +172,45 @@ pub(crate) async fn run_driver(intent:NativeLayoutIntent)->Result<NativeLayoutPr
     main_job(host.clone(),owner.clone(),false,move|o|{let sample=o.handle().sample()?;if sample.bounds!=expected.bounds||!sample.same_topology(&expected)||sample.monitor!=expected.monitor||sample.target(now_host.monitor())?!=target{return Err(LayoutError::Geometry);}o.normalize_target(target)?;o.protect_clicks(now_host.now())}).await?;
     for resize in [true,false]{let now_host=host.clone();let expected=initial.clone();main_job(host.clone(),owner.clone(),false,move|o|{if !o.geometry_queued(){let sample=o.handle().sample()?;if sample.bounds!=expected.bounds||sample.monitor!=expected.monitor||!sample.same_topology(&expected)||sample.target(now_host.monitor())?!=target{return Err(LayoutError::Geometry);}}o.expand_field(resize,target,now_host.now())}).await?;}
     loop {
-        if !owner.valid(host.now())||!host.route_current(&registered){return Err(LayoutError::Expired);}
+        if !owner.valid(host.now()){return Err(LayoutError::Expired);}
         host.validate(&owner.cancel)?;
+        match host.route_state(&registered) {
+            LayoutRouteState::Revoked => return Err(LayoutError::Stale),
+            LayoutRouteState::Classifying => { wait_for_observation(&host,&owner).await?; continue; }
+            LayoutRouteState::Current => {}
+        }
         if let Ok(fence)=owner.getter_fence(){
             let sample=main_job(host.clone(),owner.clone(),false,|o|o.handle().sample()).await?;
-            if !sample.same_topology(&initial)||sample.monitor!=host.monitor()||sample.target(host.monitor())?!=target||sample.bounds!=target{return Err(LayoutError::Geometry);}
+            if !owner.valid(host.now()){return Err(LayoutError::Expired);}
             host.validate(&owner.cancel)?;
-            if !host.route_current(&registered){return Err(LayoutError::Stale);}
+            match host.route_state(&registered) {
+                LayoutRouteState::Revoked => return Err(LayoutError::Stale),
+                // A real owned event can be between raw invalidation and Hub
+                // classification. This sample/fence cannot publish anything;
+                // obtain both anew after classification, without renewing time.
+                LayoutRouteState::Classifying => { wait_for_observation(&host,&owner).await?; continue; }
+                LayoutRouteState::Current => {}
+            }
+            if !sample.same_topology(&initial)||sample.monitor!=host.monitor()||sample.target(host.monitor())?!=target||sample.bounds!=target{return Err(LayoutError::Geometry);}
             owner.accept_getter(fence,sample.bounds,host.now())?;
             *cleanup_state.ready.lock().map_err(|_|LayoutError::Unavailable)?=Some(sample.clone());
             // MoveTo/Ready authority cannot be built from this private value.
             guard.armed=false;
             return Ok(NativeLayoutPrepared{bounds:sample.bounds,scale:sample.scale,reference_physical_height:initial.inner.height,release:NativeLayoutRelease{owner,host,route:registered,completed:cleanup_done}});
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        wait_for_observation(&host,&owner).await?;
     }
 }
+/// Waiting never changes an atom, route or deadline. In particular, a pending
+/// classification at the absolute deadline cannot manufacture another probe.
+async fn wait_for_observation(host:&Arc<dyn LayoutHost>,owner:&Arc<LayoutOwner>)->Result<(),LayoutError>{
+    if !owner.valid(host.now()){return Err(LayoutError::Expired);}
+    host.validate(&owner.cancel)?;
+    let remaining=owner.deadline.checked_sub(host.now()).filter(|remaining|*remaining>0).ok_or(LayoutError::Expired)?;
+    tokio::time::sleep(Duration::from_millis(remaining.min(50))).await;
+    Ok(())
+}
+
 async fn cleanup(host:Arc<dyn LayoutHost>,owner:Arc<LayoutOwner>,state:Arc<CleanupState>,completed:Arc<CleanupCompletion>){
     loop {
         if owner.cancel.load(Ordering::SeqCst)||host.now()>owner.deadline||owner.destroyed(){break;}

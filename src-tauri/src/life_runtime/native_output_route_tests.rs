@@ -511,3 +511,52 @@ fn inactive_cleanup_is_charged_before_hub_reservation_even_when_pending_is_reape
         for (_,_,route,_) in &held{routes.release_layout(route);}
     }
 }
+
+
+#[test]
+fn typed_layout_state_separates_live_classification_from_current_proof(){
+    let routes=NativeOutputRoutes::default();let signals=tracked(&routes,"a");layout_ui(&routes);
+    let outputs=super::super::action_output::OutputGate::default();let (route,cancel)=layout_handoff(&routes,"a",&signals,0);
+    assert_eq!(routes.layout_state(&route,0),LayoutRouteState::Current);
+    let fact=routes.begin_geometry("a",&signals,&outputs).unwrap();
+    assert_eq!(routes.layout_state(&route,0),LayoutRouteState::Classifying);
+    assert!(!routes.layout_current(&route,0));assert!(!cancel.load(Ordering::SeqCst));
+    routes.finish_geometry(fact,true);assert_eq!(routes.layout_state(&route,0),LayoutRouteState::Current);
+    let fact=routes.begin_geometry("a",&signals,&outputs).unwrap();routes.finish_geometry(fact,false);
+    assert_eq!(routes.layout_state(&route,0),LayoutRouteState::Revoked);assert!(cancel.load(Ordering::SeqCst));routes.release_layout(&route);
+}
+
+#[test]
+fn revoked_route_conditions_take_precedence_over_open_classification(){
+    for reason in ["stop","expired","backward","replacement","poison"]{
+        let routes=NativeOutputRoutes::default();let signals=tracked(&routes,"a");layout_ui(&routes);
+        let outputs=super::super::action_output::OutputGate::default();let (route,cancel)=layout_handoff(&routes,"a",&signals,10);
+        let fact=routes.begin_geometry("a",&signals,&outputs).unwrap();
+        assert_eq!(routes.layout_state(&route,10),LayoutRouteState::Classifying);
+        let mut now=10;let mut replacement=None;
+        match reason{
+            "stop"=>routes.revoke(Some("a")),
+            "expired"=>now=5011,
+            "backward"=>now=9,
+            "replacement"=>{let next=Arc::new(WindowSignals::default());routes.track_window("a","avatar-a",&next,10).unwrap();replacement=Some(next);},
+            "poison"=>assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{let _guard=routes.state.lock().unwrap();panic!("synthetic route classification poison");})).is_err()),
+            _=>unreachable!(),
+        }
+        assert_eq!(routes.layout_state(&route,now),LayoutRouteState::Revoked);
+        assert!(cancel.load(Ordering::SeqCst));routes.finish_geometry(fact,true);
+        assert_eq!(routes.layout_state(&route,10),LayoutRouteState::Revoked);
+        drop(replacement);routes.release_layout(&route);
+    }
+}
+
+#[test]
+fn inactive_and_foreign_layout_records_cannot_be_classifying_or_current(){
+    let routes=NativeOutputRoutes::default();let signals=tracked(&routes,"a");layout_ui(&routes);
+    let ui=routes.layout_ui().unwrap();let ticket=begin(&routes,"a",&signals,0);let cancel=Arc::new(AtomicBool::new(false));
+    let route=routes.retain_preparation(&ticket,&signals,&cancel,&ui,0).unwrap();
+    assert_eq!(routes.layout_state(&route,0),LayoutRouteState::Revoked,"inactive cleanup capacity is not layout proof");
+    let active=routes.handoff_preparation(&ticket,&signals,&cancel,&ui,0).unwrap();
+    let mut foreign=active.clone();foreign.cancel=Arc::new(AtomicBool::new(false));
+    assert_eq!(routes.layout_state(&foreign,0),LayoutRouteState::Revoked);
+    assert_eq!(routes.layout_state(&active,0),LayoutRouteState::Current);assert!(!cancel.load(Ordering::SeqCst));routes.release_layout(&active);
+}
