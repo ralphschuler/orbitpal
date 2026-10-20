@@ -10,7 +10,7 @@ Your own animated AI cohost for Twitch and YouTube. A native **Tauri 2 + Rust** 
 
 **Early release:** expect rough edges and review provider settings before going live. Model runtimes, accounts, API keys and voices are supplied by you.
 
-The current source version is **0.10.0**. Consult the release notes for the version included in each published package.
+The current source version is **0.10.1**. Consult the release notes for the version included in each published package.
 
 ## What it does
 
@@ -31,7 +31,7 @@ Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, sil
 
 ## Download and start
 
-Get published packages from the [latest release](https://github.com/ralphschuler/orbitpal/releases/latest). The release pipeline targets Windows x64, macOS Apple Silicon/Intel, and Linux x64; each release identifies its available files and checksums. Windows packages have no Authenticode signature. Published macOS packages through **v0.9.0** use ad-hoc signing; **v0.10.0** uses the pinned persistent self-signed identity on both Mac architectures and remains **not Apple-notarized**. Its build provenance and updater signatures were verified before publication. Platform trust prompts may appear, and an update from ad-hoc signing may need renewed microphone/screen permission. See [release details](docs/RELEASING.md).
+Get published packages from the [latest release](https://github.com/ralphschuler/orbitpal/releases/latest). The release pipeline targets Windows x64, macOS Apple Silicon/Intel, and Linux x64; each release identifies its available files and checksums. Windows packages have no Authenticode signature. Published macOS packages through **v0.9.0** use ad-hoc signing; **v0.10.0 and later** use the pinned persistent self-signed identity on both Mac architectures and remain **not Apple-notarized**. The release pipeline verifies build provenance and updater signatures before publication. Platform trust prompts may appear, and an update from ad-hoc signing may need renewed microphone/screen permission. See [release details](docs/RELEASING.md).
 
 1. Open the app and choose a dialog provider under **Models**. Local runtimes must be running; cloud/CLI providers need your own login or key.
 2. Choose a character and voice under **Character & voice**.
