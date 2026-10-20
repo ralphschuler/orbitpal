@@ -3,7 +3,7 @@
 use crate::storage::Store;
 use futures_util::StreamExt;
 use serde_json::{json,Value};
-use std::time::Duration;
+use std::{time::Duration,sync::{Arc,atomic::{AtomicBool,Ordering}}};
 
 const DEFAULT_URL:&str="http://127.0.0.1:8888";
 const MAX_RESPONSE:usize=2*1024*1024;
@@ -53,11 +53,21 @@ fn endpoint(config:&Value,bot_id:&str,recall:bool)->Result<reqwest::Url,String>{
 fn same_destination(snapshot:&Value,current:&Value,bot_id:&str)->bool{
     base_url(snapshot).ok()==base_url(current).ok()&&bank_id(snapshot,bot_id)==bank_id(current,bot_id)&&snapshot["apiKeyId"]==current["apiKeyId"]
 }
-async fn request(store:&Store,config:&Value,bot_id:&str,recall:bool,body:Value)->Result<Value,String>{
+async fn request(store:&Store,config:&Value,bot_id:&str,recall:bool,body:Value,usage:Option<&crate::usage_budget::Context>,cancel:Option<Arc<AtomicBool>>)->Result<Value,String>{
     validate_config(config)?;
-    let client=reqwest::Client::builder().connect_timeout(Duration::from_secs(2)).timeout(Duration::from_secs(if recall{5}else{20})).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"Hindsight-HTTP-Client konnte nicht erstellt werden")?;
+    if cancel.as_ref().is_some_and(|flag|flag.load(Ordering::Relaxed)){return Err("Antwort abgebrochen".into());}
+    if let Some(context)=usage{store.preflight_usage_cost(context,crate::usage_budget::Cost::memory(!recall))?;}
+    // Keychain authorization can block. Resolve it before the UTC-day
+    // reservation, then recheck cancellation before any metered HTTP work.
+    let key=store.key_for(config)?;
+    if cancel.as_ref().is_some_and(|flag|flag.load(Ordering::Relaxed)){return Err("Antwort abgebrochen".into());}
+    let current=store.bot_profile(bot_id)?;
+    let current=&current["hindsight"];
+    if current["enabled"].as_bool()!=Some(true)||current[if recall{"autoRecall"}else{"autoRetain"}].as_bool()==Some(false)||!same_destination(config,current,bot_id){return Err("Antwort abgebrochen".into());}
+    let operation=async {
+    let client=reqwest::Client::builder().retry(reqwest::retry::never()).connect_timeout(Duration::from_secs(2)).timeout(Duration::from_secs(if recall{5}else{20})).redirect(reqwest::redirect::Policy::none()).build().map_err(|_|"Hindsight-HTTP-Client konnte nicht erstellt werden")?;
     let mut request=client.post(endpoint(config,bot_id,recall)?).json(&body);
-    if let Some(key)=store.key_for(config)?{request=request.bearer_auth(key);}
+    if let Some(key)=key{request=request.bearer_auth(key);}
     let response=request.send().await.map_err(|error|if error.is_timeout(){"Hindsight hat das Zeitlimit überschritten; das Gespräch kann ohne Langzeitgedächtnis fortgesetzt werden".to_owned()}else{"Hindsight ist nicht erreichbar. Basis-URL und Server prüfen".to_owned()})?;
     let status=response.status();
     if !status.is_success(){return Err(match status.as_u16(){
@@ -74,18 +84,28 @@ async fn request(store:&Store,config:&Value,bot_id:&str,recall:bool,body:Value)-
         bytes.extend_from_slice(&chunk);
     }
     serde_json::from_slice(&bytes).map_err(|_|"Hindsight hat kein gültiges JSON geliefert".into())
+    };
+    let guarded=async{let result=if let Some(cancel)=cancel {tokio::select!{result=operation=>result,_=async{while !cancel.load(Ordering::Relaxed){tokio::time::sleep(Duration::from_millis(75)).await;}}=>Err("Antwort abgebrochen".into())}}else{operation.await};(result,None)};
+    if let Some(context)=usage{store.metered_usage(context,crate::usage_budget::Cost::memory(!recall),guarded).await}else{guarded.await.0}
 }
 
 /// No call at all unless the separate Hindsight switch was explicitly enabled.
 /// Errors are returned for the agent to log best effort, never as model context.
+#[cfg(test)]
 pub async fn recall(store:&Store,profile:&Value,query:&str)->Result<String,String>{
+    recall_with(store,profile,query,None,None).await
+}
+pub async fn recall_metered(store:&Store,profile:&Value,query:&str,usage:&crate::usage_budget::Context,cancel:Arc<AtomicBool>)->Result<String,String>{
+    recall_with(store,profile,query,Some(usage),Some(cancel)).await
+}
+async fn recall_with(store:&Store,profile:&Value,query:&str,usage:Option<&crate::usage_budget::Context>,cancel:Option<Arc<AtomicBool>>)->Result<String,String>{
     let config=&profile["hindsight"];
     if config["enabled"].as_bool()!=Some(true)||config["autoRecall"].as_bool()==Some(false)||query.trim().is_empty(){return Ok(String::new());}
     let bot_id=profile["id"].as_str().ok_or("Bot-ID für Hindsight fehlt")?;
     let current=store.profile()?;
     if current["hindsight"]["enabled"].as_bool()!=Some(true)||current["hindsight"]["autoRecall"].as_bool()==Some(false)||!same_destination(config,&current["hindsight"],bot_id){return Ok(String::new());}
     let query=query.chars().take(1200).collect::<String>();
-    let response=request(store,config,bot_id,true,json!({"query":query,"budget":config["recallBudget"].as_str().unwrap_or("low"),"max_tokens":config["maxRecallTokens"].as_u64().unwrap_or(1024).clamp(128,4096)})).await?;
+    let response=request(store,config,bot_id,true,json!({"query":query,"budget":config["recallBudget"].as_str().unwrap_or("low"),"max_tokens":config["maxRecallTokens"].as_u64().unwrap_or(1024).clamp(128,4096)}),usage,cancel).await?;
     let results=response["results"].as_array().ok_or("Hindsight hat keine gültige Recall-Ergebnisliste geliefert")?;
     let mut remaining=6000usize;let mut selected=Vec::new();
     for result in results.iter().take(6){
@@ -104,7 +124,14 @@ pub struct Conversation<'a>{pub id:&'a str,pub bot_id:&'a str,pub user_text:&'a 
 
 /// Called once after actual presentation begins. Only this new turn is sent;
 /// no history, knowledge files, profile configuration or credentials are content.
+#[cfg(test)]
 pub async fn retain_started(store:&Store,snapshot:&Value,turn:Conversation<'_>)->Result<Option<String>,String>{
+    retain_with(store,snapshot,turn,None,None).await
+}
+pub async fn retain_metered(store:&Store,snapshot:&Value,turn:Conversation<'_>,usage:&crate::usage_budget::Context,cancel:Arc<AtomicBool>)->Result<Option<String>,String>{
+    retain_with(store,snapshot,turn,Some(usage),Some(cancel)).await
+}
+async fn retain_with(store:&Store,snapshot:&Value,turn:Conversation<'_>,usage:Option<&crate::usage_budget::Context>,cancel:Option<Arc<AtomicBool>>)->Result<Option<String>,String>{
     if snapshot["enabled"].as_bool()!=Some(true)||snapshot["autoRetain"].as_bool()==Some(false){return Ok(None);}
     let current=store.profile()?;
     let current=&current["hindsight"];
@@ -115,7 +142,7 @@ pub async fn retain_started(store:&Store,snapshot:&Value,turn:Conversation<'_>)-
     let content=format!("Nutzer: {user_text}\nCo-Host: {assistant_text}");
     // Context is a human-readable label. Keep the existing tag namespace for
     // operators' filters and previously retained memories across the rename.
-    let response=request(store,snapshot,turn.bot_id,false,json!({"items":[{"content":content,"document_id":operation_id,"context":"OrbitPal conversation","timestamp":chrono::Utc::now().to_rfc3339(),"tags":["streamer-ai-cohost",format!("source:{}",turn.source)],"metadata":{"bot_id":turn.bot_id,"source":turn.source,"user":turn.user.chars().take(160).collect::<String>()}}],"async":true,"operation_id":operation_id})).await?;
+    let response=request(store,snapshot,turn.bot_id,false,json!({"items":[{"content":content,"document_id":operation_id,"context":"OrbitPal conversation","timestamp":chrono::Utc::now().to_rfc3339(),"tags":["streamer-ai-cohost",format!("source:{}",turn.source)],"metadata":{"bot_id":turn.bot_id,"source":turn.source,"user":turn.user.chars().take(160).collect::<String>()}}],"async":true,"operation_id":operation_id}),usage,cancel).await?;
     if response["success"].as_bool()!=Some(true)||response["async"].as_bool()!=Some(true){return Err("Hindsight hat die asynchrone Verarbeitung nicht bestätigt".into());}
     let accepted=response["operation_id"].as_str().ok_or("Hindsight hat keine Operations-ID bestätigt")?;
     if accepted!=operation_id{return Err("Hindsight hat eine abweichende Operations-ID zurückgegeben; keine automatische Wiederholung".into());}
@@ -220,4 +247,22 @@ mod tests{
         let id=uuid::Uuid::new_v4().to_string();
         assert!(retain_started(fixture.store(),&snapshot,Conversation{id:&id,bot_id:"nova",user_text:"not sent",assistant_text:"not sent",source:"operator",user:"Streamer"}).await.unwrap().is_none());
     }
+    #[tokio::test]
+    async fn actual_local_recall_is_metered_and_delayed_automatic_retain_cannot_bypass_the_cap(){
+        use crate::usage_budget::{Context,Origin,Limits};
+        let(url,server)=mock_server(json!({"results":[]})).await;let fixture=LocalStore::new();let profile=fixture.configure(&url,true);
+        fixture.store().set_usage_limits(&Limits{daily_hindsight_requests:1,..Limits::default()}).unwrap();let ctx=Context::new("nova",Origin::AutomaticChat);let cancel=Arc::new(AtomicBool::new(false));
+        recall_metered(fixture.store(),&profile,"fixture question",&ctx,cancel.clone()).await.unwrap();server.await.unwrap();
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let profile=fixture.configure(&format!("http://{}",listener.local_addr().unwrap()),true);let id=uuid::Uuid::new_v4().to_string();
+        let result=retain_metered(fixture.store(),&profile["hindsight"],Conversation{id:&id,bot_id:"nova",user_text:"fixture",assistant_text:"fixture",source:"twitch",user:"viewer"},&ctx,cancel).await;
+        assert_eq!(result.unwrap_err(),crate::usage_budget::Denial::HindsightLimit.message());assert!(tokio::time::timeout(Duration::from_millis(30),listener.accept()).await.is_err());
+        let total=fixture.store().usage_snapshot().unwrap().total;assert_eq!(total.hindsight_recall_requests,1);assert_eq!(total.hindsight_retain_requests,0);
+    }
+    #[tokio::test]
+    async fn cancelled_memory_work_is_not_sent_or_charged(){
+        use crate::usage_budget::{Context,Origin,Totals};
+        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();let fixture=LocalStore::new();let profile=fixture.configure(&format!("http://{}",listener.local_addr().unwrap()),true);
+        assert!(recall_metered(fixture.store(),&profile,"fixture",&Context::new("nova",Origin::Autopilot),Arc::new(AtomicBool::new(true))).await.is_err());assert_eq!(fixture.store().usage_snapshot().unwrap().total,Totals::default());assert!(tokio::time::timeout(Duration::from_millis(30),listener.accept()).await.is_err());
+    }
+
 }

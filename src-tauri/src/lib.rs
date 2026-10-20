@@ -1,4 +1,6 @@
 mod storage;
+mod usage_budget;
+mod usage_settings;
 mod credentials;
 mod providers;
 mod transcription;
@@ -194,7 +196,9 @@ async fn check_cli_provider(config:Value)->Result<Value,String>{cli_provider::st
 #[tauri::command]
 async fn list_cli_models(config:Value)->Result<Value,String>{cli_provider::models(&config).await}
 #[tauri::command]
-async fn send_message(app:tauri::AppHandle,text:String,source:Option<String>,user:Option<String>,skill_ids:Option<Vec<String>>,bot_id:Option<String>,request_id:Option<String>,reply_route_id:Option<String>)->Result<Value,String>{agent::send(app,text,source.unwrap_or("operator".into()),user.unwrap_or("Streamer".into()),skill_ids.unwrap_or_default(),bot_id,request_id,reply_route_id).await}
+async fn send_message(window:tauri::WebviewWindow,app:tauri::AppHandle,text:String,source:Option<String>,user:Option<String>,skill_ids:Option<Vec<String>>,bot_id:Option<String>,request_id:Option<String>,reply_route_id:Option<String>)->Result<Value,String>{usage_settings::main_only(window.label())?;agent::send(app,text,source.unwrap_or("operator".into()),user.unwrap_or("Streamer".into()),skill_ids.unwrap_or_default(),bot_id,request_id,reply_route_id).await}
+#[tauri::command]
+async fn send_automatic_message(window:tauri::WebviewWindow,app:tauri::AppHandle,text:String,source:String,user:String,bot_id:String,request_id:Option<String>,reply_route_id:Option<String>)->Result<Value,String>{usage_settings::main_only(window.label())?;agent::send_automatic(app,text,source,user,bot_id,request_id,reply_route_id).await}
 #[tauri::command]
 fn stop_generation(state:State<'_,AppState>,app:tauri::AppHandle)->Result<(),String>{
     state.screen_context.portal.close_all();
@@ -258,15 +262,15 @@ fn report_emote_playback(app:tauri::AppHandle,bot_id:String,output:String,id:Str
 #[tauri::command]
 async fn get_speech_audio(app:tauri::AppHandle,id:String,bot_id:String)->Result<Value,String>{overlay::speech_audio(&app,&id,&bot_id).await}
 #[tauri::command]
-async fn synthesize_speech(state:State<'_,AppState>,text:String,bot_id:Option<String>)->Result<Value,String>{
-    state.updater.ensure_idle()?;
+async fn synthesize_speech(window:tauri::WebviewWindow,state:State<'_,AppState>,text:String,bot_id:Option<String>)->Result<Value,String>{
+    usage_settings::main_only(window.label())?;state.updater.ensure_idle()?;
     if text.len()>20_000{return Err("Sprachtext ist zu lang".into());}
     let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;let store=scoped.as_ref().unwrap_or(&state.store);
     let profile=store.profile()?;let config=&profile["voice"];providers::synthesize(config,&text,store.key_for(config)?).await
 }
 #[tauri::command]
-async fn transcribe_audio(state:State<'_,AppState>,audio_base64:String,mime_type:String,bot_id:Option<String>)->Result<String,String>{
-    state.updater.ensure_idle()?;
+async fn transcribe_audio(window:tauri::WebviewWindow,state:State<'_,AppState>,audio_base64:String,mime_type:String,bot_id:Option<String>)->Result<String,String>{
+    usage_settings::main_only(window.label())?;state.updater.ensure_idle()?;
     if audio_base64.len()>40*1024*1024{return Err("Audioaufnahme ist zu groß".into());}
     let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;let store=scoped.as_ref().unwrap_or(&state.store);
     let profile=store.profile()?;let config=&profile["stt"];providers::transcribe(config,&audio_base64,&mime_type,store.key_for(config)?).await
@@ -310,7 +314,7 @@ pub fn run(){
             setup_tray(app)?;
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source])
+        .invoke_handler(tauri::generate_handler![usage_settings::get_usage_budget,usage_settings::set_usage_limits,overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,send_automatic_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source])
         .build(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden").run(|app,event|{
             if matches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit){app.state::<AppState>().screen_context.portal.close_all();}
         });

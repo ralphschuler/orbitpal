@@ -9,16 +9,19 @@ pub const DEFAULT_AGENTS: &str = "# Arbeitsanweisungen\nDu bist ein KI-Co-Host f
 pub const DEFAULT_PERSONA: &str = "# Nova\nDu bist Nova, ein neugieriger, freundlicher Roboter und Co-Host. Dein Humor ist trocken und respektvoll. Du bist offen darüber, eine KI zu sein. Vermeide lange Monologe und schließe nicht jede Antwort mit einer Frage ab.\n";
 pub const DEFAULT_SKILL: &str = "---\nname: stream-begruessung\ndescription: Begrüße neue Zuschauer, wenn der Streamer eine Begrüßung anfordert.\n---\n# Stream-Begrüßung\nBegrüße die Person mit ihrem angezeigten Namen in einem kurzen Satz. Verwende keine erfundenen persönlichen Informationen. Variiere die Formulierung. Bei unbekanntem Namen begrüße die Community gemeinsam.\n";
 
-pub struct Store { pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String> }
+#[path="usage_store.rs"]
+mod usage_store;
+pub struct Store { pub root: PathBuf, db: Mutex<Connection>, fixed_profile:Option<String>,usage_error:Option<crate::usage_budget::Denial> }
 pub fn valid_id(id: &str) -> bool { !id.is_empty() && id.len() <= 96 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') }
 fn error(e: impl std::fmt::Display) -> String { e.to_string() }
 
 impl Store {
     pub fn new(root: PathBuf) -> Result<Self,String> {
         fs::create_dir_all(root.join("avatars")).map_err(error)?;
-        let db = Connection::open(root.join("cohost.sqlite3")).map_err(error)?;
+        let mut db = Connection::open(root.join("cohost.sqlite3")).map_err(error)?;
         db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL, source TEXT NOT NULL, user_name TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS secret_ids (id TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS bot_profiles (id TEXT PRIMARY KEY, profile TEXT NOT NULL); CREATE TABLE IF NOT EXISTS mcp_library (id TEXT PRIMARY KEY, server TEXT NOT NULL);").map_err(error)?;
-        let store = Self {root,db:Mutex::new(db),fixed_profile:None};
+        let usage_error=crate::usage_budget::initialize(&mut db,crate::usage_budget::today()).err();
+        let store = Self {root,db:Mutex::new(db),fixed_profile:None,usage_error};
         let profile = store.profile()?;
         store.ensure_profile(&profile)?;
         // The previous single-profile settings row remains authoritative during
@@ -63,7 +66,7 @@ impl Store {
         self.bot_profile(id)?;
         let connection=Connection::open(self.root.join("cohost.sqlite3")).map_err(error)?;
         connection.busy_timeout(std::time::Duration::from_secs(3)).map_err(error)?;
-        Ok(Self{root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned())})
+        Ok(Self{root:self.root.clone(),db:Mutex::new(connection),fixed_profile:Some(id.to_owned()),usage_error:self.usage_error})
     }
     fn extensions_migrated(&self)->Result<bool,String>{
         self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key='extension_library_v1')",[],|row|row.get(0)).map_err(error)

@@ -647,7 +647,7 @@
       if(epoch!==turnEpoch||!currentAutopilot()||!currentChat()||!currentManual()||!sameBotConfig())return;
       onAccepted?.();
       if(selected&&!autonomous)history=[...history,{id:crypto.randomUUID(),role:'user',text,source,user,createdAt:new Date().toISOString()}];
-      const reply=autonomous?await call('send_autopilot',{botId,requestId}):await call('send_message',{text,source,user,skillIds:[],botId,requestId,replyRouteId});
+      const reply=autonomous?await call('send_autopilot',{botId,requestId}):chatClaim?await call('send_automatic_message',{text,source,user,botId,requestId,replyRouteId}):await call('send_message',{text,source,user,skillIds:[],botId,requestId,replyRouteId});
       if(epoch!==turnEpoch)return;
       if(autonomous){
         const next={...silentAutopilots};
