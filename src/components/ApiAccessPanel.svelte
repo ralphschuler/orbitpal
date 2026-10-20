@@ -100,6 +100,7 @@
 <section class="settings-panel api-access" aria-labelledby="api-access-heading">
   <div class="manager-heading"><div class="section-heading"><KeyRound size={21}/><div><h2 id="api-access-heading">{$t('Einmal speichern. Für deine Bots auswählen.')}</h2><p>{$t('API-Schlüssel werden zentral im Systemschlüsselbund verwaltet. Modell, Stimme und Gedächtnis bleiben pro Bot einstellbar.')}</p></div></div><div class="button-row"><button class="button secondary small" disabled={pending||disabled||!desktop} onclick={()=>load(!!mode)}><RotateCcw size={14}/>{$t('Status erneut laden')}</button><button class="button primary small" disabled={!mutable||!!mode} onclick={()=>begin('create')}><Plus size={14}/>{$t('Zugang hinzufügen')}</button></div></div>
   <p class="field-note">{$t('Ein Anbieterstandard gilt nur für denselben Dienst, Endpunkt und Anmeldetyp. Zusätzliche Konten sind möglich. Profilexporte enthalten keine Schlüssel oder globalen Zugänge.')}</p>
+  <p class="field-note">{$t('Laufende YouTube-Verbindungen behalten ihren bisherigen Schlüssel. Nach dem Ersetzen eines Schlüssels, Wechseln des Standards oder Entfernen des Zugangs bitte trennen und neu verbinden.')}</p>
   {#if !desktop}<p class="inline-note">{$t('API-Zugänge werden in der Desktop-App verwaltet.')}</p>
   {:else if !snapshot&&pending}<p role="status">{$t('Lädt API-Zugänge …')}</p>
   {:else if !snapshot||snapshot.availability!=='ready'}<p class="error-note" role="alert">{$t('Die zentrale Zugangsliste ist nicht verfügbar. Bestehende Daten wurden nicht zurückgesetzt. Lade den Status erneut.')}</p>

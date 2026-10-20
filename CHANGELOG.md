@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Manage API credentials centrally for the installation, with named accounts, exact destination bindings and explicit shared defaults. Select connections per bot for dialog, voice, transcription, Hindsight and YouTube Data; retain per-bot model, voice and memory settings and separate OAuth/MCP permissions.
+- Adopt existing credential references without reading or copying their OS-store values, preserve distinct accounts, and leave imported profiles unbound. Add the shared manager and per-bot selectors in all four interface languages with guarded drafts, keyboard access and honest partial-save errors.
+
 - Add a bounded native Life action executor with typed actions, distinct delivery/start/terminal states, exact session/output identities, checked storage commits and cancellation cleanup. Unsupported visual capabilities fail before planning instead of inventing a successful movement.
 - Add an explicit ten-second quiet rest and activity status in all four interface languages. It runs without a model or voice in an already active Life session, has no animation or need reward, and starts no successor. Keep saved outcomes separate from runtime observations and reject obsolete Studio reports and delayed results.
 
