@@ -14,6 +14,7 @@
   import ScreenContextPanel from './components/ScreenContextPanel.svelte';
   import { prepareScreenSession } from './lib/screen-session';
   import { AutopilotScheduler, type AutopilotClaim, type AutopilotSchedule } from './lib/autopilot';
+  import { ChatScheduler, appendChatMessage, chatPriority, chatParticipants, type ChatClaim } from './lib/chat-scheduler';
   import { speechBlocker, speechStatus } from './lib/autopilot-status';
   import { AutopilotRuntimeVersions, mayUpdateAutopilot, type AutopilotRuntime } from './lib/autopilot-runtime';
   import type { AvatarModelInfo } from './lib/avatar';
@@ -61,6 +62,7 @@
   let autopilotPreview = $state<AutopilotRuntime>();
   let answeringAutopilot = false;
   const autopilotScheduler = new AutopilotScheduler();
+  const chatScheduler = new ChatScheduler();
   let speechSchedules = $state<Record<string, AutopilotSchedule | undefined>>({});
   let silentAutopilots = $state<Record<string, string>>({});
   function refreshSpeechSchedules(){
@@ -518,12 +520,12 @@
   async function selectBot(id:string){
     if(busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending){notify(translate("Beende zuerst die laufende Antwort, Aufnahme oder Speicherung."));return;}
     if(id===profile.id){botMenu=false;return;}
-    systemPermission.cancel();switchingBot=true;wakeStopSignal++;
+    systemPermission.cancel();chatScheduler.cancel();switchingBot=true;wakeStopSignal++;
     try{if(!await saveCurrentBot())return;player?.stop();await call('select_bot',{id});await refresh();cliStatus='';partial='';emotion='neutral';botMenu=false;log(translate('{name} zum Bearbeiten ausgewählt.',{name:profile.name}));}catch(e){notify(prettyError(e),true);}finally{switchingBot=false;}
   }
   async function createBot(){
     if(!botName.trim()||creatingBot||switchingBot||saving)return;
-    systemPermission.cancel();wakeStopSignal++;creatingBot=true;
+    systemPermission.cancel();chatScheduler.cancel();wakeStopSignal++;creatingBot=true;
     try{
       if(!await saveCurrentBot())return;
       await call('create_bot',{name:botName.trim(),copyCurrent:botCopy});await refresh();
@@ -563,7 +565,7 @@
     permissionContext(); JSON.stringify($state.snapshot(bots)); systemPermission.invalidate();
   });
   async function pauseForScreenPermission(botId?: string, error: unknown = null) {
-    running = false; ++wakeStopSignal;
+    running = false; chatScheduler.cancelAutomatic(); ++wakeStopSignal;
     // The OS screen grant is app-wide. Pause every affected autonomous bot once
     // so closing recovery cannot produce a new denial dialog on the next tick.
     const affected = Object.keys(autopilots).filter(id => id === botId || (id === profile.id ? profile : bots.find(bot => bot.id === id)?.profile)?.screenContext?.enabled);
@@ -591,7 +593,7 @@
   async function toggleRunning(){
     if(updateInstalling||systemPermission.active)return;
     unlockEmoteAudio();
-    if(running){running=false;notify(translate("Automatische Antworten pausiert."));return;}
+    if(running){running=false;chatScheduler.cancelAutomatic();notify(translate("Automatische Antworten pausiert."));return;}
     if(!profile.model.model&&!cliProvider&&!liveBots.some(bot=>bot.profile?.model?.model)){navigate('models');notify(translate("Wähle zuerst ein Dialogmodell aus."));return;}
     const current = permissionLease();
     const participants = bots.filter(bot => bot.id === profile.id || botEnabled(bot)).map(bot => bot.id === profile.id ? profileSnapshot() : $state.snapshot(bot.profile));
@@ -600,8 +602,8 @@
     if (!await ensureScreenFor(participants, true, crewCurrent) || !crewCurrent()) return;
     if(await persist(true)&&crewCurrent()){running=true;log(translate("Cohost gestartet."));}
   }
-  async function stopAll(){systemPermission.cancel();++autopilotStartRevision;autopilots={};autopilotPreview=undefined;autopilotScheduler.stop();externalEmotes?.clear();turnEpoch++;wakeStopSignal++;subtitleLifetime?.cancel();running=false;busy=false;speechPreparing=false;partial='';queue=[];clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}microphoneStream?.getTracks().forEach(t=>t.stop());microphone=false;transcribing=false;player?.stop();clearEmotes();finishPlayback();answeringSpeechId='';answeringBotId='';answeringAutopilot=false;speaking=false;level=0;try{await call('stop_generation');}catch(e){if(native)notify(prettyError(e),true);}log(translate("Sprache und ausstehende Antworten gestoppt."));}
-  async function runMessage(text:string,source='operator',user='Streamer',botId=profile.id,replyRouteId?:string,interactive=true,onAccepted?:()=>void,autopilotClaim?:AutopilotClaim) {
+  async function stopAll(){systemPermission.cancel();chatScheduler.cancel();++autopilotStartRevision;autopilots={};autopilotPreview=undefined;autopilotScheduler.stop();externalEmotes?.clear();turnEpoch++;wakeStopSignal++;subtitleLifetime?.cancel();running=false;busy=false;speechPreparing=false;partial='';queue=[];clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}microphoneStream?.getTracks().forEach(t=>t.stop());microphone=false;transcribing=false;player?.stop();clearEmotes();finishPlayback();answeringSpeechId='';answeringBotId='';answeringAutopilot=false;speaking=false;level=0;try{await call('stop_generation');}catch(e){if(native)notify(prettyError(e),true);}log(translate("Sprache und ausstehende Antworten gestoppt."));}
+  async function runMessage(text:string,source='operator',user='Streamer',botId=profile.id,replyRouteId?:string,interactive=true,onAccepted?:()=>void,autopilotClaim?:AutopilotClaim,chatClaim?:ChatClaim) {
     const autonomous=source==='autopilot';
     const sessionSeed=autonomous?autopilots[botId]?.seed:undefined;
     const currentAutopilot=()=>!autonomous||(
@@ -609,6 +611,19 @@
       &&!!sessionSeed&&autopilots[botId]?.active===true&&autopilots[botId]?.seed===sessionSeed
     );
     if((!autonomous&&!text.trim())||busy||updateInstalling||microphoneStarting||systemPermission.active)return;
+    // A manual selection/operator send takes priority over automatic preflight.
+    // Once playback owns busy, its existing serial presentation guards apply.
+    const manualClaim=!autonomous&&!chatClaim?chatScheduler.beginManual(botId):undefined;
+    if(!autonomous&&!chatClaim&&!manualClaim)return;
+    try {
+    const currentManual=()=>!manualClaim||chatScheduler.isCurrentManual(manualClaim);
+    const currentChat=()=>{
+      if(!chatClaim)return true;
+      const candidate=chatParticipants(bots,profile).find(bot=>bot.botId===botId);
+      return running&&chatScheduler.isCurrentClaim(chatClaim)&&!!candidate
+        &&queue.some(entry=>entry===chatClaim.message)&&chatPriority(candidate,chatClaim.message,Date.now())!==undefined;
+    };
+    if(!currentChat()||!currentManual())return;
     if(!autonomous)autopilotScheduler.activity();
     const selected=botId===profile.id;
     const botConfig=selected?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===botId)?.profile);
@@ -617,15 +632,19 @@
       if(selected)navigate('models');notify(translate('Wähle zuerst ein Dialogmodell für {name}.',{name:botConfig.name}));return;
     }
     const permissionCurrent = permissionLease();
-    const botContext = JSON.stringify(botConfig);
-    const current = () => currentAutopilot() && permissionCurrent() && botContext === JSON.stringify(botId === profile.id ? profileSnapshot() : $state.snapshot(bots.find(bot => bot.id === botId)?.profile));
+    // Saving a selected CLI profile only normalizes its blank default model;
+    // every other configuration change invalidates preflight before dispatch.
+    const contextOf=(config:any)=>JSON.stringify(config&&['claude-code','codex'].includes(config.model?.provider)&&!config.model?.model?.trim()?{...config,model:{...config.model,model:'default'}}:config);
+    const botContext = contextOf(botConfig);
+    const sameBotConfig=()=>botContext===contextOf(botId===profile.id?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===botId)?.profile));
+    const current = () => currentAutopilot() && currentChat() && currentManual() && permissionCurrent() && sameBotConfig();
     if (!await ensureScreenFor([botConfig], interactive && !autonomous, current) || !current()) return;
     const requestId=crypto.randomUUID();
     const epoch=++turnEpoch;clearEmotes();automaticEmoteRevision=emoteRevision;emoteOutput={botId,audio:botConfig.output.mode==='studio'};busy=true;answeringBotId=botId;answeringSpeechId=requestId;answeringAutopilot=autonomous;speechPreparing=false;partial='';
     try {
       if(selected&&!autonomous&&(!await saveCurrentBot()||epoch!==turnEpoch))return;
       if(botConfig.output.mode==='overlay'&&!bots.find(bot=>bot.id===botId)?.live)await call('open_overlay',{botId});
-      if(epoch!==turnEpoch||!currentAutopilot())return;
+      if(epoch!==turnEpoch||!currentAutopilot()||!currentChat()||!currentManual()||!sameBotConfig())return;
       onAccepted?.();
       if(selected&&!autonomous)history=[...history,{id:crypto.randomUUID(),role:'user',text,source,user,createdAt:new Date().toISOString()}];
       const reply=autonomous?await call('send_autopilot',{botId,requestId}):await call('send_message',{text,source,user,skillIds:[],botId,requestId,replyRouteId});
@@ -675,14 +694,15 @@
       log(`${botConfig.name}: ${prettyError(e)}`,'error');
     }}
     finally{if(epoch===turnEpoch){busy=false;answeringAutopilot=false;speechPreparing=false;partial='';answeringBotId='';answeringSpeechId='';}}
+    } finally { if(manualClaim)chatScheduler.finishManual(manualClaim); }
   }
   async function sendOwn(){if(microphoneStarting||updateInstalling||systemPermission.active)return;unlockEmoteAudio();const text=message;await runMessage(text,'operator','Streamer',profile.id,undefined,true,()=>{if(message===text)message='';});}
-  async function answerQueued(item:any,botId=profile.id,interactive=true){
+  async function answerQueued(item:any,botId=profile.id,interactive=true,chatClaim?:ChatClaim){
     unlockEmoteAudio();
     if(busy||microphone||microphoneStarting||transcribing)return;
     await runMessage(item.text,item.platform,item.user,botId,item.replyRouteId,interactive,()=>{
       queue=queue.map(entry=>entry.queueId===item.queueId?{...entry,answeredBy:[...new Set([...(entry.answeredBy||[]),botId])]}:entry);
-    });
+    },undefined,chatClaim);
   }
   async function platformAction(platform:string){
     try{if(connection[platform]==='connected'||connection[platform]==='connecting'){await call('disconnect_platform',{platform});connection[platform]='disconnected';}
@@ -753,7 +773,7 @@
   function lockForUpdate(installing:boolean){
     updateInstalling=installing;
     if(!installing)return;
-    systemPermission.cancel();
+    systemPermission.cancel();chatScheduler.cancel();
     ++autopilotStartRevision;autopilots={};autopilotPreview=undefined;autopilotScheduler.stop();
     ++turnEpoch;++wakeStopSignal;microphoneSession.cancel();clearEmotes();player?.stop();
     clearTimeout(recordingTimer);if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}
@@ -813,7 +833,7 @@
     const voices=()=>{systemVoices=window.speechSynthesis?.getVoices()||[]};voices();window.speechSynthesis?.addEventListener('voiceschanged',voices);
     if(native){refresh().catch(e=>notify(prettyError(e),true));void refreshOutputDisplays();}
     subscribe('cohost://autopilot',acceptAutopilot);
-    subscribe('cohost://chat',m=>{queue=[...queue,{...m,queueId:JSON.stringify([m.platform,m.replyRouteId,m.id]),answeredBy:[]}].slice(-200);});
+    subscribe('cohost://chat',m=>{queue=appendChatMessage(queue,{...m,queueId:JSON.stringify([m.platform,m.replyRouteId,m.id]),answeredBy:[]});});
     subscribe('cohost://connection',e=>{connection[e.platform]=e.status;connectionOwner[e.platform]=['connected','connecting'].includes(e.status)?e.ownerName||'':'';connectionMessages[e.platform]=e.message||'';log(`${e.platform==='twitch'?'Twitch':'YouTube'}: ${e.message||translate(({connected:'Verbunden',connecting:'Verbindet …',disconnected:'Nicht verbunden',error:'Verbindungsfehler'} as Record<string,string>)[e.status]||e.status)}`,e.status==='error'?'error':'info');});
     subscribe('cohost://agent',e=>{if(e.kind==='tool')log(e.text||e.tool||translate("Werkzeug aufgerufen"),'tool');if(e.kind==='error')log(e.text||translate("Agentenfehler"),'error');});
     subscribe('cohost://presentation',e=>{if(e.kind==='started'&&busy&&matchesPlayback(e,{id:answeringSpeechId,botId:answeringBotId}))presentReply(e);});
@@ -834,7 +854,7 @@
       if(e.kind==='cancel-speech'){
         if(typeof e.id!=='string'||!e.id)return;
         cancelPlaybackTurn(e,{id:answeringSpeechId,botId:answeringBotId,autopilot:answeringAutopilot},botId=>autopilotScheduler.finish(botId),()=>{
-          ++turnEpoch;running=false;player?.stop();clearEmotes();subtitleLifetime?.cancel(e.id);
+          ++turnEpoch;running=false;chatScheduler.cancel();player?.stop();clearEmotes();subtitleLifetime?.cancel(e.id);
           busy=false;speechPreparing=false;answeringBotId='';answeringSpeechId='';answeringAutopilot=false;speaking=false;level=0;
         });
         finishPlayback(e.id);return;
@@ -843,7 +863,7 @@
       if(e.kind==='stop'){
         if(e.botId&&e.botId!==profile.id&&e.botId!==answeringBotId)return;
         if(!e.botId||!answeringBotId||e.botId===answeringBotId){
-          ++turnEpoch;autopilotScheduler.stop(e.botId);player?.stop();finishPlayback();busy=false;speechPreparing=false;answeringBotId='';answeringSpeechId='';answeringAutopilot=false;speaking=false;level=0;
+          ++turnEpoch;chatScheduler.cancel(e.botId);autopilotScheduler.stop(e.botId);player?.stop();finishPlayback();busy=false;speechPreparing=false;answeringBotId='';answeringSpeechId='';answeringAutopilot=false;speaking=false;level=0;
         }
         if(!e.botId||e.botId===profile.id){subtitleLifetime?.cancel();clearEmotes();}
         return;
@@ -851,7 +871,7 @@
       if(e.botId&&e.botId!==profile.id||e.kind==='profile'&&e.profile?.id!==profile.id)return;
       if(e.kind==='profile'&&e.profile?.output)acceptOutputUpdate(e.profile.output);
     });
-    subscribe('cohost://control',e=>{if(e.action==='pause'){running=false;systemPermission.cancel();}if(e.action==='stop')void stopAll();});
+    subscribe('cohost://control',e=>{if(e.action==='pause'){running=false;chatScheduler.cancelAutomatic();systemPermission.cancel();}if(e.action==='stop')void stopAll();});
     subscribe('cohost://emote-playback',e=>externalEmotes.accept(e));
     subscribe('cohost://emote',e=>{if(e.botId&&e.botId!==profile.id)return;void showManualEmote(e);});
     const timer=setInterval(()=>{
@@ -866,21 +886,18 @@
       if(autoBlocked)autopilotScheduler.next(true);
       refreshSpeechSchedules();
       queue=queue.filter(q=>Date.now()-new Date(q.createdAt).getTime()<Math.max(profile.chat.expirySeconds,...bots.map(bot=>bot.profile?.chat?.expirySeconds||0))*1000);
-      if(systemPermission.active||updateInstalling||busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing)return;
-      const participants=bots.filter(bot=>botEnabled(bot)||bot.id===profile.id);
+      if(systemPermission.active||updateInstalling||busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing||chatScheduler.pending)return;
       // Chat keeps the full audio guard. Autonomous preparation may interrupt
       // its own ambient track later through the fresh rendered-frame gate.
-      for(const bot of running&&!emoteSoundPlaying&&!externalEmotePlaying?participants:[]){
-        const config=bot.id===profile.id?profile:bot.profile;
-        if(!config||config.chat.mode==='manual')continue;
-        const next=queue.find(item=>!(item.answeredBy||[]).includes(bot.id)&&Date.now()-new Date(item.createdAt).getTime()<config.chat.expirySeconds*1000&&(!config.chat.trigger||item.text.toLowerCase().includes(config.chat.trigger.toLowerCase())||item.eventType&&item.eventType!=='message'));
-        if(next){void answerQueued(next,bot.id,false);return;}
+      if(running&&!emoteSoundPlaying&&!externalEmotePlaying){
+        const next=chatScheduler.nextClaim(chatParticipants(bots,profile),queue);
+        if(next){void chatScheduler.runClaim(next,()=>answerQueued(next.message,next.botId,false,next)).catch(error=>notify(prettyError(error),true));return;}
       }
       if(autoBlocked)return;
       const spontaneous=autopilotScheduler.nextClaim();
       if(spontaneous){refreshSpeechSchedules();void autopilotScheduler.runClaim(spontaneous,()=>runMessage('', 'autopilot', 'Autopilot', spontaneous.botId,undefined,false,undefined,spontaneous));}
     },1000);
-    return()=>{appAlive=false;systemPermission.cancel();disposed=true;autopilotScheduler.stop();turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
+    return()=>{appAlive=false;systemPermission.cancel();chatScheduler.cancel();disposed=true;autopilotScheduler.stop();turnEpoch++;subtitleLifetime?.destroy();clearEmotes();clearTimeout(recordingTimer);microphoneSession.cancel();if(recorder?.state==='recording'){recorder.onstop=null;recorder.stop();}clearInterval(timer);finishPlayback();cleanup.forEach(f=>f());player.destroy();emoteAudio?.destroy();externalEmotes?.destroy();window.speechSynthesis?.removeEventListener('voiceschanged',voices);microphoneStream?.getTracks().forEach(t=>t.stop());};
   });
 </script>
 
