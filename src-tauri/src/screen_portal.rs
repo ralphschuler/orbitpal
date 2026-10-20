@@ -8,6 +8,11 @@ use std::{collections::HashMap, sync::{Arc, Mutex, Weak, atomic::{AtomicBool, Or
 #[path = "screen_portal_linux.rs"]
 mod linux;
 
+// Never run a desktop/permission test as part of the ordinary fixture suite.
+#[cfg(all(test, target_os = "linux"))]
+#[path = "screen_portal_acceptance.rs"]
+mod acceptance;
+
 pub fn is_wayland() -> bool {
     cfg!(target_os = "linux") && (std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
         || std::env::var("XDG_SESSION_TYPE").is_ok_and(|v| v.eq_ignore_ascii_case("wayland")))
