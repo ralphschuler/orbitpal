@@ -145,6 +145,16 @@ impl PortalState {
         if let Ok(sessions) = self.sessions.lock() { if let Some(session) = sessions.get(bot_id) { session.close(message); } }
     }
 
+    /// A late Studio result owns only the returned lease. Compare and close
+    /// under one lock so cleanup cannot revoke a replacement or another bot.
+    pub fn close_selected(&self, bot_id: &str, display_id: &str, message: &str) -> Result<(), String> {
+        let sessions = self.sessions.lock().map_err(|_| "Wayland-Sitzung ist nicht verfügbar")?;
+        if let Some(session) = sessions.get(bot_id) {
+            if session.display_id == display_id { session.close(message); }
+        }
+        Ok(())
+    }
+
     pub fn close_all(&self) {
         if let Ok(sessions) = self.sessions.lock() { for session in sessions.values() { session.close("Wayland-Freigabe durch Stop oder Beenden geschlossen"); } }
     }
@@ -185,8 +195,11 @@ pub async fn select_screen_source(window: tauri::WebviewWindow, state: tauri::St
 }
 
 #[tauri::command]
-pub fn disconnect_screen_source(window: tauri::WebviewWindow, state: tauri::State<'_, crate::AppState>, bot_id: String) -> Result<(), String> {
+pub fn disconnect_screen_source(window: tauri::WebviewWindow, state: tauri::State<'_, crate::AppState>, bot_id: String, expected_display_id: Option<String>) -> Result<(), String> {
     main_only(window.label())?; state.store.bot_profile(&bot_id)?;
+    if let Some(display_id) = expected_display_id {
+        return state.screen_context.portal.close_selected(&bot_id, &display_id, "Wayland-Freigabe im Studio getrennt");
+    }
     state.screen_context.portal.close_bot(&bot_id, "Wayland-Freigabe im Studio getrennt"); Ok(())
 }
 
@@ -219,6 +232,22 @@ mod tests {
         hub.reconcile(&profile("nova",&newer)).unwrap();assert!(!newer.cancelled.load(Ordering::SeqCst));
         let mut changed=profile("nova",&newer);changed["screenContext"]["displayId"]=json!("different");hub.reconcile(&changed).unwrap();assert!(newer.cancelled.load(Ordering::SeqCst));
         hub.close_all();assert!(other.cancelled.load(Ordering::SeqCst));
+    }
+    #[test] fn late_selection_cleanup_closes_only_the_exact_bot_lease_and_its_turns() {
+        let hub=PortalState::default();let old=hub.begin("nova",json!({"model":"fixture"})).unwrap();
+        let newer=hub.begin("nova",old.model.clone()).unwrap();let other=hub.begin("james",old.model.clone()).unwrap();
+        let (sender,_first)=mpsc::sync_channel(1);newer.ready(sender).unwrap();
+        let (sender,_second)=mpsc::sync_channel(1);other.ready(sender).unwrap();
+        let cancel=Arc::new(AtomicBool::new(false));let other_cancel=Arc::new(AtomicBool::new(false));
+        newer.attach(&cancel).unwrap();other.attach(&other_cancel).unwrap();
+        hub.close_selected("nova",&old.display_id,"stale result").unwrap();
+        hub.close_selected("nova",&other.display_id,"wrong bot").unwrap();
+        hub.close_selected("missing",&newer.display_id,"missing bot").unwrap();
+        assert_eq!(newer.snapshot().unwrap().phase,"ready");assert_eq!(other.snapshot().unwrap().phase,"ready");
+        assert!(!cancel.load(Ordering::SeqCst));assert!(!other_cancel.load(Ordering::SeqCst));
+        hub.close_selected("nova",&newer.display_id,"discarded result").unwrap();
+        assert_eq!(newer.snapshot().unwrap().phase,"closed");assert!(cancel.load(Ordering::SeqCst));
+        assert_eq!(other.snapshot().unwrap().phase,"ready");assert!(!other_cancel.load(Ordering::SeqCst));
     }
     #[test] fn studio_switch_cancels_old_tickets_but_keeps_two_independent_bot_leases() {
         let state=crate::screen_context::ScreenState::default();

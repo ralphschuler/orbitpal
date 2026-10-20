@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.1 — 2026-10-20
+
+- Replace the monolithic keyring dependency with supported explicit native stores while preserving the legacy service, credential IDs, macOS User Keychain, Windows credential encoding/target and Linux persistent Secret Service `target=default` attributes. Construct stores directly without a process-global default. Return fixed, localized credential error categories without backend payloads or malformed secret bytes.
+- Save current bot/model settings before Wayland source selection and reject stale preparation/results after a bot, draft or panel change. Close a discarded result by its exact bot/session lease so cleanup cannot disconnect a newer selection or another bot. Surface cleanup failures even after leaving the panel. The new source display ID still requires an explicit save.
+- Add a disposable three-OS old/new credential compatibility fixture. Keep the separate real-desktop ScreenCast/PipeWire prototype in draft PR #56 while its KDE test-compositor limitation is unresolved. Wayland remains experimental pending the full acceptance matrix in #26; a successful GNOME prototype does not establish KDE or full application acceptance.
+- Remove three old optional keyring/zbus maintenance-warning package versions from the production lockfile through the supported credential-store migration. Five production maintenance warnings and the separately audited legacy fixture warnings remain documented in #19; no advisory exclusions are introduced.
+- Record v0.10.0 production signing/provenance evidence and activate future release asset immutability plus version-tag update/deletion protection. Preserve the persistent self-signed macOS identity, updater key and installed compatibility identities. Native install/privacy acceptance and protected signing custody remain open in #17.
+
 ## 0.10.0 — 2026-10-19
 
 - Show the Autopilot's actual speech blocker, next-attempt countdown and silent attempts. Allow short persona-based conversation starters without inventing screen, game or viewer events. Keep exact per-attempt claims across permission checks so pausing/restarting cannot revive an old request. Automatic walking and gesture sounds no longer restart autonomous quiet periods; actual audio still blocks microphone activation, ordinary chat playback and update installation.

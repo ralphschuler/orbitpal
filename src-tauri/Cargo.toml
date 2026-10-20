@@ -1,6 +1,6 @@
 [package]
 name = "orbitpal"
-version = "0.10.0"
+version = "0.10.1"
 description = "An extensible AI streaming companion"
 authors = ["OrbitPal contributors"]
 edition = "2021"

@@ -81,7 +81,9 @@
     "Wayland-Sitzung ist nicht verfügbar": "The Wayland session is unavailable",
     "Wayland-Sitzung konnte nicht vorbereitet werden": "The Wayland session could not be prepared",
     "Wayland-Sitzungsende konnte nicht abonniert werden": "Wayland session closure could not be subscribed",
-    "Unter Wayland wird die Quelle ausdrücklich im ScreenCast-Freigabedialog ausgewählt; es gibt keinen automatischen Hauptbildschirm oder XWayland-Ersatz.": "On Wayland, explicitly select the source in the ScreenCast sharing dialog; there is no automatic primary monitor or XWayland fallback."
+    "Unter Wayland wird die Quelle ausdrücklich im ScreenCast-Freigabedialog ausgewählt; es gibt keinen automatischen Hauptbildschirm oder XWayland-Ersatz.": "On Wayland, explicitly select the source in the ScreenCast sharing dialog; there is no automatic primary monitor or XWayland fallback.",
+    "Beim Klick auf „Quelle auswählen“ werden zuerst die aktuellen Bot-Einstellungen gespeichert. So gehört die Freigabe zum angezeigten Modell. Anschließend die neue Quellenauswahl speichern.": "Clicking ‘Select source’ first saves the current bot settings, so sharing belongs to the model shown. Save the new source selection afterwards.",
+    "Die veraltete Bildschirmfreigabe konnte nicht geschlossen werden. Bitte die Bildschirmfreigabe trennen oder Stop drücken.": "The outdated screen-sharing session could not be closed. Disconnect screen sharing or press Stop."
   },
   "fr": {
     "Unter Wayland wählst du die Quelle im Freigabedialog deines Desktops. Diese Sitzung ersetzt nicht die Bildfreigabe dieses Bots. Die Auswahl bleibt nur für diese App-Sitzung bestehen; anschließend die Einstellungen speichern.": "Sous Wayland, sélectionnez une source dans le dialogue de partage du bureau. Cette session ne remplace pas l’autorisation d’image de ce bot. La sélection dure uniquement pour cette session de l’application ; enregistrez ensuite les paramètres.",
@@ -165,7 +167,9 @@
     "Wayland-Sitzung ist nicht verfügbar": "La session Wayland est indisponible",
     "Wayland-Sitzung konnte nicht vorbereitet werden": "La session Wayland n’a pas pu être préparée",
     "Wayland-Sitzungsende konnte nicht abonniert werden": "L’abonnement à la fermeture de session Wayland a échoué",
-    "Unter Wayland wird die Quelle ausdrücklich im ScreenCast-Freigabedialog ausgewählt; es gibt keinen automatischen Hauptbildschirm oder XWayland-Ersatz.": "Sous Wayland, sélectionnez explicitement la source dans le dialogue ScreenCast ; il n’y a ni écran principal automatique ni remplacement XWayland."
+    "Unter Wayland wird die Quelle ausdrücklich im ScreenCast-Freigabedialog ausgewählt; es gibt keinen automatischen Hauptbildschirm oder XWayland-Ersatz.": "Sous Wayland, sélectionnez explicitement la source dans le dialogue ScreenCast ; il n’y a ni écran principal automatique ni remplacement XWayland.",
+    "Beim Klick auf „Quelle auswählen“ werden zuerst die aktuellen Bot-Einstellungen gespeichert. So gehört die Freigabe zum angezeigten Modell. Anschließend die neue Quellenauswahl speichern.": "Cliquer sur « Choisir la source » enregistre d’abord les paramètres actuels du bot, afin que le partage corresponde au modèle affiché. Enregistrez ensuite la nouvelle source choisie.",
+    "Die veraltete Bildschirmfreigabe konnte nicht geschlossen werden. Bitte die Bildschirmfreigabe trennen oder Stop drücken.": "L’ancienne session de partage d’écran n’a pas pu être fermée. Déconnectez le partage d’écran ou appuyez sur Stop."
   },
   "es": {
     "Unter Wayland wählst du die Quelle im Freigabedialog deines Desktops. Diese Sitzung ersetzt nicht die Bildfreigabe dieses Bots. Die Auswahl bleibt nur für diese App-Sitzung bestehen; anschließend die Einstellungen speichern.": "En Wayland, elige una fuente en el diálogo de uso compartido del escritorio. Esta sesión no sustituye el permiso de imágenes de este bot. La selección solo dura durante esta sesión de la aplicación; guarda los ajustes después.",
@@ -249,6 +253,8 @@
     "Wayland-Sitzung ist nicht verfügbar": "La sesión de Wayland no está disponible",
     "Wayland-Sitzung konnte nicht vorbereitet werden": "No se pudo preparar la sesión de Wayland",
     "Wayland-Sitzungsende konnte nicht abonniert werden": "No se pudo suscribir al cierre de la sesión de Wayland",
-    "Unter Wayland wird die Quelle ausdrücklich im ScreenCast-Freigabedialog ausgewählt; es gibt keinen automatischen Hauptbildschirm oder XWayland-Ersatz.": "En Wayland, selecciona explícitamente la fuente en el diálogo de ScreenCast; no hay un monitor principal automático ni sustitución XWayland."
+    "Unter Wayland wird die Quelle ausdrücklich im ScreenCast-Freigabedialog ausgewählt; es gibt keinen automatischen Hauptbildschirm oder XWayland-Ersatz.": "En Wayland, selecciona explícitamente la fuente en el diálogo de ScreenCast; no hay un monitor principal automático ni sustitución XWayland.",
+    "Beim Klick auf „Quelle auswählen“ werden zuerst die aktuellen Bot-Einstellungen gespeichert. So gehört die Freigabe zum angezeigten Modell. Anschließend die neue Quellenauswahl speichern.": "Al pulsar « Seleccionar fuente » se guardan primero los ajustes actuales del bot, para que el permiso corresponda al modelo mostrado. Guarda después la nueva fuente seleccionada.",
+    "Die veraltete Bildschirmfreigabe konnte nicht geschlossen werden. Bitte die Bildschirmfreigabe trennen oder Stop drücken.": "No se pudo cerrar la sesión anterior de pantalla compartida. Desconecta la pantalla compartida o pulsa Stop."
   }
 }
