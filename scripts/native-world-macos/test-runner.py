@@ -22,7 +22,7 @@ class Guards(unittest.TestCase):
                 'GITHUB_REF': 'refs/heads/main', 'REVIEWED_SHA': 'a' * 40, 'DISPATCH_SHA': 'a' * 40}
 
     def record(self):
-        return {key: 1 if key in ('version', 'ax', 'appleEvents', 'gui') else 0 for key in runner.FIELDS}
+        return {key: 6 if key == 'probePhase' else 1 if key in ('version', 'ax', 'appleEvents', 'gui', 'aeFunction') else 0 for key in runner.FIELDS}
 
     def test_only_reviewed_explicit_hosted_mac_source_can_reach_probe(self):
         runner.environment('darwin', self.environment())
@@ -38,12 +38,23 @@ class Guards(unittest.TestCase):
     def test_numeric_protocol_rejects_private_extra_duplicate_bool_and_out_of_range(self):
         self.assertEqual(runner.ui_record(json.dumps(self.record()).encode()), self.record())
         variants = [{**self.record(), 'private': 'PRIVATE'}, {**self.record(), 'ax': True},
-                    {**self.record(), 'code': 10}, {**self.record(), 'windows': 17}, {**self.record(), 'acted': -1}]
+                    {**self.record(), 'code': 10}, {**self.record(), 'windows': 17}, {**self.record(), 'acted': -1},
+                    {**self.record(), 'probePhase': 7}, {**self.record(), 'probePhase': True},
+                    {**self.record(), 'aeFunction': 2}, {**self.record(), 'aeFunction': True},
+                    {**self.record(), 'probePhase': 4}, {**self.record(), 'aeFunction': 0}]
         for value in variants:
             with self.subTest(value=value), self.assertRaises(runner.Refused):
                 runner.ui_record(json.dumps(value).encode())
         with self.assertRaises(runner.Refused): runner.ui_record(b'{"version":1,"version":1}')
         with self.assertRaises(runner.Refused): runner.ui_record(b'x' * 2049)
+
+    def test_closed_probe_failure_phases_are_retained_without_becoming_success(self):
+        for code, phase, present in ((3, 4, 1), (8, 1, 0), (8, 2, 1), (8, 3, 1), (8, 4, 1), (8, 5, 1)):
+            value = {**self.record(), 'code': code, 'probePhase': phase, 'aeFunction': present,
+                     'appleEvents': int(phase == 5), 'gui': 0}
+            with self.subTest(code=code, phase=phase):
+                self.assertEqual(runner.ui_record(json.dumps(value).encode()), value)
+                self.assertNotEqual(value['code'], 0)
 
     def test_ui_uses_retained_child_fixed_osascript_and_withheld_stderr(self):
         child = Mock(pid=42)
@@ -157,7 +168,7 @@ class Guards(unittest.TestCase):
         source = (DIRECTORY / 'ui.js').read_text()
         for forbidden in ('executeScript(', '.eval(', 'invoke(', 'tccutil', 'CGEventPost', 'keyCode(', 'keystroke('):
             self.assertNotIn(forbidden, source)
-        self.assertIn('target.aeDesc, 0x2a2a2a2a, 0x2a2a2a2a, false', source)
+        self.assertIn('address, 0x2a2a2a2a, 0x2a2a2a2a, false', source)
         self.assertIn('$.AXIsProcessTrusted()', source)
 
 

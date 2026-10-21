@@ -15,7 +15,7 @@ import sys
 import time
 
 APP_ID = 'studio.orbitpal.native-world-fixture'
-FIELDS = frozenset(('version', 'code', 'ax', 'appleEvents', 'gui', 'matched', 'acted', 'mainVisible', 'windows'))
+FIELDS = frozenset(('version', 'code', 'ax', 'appleEvents', 'gui', 'probePhase', 'aeFunction', 'matched', 'acted', 'mainVisible', 'windows'))
 REFS = ('refs/heads/main', 'refs/heads/feat/parallel-backlog', 'refs/heads/test/native-world-macos-acceptance')
 DIRECTORY = Path(__file__).resolve().parent
 
@@ -69,7 +69,9 @@ def ui_record(raw):
     value = json.loads(raw, object_pairs_hook=pairs)
     require(type(value) is dict and set(value) == FIELDS and all(type(v) is int for v in value.values()), 2)
     require(value['version'] == 1 and 0 <= value['code'] <= 9 and 0 <= value['windows'] <= 16, 2)
-    require(all(value[k] in (0, 1) for k in FIELDS - {'version', 'code', 'windows'}), 2)
+    require(0 <= value['probePhase'] <= 6, 2)
+    require(all(value[k] in (0, 1) for k in FIELDS - {'version', 'code', 'windows', 'probePhase'}), 2)
+    require(value['code'] != 0 or (value['probePhase'] == 6 and value['aeFunction'] == 1), 2)
     return value
 
 
