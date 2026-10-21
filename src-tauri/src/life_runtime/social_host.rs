@@ -1,5 +1,7 @@
 //! Real two-actor social work. The pure coordinator never grants a native surface,
 //! reservation, arrival or completion; every transition below consumes host receipts.
+#[path = "social_fact_retry.rs"]
+mod social_fact_retry;
 use super::{cancel_actor_action, start_slot_activity, LifeRuntime};
 use crate::{
     experience::ExperienceRuntime,
@@ -247,6 +249,7 @@ impl Memory {
 #[derive(Default)]
 pub(crate) struct SocialRuntime {
     memory: Mutex<Memory>,
+    facts: Mutex<social_fact_retry::SocialFactRetry>,
     in_flight: AtomicBool,
 }
 impl SocialRuntime {
@@ -765,6 +768,40 @@ fn release(app: &tauri::AppHandle, reservations: &[Reservation]) -> Result<(), S
     }
     Ok(())
 }
+/// Album retries never retain a scene, action, reservation or dialogue grant.
+/// Permanent optional-storage failure pauses only the affected owners; the
+/// successfully committed shared memory/Completed scene remains truthful.
+fn project_fact_report(app: &tauri::AppHandle, report: social_fact_retry::Report) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let runtime = &state.life_runtime;
+    let mut projection_failed = false;
+    if !report.failed.is_empty() {
+        {
+            let mut core = runtime.core.lock().map_err(|_| ERROR)?;
+            for bot in &report.failed { core.mark_storage_failure(bot, runtime.now()); }
+        }
+        // Do not let one optional projection/cancellation error prevent the
+        // other owner's actual storage pause or its visible status readback.
+        for bot in &report.failed {
+            projection_failed |= app.state::<ExperienceRuntime>().set_paused(bot, true).is_err();
+            projection_failed |= runtime.social.cancel_actor(bot, runtime.social_now()).is_err();
+        }
+        // Existing localized storage_unavailable projection explains the pause.
+        super::publish(app);
+    }
+    for bot in report.changed.union(&report.failed) {
+        if let Ok(snapshot) = crate::experience_commands::native_snapshot(app, bot) {
+            let _ = app.emit_to("main", "experience-state", snapshot);
+        }
+    }
+    if projection_failed { Err(ERROR.into()) } else { Ok(()) }
+}
+fn retry_facts(app: &tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let report = state.life_runtime.social.facts.lock().map_err(|_| ERROR)?
+        .retry(|bot, event| state.store.record_experience_social_event(bot, event));
+    project_fact_report(app, report)
+}
 pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
     if runtime.stopping.load(Ordering::SeqCst)
         || runtime.social.in_flight.swap(true, Ordering::SeqCst)
@@ -799,6 +836,7 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
 }
 async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
     initialize(app)?;
+    retry_facts(app)?;
     let state = app.state::<AppState>();
     let runtime = &state.life_runtime;
     let stale = {
@@ -1082,23 +1120,7 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                             .insert(scene.id.clone(), directive.clone());
                         continue;
                     }
-                    let result = (|| {
-                        state.store.social_commit_terminal(scene, event)?;
-                        if event.outcome() == Outcome::Completed {
-                            for bot in &scene.participants {
-                                if state.store.record_experience_social_event(bot, event)
-                                    == Ok(true)
-                                {
-                                    if let Ok(snapshot) =
-                                        crate::experience_commands::native_snapshot(app, bot)
-                                    {
-                                        let _ = app.emit_to("main", "experience-state", snapshot);
-                                    }
-                                }
-                            }
-                        }
-                        Ok::<_, String>(())
-                    })();
+                    let result = state.store.social_commit_terminal(scene, event);
                     let mut m = runtime.social.memory.lock().map_err(|_| ERROR)?;
                     if result.is_err() {
                         // Native cleanup is confirmed above; data failure must
@@ -1140,6 +1162,12 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                     }
                     drop(m);
                     if event.outcome() == Outcome::Completed {
+                        // Only this successfully committed immutable native
+                        // event enters the optional album queue. Cleanup and
+                        // coordinator release above never await its retries.
+                        let report = runtime.social.facts.lock().map_err(|_| ERROR)?
+                            .submit(event, |bot, event| state.store.record_experience_social_event(bot, event));
+                        project_fact_report(app, report)?;
                         let _ = start_conversation(app, event);
                     }
                     publish(app, &scene.participants);
