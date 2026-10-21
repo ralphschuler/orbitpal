@@ -564,6 +564,17 @@ impl Coordinator {
             Ok(())
         })
     }
+    /// Persistence failed after actual resources were released. This projection
+    /// is an error/cancellation, never a completed shared experience.
+    pub(crate) fn terminal_failed(&mut self, id: &str) -> Result<SceneView, String> {
+        let scene = self.scenes.get_mut(id).ok_or("unknown social scene")?;
+        if !scene.view.phase.terminal() {
+            return Err("scene still running".into());
+        }
+        scene.view.phase = Phase::Cancelled;
+        scene.view.reason = Some(Reason::Unavailable);
+        Ok(scene.view.clone())
+    }
     /// Call only after real action cancellation and all exact World leases released.
     pub(crate) fn released(&mut self, id: &str) -> Result<(), String> {
         let scene = self.scenes.get_mut(id).ok_or("unknown social scene")?;

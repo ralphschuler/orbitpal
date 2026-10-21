@@ -11,9 +11,12 @@ use std::{
         Arc, Mutex,
     },
 };
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Policy {
     pub model_enabled: bool,
+    /// User-declared conservative rate; a planning estimate, never an invoice guarantee.
+    pub estimated_micros_per_million: Option<u64>,
     pub max_turns: u8,
     pub duration_ms: u64,
     pub token_limit: u64,
@@ -26,6 +29,7 @@ impl Default for Policy {
     fn default() -> Self {
         Self {
             model_enabled: false,
+            estimated_micros_per_million: None,
             max_turns: 2,
             duration_ms: 30000,
             token_limit: 300000,
@@ -38,7 +42,10 @@ impl Default for Policy {
 }
 impl Policy {
     pub(crate) fn validate(&self) -> Result<(), String> {
-        if !(1..=4).contains(&self.max_turns)
+        if self
+            .estimated_micros_per_million
+            .is_some_and(|rate| rate == 0 || rate > 1_000_000_000)
+            || !(1..=4).contains(&self.max_turns)
             || !(1000..=60000).contains(&self.duration_ms)
             || self.token_limit > 1000000
             || self.cost_limit_micros > 1000000
@@ -141,7 +148,7 @@ impl Turn {
         bound.push(cancel);
         Ok(())
     }
-    fn stop(&self) {
+    pub(crate) fn stop(&self) {
         self.cancel.store(true, Ordering::SeqCst);
         if let Ok(bound) = self.bound.lock() {
             for cancel in bound.iter() {
@@ -172,6 +179,12 @@ impl Turn {
             reaction: Reaction::None,
         }
     }
+    pub(crate) fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+    pub(crate) fn cancel_token(&self) -> Arc<AtomicBool> {
+        self.cancel.clone()
+    }
     pub(crate) fn prompt(&self) -> String {
         format!("Reply as {} in one short line about the confirmed {:?} event {} with {} and {}. Only JSON {{\"text\":\"...\",\"reaction\":\"none\"|\"happy\"|\"wave\"}}; at most240 characters. No tools, actions, state changes or new participants.",self.speaker,self.kind,self.event_id,self.participants[0],self.participants[1])
     }
@@ -200,6 +213,12 @@ pub(crate) struct DialogueHub {
     last_ms: u64,
 }
 impl DialogueHub {
+    pub(crate) fn next_speaker(&self, id: &str) -> Option<&str> {
+        let c = self.conversations.get(id)?;
+        (c.pending.is_none() && c.next < c.policy.max_turns)
+            .then(|| c.participants[c.next as usize % 2].as_str())
+    }
+
     pub(crate) fn start(
         &mut self,
         event: &SocialEvent,
@@ -376,6 +395,13 @@ impl DialogueHub {
         c.pending.take();
         c.next += 1;
         Ok(())
+    }
+    pub(crate) fn finish(&mut self, id: &str) {
+        if let Some(c) = self.conversations.remove(id) {
+            if let Some(turn) = c.pending {
+                turn.stop();
+            }
+        }
     }
     pub(crate) fn cancel_all(&mut self) {
         for (_, c) in std::mem::take(&mut self.conversations) {

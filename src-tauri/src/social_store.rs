@@ -46,6 +46,36 @@ pub(crate) struct SocialSnapshot {
     pub summary: Summary,
     pub development: Character,
     pub scenes: Vec<SceneView>,
+    pub dialogue: DialogueSettings,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DialogueSettings {
+    pub version: u8,
+    pub revision: u64,
+    pub policy: crate::social_dialogue::Policy,
+}
+impl Default for DialogueSettings {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            revision: 0,
+            policy: Default::default(),
+        }
+    }
+}
+fn dialogue_settings(db: &Connection, id: &str) -> Result<DialogueSettings, String> {
+    let row=db.query_row("SELECT revision, CASE WHEN length(CAST(policy AS BLOB))<=4096 THEN policy END FROM social_dialogue_policies WHERE owner=?1",[id],|r|Ok((read_counter(r,0)?,r.get::<_,String>(1)?))).optional().map_err(err)?;
+    let Some((revision, raw)) = row else {
+        return Ok(DialogueSettings::default());
+    };
+    let policy: crate::social_dialogue::Policy = serde_json::from_str(&raw).map_err(err)?;
+    policy.validate()?;
+    Ok(DialogueSettings {
+        version: 1,
+        revision,
+        policy,
+    })
 }
 struct Bot {
     revision: u64,
@@ -79,7 +109,7 @@ pub(crate) fn initialize(db: &mut Connection) -> Result<(), String> {
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(err)?;
-    tx.execute_batch("CREATE TABLE IF NOT EXISTS social_schema(version INTEGER NOT NULL); INSERT INTO social_schema(version) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM social_schema); CREATE TABLE IF NOT EXISTS social_meta(id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL,epoch INTEGER NOT NULL); INSERT OR IGNORE INTO social_meta VALUES(1,0,0); CREATE TABLE IF NOT EXISTS social_bots(owner TEXT PRIMARY KEY,revision INTEGER NOT NULL,sequence INTEGER NOT NULL,mask INTEGER NOT NULL,context_sequence INTEGER NOT NULL,context_mask INTEGER NOT NULL,action_world TEXT NOT NULL,action_ordinal INTEGER NOT NULL,character TEXT NOT NULL,summary TEXT NOT NULL,context_goal TEXT NOT NULL); CREATE TABLE IF NOT EXISTS social_relationships(owner TEXT NOT NULL,other TEXT NOT NULL,familiarity INTEGER NOT NULL,affection INTEGER NOT NULL,PRIMARY KEY(owner,other)); CREATE TABLE IF NOT EXISTS social_memories(owner TEXT NOT NULL,event_id TEXT NOT NULL,sequence INTEGER NOT NULL,kind TEXT NOT NULL,outcome TEXT NOT NULL,participants TEXT NOT NULL,at_ms INTEGER NOT NULL,shared INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,event_id)); CREATE TABLE IF NOT EXISTS social_scenes(id TEXT PRIMARY KEY,sequence INTEGER NOT NULL,actor_a TEXT NOT NULL,actor_b TEXT NOT NULL,terminal INTEGER NOT NULL,view TEXT NOT NULL);").map_err(err)?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS social_schema(version INTEGER NOT NULL); INSERT INTO social_schema(version) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM social_schema); CREATE TABLE IF NOT EXISTS social_meta(id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL,epoch INTEGER NOT NULL); INSERT OR IGNORE INTO social_meta VALUES(1,0,0); CREATE TABLE IF NOT EXISTS social_bots(owner TEXT PRIMARY KEY,revision INTEGER NOT NULL,sequence INTEGER NOT NULL,mask INTEGER NOT NULL,context_sequence INTEGER NOT NULL,context_mask INTEGER NOT NULL,action_world TEXT NOT NULL,action_ordinal INTEGER NOT NULL,character TEXT NOT NULL,summary TEXT NOT NULL,context_goal TEXT NOT NULL); CREATE TABLE IF NOT EXISTS social_relationships(owner TEXT NOT NULL,other TEXT NOT NULL,familiarity INTEGER NOT NULL,affection INTEGER NOT NULL,PRIMARY KEY(owner,other)); CREATE TABLE IF NOT EXISTS social_memories(owner TEXT NOT NULL,event_id TEXT NOT NULL,sequence INTEGER NOT NULL,kind TEXT NOT NULL,outcome TEXT NOT NULL,participants TEXT NOT NULL,at_ms INTEGER NOT NULL,shared INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,event_id)); CREATE TABLE IF NOT EXISTS social_dialogue_days(owner TEXT NOT NULL,day INTEGER NOT NULL,tokens INTEGER NOT NULL,cost INTEGER NOT NULL,PRIMARY KEY(owner,day)); CREATE TABLE IF NOT EXISTS social_dialogue_clock(id INTEGER PRIMARY KEY CHECK(id=1),day INTEGER NOT NULL); INSERT OR IGNORE INTO social_dialogue_clock VALUES(1,0); CREATE TABLE IF NOT EXISTS social_dialogue_policies(owner TEXT PRIMARY KEY,revision INTEGER NOT NULL,policy TEXT NOT NULL); CREATE TABLE IF NOT EXISTS social_scenes(id TEXT PRIMARY KEY,sequence INTEGER NOT NULL,actor_a TEXT NOT NULL,actor_b TEXT NOT NULL,terminal INTEGER NOT NULL,view TEXT NOT NULL);").map_err(err)?;
     let versions: Vec<i64> = {
         let mut s = tx
             .prepare("SELECT version FROM social_schema LIMIT 2")
@@ -229,14 +259,10 @@ fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
             let actual = super::life_store::read(tx, id)
                 .map_err(err)?
                 .ok_or("missing confirmed actor")?;
-            let action = actual
-                .state()
-                .current_action()
-                .ok_or("missing confirmed action")?;
-            if action.phase() != crate::life_domain::ActionPhase::Completed
-                || action.intent().id() != &actions[index]
-                || !actual.state().recent_events().any(|record| record.id() == &sources[index]
-                    && matches!(record.event(), crate::life_domain::CommittedEvent::Completed { action_id } if action_id == &actions[index])) {
+            if actual.state().actor_id().as_str()!=id || actual.state().world_id()!=actions[index].world_id()
+                || actions[index].actor_id().as_str()!=id
+                || !actual.state().recent_events().any(|record|record.id()==&sources[index]
+                    && matches!(record.event(),crate::life_domain::CommittedEvent::Completed{action_id} if action_id==&actions[index])) {
                 return Err("social completion not confirmed in Store".into());
             }
         }
@@ -304,10 +330,9 @@ fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
                             .find(|action| action.actor_id().as_str() == id)
                     })
                     .ok_or("missing completed scene action")?;
-                if !b.action_world.is_empty() && b.action_world != action.world_id().as_str() {
-                    return Err("character lineage changed".into());
-                }
-                if action.ordinal() > b.action_ordinal {
+                if b.action_world != action.world_id().as_str()
+                    || action.ordinal() > b.action_ordinal
+                {
                     b.action_world = action.world_id().as_str().into();
                     b.action_ordinal = action.ordinal();
                     b.character.credit(if event.kind() == SceneKind::Play {
@@ -434,6 +459,39 @@ impl Store {
         tx.commit().map_err(err)?;
         Ok(changed)
     }
+    /// Pair effects and terminal protocol state share one durable transaction.
+    pub(crate) fn social_commit_terminal(
+        &self,
+        scene: &SceneView,
+        event: &SocialEvent,
+    ) -> Result<bool, String> {
+        scene.validate()?;
+        if !scene.phase.terminal()
+            || scene.sequence != event.sequence()
+            || &scene.participants != event.participants()
+            || !matches!(
+                (scene.phase, event.outcome()),
+                (Phase::Completed, Outcome::Completed)
+                    | (Phase::Cancelled, Outcome::Cancelled)
+                    | (Phase::Declined, Outcome::Declined)
+            )
+        {
+            return Err(FAIL.into());
+        }
+        self.social_ready()?;
+        if self.fixed_profile.is_some() {
+            return Err(FAIL.into());
+        }
+        let mut db = self.db.lock().map_err(err)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(err)?;
+        let changed = apply(&tx, event)?;
+        tx.execute("INSERT INTO social_scenes VALUES(?1,?2,?3,?4,1,?5) ON CONFLICT(id) DO UPDATE SET terminal=1,view=excluded.view",params![scene.id,sql_counter(scene.sequence)?,scene.participants[0],scene.participants[1],encode(scene)?]).map_err(err)?;
+        tx.execute("DELETE FROM social_scenes WHERE terminal=1 AND id NOT IN(SELECT id FROM social_scenes ORDER BY sequence DESC LIMIT 64)",[]).map_err(err)?;
+        tx.commit().map_err(err)?;
+        Ok(changed)
+    }
     pub(crate) fn social_save_scene(&self, scene: &SceneView) -> Result<(), String> {
         scene.validate()?;
         self.social_ready()?;
@@ -547,6 +605,7 @@ impl Store {
             summary: b.summary,
             development: b.character,
             scenes,
+            dialogue: dialogue_settings(&db, id)?,
         })
     }
     pub(crate) fn social_set_development(
@@ -671,6 +730,113 @@ impl Store {
         }
         tx.commit().map_err(err)
     }
+    pub(crate) fn social_dialogue_settings(&self, id: &str) -> Result<DialogueSettings, String> {
+        self.social_ready()?;
+        let db = self.db.lock().map_err(err)?;
+        owner(&db, self.fixed_profile.as_deref(), id)?;
+        dialogue_settings(&db, id)
+    }
+    pub(crate) fn social_set_dialogue_policy(
+        &self,
+        id: &str,
+        expected: u64,
+        policy: crate::social_dialogue::Policy,
+    ) -> Result<DialogueSettings, String> {
+        policy.validate()?;
+        self.social_ready()?;
+        let mut db = self.db.lock().map_err(err)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(err)?;
+        owner(&tx, self.fixed_profile.as_deref(), id)?;
+        let before = dialogue_settings(&tx, id)?;
+        if before.revision != expected {
+            return Err("social data changed".into());
+        }
+        let revision = before
+            .revision
+            .checked_add(1)
+            .filter(|v| *v <= MAX_COUNTER)
+            .ok_or(FAIL)?;
+        tx.execute("INSERT INTO social_dialogue_policies VALUES(?1,?2,?3) ON CONFLICT(owner) DO UPDATE SET revision=excluded.revision,policy=excluded.policy",params![id,sql_counter(revision)?,encode(&policy)?]).map_err(err)?;
+        bump(&tx)?;
+        tx.commit().map_err(err)?;
+        Ok(DialogueSettings {
+            version: 1,
+            revision,
+            policy,
+        })
+    }
+    /// Conservative reservation survives restart and is never refunded after an ambiguous send.
+    pub(crate) fn social_reserve_dialogue_estimate(
+        &self,
+        id: &str,
+        now: u64,
+        quote: crate::social_dialogue::Quote,
+        policy: &crate::social_dialogue::Policy,
+    ) -> Result<bool, String> {
+        policy.validate()?;
+        if now > MAX_COUNTER || quote.tokens == 0 {
+            return Err(FAIL.into());
+        }
+        let Some(cost) = quote.cost_micros else {
+            return Ok(false);
+        };
+        if quote.tokens > policy.token_limit || cost > policy.cost_limit_micros {
+            return Ok(false);
+        }
+        self.social_ready()?;
+        let mut db = self.db.lock().map_err(err)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(err)?;
+        owner(&tx, self.fixed_profile.as_deref(), id)?;
+        let day = now / 86400000;
+        let last = tx
+            .query_row(
+                "SELECT day FROM social_dialogue_clock WHERE id=1",
+                [],
+                |r| read_counter(r, 0),
+            )
+            .map_err(err)?;
+        if day < last {
+            return Err("social dialogue clock regressed".into());
+        }
+        let (tokens, used) = tx
+            .query_row(
+                "SELECT tokens,cost FROM social_dialogue_days WHERE owner=?1 AND day=?2",
+                params![id, sql_counter(day)?],
+                |r| Ok((read_counter(r, 0)?, read_counter(r, 1)?)),
+            )
+            .optional()
+            .map_err(err)?
+            .unwrap_or((0, 0));
+        let Some(tokens) = tokens
+            .checked_add(quote.tokens)
+            .filter(|v| *v <= policy.daily_token_limit)
+        else {
+            return Ok(false);
+        };
+        let Some(used) = used
+            .checked_add(cost)
+            .filter(|v| *v <= policy.daily_cost_limit_micros)
+        else {
+            return Ok(false);
+        };
+        tx.execute("INSERT INTO social_dialogue_days VALUES(?1,?2,?3,?4) ON CONFLICT(owner,day) DO UPDATE SET tokens=excluded.tokens,cost=excluded.cost",params![id,sql_counter(day)?,sql_counter(tokens)?,sql_counter(used)?]).map_err(err)?;
+        tx.execute(
+            "UPDATE social_dialogue_clock SET day=?1 WHERE id=1",
+            [sql_counter(day)?],
+        )
+        .map_err(err)?;
+        tx.execute(
+            "DELETE FROM social_dialogue_days WHERE day<?1",
+            [sql_counter(day.saturating_sub(7))?],
+        )
+        .map_err(err)?;
+        tx.commit().map_err(err)?;
+        Ok(true)
+    }
     pub(crate) fn social_epoch(&self) -> Result<u64, String> {
         self.social_ready()?;
         self.db
@@ -779,10 +945,7 @@ impl Store {
         }
         let mut b = bot(&tx, id)?;
         let world = confirmed.world_id().as_str();
-        if !b.action_world.is_empty() && b.action_world != world {
-            return Err("character lineage changed".into());
-        }
-        if action.intent().id().ordinal() <= b.action_ordinal {
+        if b.action_world == world && action.intent().id().ordinal() <= b.action_ordinal {
             return Ok(false);
         }
         b.action_world = world.into();

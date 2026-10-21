@@ -181,7 +181,7 @@ fn completion_body(config:&Value,messages:Vec<Value>,tools:Vec<Value>)->Result<(
 /// snapshots on the official TLS endpoint. Unknown models, aliases, proxies and
 /// coding CLI internals have no claimed hard bound. Includes images/framing;
 /// adding the enforced output cap again errs conservatively.
-fn token_upper(config:&Value)->Option<u64>{
+pub(crate) fn token_upper(config:&Value)->Option<u64>{
     if matches!(field(config,"provider","compatible"),"codex"|"claude-code"|"anthropic"){return None;}
     let url=Url::parse(&endpoint(config,"chat/completions").ok()?).ok()?;
     if url.scheme()!="https"||url.host_str()!=Some("api.openai.com")||url.port_or_known_default()!=Some(443)||url.path()!="/v1/chat/completions"||!url.username().is_empty()||url.password().is_some()||url.query().is_some()||url.fragment().is_some(){return None;}
