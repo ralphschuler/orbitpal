@@ -1,8 +1,10 @@
 # Nonshipping native Linux renderer lane
 
-This source checkpoint has not launched, compiled or qualified this harness.
-Issue #66 stays open. The first executable acceptance is a **short smoke run**
-on an explicitly disposable GitHub-hosted Linux VM. A successful smoke would
+Three-OS CI builds the standalone example and runs its non-GUI protocol tests.
+The actual hosted smoke attempts have reached guard refusals before launching
+the renderer. No qualified measurements or hardware baseline exist; issue #66
+stays open. The first executable acceptance remains a **short smoke run** on an
+explicitly disposable GitHub-hosted Linux VM. A successful smoke would
 qualify this fixture's lifecycle and numeric scope, not hardware performance,
 the full application or the broader benchmark matrix.
 
@@ -334,3 +336,53 @@ methods, both shell syntax checks and Python AST checks passed with source hashe
 unchanged. This does not execute the privileged Linux harness or qualify a native
 renderer. The new workflow is source-only and still awaits independent review
 and executable qualification; no workflow dispatch or benchmark result is claimed.
+
+## First actual hosted smoke
+
+Run `39587659424` at merged source `000cfe3c96a8f32db6efa21968da2897db831b8b`
+built the standalone Linux example but refused before starting the renderer:
+`untrusted_bus_service`, `cleanupConfirmed=true`, `passed=false`. It does not
+qualify the smoke, any pilot, or issue #66. At that checkpoint the trust policy rejected
+nonregular, non-root-owned or group/world-writable packaged service files.
+
+Both manual workflows run the same read-only isolated-activator check before
+the cold build. Packaged accessibility-descriptor refusals report only fixed
+service code 1, regular-file/symlink/root-owner booleans and masked write bits;
+the earlier diagnostic revision also used code 2 for the dconf descriptor. No
+raw file, executable command, symlink target, path, process or home is exported.
+The ordinary runtime repeats the same check and includes those closed fields in
+its existing `fixture-result.json` if that exact refusal occurs. Diagnostics do
+not allow another service, follow a new link, change permissions or qualify a
+runtime. The preflight creates no fixture account, bus or application.
+
+
+## Isolated dconf activation after the second actual refusal
+
+Run `39589792944` at `33ce7de` failed the early read-only check: service code2
+(dconf), regular file, root owned, not a symlink, masked group/world write bits
+`0o022`. That run did not reach the cold build or renderer launch. The writable
+package descriptor is never accepted, read, followed, copied or repaired by the
+new dconf path.
+
+Only `ca.desrt.dconf` uses a repository-declared three-line `Name`/`Exec`
+activation template. This matches the Name and argument-free executable in
+[GNOME's upstream service definition](https://raw.githubusercontent.com/GNOME/dconf/master/service/ca.desrt.dconf.service.in),
+with the existing two exact installation paths: `/usr/libexec/dconf-service`,
+then `/usr/lib/dconf/dconf-service` only if the first path is absent. An existing
+untrusted candidate fails; it cannot cause a fallback. No descriptor-provided
+command, argument, service name, `User` or `SystemdService` is consumed. The
+accessibility bus retains its original protected package-descriptor check.
+
+Before returning the dconf template, the same preflight/runtime helper opens
+only the fixed executable through retained no-follow parent-directory FDs. Each
+ancestor must be a root-owned directory, traversable by the fresh UID and with
+no group/world write bits; the
+file must be a root-owned regular ELF executable, executable by the fresh UID,
+with no group/world write bits or set-ID bits. Its retained FD and final named
+identity must remain equal across the bounded header read. A link, bad mode,
+foreign owner, script, substitution, missing candidates or failed read refuses.
+No system permissions or packaged files are changed. Only this fresh private
+bus receives the declared template, under the existing isolated UID/socket and
+closed child environment. This source change is not a passed smoke or a native
+performance measurement; all lifecycle/collector checks still have to pass in
+an actual reviewed-source run.

@@ -35,6 +35,17 @@ SERVICES = {
 _interrupted = False
 
 
+class BusServiceRefusal(Refusal):
+    """Closed packaged-file diagnostics; never include paths or service text."""
+    def __init__(self, service, info):
+        self.diagnostic = {"serviceCode": list(SERVICES).index(service) + 1,
+                           "regularFile": stat.S_ISREG(info.st_mode),
+                           "symbolicLink": stat.S_ISLNK(info.st_mode),
+                           "rootOwned": info.st_uid == 0,
+                           "writeBits": info.st_mode & 0o022}
+        super().__init__("untrusted_bus_service")
+
+
 def hosted_root():
     if sys.platform != "linux" or os.geteuid() != 0 or any(os.environ.get(key) != value for key, value in (
             ("GITHUB_ACTIONS", "true"), ("RUNNER_ENVIRONMENT", "github-hosted"), ("RUNNER_OS", "Linux"))):
@@ -68,17 +79,89 @@ def service_entry(service, raw):
     return executable, "[D-BUS Service]\nName=" + service + "\nExec=" + executable + "\n"
 
 
+def checked_dconf_executable(executable):
+    """Vetted fixed native activator, independent of any packaged descriptor.
+
+    The fresh fixture UID cannot replace a protected ancestor or executable.
+    Retained no-follow directory/file FDs also reject check/open/read swaps.
+    """
+    if executable not in SERVICES["ca.desrt.dconf"]:
+        refuse("unsupported_bus_activator")
+    descriptors = []
+    native_opened = False
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_uid, info.st_mode,
+                             info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    try:
+        current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptors.append(current)
+        parts = Path(executable).parts[1:]
+        for component in parts[:-1]:
+            info = os.fstat(current)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or not info.st_mode & 0o001:
+                refuse("untrusted_bus_activator")
+            current = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                              dir_fd=current)
+            descriptors.append(current)
+        parent = os.fstat(current)
+        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or parent.st_mode & 0o022 or not parent.st_mode & 0o001:
+            refuse("untrusted_bus_activator")
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=current)
+        descriptors.append(descriptor)
+        native_opened = True
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_mode & 0o022 \
+                or before.st_mode & 0o6000 or not before.st_mode & 0o001 or before.st_size < 4:
+            refuse("untrusted_bus_activator")
+        if os.read(descriptor, 4) != b"\x7fELF":
+            refuse("untrusted_bus_activator")
+        try:
+            named = os.stat(executable, follow_symlinks=False)
+        except OSError:
+            refuse("untrusted_bus_activator")
+        if identity(before) != identity(os.fstat(descriptor)) or identity(before) != identity(named):
+            refuse("untrusted_bus_activator")
+    except FileNotFoundError:
+        if native_opened:
+            refuse("untrusted_bus_activator")
+        raise
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def declared_dconf_service():
+    # Only these reviewed Name/Exec pairs are authored by this trusted source.
+    # Never read, follow, copy or repair the observed writable package descriptor.
+    for executable in SERVICES["ca.desrt.dconf"]:
+        try:
+            checked_dconf_executable(executable)
+        except FileNotFoundError:
+            continue
+        return "[D-BUS Service]\nName=ca.desrt.dconf\nExec=" + executable + "\n"
+    refuse("missing_bus_activator")
+
+
+def checked_service(service):
+    if service not in SERVICES:
+        refuse("unsupported_bus_activator")
+    if service == "ca.desrt.dconf":
+        return declared_dconf_service()
+    source = Path("/usr/share/dbus-1/services") / (service + ".service")
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise BusServiceRefusal(service, info)
+    executable, text = service_entry(service, bounded(source, 16384))
+    metadata = Path(executable).stat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
+        refuse("untrusted_bus_activator")
+    return text
+
+
 def install_bus(root, directory, address, uid):
     directory.mkdir(mode=0o700)
     for service in SERVICES:
-        source = Path("/usr/share/dbus-1/services") / (service + ".service")
-        info = source.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-            refuse("untrusted_bus_service")
-        executable, text = service_entry(service, bounded(source, 16384))
-        metadata = Path(executable).stat()
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o022:
-            refuse("untrusted_bus_activator")
+        text = checked_service(service)
         # Deliberately omit SystemdService/User and any other packaged directives.
         (directory / (service + ".service")).write_text(text, encoding="ascii")
     # Only the fresh account reads the two explicit service files.
@@ -326,6 +409,7 @@ def execute(mode, binary, output):
     failure = "fixture_incomplete"
     cleanup_ok = True
     manifest = None
+    bus_diagnostic = None
     try:
         for lookup in (pwd.getpwnam, grp.getgrnam):
             try:
@@ -442,6 +526,8 @@ def execute(mode, binary, output):
     except Refusal as error:
         # Only fixed authored refusal codes; no raw subprocess output/errors.
         failure = error.args[0] if type(error.args[0]) is str and re.fullmatch(r"[a-z_]{1,96}", error.args[0]) else "fixture_refused"
+        if isinstance(error, BusServiceRefusal):
+            bus_diagnostic = error.diagnostic
     except Exception:
         failure = "fixture_metadata_unavailable"
     finally:
@@ -519,6 +605,8 @@ def execute(mode, binary, output):
     result = {"version": 1, "passed": failure is None and cleanup_ok, "reason": failure,
               "cleanupConfirmed": cleanup_ok, "durationSeconds": time.monotonic() - start,
               "fullIssue66Acceptance": False, "hardwarePerformanceBaseline": False}
+    if bus_diagnostic is not None:
+        result["busService"] = bus_diagnostic
     with PinnedDirectory(output) as destination:
         destination.write_new("fixture-result.json", json.dumps(result, sort_keys=True) + "\n")
     # The root collector owns writes; the CI artifact uploader is the original
@@ -535,6 +623,16 @@ def execute(mode, binary, output):
 def main():
     hosted_root()
     os.umask(0o077)
+    if sys.argv[1:] == ["--check-services"]:
+        trusted_sources()
+        try:
+            for service in SERVICES:
+                checked_service(service)
+        except BusServiceRefusal as error:
+            print(json.dumps({"passed": False, "reason": "untrusted_bus_service", "busService": error.diagnostic}, sort_keys=True))
+            return 1
+        print(json.dumps({"passed": True, "servicesChecked": len(SERVICES)}, sort_keys=True))
+        return 0
     if len(sys.argv) != 5 or sys.argv[1] != "--mode" or sys.argv[3] != "--binary":
         refuse("invalid_fixture_arguments")
     measurement_mode(sys.argv[2])
