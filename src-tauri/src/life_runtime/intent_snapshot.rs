@@ -193,10 +193,10 @@ mod tests {
             generation: 1, source: Source::MacosCgSessionCompatibility });
         let state = LifeState::new(ActorId::new("nova").unwrap(), WorldId::new("world").unwrap(), Needs::new(5000, 5000, 5000, 5000).unwrap());
         let config = SpeechConfig { speak: false, min_ms: 15_000, max_ms: 15_000 };
-        core.start("nova", Mode::Life, "session_one".into(), config.clone(), Some(state.clone()), 7, false, true, 0).unwrap();
+        core.start("nova", Mode::Life, "11111111-1111-4111-8111-111111111111".into(), config.clone(), Some(state.clone()), 7, false, true, 0).unwrap();
         let previous = scope(&core, "nova").unwrap();
         core.stop("nova", 1); assert!(scope(&core, "nova").is_none());
-        core.start("nova", Mode::Life, "session_two".into(), config, Some(state), 7, false, true, 2).unwrap();
+        core.start("nova", Mode::Life, "22222222-2222-4222-8222-222222222222".into(), config, Some(state), 7, false, true, 2).unwrap();
         assert_ne!(scope(&core, "nova").unwrap(), previous); assert!(scope(&core, "friend").is_none());
     }
 }
