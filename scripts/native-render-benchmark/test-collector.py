@@ -1,11 +1,16 @@
 #!/usr/bin/python3
 """Synthetic metadata only. Never provisions, launches or samples a real app."""
 from contextlib import ExitStack, contextmanager
+import ast
 import io
 import json
 import os
 from pathlib import Path
+import runpy
+import signal
 import stat
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -203,6 +208,106 @@ class CollectorTests(unittest.TestCase):
         for error in (Hostile("PRIVATE_SECRET", b"PRIVATE_IMAGE"), collect.Refusal("PRIVATE_PATH")):
             self.assertEqual(collect.failure_summary(error), {"version": 1, "passed": False, "reason": "metadata_unavailable"})
         self.assertEqual(collect.failure_summary(collect.Refusal("process_scope_changed"))["reason"], "process_scope_changed")
+
+
+class CollectorExitDiagnosticsTests(unittest.TestCase):
+    def test_exit_manifest_is_literal_unique_nonzero_and_only_authored_refusals(self):
+        source = ast.parse(Path(collect.__file__).read_text(encoding="utf-8"))
+        entries = [node.value for node in source.body if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == "FAILURE_EXIT_CODES" for target in node.targets)]
+        self.assertEqual(len(entries), 1)
+        self.assertIsInstance(entries[0], ast.Dict)
+        manifest = ast.literal_eval(entries[0])
+        authored = {node.args[0].value for node in ast.walk(source) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name) and node.func.id == "refuse" and len(node.args) == 1
+                    and isinstance(node.args[0], ast.Constant) and type(node.args[0].value) is str}
+        self.assertEqual(len(manifest), 39)
+        self.assertEqual(len(entries[0].keys), len(manifest))  # No shadowed literal key.
+        self.assertTrue(set(manifest) <= authored)
+        self.assertEqual(set(manifest.values()), set(range(64, 103)))
+        self.assertTrue(all(type(value) is int for value in manifest.values()))
+        self.assertEqual(manifest, collect.FAILURE_EXIT_CODES)
+        self.assertEqual(set(manifest), collect.FAILURE_CODES)
+
+    def test_documented_exit_manifest_matches_actual_closed_classification(self):
+        document = Path(collect.__file__).with_name("README.md").read_text(encoding="utf-8")
+        rows = [tuple(column.strip().strip("`") for column in line.split("|")[1:-1])
+                for line in document.splitlines() if line.startswith("|")]
+        manifest = {reason: int(code) for code, reason in rows if code.isascii() and code.isdigit() and 64 <= int(code) <= 102}
+        self.assertEqual(manifest, collect.FAILURE_EXIT_CODES)
+        for reason, code in manifest.items():
+            error = collect.Refusal(reason)
+            self.assertEqual(collect.failure_summary(error)["reason"], reason)
+            self.assertEqual(collect.failure_exit_code(error), code)
+
+    def test_private_unknown_or_forged_errors_never_choose_a_diagnostic_code(self):
+        class PrivateError(Exception):
+            def __str__(self):
+                raise AssertionError("private exception must not be formatted")
+        class ForgedRefusal(collect.Refusal):
+            pass
+        errors = (PrivateError("PRIVATE_SECRET", b"PRIVATE_IMAGE"), OSError("PRIVATE_PATH"),
+                  collect.Refusal("PRIVATE_PATH"), collect.Refusal(75), collect.Refusal(True),
+                  collect.Refusal("process_scope_changed", "PRIVATE_SECRET"),
+                  ForgedRefusal("process_scope_changed"), RuntimeError("process_scope_changed"))
+        for error in errors:
+            self.assertEqual(collect.failure_exit_code(error), 1)
+            self.assertEqual(collect.failure_summary(error)["reason"], "metadata_unavailable")
+
+    def test_actual_main_boundary_classifies_preflight_without_new_file_reads(self):
+        hosted = {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux", "RUNNER_ENVIRONMENT": "github-hosted"}
+        cases = (({}, ["collect.py"], 100), (hosted, ["collect.py"], 101),
+                 (hosted, ["collect.py", "--collect", "/not-opened", "1000", "3"], 102))
+        for environment, arguments, code in cases:
+            with self.subTest(code=code), patch.dict(os.environ, environment, clear=True), patch.object(sys, "argv", arguments), \
+                    patch.object(os, "open") as opening, patch.object(sys, "stderr", io.StringIO()) as stderr, \
+                    patch.object(sys, "stdout", io.StringIO()) as stdout:
+                with self.assertRaises(SystemExit) as stopped:
+                    runpy.run_path(collect.__file__, run_name="__main__")
+                self.assertEqual(stopped.exception.code, code)
+                self.assertEqual(stderr.getvalue(), "benchmark-collector-failed\n")
+                self.assertEqual(stdout.getvalue(), "")
+                opening.assert_not_called()
+
+    def test_actual_main_boundary_keeps_private_errors_generic_and_base_exceptions_intact(self):
+        class PrivateError(Exception):
+            def __str__(self):
+                raise AssertionError("private exception must not be formatted")
+        for error in (PrivateError("PRIVATE_SECRET"), KeyboardInterrupt(), SystemExit(23)):
+            def failed_guard(_name):
+                raise error
+            with patch.object(os, "environ", SimpleNamespace(get=failed_guard)), \
+                    patch.object(sys, "stderr", io.StringIO()) as stderr, patch.object(sys, "stdout", io.StringIO()) as stdout:
+                with self.assertRaises(SystemExit if type(error) is PrivateError else type(error)) as stopped:
+                    runpy.run_path(collect.__file__, run_name="__main__")
+                if type(error) is PrivateError:
+                    self.assertEqual(stopped.exception.code, 1)
+                    self.assertEqual(stderr.getvalue(), "benchmark-collector-failed\n")
+                else:
+                    self.assertIs(stopped.exception, error)
+                    self.assertEqual(stderr.getvalue(), "")
+                self.assertEqual(stdout.getvalue(), "")
+
+    @unittest.skipUnless(os.name == "posix", "Linux collector uses POSIX child signal statuses")
+    def test_actual_main_boundary_preserves_real_sigint_and_sigterm_child_statuses(self):
+        # Only this owned tiny Python child receives a real signal. The real
+        # collector boundary runs, but its first guard cannot reach host reads.
+        child = """import os, runpy, sys
+class InterruptedEnvironment:
+    def get(self, _name):
+        os.kill(os.getpid(), int(sys.argv[2]))
+        raise AssertionError('signal did not interrupt')
+os.environ = InterruptedEnvironment()
+runpy.run_path(sys.argv[1], run_name='__main__')
+"""
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=int(signum)):
+                result = subprocess.run([sys.executable, "-I", "-c", child, str(Path(collect.__file__).resolve()), str(int(signum))],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        env={}, timeout=10, check=False)
+                self.assertEqual(result.returncode, -int(signum))
+                self.assertEqual(result.stdout, b"")
+                self.assertNotIn(b"benchmark-collector-failed", result.stderr)
 
 
 class HarnessSafetyTests(unittest.TestCase):
