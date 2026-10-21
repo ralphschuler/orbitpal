@@ -426,10 +426,103 @@ class Studio:
 
         return locate
 
+    def integration_control(self):
+        """One fixed combo, one native reveal budget, no foreground input."""
+        deadline = time.monotonic() + 12  # Earlier than the caller's unchanged wait.
+        attempts = 0
+
+        def within_deadline():
+            if time.monotonic() >= deadline:
+                raise Refusal("app_control_missing")
+
+        def locate():
+            nonlocal attempts
+            within_deadline()
+            current = self.studio_frame(active=False)
+            within_deadline()
+            candidate = self.find("Integration", {self.a.ROLE_COMBO_BOX}, include_offscreen=True, frame=current)
+            within_deadline()
+            if candidate is None:
+                return None
+            showing = candidate.getState().contains(self.a.STATE_SHOWING)
+            within_deadline()
+            if showing:
+                return candidate
+            if attempts >= 2:
+                return None
+            try:
+                component = candidate.queryComponent()
+                within_deadline()
+                attempts += 1
+                scrolled = component.scrollTo(self.a.SCROLL_ANYWHERE)
+                within_deadline()
+                if scrolled is not True:
+                    raise Refusal("app_action_refused")
+            except (RuntimeError, AttributeError, NotImplementedError):
+                raise Refusal("app_action_unavailable") from None
+            # The scroll may replace the accessible or its owning frame. Rejoin
+            # the exact current owned frame; never act on the old offscreen node.
+            current = self.studio_frame(active=False)
+            within_deadline()
+            node = self.find("Integration", {self.a.ROLE_COMBO_BOX}, include_offscreen=True, frame=current)
+            within_deadline()
+            showing = node is not None and node.getState().contains(self.a.STATE_SHOWING)
+            within_deadline()
+            return node if showing else None
+
+        return locate
+
+    def integration_diagnostic(self):
+        """Terminal bounded counts only; normalized names never grant input."""
+        current = self.studio_frame(active=False)
+        counts = {"version": 1, "examinedNodeCount": 0, "exactNameCount": 0,
+                  "expectedComboRoleCount": 0, "exactComboCount": 0,
+                  "exactComboShowingCount": 0, "exactComboOffscreenCount": 0,
+                  "normalizedNameOnlyCount": 0, "normalizedComboOnlyCount": 0,
+                  "unavailableMetadataCount": 0, "oversizedNameCount": 0}
+        # nodes() keeps its existing 1200-node walk limit and owned/VISIBLE gate.
+        # This is a point-in-time diagnostic, never a selector or readiness proof.
+        for node in self.nodes(include_offscreen=True, frame=current):
+            counts["examinedNodeCount"] += 1
+            try:
+                name, role, state = node.name, node.getRole(), node.getState()
+                if type(name) is not str:
+                    counts["unavailableMetadataCount"] += 1
+                    continue
+                if not state.contains(self.a.STATE_VISIBLE):
+                    continue
+                expected_role = role == self.a.ROLE_COMBO_BOX
+                counts["expectedComboRoleCount"] += int(expected_role)
+                if name == "Integration":
+                    counts["exactNameCount"] += 1
+                    if expected_role:
+                        counts["exactComboCount"] += 1
+                        key = "exactComboShowingCount" if state.contains(self.a.STATE_SHOWING) else "exactComboOffscreenCount"
+                        counts[key] += 1
+                elif len(name) > 128:
+                    counts["oversizedNameCount"] += 1
+                elif " ".join(name.split()) == "Integration":
+                    counts["normalizedNameOnlyCount"] += 1
+                    counts["normalizedComboOnlyCount"] += int(expected_role)
+            except (RuntimeError, AttributeError, NotImplementedError, TypeError, ValueError):
+                counts["unavailableMetadataCount"] += 1
+        print("app-model-selector: " + json.dumps(counts, sort_keys=True), file=sys.stderr, flush=True)
+
     def compatible(self):
         phase("configure_model_integration_lookup")
-        node = self.one("Integration", {self.a.ROLE_COMBO_BOX})
-        self.action(node)
+        locate = self.integration_control()
+        try:
+            node = self.wait(locate, "app_control_missing")
+        except Refusal as error:
+            if type(error) is Refusal and type(error.code) is str and error.code == "app_control_missing":
+                try:
+                    self.integration_diagnostic()
+                except Exception:
+                    # Optional metadata must neither expose errors nor replace
+                    # the original failure if the fresh owned frame is gone.
+                    pass
+            raise
+        self.action(node, scroll=False)  # The locator owns the only reveal budget.
         phase("configure_model_integration_opened")
         choices = {self.a.ROLE_MENU_ITEM, self.a.ROLE_LIST_ITEM, self.a.ROLE_RADIO_MENU_ITEM}
         phase("configure_model_compatible_lookup")

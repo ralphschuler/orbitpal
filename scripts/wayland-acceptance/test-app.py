@@ -1544,9 +1544,11 @@ class ModelAcquisitionDiagnosticTests(unittest.TestCase):
         def one(name, roles):
             events.append(("lookup", name, roles))
             return combo if name == "Integration" else option
-        def action(node):
+        def action(node, scroll=True):
             events.append(("action", "combo" if node is combo else "option"))
         studio.one, studio.action = Mock(side_effect=one), Mock(side_effect=action)
+        studio.integration_control = Mock(return_value=lambda: studio.one("Integration", {6}))
+        studio.wait = Mock(side_effect=lambda predicate, code: predicate())
         real_phase = app.phase
         def observed(code):
             events.append(("phase", code))
@@ -1576,6 +1578,9 @@ class ModelAcquisitionDiagnosticTests(unittest.TestCase):
                 raise provider.Refusal("app_control_missing")
             return object()
         studio.one.side_effect = one
+        native_lookup = Mock(side_effect=lambda: studio.one("Integration", {6}))
+        studio.integration_control.return_value = native_lookup
+        studio.wait.side_effect = lambda predicate, *args, **kwargs: predicate() if predicate is native_lookup else None
         studio.compatible.side_effect = lambda: compatible(studio)
         def entry(name, value):
             app.phase("studio_registry_query")
@@ -1656,6 +1661,277 @@ class ModelAcquisitionDiagnosticTests(unittest.TestCase):
                 if node.args[0].value in self.SITES:
                     model_sites.append(node.args[0].value)
         self.assertCountEqual(model_sites, self.SITES)
+
+
+class IntegrationSelectorRevealTests(unittest.TestCase):
+    """Real owned-frame/selector/action paths with AX doubles; no desktop IO."""
+    Node = SwitchRevealTests.Node
+    parents = SwitchRevealTests.parents
+
+    def fixture(self, controls):
+        source = SwitchRevealTests()
+        studio, frame, desktop = source.fixture(controls)
+        studio.a.ROLE_COMBO_BOX = 6
+        studio.a.ROLE_MENU_ITEM, studio.a.ROLE_LIST_ITEM, studio.a.ROLE_RADIO_MENU_ITEM = 7, 8, 9
+        frame.states.discard("active")
+        return studio, frame, desktop
+
+    def combo(self, showing=False, name="Integration", role=6, pid=42):
+        return self.Node(name, role, ("visible", "enabled", "sensitive") + (("showing",) if showing else ()), pid=pid)
+
+    def option(self):
+        return self.Node("Compatible API · custom endpoint", 7, ("visible", "showing", "enabled", "sensitive"), pid=42)
+
+    def diagnostic(self, text):
+        lines = text.splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("app-model-selector: "))
+        value = json.loads(lines[0].removeprefix("app-model-selector: "))
+        self.assertEqual(set(value), {"version", "examinedNodeCount", "exactNameCount", "expectedComboRoleCount", "exactComboCount", "exactComboShowingCount", "exactComboOffscreenCount", "normalizedNameOnlyCount", "normalizedComboOnlyCount", "unavailableMetadataCount", "oversizedNameCount"})
+        self.assertTrue(all(type(item) is int and 0 <= item <= 1200 for item in value.values()))
+        self.assertEqual(value["version"], 1)
+        return value
+
+    def test_real_compatible_reveals_then_acts_only_on_fresh_showing_combo_without_extra_scroll(self):
+        old, fresh, option = self.combo(), self.combo(showing=True), self.option()
+        studio, frame, _ = self.fixture([old, option])
+        frame.queryComponent = Mock(side_effect=AssertionError("window focus is forbidden"))
+        def reveal(_):
+            frame.children = [fresh, option]
+            return True
+        old.scroll.side_effect = reveal
+        errors = io.StringIO()
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.sys, "stderr", errors):
+            studio.compatible()
+        old.scroll.assert_called_once_with(0)
+        old.press.assert_not_called()
+        fresh.scroll.assert_not_called()
+        fresh.press.assert_called_once_with(0)
+        option.scroll.assert_called_once_with(0)  # Original option action is unchanged.
+        option.press.assert_called_once_with(0)
+        frame.queryComponent.assert_not_called()
+        self.assertNotIn("active", frame.states)
+        self.assertEqual(errors.getvalue(), "")
+
+    def test_already_showing_combo_needs_no_reveal_and_strict_frame_default_stays_active(self):
+        combo = self.combo(showing=True)
+        studio, _, _ = self.fixture([combo])
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"):
+            self.assertIs(studio.integration_control()(), combo)
+            with self.assertRaisesRegex(provider.Refusal, "^app_window_not_active$"):
+                studio.studio_frame()
+        combo.scroll.assert_not_called()
+        combo.press.assert_not_called()
+
+    def test_shared_two_reveal_budget_and_original_twelve_second_timeout_emit_one_terminal_count_line(self):
+        combo = self.combo()
+        studio, _, _ = self.fixture([combo])
+        clock, errors = [0.0], io.StringIO()
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)), patch.object(app.sys, "stderr", errors), self.assertRaisesRegex(provider.Refusal, "^app_control_missing$"):
+            studio.compatible()
+        self.assertEqual(combo.scroll.call_count, 2)
+        combo.press.assert_not_called()
+        self.assertGreaterEqual(clock[0], 12)
+        self.assertLess(clock[0], 12.2)
+        counts = self.diagnostic(errors.getvalue())
+        self.assertEqual(counts["exactComboOffscreenCount"], 1)
+        self.assertEqual(counts["exactComboShowingCount"], 0)
+
+    def test_late_component_getter_scroll_or_reacquisition_never_authorizes_selector_action(self):
+        for late in ("frame", "lookup", "component", "scroll", "reacquisition"):
+            combo = self.combo()
+            studio, _, _ = self.fixture([combo])
+            clock = [0.0]
+            original_component = combo.queryComponent
+            if late == "component":
+                def component():
+                    clock[0] = 12.1
+                    return original_component()
+                combo.queryComponent = component
+            def reveal(_):
+                combo.states.add("showing")
+                if late == "scroll": clock[0] = 12.1
+                return True
+            combo.scroll.side_effect = reveal
+            original_frame = studio.studio_frame
+            def frame_read(*args, **kwargs):
+                result = original_frame(*args, **kwargs)
+                if late == "frame": clock[0] = 12.1
+                return result
+            original_find, calls = studio.find, [0]
+            def find(*args, **kwargs):
+                result = original_find(*args, **kwargs)
+                calls[0] += 1
+                if late == "lookup" and calls[0] == 1 or late == "reacquisition" and calls[0] == 2: clock[0] = 12.1
+                return result
+            with self.subTest(late=late), patch.object(studio, "studio_frame", side_effect=frame_read), patch.object(studio, "find", side_effect=find), patch.object(studio, "integration_diagnostic") as diagnostic, patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), self.assertRaisesRegex(provider.Refusal, "^app_control_missing$"):
+                studio.compatible()
+            self.assertEqual(combo.scroll.call_count, 0 if late in ("frame", "lookup", "component") else 1)
+            combo.press.assert_not_called()
+            diagnostic.assert_called_once_with()
+
+    def test_expired_locator_does_not_query_frame_or_spend_reveal_budget(self):
+        combo = self.combo()
+        studio, _, _ = self.fixture([combo])
+        clock = [0.0]
+        with patch.object(app.time, "monotonic", side_effect=lambda: clock[0]):
+            locate = studio.integration_control()
+            clock[0] = 12.0
+            with patch.object(studio, "studio_frame") as frame, self.assertRaisesRegex(provider.Refusal, "^app_control_missing$"):
+                locate()
+        frame.assert_not_called()
+        combo.scroll.assert_not_called()
+        combo.press.assert_not_called()
+
+    def test_process_executable_or_duplicate_frame_change_after_scroll_blocks_fresh_input(self):
+        for change, code in (("process", "app_process_exited"), ("executable", "unexpected_app_executable"), ("duplicate", "ambiguous_app_window")):
+            combo = self.combo()
+            studio, frame, desktop = self.fixture([combo])
+            changed = [False]
+            def reveal(_):
+                combo.states.add("showing")
+                changed[0] = True
+                if change == "duplicate": desktop.children.append(self.Node("OrbitPal", 10, ("visible", "showing")))
+                return True
+            combo.scroll.side_effect = reveal
+            def parent(pid):
+                if changed[0] and change == "process": raise provider.Refusal(code)
+                return self.parents(pid)
+            def executable(**_):
+                return Path("/disposable/foreign-app") if changed[0] and change == "executable" else studio.root / "acceptance-app"
+            with self.subTest(change=change), patch.object(app, "process_parent", side_effect=parent), patch.object(app.Path, "resolve", side_effect=executable), patch.object(app, "phase"), patch.object(studio, "integration_diagnostic") as diagnostic, self.assertRaisesRegex(provider.Refusal, "^" + code + "$"):
+                studio.compatible()
+            combo.scroll.assert_called_once_with(0)
+            combo.press.assert_not_called()
+            diagnostic.assert_not_called()
+
+    def test_frame_still_requires_owned_visible_showing_unique_fixed_name_and_role(self):
+        for change in ("hidden", "offscreen", "foreign", "name", "role", "duplicate"):
+            combo = self.combo()
+            studio, frame, desktop = self.fixture([combo])
+            if change == "hidden": frame.states.discard("visible")
+            elif change == "offscreen": frame.states.discard("showing")
+            elif change == "foreign": frame.pid = 99
+            elif change == "name": frame.name = "PRIVATE_WRONG_FRAME"
+            elif change == "role": frame.role = 5
+            else: desktop.children.append(self.Node("OrbitPal", 10, ("visible", "showing")))
+            with self.subTest(change=change), patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), self.assertRaisesRegex(provider.Refusal, "^ambiguous_app_window$"):
+                studio.integration_control()()
+            combo.scroll.assert_not_called()
+            combo.press.assert_not_called()
+
+    def test_nonexact_hidden_foreign_wrong_role_or_outside_frame_candidates_are_never_revealed(self):
+        for change in ("name", "whitespace", "role", "hidden", "foreign", "outside"):
+            combo = self.combo(name="Integration " if change == "whitespace" else "PRIVATE_WRONG_NAME" if change == "name" else "Integration", role=5 if change == "role" else 6, pid=99 if change == "foreign" else 42)
+            if change == "hidden": combo.states.discard("visible")
+            studio, _, desktop = self.fixture([] if change == "outside" else [combo])
+            if change == "outside": desktop.children.append(self.Node("avatar-nova", 10, ("visible", "showing"), children=[combo]))
+            with self.subTest(change=change), patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"):
+                self.assertIsNone(studio.integration_control()())
+            combo.scroll.assert_not_called()
+            combo.press.assert_not_called()
+        first, second = self.combo(), self.combo(showing=True)
+        studio, _, _ = self.fixture([first, second])
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), self.assertRaisesRegex(provider.Refusal, "^ambiguous_app_control$"):
+            studio.integration_control()()
+        first.scroll.assert_not_called()
+        second.press.assert_not_called()
+
+    def test_refused_or_unsupported_native_scroll_has_no_action_or_missing_control_diagnostic(self):
+        for result, code in ((False, "app_action_refused"), (RuntimeError("PRIVATE"), "app_action_unavailable"), (AttributeError("PRIVATE"), "app_action_unavailable"), (NotImplementedError("PRIVATE"), "app_action_unavailable")):
+            combo = self.combo()
+            studio, _, _ = self.fixture([combo])
+            if isinstance(result, BaseException): combo.scroll.side_effect = result
+            else: combo.scroll.return_value = result
+            with self.subTest(result_type=type(result).__name__), patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(studio, "integration_diagnostic") as diagnostic, self.assertRaisesRegex(provider.Refusal, "^" + code + "$"):
+                studio.compatible()
+            combo.press.assert_not_called()
+            diagnostic.assert_not_called()
+
+    def test_terminal_counts_are_numeric_scoped_and_whitespace_normalization_is_diagnostic_only(self):
+        class HostileName:
+            def __str__(self): raise AssertionError("private string must not be used")
+            def __repr__(self): raise AssertionError("private repr must not be used")
+        controls = [self.combo(showing=True), self.combo(), self.combo(showing=True, role=5),
+                    self.combo(showing=True, name="PRIVATE_NAME"), self.combo(showing=True, name=" Integration "),
+                    self.combo(showing=True, name="\tIntegration\n", role=5), self.combo(showing=True, name="X" * 129),
+                    self.combo(showing=True, name=HostileName(), role=5)]
+        studio, _, desktop = self.fixture(controls)
+        outside = self.combo(showing=True)
+        desktop.children.append(self.Node("avatar-nova", 10, ("visible", "showing"), children=[outside]))
+        errors = io.StringIO()
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.sys, "stderr", errors):
+            studio.integration_diagnostic()
+        counts = self.diagnostic(errors.getvalue())
+        self.assertEqual(counts, {"version": 1, "examinedNodeCount": 9, "exactNameCount": 3,
+                                  "expectedComboRoleCount": 5, "exactComboCount": 2,
+                                  "exactComboShowingCount": 1, "exactComboOffscreenCount": 1,
+                                  "normalizedNameOnlyCount": 2, "normalizedComboOnlyCount": 1,
+                                  "unavailableMetadataCount": 1, "oversizedNameCount": 1})
+        self.assertNotIn("PRIVATE", errors.getvalue())
+        self.assertNotIn("X" * 20, errors.getvalue())
+        for node in controls + [outside]:
+            node.scroll.assert_not_called()
+            node.press.assert_not_called()
+        normalized = self.combo(showing=True, name=" Integration ")
+        studio, _, _ = self.fixture([normalized])
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"):
+            self.assertIsNone(studio.integration_control()())
+        normalized.scroll.assert_not_called()
+        normalized.press.assert_not_called()
+
+    def test_terminal_count_scan_keeps_existing_traversal_limit(self):
+        controls = [self.combo(showing=True) for _ in range(1500)]
+        studio, _, _ = self.fixture(controls)
+        errors = io.StringIO()
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.sys, "stderr", errors):
+            studio.integration_diagnostic()
+        counts = self.diagnostic(errors.getvalue())
+        self.assertEqual(counts["examinedNodeCount"], 1200)
+        self.assertEqual(counts["exactComboShowingCount"], 1199)
+        for node in controls:
+            node.scroll.assert_not_called()
+            node.press.assert_not_called()
+
+    def test_diagnostic_cannot_replace_original_missing_control_or_emit_stale_owned_frame_counts(self):
+        combo = self.combo()
+        studio, _, _ = self.fixture([combo])
+        original = provider.Refusal("app_control_missing")
+        errors = io.StringIO()
+        with patch.object(studio, "wait", side_effect=original), patch.object(studio, "studio_frame", side_effect=provider.Refusal("app_process_exited")), patch.object(studio, "nodes") as nodes, patch.object(app, "phase"), patch.object(app.sys, "stderr", errors), self.assertRaises(provider.Refusal) as caught:
+            studio.compatible()
+        self.assertIs(caught.exception, original)
+        self.assertEqual(errors.getvalue(), "")
+        nodes.assert_not_called()
+        combo.scroll.assert_not_called()
+        combo.press.assert_not_called()
+
+    def test_nonmissing_failure_does_not_trigger_selector_diagnostic_or_input(self):
+        combo = self.combo()
+        studio, _, _ = self.fixture([combo])
+        for code in ("app_process_exited", "unexpected_app_executable", "ambiguous_app_control", "app_action_refused"):
+            error = provider.Refusal(code)
+            with self.subTest(code=code), patch.object(studio, "wait", side_effect=error), patch.object(studio, "integration_diagnostic") as diagnostic, patch.object(app, "phase"), self.assertRaises(provider.Refusal) as caught:
+                studio.compatible()
+            self.assertIs(caught.exception, error)
+            diagnostic.assert_not_called()
+        combo.scroll.assert_not_called()
+        combo.press.assert_not_called()
+
+    def test_disabled_combo_or_unoffered_generic_alias_keeps_original_action_refusal(self):
+        for disabled, code in ((True, "app_control_disabled"), (False, "app_action_unavailable")):
+            combo = self.combo(showing=True)
+            if disabled: combo.states.discard("enabled")
+            interface = SimpleNamespace(nActions=1, getName=Mock(return_value="activate"), doAction=Mock(return_value=True))
+            combo.queryAction = Mock(return_value=interface)
+            studio, _, _ = self.fixture([combo])
+            errors = io.StringIO()
+            with self.subTest(disabled=disabled), patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.sys, "stderr", errors), patch.object(studio, "integration_diagnostic") as diagnostic, self.assertRaisesRegex(provider.Refusal, "^" + code + "$"):
+                studio.compatible()
+            interface.doAction.assert_not_called()
+            combo.scroll.assert_not_called()
+            diagnostic.assert_not_called()
+            self.assertNotIn("app-model-selector:", errors.getvalue())
 
 if __name__ == "__main__":
     unittest.main()
