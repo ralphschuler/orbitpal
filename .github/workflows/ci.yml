@@ -103,6 +103,7 @@ jobs:
         run: |
           python3 -B scripts/native-world-macos/test-runner.py
           node --check scripts/native-world-macos/ui.js
+          node scripts/native-world-macos/test-ui.mjs
       - name: Linux GLib iterator regression (optimized)
         if: runner.os == 'Linux'
         run: |

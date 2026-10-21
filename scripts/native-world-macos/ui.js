@@ -11,6 +11,17 @@ function inside(child, parent) {
   return child[0] > 0 && child[1] > 0 && child[2] >= parent[2] && child[3] >= parent[3]
     && child[2] + child[0] <= parent[2] + parent[0] && child[3] + child[1] <= parent[3] + parent[1];
 }
+function matchesButton(node, label, actor, walk) {
+  if (node.role() !== 'AXButton') return false;
+  if (actor) {
+    // An empty label is never an alternate actor selector. Require the exact
+    // seeded actor's actual native static text inside this button.
+    return ['Fixture Nova', 'Fixture Blue'].includes(actor) && walk(node).some(child =>
+      child.role() === 'AXStaticText' && (child.name() === actor || child.value() === actor));
+  }
+  return ['Autopilot', 'Set up desktop', 'Save and start Life', 'Stop Life'].includes(label)
+    && node.name() === label;
+}
 function run(argv) {
   let out = closed(1);
   try {
@@ -56,8 +67,7 @@ function run(argv) {
     }
     function button(label, actor) {
       const current = main();
-      const matches = walk(current).filter(node => node.role() === 'AXButton' && (text(node) === label
-        || actor && walk(node).some(child => child.role() === 'AXStaticText' && (text(child) === actor || child.value() === actor))));
+      const matches = walk(current).filter(node => matchesButton(node, label, actor, walk));
       const node = one(matches);
       out.matched = 1;
       if (node.enabled() !== true || !inside(frame(node), frame(current))) throw 6;
@@ -108,4 +118,4 @@ function run(argv) {
   }
   return JSON.stringify(out);
 }
-if (typeof module !== 'undefined') module.exports = {closed, one, inside, OPERATIONS};
+if (typeof module !== 'undefined') module.exports = {closed, one, inside, matchesButton, OPERATIONS};

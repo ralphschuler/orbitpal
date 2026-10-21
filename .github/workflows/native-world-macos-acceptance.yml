@@ -53,6 +53,7 @@ jobs:
           git diff --exit-code
           python3 -B scripts/native-world-macos/test-runner.py
           node --check scripts/native-world-macos/ui.js
+          node scripts/native-world-macos/test-ui.mjs
           python3 -B scripts/native-world-macos/runner.py --evidence "$NATIVE_WORLD_EVIDENCE"
       - name: Require the actual nonshipping fixture source
         shell: bash
