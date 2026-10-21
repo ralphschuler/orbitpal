@@ -271,3 +271,21 @@ fn memory_retention_is_bounded_without_duplicate_progress_after_eviction() {
     assert!(!s.social_apply_event(first.as_ref().unwrap()).unwrap());
     assert_eq!(s.social_snapshot("nova").unwrap().summary.completed, 70);
 }
+
+#[test]
+fn sqlite_counter_boundary_refuses_negative_oversized_and_exhausted_values() {
+    let f = Fixture::new();
+    let s = f.store();
+    let blue = bot_id(s.create_bot("Blue", false).unwrap());
+    let actors = ["nova".into(), blue];
+    s.social_ready().unwrap();
+    for value in [-1_i64, i64::MAX] {
+        s.db.lock().unwrap().execute("UPDATE social_meta SET sequence=?1,epoch=?1 WHERE id=1", [value]).unwrap();
+        assert!(s.social_next_scene_sequence(&actors).is_err());
+        assert!(s.social_epoch().is_err());
+    }
+    s.db.lock().unwrap().execute("UPDATE social_meta SET sequence=?1,epoch=?1 WHERE id=1", [sql_counter(MAX_COUNTER).unwrap()]).unwrap();
+    assert_eq!(s.social_epoch().unwrap(), MAX_COUNTER);
+    assert!(s.social_next_scene_sequence(&actors).is_err());
+    assert!(sql_counter(MAX_COUNTER+1).is_err());
+}

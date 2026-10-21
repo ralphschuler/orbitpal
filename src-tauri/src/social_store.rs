@@ -62,6 +62,15 @@ struct Bot {
 fn err(_: impl std::fmt::Debug) -> String {
     FAIL.into()
 }
+fn read_counter(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(index)?;
+    u64::try_from(value).ok().filter(|value| *value <= MAX_COUNTER)
+        .ok_or(rusqlite::Error::IntegralValueOutOfRange(index, value))
+}
+fn sql_counter(value: u64) -> Result<i64, String> {
+    if value > MAX_COUNTER { return Err(FAIL.into()); }
+    i64::try_from(value).map_err(err)
+}
 pub(crate) fn initialize(db: &mut Connection) -> Result<(), String> {
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -102,7 +111,7 @@ fn encode<T: Serialize>(value: &T) -> Result<String, String> {
     Ok(s)
 }
 fn bot(db: &Connection, id: &str) -> Result<Bot, String> {
-    let row=db.query_row("SELECT revision,sequence,mask,context_sequence,context_mask,CASE WHEN length(CAST(action_world AS BLOB))<=96 THEN action_world END,action_ordinal,CASE WHEN length(CAST(character AS BLOB))<=32768 THEN character END,CASE WHEN length(CAST(summary AS BLOB))<=1024 THEN summary END,CASE WHEN length(CAST(context_goal AS BLOB))<=128 THEN context_goal END FROM social_bots WHERE owner=?1",[id],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,u64>(1)?,r.get::<_,u8>(2)?,r.get::<_,u64>(3)?,r.get::<_,u8>(4)?,r.get::<_,String>(5)?,r.get::<_,u64>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?))).optional().map_err(err)?;
+    let row=db.query_row("SELECT revision,sequence,mask,context_sequence,context_mask,CASE WHEN length(CAST(action_world AS BLOB))<=96 THEN action_world END,action_ordinal,CASE WHEN length(CAST(character AS BLOB))<=32768 THEN character END,CASE WHEN length(CAST(summary AS BLOB))<=1024 THEN summary END,CASE WHEN length(CAST(context_goal AS BLOB))<=128 THEN context_goal END FROM social_bots WHERE owner=?1",[id],|r|Ok((read_counter(r,0)?,read_counter(r,1)?,r.get::<_,u8>(2)?,read_counter(r,3)?,r.get::<_,u8>(4)?,r.get::<_,String>(5)?,read_counter(r,6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?))).optional().map_err(err)?;
     if let Some((
         revision,
         sequence,
@@ -159,14 +168,14 @@ fn save_bot(tx: &Transaction, id: &str, bot: &Bot) -> Result<(), String> {
     if bot.revision > MAX_COUNTER {
         return Err("social revision exhausted".into());
     }
-    tx.execute("INSERT INTO social_bots VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(owner) DO UPDATE SET revision=excluded.revision,sequence=excluded.sequence,mask=excluded.mask,context_sequence=excluded.context_sequence,context_mask=excluded.context_mask,action_world=excluded.action_world,action_ordinal=excluded.action_ordinal,character=excluded.character,summary=excluded.summary,context_goal=excluded.context_goal",params![id,bot.revision,bot.sequence,bot.mask,bot.context_sequence,bot.context_mask,bot.action_world,bot.action_ordinal,encode(&bot.character)?,encode(&bot.summary)?,bot.context_goal]).map_err(err)?;
+    tx.execute("INSERT INTO social_bots VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(owner) DO UPDATE SET revision=excluded.revision,sequence=excluded.sequence,mask=excluded.mask,context_sequence=excluded.context_sequence,context_mask=excluded.context_mask,action_world=excluded.action_world,action_ordinal=excluded.action_ordinal,character=excluded.character,summary=excluded.summary,context_goal=excluded.context_goal",params![id,sql_counter(bot.revision)?,sql_counter(bot.sequence)?,bot.mask,sql_counter(bot.context_sequence)?,bot.context_mask,bot.action_world,sql_counter(bot.action_ordinal)?,encode(&bot.character)?,encode(&bot.summary)?,bot.context_goal]).map_err(err)?;
     Ok(())
 }
 fn bump(tx: &Transaction) -> Result<(), String> {
     if tx
         .execute(
             "UPDATE social_meta SET epoch=epoch+1 WHERE id=1 AND epoch<?1",
-            [MAX_COUNTER],
+            [sql_counter(MAX_COUNTER)?],
         )
         .map_err(err)?
         != 1
@@ -186,7 +195,7 @@ fn bit(outcome: Outcome) -> u8 {
 fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
     let allocated: u64 = tx
         .query_row("SELECT sequence FROM social_meta WHERE id=1", [], |r| {
-            r.get(0)
+            read_counter(r, 0)
         })
         .map_err(err)?;
     if event.sequence() == 0 || event.sequence() > allocated {
@@ -253,7 +262,7 @@ fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
         if previous.0 > 10000 || !(-10000..=10000).contains(&previous.1) {
             return Err(FAIL.into());
         }
-        let count: u64 = tx
+        let count: i64 = tx
             .query_row(
                 "SELECT count(*) FROM social_relationships WHERE owner=?1",
                 [id],
@@ -312,7 +321,7 @@ fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
             }
             _ => (),
         }
-        tx.execute("INSERT INTO social_memories(owner,event_id,sequence,kind,outcome,participants,at_ms,shared) VALUES(?1,?2,?3,?4,?5,?6,?7,0)",params![id,event.id(),event.sequence(),encode(&event.kind())?,encode(&event.outcome())?,encode(event.participants())?,event.at_ms()]).map_err(err)?;
+        tx.execute("INSERT INTO social_memories(owner,event_id,sequence,kind,outcome,participants,at_ms,shared) VALUES(?1,?2,?3,?4,?5,?6,?7,0)",params![id,event.id(),sql_counter(event.sequence())?,encode(&event.kind())?,encode(&event.outcome())?,encode(event.participants())?,sql_counter(event.at_ms())?]).map_err(err)?;
         tx.execute("DELETE FROM social_memories WHERE owner=?1 AND event_id NOT IN(SELECT event_id FROM social_memories WHERE owner=?1 ORDER BY sequence DESC,at_ms DESC,event_id DESC LIMIT 128)",[id]).map_err(err)?;
         save_bot(tx, id, &b)?;
         changed = true;
@@ -333,11 +342,11 @@ fn memories(db: &Connection, id: &str, shared: bool) -> Result<Vec<Memory>, Stri
         .query_map([id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                r.get::<_, u64>(1)?,
+                read_counter(r,1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
-                r.get::<_, u64>(5)?,
+                read_counter(r,5)?,
                 r.get::<_, i64>(6)?,
                 r.get::<_, String>(7)?,
             ))
@@ -376,7 +385,8 @@ fn memories(db: &Connection, id: &str, shared: bool) -> Result<Vec<Memory>, Stri
 }
 impl Store {
     fn social_ready(&self) -> Result<(), String> {
-        initialize(&mut self.db.lock().map_err(err)?)
+        let mut db = self.db.lock().map_err(err)?;
+        initialize(&mut db)
     }
     pub(crate) fn social_next_scene_sequence(&self, actors: &[String; 2]) -> Result<u64, String> {
         self.social_ready()?;
@@ -392,14 +402,14 @@ impl Store {
         }
         let seq: u64 = tx
             .query_row("SELECT sequence FROM social_meta WHERE id=1", [], |r| {
-                r.get(0)
+                read_counter(r, 0)
             })
             .map_err(err)?;
         let next = seq
             .checked_add(1)
             .filter(|v| *v <= MAX_COUNTER)
             .ok_or("social sequence exhausted")?;
-        tx.execute("UPDATE social_meta SET sequence=?1 WHERE id=1", [next])
+        tx.execute("UPDATE social_meta SET sequence=?1 WHERE id=1", [sql_counter(next)?])
             .map_err(err)?;
         tx.commit().map_err(err)?;
         Ok(next)
@@ -430,7 +440,7 @@ impl Store {
         for id in &scene.participants {
             owner(&tx, None, id)?;
         }
-        let count: u64 = tx
+        let count: i64 = tx
             .query_row(
                 "SELECT count(*) FROM social_scenes WHERE terminal=0",
                 [],
@@ -448,7 +458,7 @@ impl Store {
         {
             return Err("social scene capacity".into());
         }
-        tx.execute("INSERT INTO social_scenes VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET terminal=excluded.terminal,view=excluded.view",params![scene.id,scene.sequence,scene.participants[0],scene.participants[1],scene.phase.terminal(),encode(scene)?]).map_err(err)?;
+        tx.execute("INSERT INTO social_scenes VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET terminal=excluded.terminal,view=excluded.view",params![scene.id,sql_counter(scene.sequence)?,scene.participants[0],scene.participants[1],scene.phase.terminal(),encode(scene)?]).map_err(err)?;
         tx.execute("DELETE FROM social_scenes WHERE terminal=1 AND id NOT IN(SELECT id FROM social_scenes ORDER BY sequence DESC LIMIT 64)",[]).map_err(err)?;
         tx.commit().map_err(err)
     }
@@ -659,7 +669,7 @@ impl Store {
         self.db
             .lock()
             .map_err(err)?
-            .query_row("SELECT epoch FROM social_meta WHERE id=1", [], |r| r.get(0))
+            .query_row("SELECT epoch FROM social_meta WHERE id=1", [], |r| read_counter(r, 0))
             .map_err(err)
     }
     /// One-use event retrieval claim, not a provider admission or permission.
@@ -682,7 +692,7 @@ impl Store {
                     || m.sequence == b.context_sequence && b.context_mask & bit(m.outcome) == 0)
         });
         let epoch = tx
-            .query_row("SELECT epoch FROM social_meta WHERE id=1", [], |r| r.get(0))
+            .query_row("SELECT epoch FROM social_meta WHERE id=1", [], |r| read_counter(r, 0))
             .map_err(err)?;
         let context = if let Some(memory) = found {
             if memory.sequence > b.context_sequence {
