@@ -177,7 +177,7 @@
         <button type="button" class={`object-handle ${anchor.kind}`} class:selected={same(target)} style:left={`${point.x / 10000}%`} style:top={`${point.y / 10000}%`} disabled={disabled}
           aria-label={$t('Objekt {number}: {kind}', { number: index + 1, kind: $t(anchorKinds[anchor.kind]) })} onclick={() => select(target)} onkeydown={event => key(event, target)}
           onpointerdown={event => begin(event, target)} onpointermove={drag} onpointerup={finish} onpointercancel={cancel} onlostpointercapture={lost}>
-          {#if anchor.kind === 'rest'}<Moon size={18}/>{:else if anchor.kind === 'meeting'}<Users size={18}/>{:else if kind === 'snack'}<Cookie size={18}/>{:else}<Gamepad2 size={18}/>{/if}<span>{index + 1}</span>
+          {#if anchor.kind === 'rest'}<Moon size={18}/>{:else if anchor.kind === 'meeting'}<Users size={18}/>{:else if anchor.kind === 'snack'}<Cookie size={18}/>{:else}<Gamepad2 size={18}/>{/if}<span>{index + 1}</span>
         </button>
         {#each anchor.slots as slot, seat (slot.id)}
           {@const position = readEditorPoint(slot.position)}

@@ -189,7 +189,11 @@
     "Ablehnen": "Decline",
     "Entfernen": "Remove",
     "Wartend": "Pending",
-    "Angenommen": "Accepted"
+    "Angenommen": "Accepted",
+    "Menü an der nativen Figur öffnen": "Open menu at native character",
+    "Ein echtes Systemmenü mit Tastatursteuerung. Das Figurenfenster bleibt durchklickbar; Escape schließt das Menü.": "A real system menu with keyboard navigation. The character window stays click-through; Escape closes the menu.",
+    "Das native Figurenmenü ist derzeit nicht verfügbar.": "The native character menu is currently unavailable.",
+    "macOS unterstützt eine rein geometrische Quelle. Sie wird nur bei eigener Freigabe während einer geprüften Life-Sitzung gelesen; bei Verlust gelten feste Plätze.": "macOS supports a geometry-only source. It is read only with separate permission during a verified Life session; fixed spots apply if it is lost."
   },
   "fr": {
     "Alltag deiner Figuren": "Le quotidien de vos personnages",
@@ -381,7 +385,11 @@
     "Ablehnen": "Refuser",
     "Entfernen": "Retirer",
     "Wartend": "En attente",
-    "Angenommen": "Accepté"
+    "Angenommen": "Accepté",
+    "Menü an der nativen Figur öffnen": "Ouvrir le menu du personnage natif",
+    "Ein echtes Systemmenü mit Tastatursteuerung. Das Figurenfenster bleibt durchklickbar; Escape schließt das Menü.": "Un vrai menu système utilisable au clavier. La fenêtre du personnage reste traversable ; Échap ferme le menu.",
+    "Das native Figurenmenü ist derzeit nicht verfügbar.": "Le menu natif du personnage est actuellement indisponible.",
+    "macOS unterstützt eine rein geometrische Quelle. Sie wird nur bei eigener Freigabe während einer geprüften Life-Sitzung gelesen; bei Verlust gelten feste Plätze.": "macOS propose une source purement géométrique. Elle est lue uniquement avec une autorisation distincte pendant une session Life vérifiée ; sinon les places fixes sont utilisées."
   },
   "es": {
     "Alltag deiner Figuren": "La vida diaria de tus personajes",
@@ -573,6 +581,10 @@
     "Ablehnen": "Rechazar",
     "Entfernen": "Quitar",
     "Wartend": "Pendiente",
-    "Angenommen": "Aceptado"
+    "Angenommen": "Aceptado",
+    "Menü an der nativen Figur öffnen": "Abrir menú del personaje nativo",
+    "Ein echtes Systemmenü mit Tastatursteuerung. Das Figurenfenster bleibt durchklickbar; Escape schließt das Menü.": "Un menú real del sistema con teclado. La ventana del personaje sigue dejando pasar clics; Escape cierra el menú.",
+    "Das native Figurenmenü ist derzeit nicht verfügbar.": "El menú nativo del personaje no está disponible ahora.",
+    "macOS unterstützt eine rein geometrische Quelle. Sie wird nur bei eigener Freigabe während einer geprüften Life-Sitzung gelesen; bei Verlust gelten feste Plätze.": "macOS ofrece una fuente solo de geometría. Se lee únicamente con permiso separado durante una sesión de Life verificada; si se pierde, se usan lugares fijos."
   }
 }
