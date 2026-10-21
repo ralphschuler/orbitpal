@@ -448,3 +448,63 @@ fn paired_experience_fact_comes_only_from_retained_committed_social_event() {
     let third = bot_id(s.create_bot("Third", false).unwrap());
     assert!(s.record_experience_social_event(&third, event).is_err());
 }
+#[test]
+fn shared_dialogue_day_estimate_is_aggregated_across_speakers_after_restart() {
+    use crate::social_dialogue::{Policy, Quote};
+    let f = Fixture::new();
+    let s = f.store();
+    let blue = bot_id(s.create_bot("Blue", false).unwrap());
+    let mut policy = Policy::default();
+    policy.model_enabled = true;
+    policy.estimated_micros_per_million = Some(1000);
+    policy.token_limit = 100;
+    policy.cost_limit_micros = 10;
+    policy.daily_token_limit = 100;
+    policy.daily_cost_limit_micros = 10;
+    assert!(s
+        .social_reserve_dialogue_estimate(
+            "nova",
+            86400000,
+            Quote {
+                tokens: 60,
+                cost_micros: Some(6)
+            },
+            &policy
+        )
+        .unwrap());
+    drop(s);
+    let s = f.store();
+    assert!(!s
+        .social_reserve_dialogue_estimate(
+            &blue,
+            86400000,
+            Quote {
+                tokens: 60,
+                cost_micros: Some(6)
+            },
+            &policy
+        )
+        .unwrap());
+    assert!(s
+        .social_reserve_dialogue_estimate(
+            &blue,
+            86400000,
+            Quote {
+                tokens: 40,
+                cost_micros: Some(4)
+            },
+            &policy
+        )
+        .unwrap());
+    assert!(!s
+        .social_reserve_dialogue_estimate(
+            "nova",
+            86400000,
+            Quote {
+                tokens: 1,
+                cost_micros: Some(1)
+            },
+            &policy
+        )
+        .unwrap());
+}

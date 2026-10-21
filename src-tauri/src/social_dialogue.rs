@@ -133,6 +133,10 @@ impl std::fmt::Debug for Turn {
 impl Turn {
     pub(crate) fn current(&self, now: u64, generation: u64) -> bool {
         !self.cancel.load(Ordering::SeqCst)
+            && self
+                .bound
+                .lock()
+                .is_ok_and(|bound| bound.iter().all(|token| !token.load(Ordering::SeqCst)))
             && now <= self.deadline_ms
             && generation == self.preset_generation
     }

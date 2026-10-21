@@ -163,6 +163,36 @@ struct Memory {
     next_initiative: u64,
 }
 impl Memory {
+    fn take_work(&mut self) -> Vec<Directive> {
+        let mut work = self.coordinator.drain();
+        for directive in &work {
+            if let Directive::Terminal { scene, event, .. } = directive {
+                if event.outcome() != Outcome::Completed {
+                    if let Some(group) = self.groups.get(&scene.id) {
+                        group.stop();
+                    }
+                }
+                self.terminal.insert(scene.id.clone(), directive.clone());
+            }
+        }
+        let already = work
+            .iter()
+            .filter_map(|d| {
+                if let Directive::Terminal { scene, .. } = d {
+                    Some(scene.id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        work.extend(
+            self.terminal
+                .iter()
+                .filter(|(id, _)| !already.contains(id))
+                .map(|(_, directive)| directive.clone()),
+        );
+        work
+    }
     fn cancel_scene(&mut self, id: &str, reason: Reason, now: u64) -> Result<(), String> {
         if let Some(group) = self.groups.get(id) {
             group.stop();
@@ -579,14 +609,25 @@ fn reserve(
             LEASE_MS,
             runtime.now(),
         ) {
-            Ok(lease) => reserved.push(Reservation {
-                bot: bot.clone(),
-                stamp,
-                lease,
-            }),
+            Ok(lease) => {
+                reserved.push(Reservation {
+                    bot: bot.clone(),
+                    stamp,
+                    lease,
+                });
+                runtime
+                    .social
+                    .memory
+                    .lock()
+                    .map_err(|_| ERROR)?
+                    .leases
+                    .insert(scene.id.clone(), reserved.clone());
+            }
             Err(error) => {
                 for old in &reserved {
-                    state.world.release(&old.stamp, &old.lease, runtime.now())?;
+                    state
+                        .world
+                        .release_if_present(&old.stamp, &old.lease, runtime.now())?;
                 }
                 return Err(error);
             }
@@ -736,37 +777,7 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
     for _ in 0..8 {
-        let directives = {
-            let mut m = runtime.social.memory.lock().map_err(|_| ERROR)?;
-            let mut work = m.coordinator.drain();
-            for directive in &work {
-                if let Directive::Terminal { scene, event, .. } = directive {
-                    if event.outcome() != Outcome::Completed {
-                        if let Some(group) = m.groups.get(&scene.id) {
-                            group.stop();
-                        }
-                    }
-                    m.terminal.insert(scene.id.clone(), directive.clone());
-                }
-            }
-            let already = work
-                .iter()
-                .filter_map(|d| {
-                    if let Directive::Terminal { scene, .. } = d {
-                        Some(scene.id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-            work.extend(
-                m.terminal
-                    .iter()
-                    .filter(|(id, _)| !already.contains(id))
-                    .map(|(_, directive)| directive.clone()),
-            );
-            work
-        };
+        let directives = runtime.social.memory.lock().map_err(|_| ERROR)?.take_work();
         if directives.is_empty() {
             break;
         }
@@ -1158,9 +1169,37 @@ fn dialogue_quote(model: &serde_json::Value, policy: &Policy) -> Quote {
     }
 }
 /// Uses only an already-issued native claim. No model result grants another turn.
+pub(crate) fn has_local_opportunity(app: &tauri::AppHandle, bot: &str) -> bool {
+    let state = app.state::<AppState>();
+    let context = {
+        let Ok(m) = state.life_runtime.social.memory.lock() else {
+            return false;
+        };
+        m.conversations
+            .iter()
+            .find(|(id, _)| m.dialogues.next_speaker(id) == Some(bot))
+            .map(|(_, context)| context.clone())
+    };
+    context.is_some_and(|context| {
+        state.life_runtime.social_now() < context.deadline && context.policy_current(app)
+    })
+}
 pub(crate) async fn send_dialogue(
     app: &tauri::AppHandle,
     claim: &super::core::Claim,
+) -> Result<Option<serde_json::Value>, String> {
+    send_dialogue_mode(app, claim, false).await
+}
+pub(crate) async fn send_dialogue_local(
+    app: &tauri::AppHandle,
+    claim: &super::core::Claim,
+) -> Result<Option<serde_json::Value>, String> {
+    send_dialogue_mode(app, claim, true).await
+}
+async fn send_dialogue_mode(
+    app: &tauri::AppHandle,
+    claim: &super::core::Claim,
+    local_only: bool,
 ) -> Result<Option<serde_json::Value>, String> {
     let state = app.state::<AppState>();
     let runtime = &state.life_runtime;
@@ -1184,17 +1223,25 @@ pub(crate) async fn send_dialogue(
             .cancel_actor(&claim.bot_id);
         return Err(ERROR.into());
     }
-    runtime.check_cloud(app, claim).await?;
+    if local_only {
+        if !runtime.current(claim) {
+            return Err(ERROR.into());
+        }
+    } else {
+        runtime.check_cloud(app, claim).await?;
+    }
     let store = state.store.scoped(&claim.bot_id)?;
     let mut profile = store.profile()?;
     let ticket = state
         .autopilot
         .admit(&claim.bot_id, &crate::autopilot::config(&profile)?)?;
     runtime.bind(claim, ticket.cancel.clone())?;
+    *state.cancel.lock().map_err(|_| ERROR)? = Some(ticket.cancel.clone());
     let mut model = profile["model"].clone();
     model["maxTokens"] = serde_json::json!(128);
     let mut quote = dialogue_quote(&model, &context.policy);
-    if context.policy.model_enabled
+    if !local_only
+        && context.policy.model_enabled
         && quote.tokens > 0
         && quote.cost_micros.is_some()
         && !store.social_reserve_dialogue_estimate(
@@ -1213,7 +1260,7 @@ pub(crate) async fn send_dialogue(
             Admission {
                 text: true,
                 voice: false,
-                model: crate::providers::dialog_model_ready(&model),
+                model: !local_only && crate::providers::dialog_model_ready(&model),
                 preset_generation: context.generation,
             },
             quote,
@@ -1341,7 +1388,13 @@ pub(crate) async fn send_dialogue(
     {
         return Err(ERROR.into());
     }
-    runtime.check_cloud(app, claim).await?;
+    if local_only {
+        if !runtime.current(claim) {
+            return Err(ERROR.into());
+        }
+    } else {
+        runtime.check_cloud(app, claim).await?;
+    }
     // Text-only fallback never creates an implicit paid TTS call. Output uses
     // the existing actual acknowledgement and native session route, unchanged.
     if !ticket.config.speak || !turn.model {
@@ -1413,5 +1466,76 @@ pub(crate) async fn send_dialogue(
                 .remove(&speech_id);
             Err(error)
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn ancestor_cancels_both_jobs_and_late_bind_without_sharing_normal_completion() {
+        let group = Arc::new(SceneCancellation::default());
+        let first = SceneActionGuard {
+            group: group.clone(),
+            bot: "nova".into(),
+        };
+        let second = SceneActionGuard {
+            group: group.clone(),
+            bot: "blue".into(),
+        };
+        let a = Arc::new(AtomicBool::new(false));
+        let b = Arc::new(AtomicBool::new(false));
+        first.bind(&a).unwrap();
+        second.bind(&b).unwrap();
+        assert_eq!(first.actor(), "nova");
+        a.store(true, Ordering::SeqCst);
+        assert!(first.current());
+        assert!(!b.load(Ordering::SeqCst));
+        let next = Arc::new(AtomicBool::new(false));
+        first.bind(&next).unwrap();
+        group.stop();
+        assert!(b.load(Ordering::SeqCst));
+        assert!(next.load(Ordering::SeqCst));
+        assert!(!second.current());
+        let late = Arc::new(AtomicBool::new(false));
+        assert!(second.bind(&late).is_err());
+        assert!(late.load(Ordering::SeqCst));
+    }
+    #[test]
+    fn unprocessed_terminal_survives_an_earlier_phase_persistence_error() {
+        let ids = ["nova", "blue"];
+        let (_, scene, events, _) =
+            crate::social::tests::completed(1, ids, crate::social::tests::states(ids));
+        let mut memory = Memory::default();
+        let terminal = Directive::Terminal {
+            scene: scene.clone(),
+            event: events.last().unwrap().clone(),
+            slots: [SlotId::new("left").unwrap(), SlotId::new("right").unwrap()],
+        };
+        memory.terminal.insert(scene.id.clone(), terminal);
+        let first = memory.take_work();
+        assert_eq!(first.len(), 1);
+        // An earlier Trace/Record/save failed and caller drops this batch. No
+        // terminal acknowledgement has happened, so the capability cleanup stays.
+        drop(first);
+        assert!(memory.terminal.contains_key(&scene.id));
+        assert!(
+            matches!(memory.take_work().as_slice(),[Directive::Terminal{scene:pending,..}]if pending.id==scene.id)
+        );
+    }
+    #[test]
+    fn unknown_model_or_unpriced_rate_never_claims_a_currency_bound() {
+        let mut policy = Policy::default();
+        policy.estimated_micros_per_million = Some(1000);
+        let unknown = dialogue_quote(
+            &serde_json::json!({"provider":"compatible","baseUrl":"https://example.invalid/v1","model":"unknown"}),
+            &policy,
+        );
+        assert_eq!(unknown.tokens, 0);
+        let model = serde_json::json!({"provider":"openai","baseUrl":"https://api.openai.com/v1","model":"gpt-4o-mini-2024-07-18","maxTokens":128});
+        let known = dialogue_quote(&model, &policy);
+        assert_eq!(known.tokens, 128128);
+        assert_eq!(known.cost_micros, Some(129));
+        policy.estimated_micros_per_million = None;
+        assert!(dialogue_quote(&model, &policy).cost_micros.is_none());
     }
 }

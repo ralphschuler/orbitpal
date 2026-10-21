@@ -879,6 +879,16 @@ impl Store {
             .optional()
             .map_err(err)?
             .unwrap_or((0, 0));
+        let (shared_tokens,shared_cost)=tx.query_row("SELECT COALESCE(sum(tokens),0),COALESCE(sum(cost),0) FROM social_dialogue_days WHERE day=?1",[sql_counter(day)?],|r|Ok((read_counter(r,0)?,read_counter(r,1)?))).map_err(err)?;
+        if shared_tokens
+            .checked_add(quote.tokens)
+            .is_none_or(|n| n > policy.daily_token_limit)
+            || shared_cost
+                .checked_add(cost)
+                .is_none_or(|n| n > policy.daily_cost_limit_micros)
+        {
+            return Ok(false);
+        }
         let Some(tokens) = tokens
             .checked_add(quote.tokens)
             .filter(|v| *v <= policy.daily_token_limit)

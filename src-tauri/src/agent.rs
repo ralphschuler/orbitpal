@@ -54,12 +54,12 @@ pub async fn send_runtime_autopilot(app:tauri::AppHandle,claim:crate::life_runti
     if state.overlay.has_any_pending_speech(){return Err("Bitte die vorbereitete oder laufende Sprachausgabe vor dem nächsten Autopilot-Beitrag beenden".into());}
     *state.cancel.lock().map_err(|e|e.to_string())?=Some(claim.cancel.clone());
     let result=async{
+    if let Some(result)=crate::life_runtime::social_host::send_dialogue(&app,&claim).await?{return Ok(result);}
     // An autonomous opportunity must not interrupt local activity merely to
     // discover that the model elects silence. Manual dialogue keeps its policy.
     if state.presentation.any_native_work(){return Ok(json!({"skipped":true,"reason":"local_activity","botId":bot_id}));}
     state.life_runtime.quiesce_native_for_dialog(&app,crate::usage_budget::Origin::Autopilot).await?;
     state.life_runtime.check_cloud(&app,&claim).await?;
-    if let Some(result)=crate::life_runtime::social_host::send_dialogue(&app,&claim).await?{return Ok(result);}
     let profile=state.store.bot_profile(&bot_id)?;
     let now=state.life_runtime.social_now();
     let context=match state.store.social_take_context(&bot_id,now)?{Some(context)=>context,None=>crate::autonomy_context::AutonomyContext::opportunity(&bot_id,&claim.turn_id,state.store.social_epoch()?)?};
