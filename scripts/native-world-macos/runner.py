@@ -15,7 +15,9 @@ import sys
 import time
 
 APP_ID = 'studio.orbitpal.native-world-fixture'
-FIELDS = frozenset(('version', 'code', 'ax', 'appleEvents', 'gui', 'probePhase', 'aeFunction', 'matched', 'acted', 'mainVisible', 'windows'))
+SYSTEM_EVENTS = Path('/System/Library/CoreServices/System Events.app')
+SYSTEM_EVENTS_EXECUTABLE = SYSTEM_EVENTS / 'Contents/MacOS/System Events'
+FIELDS = frozenset(('version', 'code', 'ax', 'appleEvents', 'gui', 'probePhase', 'aeFunction', 'aeStatusKind', 'targetRunning', 'matched', 'acted', 'mainVisible', 'windows'))
 REFS = ('refs/heads/main', 'refs/heads/feat/parallel-backlog', 'refs/heads/test/native-world-macos-acceptance')
 DIRECTORY = Path(__file__).resolve().parent
 
@@ -58,6 +60,49 @@ def write(path, value):
         stream.write(data)
 
 
+def start_system_events(deadline):
+    """One fixed background launch, only after source/job guards; no AppleEvents."""
+    environment(sys.platform, os.environ)
+    require(SYSTEM_EVENTS.resolve(strict=True) == SYSTEM_EVENTS, 5)
+    identity = lambda meta: (meta.st_dev, meta.st_ino, meta.st_mode, meta.st_uid, meta.st_size, meta.st_mtime_ns, meta.st_ctime_ns)
+    directories, files = [], []
+    try:
+        for path in (SYSTEM_EVENTS, SYSTEM_EVENTS / 'Contents', SYSTEM_EVENTS / 'Contents/MacOS'):
+            meta = path.lstat()
+            require(stat.S_ISDIR(meta.st_mode) and meta.st_uid == 0 and not meta.st_mode & 0o022, 5)
+            directories.append((path, identity(meta)))
+        for path, maximum, executable in ((SYSTEM_EVENTS / 'Contents/Info.plist', 65536, False),
+                                          (SYSTEM_EVENTS_EXECUTABLE, 128 * 1024 * 1024, True)):
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            files.append((path, fd, None))
+            meta = os.fstat(fd)
+            require(stat.S_ISREG(meta.st_mode) and meta.st_uid == 0 and not meta.st_mode & 0o022
+                    and 0 < meta.st_size <= maximum and (not executable or meta.st_mode & 0o111), 5)
+            files[-1] = (path, fd, identity(meta))
+        raw = os.read(files[0][1], 65537)
+        require(len(raw) == os.fstat(files[0][1]).st_size, 5)
+        info = plistlib.loads(raw)
+        require(info.get('CFBundleIdentifier') == 'com.apple.systemevents' and info.get('CFBundleExecutable') == 'System Events', 5)
+        def current():
+            require(all(identity(path.lstat()) == pin for path, pin in directories), 5)
+            require(all(identity(os.fstat(fd)) == pin == identity(path.lstat()) for path, fd, pin in files), 5)
+        def fixed_command(command):
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, 3)
+            result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=min(2, remaining), check=False)
+            require(result.returncode == 0 and time.monotonic() < deadline, 5)
+        current()
+        fixed_command(['/usr/bin/codesign', '--verify', '--strict', '-R',
+                       '=anchor apple and identifier = "com.apple.systemevents"', str(SYSTEM_EVENTS)])
+        current()
+        fixed_command(['/usr/bin/open', '-g', '-j', '-a', str(SYSTEM_EVENTS)])
+        current()
+    finally:
+        for _, fd, _ in files:
+            os.close(fd)
+
+
 def ui_record(raw):
     require(len(raw) <= 2048, 2)
     def pairs(items):
@@ -69,9 +114,11 @@ def ui_record(raw):
     value = json.loads(raw, object_pairs_hook=pairs)
     require(type(value) is dict and set(value) == FIELDS and all(type(v) is int for v in value.values()), 2)
     require(value['version'] == 1 and 0 <= value['code'] <= 9 and 0 <= value['windows'] <= 16, 2)
-    require(0 <= value['probePhase'] <= 6, 2)
-    require(all(value[k] in (0, 1) for k in FIELDS - {'version', 'code', 'windows', 'probePhase'}), 2)
-    require(value['code'] != 0 or (value['probePhase'] == 6 and value['aeFunction'] == 1), 2)
+    require(0 <= value['probePhase'] <= 7, 2)
+    require(0 <= value['aeStatusKind'] <= 4, 2)
+    require(all(value[k] in (0, 1) for k in FIELDS - {'version', 'code', 'windows', 'probePhase', 'aeStatusKind'}), 2)
+    require(value['code'] != 0 or (value['probePhase'] == 6 and value['aeFunction'] == 1 and value['aeStatusKind'] == 0 and value['targetRunning'] == 1), 2)
+    require(value['code'] != 3 or (value['probePhase'] == 4 and value['aeFunction'] == 1 and value['aeStatusKind'] != 0), 2)
     return value
 
 
@@ -232,8 +279,17 @@ def main():
     head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=DIRECTORY, text=True).strip()
     require(head == os.environ['REVIEWED_SHA'])
     require(subprocess.run(['git', 'diff', '--quiet'], cwd=DIRECTORY, check=False).returncode == 0)
-    probe = ui('probe', time.monotonic() + 5)
-    write(evidence / ('capability.json' if args.binary is None else 'run-capability.json'), probe)
+    deadline = time.monotonic() + 5
+    name = 'capability.json' if args.binary is None else 'run-capability.json'
+    try:
+        start_system_events(deadline)
+    except Exception:
+        # Negative source/launch observation only; no native permission query ran.
+        write(evidence / name, {key: 1 if key == 'version' else 5 if key == 'code' else 7 if key == 'probePhase'
+                               else 4 if key == 'aeStatusKind' else 0 for key in FIELDS})
+        raise
+    probe = ui('probe', deadline)
+    write(evidence / name, probe)
     require(probe['code'] == 0 and all(probe[key] == 1 for key in ('ax', 'appleEvents', 'gui')), 11)
     if args.binary is None:
         return 0

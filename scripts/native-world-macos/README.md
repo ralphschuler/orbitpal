@@ -21,9 +21,9 @@ The first five-second client probe checks existing `AXIsProcessTrusted`,
 same-UID console/login session and an available display. Missing/unknown native
 bridging, permission or GUI capability fails closed. The source uses the existing
 macOS compatibility session keys; it does not grant the application's independent
-production AwakeUnlocked monitor any authority. An absent System Events process
-may also make the nonprompting probe fail; the harness does not change its rights
-or substitute a different controller. No local developer Mac is supported.
+production AwakeUnlocked monitor any authority. The target's required background
+launch below does not change its rights or substitute a different controller.
+No local developer Mac is supported.
 
 The first [actual VM probe, run 39594013069](https://github.com/ralphschuler/orbitpal/actions/runs/39594013069)
 on `de48e0a537211c469bd2d7b04031aa0e407f95fd` reported AX trust but caught a
@@ -36,10 +36,44 @@ structure size/layout is fabricated. The next real probe remains required.
 Two closed numeric fields distinguish failures: `aeFunction` records callable
 presence after binding; `probePhase` is 0 initial/AX, 1 binding, 2 descriptor
 factory, 3 descriptor pointer, 4 actual permission call, 5 actual session/display
-checks, 6 all prerequisites completed. Code 8 remains an unknown native exception;
+checks, 6 all prerequisites completed, 7 fixed System Events source/identity
+preparation or native readback. `targetRunning` is positive only after actual
+same-client running-process identity checks. Code 8 remains an unknown native exception;
 code 3 requires an actual completed permission query with a nonzero OSStatus.
 No exception text or raw status/session data is exported. Controlled Node VM
 tests exercise the production probe with doubles, never a host permission query.
+
+The second [actual VM probe, run 39595025071](https://github.com/ralphschuler/orbitpal/actions/runs/39595025071)
+on `5bcd6dd683bdc0f81b9d5d8b8e828ef052f30c5b` reached the real permission
+call (`aeFunction:1`, `probePhase:4`) and returned code 3. Its artifact did not
+retain the OSStatus category, so it proves neither denial nor an absent target.
+`aeStatusKind` now records only 0 success, 1 consent required (`-1744`), 2 event
+not permitted (`-1743`), 3 target process absent (`-600`), or 4 other/unknown.
+Before a completed query, 4 means unobserved; code/phase still determine which
+operations actually completed. Raw OSStatus and exception/session data remain
+unexported. All nonzero results still fail without asking the user.
+
+Apple's public SDK `AppleEvents.h` documents that the address must identify an
+already running target, and returns `procNotFound` otherwise. The same header
+defines the two consent constants; `CarbonCore/MacErrors.h` defines
+`procNotFound`. After the hosted/reviewed-SHA/clean-source guards, the runner now
+checks only the fixed `/System/Library/CoreServices/System Events.app`: canonical
+root-owned non-writable directories, retained no-follow regular Info.plist and
+executable FDs, exact bundle/executable names and repeated file identity. It
+verifies the signature with the explicit Apple requirement (not the broader
+Apple-issued developer requirement), then issues one fixed `/usr/bin/open -g -j
+-a` background launch. Both commands suppress all diagnostics and share the
+original five-second probe deadline. No shell, URI, user argument, activation,
+permission request, AppleEvent automation command or permission retry is added.
+
+Before its first permission call, the same osascript client performs bounded
+native readback of the unique running System Events bundle, fixed bundle and
+executable URL and valid PID. It rejoins the same PID immediately before the
+query. Absent, replaced, ambiguous or foreign targets fail before AppleEvents;
+code 3 still stops on every nonzero result. The new source/launch failure record
+has AX/permission/target observations zero, phase 7 and unknown status kind 4;
+it cannot be mistaken for a completed native query. System Events is not killed
+or given broader rights; its lifetime ends with disposal of the hosted VM.
 
 `ui.js` runs in `/usr/bin/osascript` as a **native JXA/System Events/ObjC client**,
 not in a WKWebView. It never evaluates application JavaScript, calls native IPC,
