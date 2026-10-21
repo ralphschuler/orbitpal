@@ -20,9 +20,15 @@ use std::{
 use tauri::{Emitter, Manager};
 const ERROR: &str = "social_native_unavailable";
 const LEASE_MS: u64 = 120_000;
+#[derive(Clone)]
+struct StreamSource {
+    owner: String,
+    authority: Arc<crate::platform_impulses::DispatchLease>,
+}
 #[derive(Default)]
 struct SceneCancellation {
-    cancelled: AtomicBool,
+    cancelled: Arc<AtomicBool>,
+    source: Option<StreamSource>,
     bound: Mutex<Vec<Weak<AtomicBool>>>,
 }
 impl SceneCancellation {
@@ -48,7 +54,24 @@ impl SceneActionGuard {
     pub(crate) fn current(&self) -> bool {
         !self.group.cancelled.load(Ordering::SeqCst)
     }
+    pub(crate) fn source_current(&self, store: &crate::storage::Store) -> bool {
+        self.current()
+            && self
+                .group
+                .source
+                .as_ref()
+                .is_none_or(|source| source.authority.current(store))
+    }
+    pub(crate) fn source_session(&self) -> Option<(&str, &str)> {
+        self.group
+            .source
+            .as_ref()
+            .map(|source| (source.owner.as_str(), source.authority.session_id()))
+    }
     pub(crate) fn bind(&self, cancel: &Arc<AtomicBool>) -> Result<(), String> {
+        if let Some(source) = &self.group.source {
+            source.authority.bind_cancel(cancel)?;
+        }
         let mut bound = self.group.bound.lock().map_err(|_| ERROR)?;
         bound.retain(|weak| {
             weak.upgrade()
@@ -435,6 +458,36 @@ pub(crate) fn request(
     target: &str,
     kind: SceneKind,
 ) -> Result<String, String> {
+    request_inner(app, bot, target, kind, None)
+}
+pub(crate) fn request_from_stream(
+    app: &tauri::AppHandle,
+    owner: &str,
+    other: &str,
+    kind: SceneKind,
+    authority: Arc<crate::platform_impulses::DispatchLease>,
+) -> Result<String, String> {
+    if owner != authority.owner() {
+        return Err(ERROR.into());
+    }
+    request_inner(
+        app,
+        owner,
+        other,
+        kind,
+        Some(StreamSource {
+            owner: owner.into(),
+            authority,
+        }),
+    )
+}
+fn request_inner(
+    app: &tauri::AppHandle,
+    bot: &str,
+    target: &str,
+    kind: SceneKind,
+    source: Option<StreamSource>,
+) -> Result<String, String> {
     initialize(app)?;
     if bot == target {
         return Err(ERROR.into());
@@ -475,9 +528,43 @@ pub(crate) fn request(
             actor.participant.affection = relation.affection;
         }
     }
+    if source.as_ref().is_some_and(|source| {
+        source.owner != bot
+            || source.authority.session_id() != a.participant.session
+            || !source.authority.current(&state.store)
+    }) {
+        return Err(ERROR.into());
+    }
     let sequence = state
         .store
         .social_next_scene_sequence(&[bot.into(), target.into()])?;
+    // Serialize final invitation publication with Stop/replacement. Root uses
+    // Core -> Social -> Store, so an admitted group cannot miss synchronous Stop.
+    let core = state.life_runtime.core.lock().map_err(|_| ERROR)?;
+    for actor in [&a, &b] {
+        let id = actor.participant.actor.as_str();
+        if core.local_fence(id, state.life_runtime.now()).is_none()
+            || core.sessions.get(id).is_none_or(|s| {
+                s.session_id != actor.participant.session
+                    || s.revision != actor.participant.generation
+                    || s.state
+                        .as_ref()
+                        .is_none_or(|life| life.world_id() != &actor.participant.world)
+            })
+            || core
+                .actions
+                .as_ref()
+                .is_none_or(|actions| actions.actor_busy(id))
+        {
+            return Err(ERROR.into());
+        }
+    }
+    if source
+        .as_ref()
+        .is_some_and(|source| !source.authority.current(&state.store))
+    {
+        return Err(ERROR.into());
+    }
     let mut m = state.life_runtime.social.memory.lock().map_err(|_| ERROR)?;
     let scene = m.coordinator.invite(
         sequence,
@@ -487,8 +574,22 @@ pub(crate) fn request(
         state.life_runtime.social_now(),
     )?;
     m.scopes.insert(scene.id.clone(), [a.scope, b.scope]);
-    m.groups
-        .insert(scene.id.clone(), Arc::new(SceneCancellation::default()));
+    let group = Arc::new(SceneCancellation {
+        source,
+        ..Default::default()
+    });
+    if let Some(source) = &group.source {
+        if source.authority.bind_cancel(&group.cancelled).is_err() {
+            group.stop();
+            m.cancel_scene(
+                &scene.id,
+                Reason::Unavailable,
+                state.life_runtime.social_now(),
+            )?;
+            return Err(ERROR.into());
+        }
+    }
+    m.groups.insert(scene.id.clone(), group);
     if let Err(error) = state.store.social_save_scene(&scene) {
         m.cancel_scene(
             &scene.id,
@@ -498,6 +599,7 @@ pub(crate) fn request(
         return Err(error);
     }
     drop(m);
+    drop(core);
     publish(app, &scene.participants);
     Ok(scene.id)
 }
@@ -707,6 +809,21 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
     let now = runtime.social_now();
     {
         let mut m = runtime.social.memory.lock().map_err(|_| ERROR)?;
+        let obsolete = m
+            .groups
+            .iter()
+            .filter(|(_, group)| {
+                group.cancelled.load(Ordering::SeqCst)
+                    || group
+                        .source
+                        .as_ref()
+                        .is_some_and(|source| !source.authority.current(&state.store))
+            })
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in obsolete {
+            m.cancel_scene(&id, Reason::Unavailable, now)?;
+        }
         let views = current
             .iter()
             .flat_map(|a| m.coordinator.views(a.participant.actor.as_str()))
