@@ -151,6 +151,33 @@ still applies. Controlled tests execute the real execute/perform/ui/parser path
 with subprocess and clock doubles, including hostile timeout payloads, rejected
 schemas, exact retry sleep and a later failure after a valid reply.
 
+The sixth [actual VM run, 39601210007](https://github.com/ralphschuler/orbitpal/actions/runs/39601210007)
+on `6a20a1d67e7609e78c20f20a7c80a4071d2fd654` passed the native probes and
+actual Wry build. Initial Main inspection later timed out in the native client
+(`transportPhase:2`, `exceptionKind:1`). Its earlier validated reply observed one
+visible Main but no matched control (`code:9`, `matched:0`). That earlier reply
+is not the timed-out attempt and does not locate the blocking native getter or
+prove that a required control is permanently absent. Forced owned-child cleanup
+completed; no Life/frame or normal Stop/Quit qualification was obtained.
+
+The previous discovery scan queried children and roles separately for every node,
+including terminal text/images, and re-traversed overlapping button subtrees for
+actor labels. Discovery now batches direct-child role properties using Apple's
+[documented JXA collection-property access](https://developer.apple.com/library/archive/releasenotes/InterapplicationCommunication/RN-JavaScriptForAutomation/Articles/OSX10-10.html)
+and caches those children/roles only inside one operation. Only fixed terminal
+`AXStaticText`/`AXImage` content is not expanded; all unknown container roles stay
+in the scan. The shared 1,200-node budget includes the selected actor's fresh
+subtree and refuses oversized/inconsistent collections instead of accepting a
+truncated uniqueness scan. The selected button's exact role and label/actor text
+are freshly checked before the existing enabled/geometry guards and native click.
+The two initial window diagnostics share one read; button admission still obtains
+a fresh unique Main. No tree, role, UI text or cached authority crosses commands.
+Controlled doubles exercise this production path with 800 unrelated text leaves,
+ambiguity, unknown containers, changed target text and capacity/type failures.
+Actual native collection batching, reduced latency and complete UI acceptance
+still require a new hosted-VM run. Client caps, retry rules and overall deadlines
+are unchanged; no new capability query, timeout increase or alternate input was added.
+
 `ui.js` runs in `/usr/bin/osascript` as a **native JXA/System Events/ObjC client**,
 not in a WKWebView. It never evaluates application JavaScript, calls native IPC,
 injects ACKs or modifies Store state. Apple documents [native UI scripting](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/AutomatetheUserInterface.html)
