@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-/** Pure, currently unwired World motion adapter. Inputs are authorized LOCAL
+/** Pure World motion adapter. Inputs are authorized LOCAL
  * CSS targets: no canonical/DPI conversion, DOM, native APIs, timers or random
  * goals. A mathematical target is never a successful-render/arrival receipt. */
 import type { CssPoint as WirePoint, CssSize as WireSize, CssRect as WireRect,
@@ -171,7 +171,8 @@ export function parseWorldMotionCommand(value: unknown): WorldMotionCommand | nu
       && Number(data.minimumActiveMs) < Number(data.validForMs);
     return activity && minimum && from && target && finite(data.maximumSpeed, 0.01, WORLD_MAX_SPEED)
       && finite(data.acceleration, 0.01, 5000) && counter(data.validForMs)
-      && data.validForMs <= (data.activity === 'move_to' ? 75_000 : 615_000)
+      && data.validForMs <= (data.activity === 'move_to' ? 75_000
+        : Math.max(data.activity === 'recharge' ? 40_000 : 30_000, Number(data.minimumActiveMs) + 15_000))
       ? Object.freeze({ ...data, from, target, fence: identity }) as MotionOffer : null;
   }
   if (type === 'terminal' && (typeof data.status !== 'string' || !['completed', 'cancelled', 'failed'].includes(data.status))) return null;

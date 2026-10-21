@@ -39,9 +39,9 @@ fallbacks. Models and outputs cannot supply these effects.
 Care's saved minimum duration is enforced by both the actual visual contract
 and executor policy. The minimum is the largest of the fixed activity minimum,
 the operator setting and any active package duration. The already supported
-operator range of 1–600,000ms is retained; stationary offers and care run
-deadlines remain bounded at 600,000ms and at least that minimum plus 15 seconds,
-respectively. MoveTo retains its existing limits. Fresh frames/progress and a
+operator range of 1–600,000ms is retained. Stationary minima remain bounded at
+600,000ms; their run deadlines allow the existing fixed bound or the minimum
+plus 15 seconds, up to 615,000ms. MoveTo retains its existing limits. Fresh frames/progress and a
 real Complete transaction are still required; a long duration supplies no
 completion receipt or permission. Stop and source loss remain immediately
 cancellable. The quiet nonvisual ten-second rest path remains separate.
