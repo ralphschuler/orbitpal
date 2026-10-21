@@ -210,7 +210,11 @@
     "Geschätzte Mikro-USD je Gespräch": "Estimated micro-USD per conversation",
     "Geschätzte Mikro-USD pro Tag": "Estimated micro-USD per day",
     "Gesprächspause in Millisekunden": "Conversation cooldown in milliseconds",
-    "Dialogregeln speichern": "Save dialogue rules"
+    "Dialogregeln speichern": "Save dialogue rules",
+    "Nur Nachrichten aus deiner verbundenen Twitch- oder YouTube-Verbindung dürfen Spiel- oder Grußvorschläge senden. Chattexte ändern keine Rechte und starten Life nicht.": "Only messages from your connected Twitch or YouTube connection may propose play or greetings. Chat text cannot change permissions or start Life.",
+    "In die Warteschlange aufgenommen": "Added to queue",
+    "Befehle:": "Commands:",
+    "Vote-Befehle sind einzelne Vorschläge, keine ausgezählte Abstimmung. Aufnahme in die Warteschlange bestätigt noch keine Ausführung.": "Vote commands are individual proposals, not a counted poll. Admission to the queue does not confirm execution."
   },
   "fr": {
     "Alltag deiner Figuren": "Le quotidien de vos personnages",
@@ -423,7 +427,11 @@
     "Geschätzte Mikro-USD je Gespräch": "Micro-USD estimés par conversation",
     "Geschätzte Mikro-USD pro Tag": "Micro-USD estimés par jour",
     "Gesprächspause in Millisekunden": "Pause entre conversations en millisecondes",
-    "Dialogregeln speichern": "Enregistrer les règles de dialogue"
+    "Dialogregeln speichern": "Enregistrer les règles de dialogue",
+    "Nur Nachrichten aus deiner verbundenen Twitch- oder YouTube-Verbindung dürfen Spiel- oder Grußvorschläge senden. Chattexte ändern keine Rechte und starten Life nicht.": "Seuls les messages de votre connexion Twitch ou YouTube peuvent proposer des jeux ou salutations. Le texte du chat ne modifie pas les autorisations et ne démarre pas Life.",
+    "In die Warteschlange aufgenommen": "Ajoutés à la file",
+    "Befehle:": "Commandes :",
+    "Vote-Befehle sind einzelne Vorschläge, keine ausgezählte Abstimmung. Aufnahme in die Warteschlange bestätigt noch keine Ausführung.": "Les commandes vote sont des propositions individuelles, sans dépouillement. L’ajout à la file ne confirme pas l’exécution."
   },
   "es": {
     "Alltag deiner Figuren": "La vida diaria de tus personajes",
@@ -636,6 +644,10 @@
     "Geschätzte Mikro-USD je Gespräch": "Micro-USD estimados por conversación",
     "Geschätzte Mikro-USD pro Tag": "Micro-USD estimados por día",
     "Gesprächspause in Millisekunden": "Pausa entre conversaciones en milisegundos",
-    "Dialogregeln speichern": "Guardar reglas de diálogo"
+    "Dialogregeln speichern": "Guardar reglas de diálogo",
+    "Nur Nachrichten aus deiner verbundenen Twitch- oder YouTube-Verbindung dürfen Spiel- oder Grußvorschläge senden. Chattexte ändern keine Rechte und starten Life nicht.": "Solo los mensajes de tu conexión de Twitch o YouTube pueden proponer juegos o saludos. El chat no cambia permisos ni inicia Life.",
+    "In die Warteschlange aufgenommen": "Añadidos a la cola",
+    "Befehle:": "Comandos:",
+    "Vote-Befehle sind einzelne Vorschläge, keine ausgezählte Abstimmung. Aufnahme in die Warteschlange bestätigt noch keine Ausführung.": "Los comandos vote son propuestas individuales, no una votación contabilizada. Entrar en la cola no confirma la ejecución."
   }
 }
