@@ -123,6 +123,34 @@ has AX/permission/target observations zero, phase 7 and unknown status kind 4;
 it cannot be mistaken for a completed native query. System Events is not killed
 or given broader rights; its lifetime ends with disposal of the hosted VM.
 
+The fifth [actual VM run, 39599169139](https://github.com/ralphschuler/orbitpal/actions/runs/39599169139)
+on `881411401a59317bfa40914251dc405703b331d5` passed both strict native probes
+and the actual isolated Wry build. Its first Main `inspect` ended with controller
+`stage:1`, `code:10`, forced owned-child cleanup and no unconfirmed cleanup. The
+old catch-all exception category cannot distinguish a native-client timeout from
+decode/other failures, and no validated per-operation reply was retained. This
+proves neither missing AX/window/menu support nor a product error. No Life/frame
+or normal Stop/Quit qualification was obtained.
+
+Controller diagnostics now retain only fixed numeric transport metadata:
+`transportPhase` is 0 before transport, 1 existing deadline/owned-child checks,
+2 existing native-client run/return checks, 3 reply decoding, 4 closed-schema
+validation, or 5 a fully validated reply. `exceptionKind` is 0 no Python transport
+exception, 1 `TimeoutExpired`, 2 JSON/Unicode decoding, 3 a schema guard refusal,
+or 4 another exception/transport guard refusal. Existing controller refusal codes,
+commands, one native client per attempt, five-second cap, original retry rules
+and all deadlines are unchanged. Exceptions, their arguments/output/stderr and
+UI text are never formatted or exported.
+
+`lastUiObserved:1` adds `lastUiRecord`, copied only after every existing numeric
+schema check passed, plus its `lastUiStage`. Initially the flag/stage are zero and
+the record is absent. A later timeout never overwrites or relabels that earlier
+reply; a structured nonzero UI reply is still a failure, never success. No extra
+UI query obtains these fields. The existing two-KiB private controller-file bound
+still applies. Controlled tests execute the real execute/perform/ui/parser path
+with subprocess and clock doubles, including hostile timeout payloads, rejected
+schemas, exact retry sleep and a later failure after a valid reply.
+
 `ui.js` runs in `/usr/bin/osascript` as a **native JXA/System Events/ObjC client**,
 not in a WKWebView. It never evaluates application JavaScript, calls native IPC,
 injects ACKs or modifies Store state. Apple documents [native UI scripting](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/AutomatetheUserInterface.html)
