@@ -141,7 +141,7 @@ jobs:
           assert (root / 'process.ndjson').is_file() and (root / 'collector-summary.json').is_file()
           print('Native software-GPU smoke scope and cleanup passed; no issue #66 acceptance.')
           PY
-      - name: Upload only the six fixed validated metadata files, including available failure evidence
+      - name: Upload fixed numeric evidence and separate failed compositor diagnostic
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -153,5 +153,7 @@ jobs:
             ${{ runner.temp }}/native-render-benchmark-smoke/collector-failure.json
             ${{ runner.temp }}/native-render-benchmark-smoke/fixture-manifest.json
             ${{ runner.temp }}/native-render-benchmark-smoke/fixture-result.json
+            ${{ runner.temp }}/native-render-benchmark-smoke/compositor-startup-diagnostic.json
+            ${{ runner.temp }}/native-render-benchmark-smoke/compositor-startup-diagnostic.txt
           if-no-files-found: warn
           retention-days: 7
