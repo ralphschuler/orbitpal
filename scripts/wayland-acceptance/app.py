@@ -253,15 +253,26 @@ class Studio:
             raise Refusal("ambiguous_app_control")
         return matches[0] if matches else None
 
-    def wait(self, predicate, code, seconds=12):
+    def wait(self, predicate, code, seconds=12, retry_inactive=False):
         deadline = time.monotonic() + seconds
+        inactive = False
         while time.monotonic() < deadline:
             process_parent(self.pid)
-            result = predicate()
-            if result:
-                return result
+            try:
+                result = predicate()
+            except Refusal as error:
+                if (not retry_inactive or type(error) is not Refusal
+                        or type(error.code) is not str or error.code != "app_window_not_active"):
+                    raise
+                # Reacquire through the same PID/executable/unique-active-frame
+                # gate on the next poll. Never focus, act on or accept this frame.
+                inactive = True
+            else:
+                inactive = False
+                if result:
+                    return result
             time.sleep(0.1)
-        raise Refusal(code)
+        raise Refusal("app_window_not_active" if inactive else code)
 
     def one(self, name, roles):
         return self.wait(lambda: self.find(name, roles), "app_control_missing")
@@ -279,11 +290,35 @@ class Studio:
             except (RuntimeError, AttributeError, NotImplementedError):
                 pass
         interface = node.queryAction()
-        for index in range(min(interface.nActions, 8)):
-            if interface.getName(index).lower() in ("click", "press", "toggle", "select"):
+        offered = interface.nActions
+        examined, activate, check, uncheck, other = 0, 0, 0, 0, 0
+        for index in range(min(offered, 8)):
+            name = interface.getName(index).lower()
+            examined += 1
+            if name in ("click", "press", "toggle", "select"):
                 if not interface.doAction(index):
                     raise Refusal("app_action_refused")
                 return
+            # These are diagnostic buckets ONLY, never accepted input aliases.
+            if name == "activate":
+                activate += 1
+            elif name == "check":
+                check += 1
+            elif name == "uncheck":
+                uncheck += 1
+            else:
+                other += 1
+        # One terminal, closed numeric line. Never retain or print AX names,
+        # labels, nodes, exceptions or a global last-action observation. Getter
+        # failures still follow the unchanged bounded failure_diagnostic path.
+        count_valid = type(offered) is int and offered >= 0
+        print("app-action-capabilities: " + json.dumps({
+            "version": 1, "offeredActionCountValid": count_valid,
+            "offeredActionCount": min(offered, 8) if count_valid else 0,
+            "offeredActionCountCapped": count_valid and offered > 8,
+            "examinedActionCount": examined, "activateCount": activate,
+            "checkCount": check, "uncheckCount": uncheck, "otherCount": other,
+        }, sort_keys=True), file=sys.stderr, flush=True)
         raise Refusal("app_action_unavailable")
 
     def button(self, name):
@@ -301,10 +336,10 @@ class Studio:
         roles = {self.a.ROLE_CHECK_BOX, self.a.ROLE_TOGGLE_BUTTON, getattr(self.a, "ROLE_SWITCH", -1)}
         roles.discard(-1)
         locate = self.switch_control(name, roles)
-        node = self.wait(locate, "app_control_missing")
+        node = self.wait(locate, "app_control_missing", retry_inactive=True)
         if node.getState().contains(self.a.STATE_CHECKED) != enabled:
             self.action(node, scroll=False)  # Already reacquired after scrolling.
-        self.wait(lambda: (node := locate()) is not None and node.getState().contains(self.a.STATE_CHECKED) == enabled, "app_switch_not_changed")
+        self.wait(lambda: (node := locate()) is not None and node.getState().contains(self.a.STATE_CHECKED) == enabled, "app_switch_not_changed", retry_inactive=True)
 
     def switch_control(self, name, roles):
         """Reveal only fixed source controls, never activate an offscreen node."""

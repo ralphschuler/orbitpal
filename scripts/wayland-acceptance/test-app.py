@@ -922,6 +922,122 @@ class SwitchRevealTests(unittest.TestCase):
                 studio.switch_control(node.name, {3, 4})()
             node.press.assert_not_called()
 
+    def test_switch_retries_only_inactive_observation_then_reacquires_before_action(self):
+        node = self.Node("Enable speech output", 3, ("visible", "showing", "checked", "enabled", "sensitive"), pid=42)
+        studio, frame, _ = self.fixture([node])
+        frame.states.discard("active")
+        clock = [0.0]
+        def resume(delay):
+            node.press.assert_not_called()
+            node.scroll.assert_not_called()
+            clock[0] += delay
+            frame.states.add("active")
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app") as executable, patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=resume) as sleep:
+            studio.switch(node.name, False)
+        sleep.assert_called_once_with(0.1)
+        self.assertGreaterEqual(executable.call_count, 3)
+        node.press.assert_called_once_with(0)
+        self.assertNotIn("checked", node.states)
+
+    def test_inactive_after_scroll_reacquires_fresh_showing_node_without_repeating_action(self):
+        old = self.Node("Enable speech output", 3, ("visible", "checked", "enabled", "sensitive"), pid=42)
+        fresh = self.Node(old.name, 3, ("visible", "showing", "checked", "enabled", "sensitive"), pid=42)
+        studio, frame, _ = self.fixture([old])
+        clock = [0.0]
+        def reveal(_):
+            frame.children = [fresh]
+            frame.states.discard("active")
+            return True
+        def resume(delay):
+            old.press.assert_not_called()
+            fresh.press.assert_not_called()
+            clock[0] += delay
+            frame.states.add("active")
+        old.scroll.side_effect = reveal
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=resume):
+            studio.switch(old.name, False)
+        old.scroll.assert_called_once_with(0)
+        old.press.assert_not_called()
+        fresh.scroll.assert_not_called()
+        fresh.press.assert_called_once_with(0)
+
+    def test_permanently_inactive_frame_refuses_within_original_deadline_without_action(self):
+        node = self.Node("Enable speech output", 3, ("visible", "showing", "checked", "enabled", "sensitive"))
+        studio, frame, _ = self.fixture([node])
+        frame.states.discard("active")
+        clock = [0.0]
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)), self.assertRaisesRegex(provider.Refusal, "^app_window_not_active$"):
+            studio.wait(studio.switch_control(node.name, {3, 4}), "app_control_missing", seconds=0.25, retry_inactive=True)
+        self.assertGreaterEqual(clock[0], 0.25)
+        self.assertLess(clock[0], 0.4)
+        node.scroll.assert_not_called()
+        node.press.assert_not_called()
+
+    def test_reacquisition_does_not_retry_ownership_replacement_or_ambiguity(self):
+        for change, expected in (("process", "app_process_exited"), ("executable", "unexpected_app_executable"), ("frame", "ambiguous_app_window")):
+            node = self.Node("Enable speech output", 3, ("visible", "showing", "checked", "enabled", "sensitive"))
+            studio, frame, desktop = self.fixture([node])
+            frame.states.discard("active")
+            clock, replaced = [0.0], [False]
+            def parent(pid):
+                if replaced[0] and change == "process":
+                    raise provider.Refusal("app_process_exited")
+                return self.parents(pid)
+            def resume(delay):
+                clock[0] += delay
+                replaced[0] = True
+                frame.states.add("active")
+                if change == "frame":
+                    desktop.children.append(self.Node("OrbitPal", 10, ("visible", "showing", "active")))
+            def executable(**_):
+                return Path("/disposable/foreign-app") if replaced[0] and change == "executable" else studio.root / "acceptance-app"
+            with self.subTest(change=change), patch.object(app, "process_parent", side_effect=parent), patch.object(app.Path, "resolve", side_effect=executable), patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=resume) as sleep, self.assertRaisesRegex(provider.Refusal, "^" + expected + "$"):
+                studio.switch(node.name, False)
+            sleep.assert_called_once_with(0.1)
+            node.scroll.assert_not_called()
+            node.press.assert_not_called()
+
+    def test_inactive_retries_do_not_reset_two_scroll_budget_or_extend_deadline(self):
+        node = self.Node("Enable speech output", 3, ("visible",))
+        studio, frame, _ = self.fixture([node])
+        clock = [0.0]
+        def reveal(_):
+            frame.states.discard("active")
+            return True
+        def resume(delay):
+            clock[0] += delay
+            frame.states.add("active")
+        node.scroll.side_effect = reveal
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=resume), self.assertRaisesRegex(provider.Refusal, "^app_control_missing$"):
+            studio.wait(studio.switch_control(node.name, {3, 4}), "app_control_missing", seconds=0.35, retry_inactive=True)
+        self.assertEqual(node.scroll.call_count, 2)
+        self.assertLess(clock[0], 0.5)
+        node.press.assert_not_called()
+
+    def test_inactive_does_not_change_other_waits_or_retry_other_refusals(self):
+        studio, _, _ = self.fixture([])
+        for retry, failure in ((False, provider.Refusal("app_window_not_active")), (True, provider.Refusal("app_action_unavailable")), (True, provider.Refusal("ambiguous_app_control")), (True, provider.Refusal("foreign_process"))):
+            predicate = Mock(side_effect=failure)
+            with self.subTest(retry=retry, code=failure.code), patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.time, "monotonic", return_value=0), patch.object(app.time, "sleep") as sleep, self.assertRaises(provider.Refusal) as caught:
+                studio.wait(predicate, "app_control_missing", retry_inactive=retry)
+            self.assertIs(caught.exception, failure)
+            predicate.assert_called_once_with()
+            sleep.assert_not_called()
+
+    def test_expired_inactive_wait_does_not_poll_or_act_after_focus_returns(self):
+        node = self.Node("Enable speech output", 3, ("visible", "showing", "checked", "enabled", "sensitive"))
+        studio, frame, _ = self.fixture([node])
+        frame.states.discard("active")
+        clock = [0.0]
+        def late_resume(_):
+            clock[0] = 1.0
+            frame.states.add("active")
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app") as executable, patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=late_resume), self.assertRaisesRegex(provider.Refusal, "^app_window_not_active$"):
+            studio.wait(studio.switch_control(node.name, {3, 4}), "app_control_missing", seconds=0.25, retry_inactive=True)
+        executable.assert_called_once_with(strict=True)
+        node.scroll.assert_not_called()
+        node.press.assert_not_called()
+
     def test_reveal_never_guesses_names_or_roles(self):
         node = self.Node("Enable speech output extra", 3, ("visible",))
         studio, _, _ = self.fixture([node])
@@ -931,6 +1047,134 @@ class SwitchRevealTests(unittest.TestCase):
                 studio.switch_control(node.name, {3, 4})
         node.scroll.assert_not_called()
         node.press.assert_not_called()
+
+
+class ActionCapabilityDiagnosticTests(unittest.TestCase):
+    """Production action() with local AX doubles; no GUI/input/capture executes."""
+    def fixture(self, names=(), offered=None, succeeds=True):
+        studio = app.Studio.__new__(app.Studio)
+        studio.enabled = Mock(return_value=True)
+        interface = SimpleNamespace(nActions=len(names) if offered is None else offered,
+                                    getName=Mock(side_effect=lambda index: names[index]),
+                                    doAction=Mock(return_value=succeeds))
+        node = SimpleNamespace(queryAction=Mock(return_value=interface))
+        return studio, node, interface
+
+    def refused(self, studio, node):
+        errors = io.StringIO()
+        with patch.object(app.sys, "stderr", errors), self.assertRaises(provider.Refusal) as raised:
+            studio.action(node, scroll=False)
+        self.assertEqual(raised.exception.code, "app_action_unavailable")
+        lines = errors.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("app-action-capabilities: "))
+        self.assertLess(len(lines[0]), 384)
+        result = json.loads(lines[0].removeprefix("app-action-capabilities: "))
+        self.assertEqual(set(result), {"version", "offeredActionCountValid", "offeredActionCount",
+                                      "offeredActionCountCapped", "examinedActionCount", "activateCount",
+                                      "checkCount", "uncheckCount", "otherCount"})
+        self.assertTrue(all(type(value) in (int, bool) for value in result.values()))
+        return result, errors.getvalue()
+
+    def test_zero_actions_is_distinct_from_an_unrecognized_offered_action(self):
+        studio, node, interface = self.fixture()
+        result, _ = self.refused(studio, node)
+        self.assertEqual(result["offeredActionCount"], 0)
+        self.assertEqual(result["examinedActionCount"], 0)
+        self.assertTrue(result["offeredActionCountValid"])
+        self.assertFalse(result["offeredActionCountCapped"])
+        interface.getName.assert_not_called()
+        interface.doAction.assert_not_called()
+        studio, node, interface = self.fixture(["PRIVATE_AX_URL_AND_PATH"])
+        result, output = self.refused(studio, node)
+        self.assertEqual(result["offeredActionCount"], 1)
+        self.assertEqual(result["otherCount"], 1)
+        self.assertNotIn("PRIVATE_AX", output)
+        interface.getName.assert_called_once_with(0)
+        interface.doAction.assert_not_called()
+
+    def test_authored_alias_buckets_are_diagnostic_only_and_never_input(self):
+        studio, node, interface = self.fixture(["Activate", "CHECK", "uncheck", "PRIVATE_CONTROL_NAME"])
+        result, output = self.refused(studio, node)
+        self.assertEqual([result[key] for key in ("activateCount", "checkCount", "uncheckCount", "otherCount")], [1, 1, 1, 1])
+        self.assertEqual(result["examinedActionCount"], 4)
+        self.assertNotIn("PRIVATE_CONTROL_NAME", output)
+        self.assertNotIn('"Activate"', output)
+        self.assertEqual(interface.getName.call_count, 4)
+        interface.doAction.assert_not_called()
+
+    def test_large_offered_count_does_not_query_or_activate_beyond_original_eight(self):
+        studio, node, interface = self.fixture(["private"] * 8 + ["press"], offered=10000)
+        result, _ = self.refused(studio, node)
+        self.assertEqual(result["offeredActionCount"], 8)
+        self.assertTrue(result["offeredActionCountCapped"])
+        self.assertEqual(result["examinedActionCount"], 8)
+        self.assertEqual(result["otherCount"], 8)
+        self.assertEqual([call.args for call in interface.getName.call_args_list], [(i,) for i in range(8)])
+        interface.doAction.assert_not_called()
+
+    def test_existing_mixed_case_execution_names_keep_their_original_behavior(self):
+        for name in ("CLICK", "Press", "Toggle", "SELECT"):
+            studio, node, interface = self.fixture(["private", name])
+            errors = io.StringIO()
+            with self.subTest(name=name), patch.object(app.sys, "stderr", errors):
+                studio.action(node, scroll=False)
+            interface.doAction.assert_called_once_with(1)
+            self.assertEqual(interface.getName.call_count, 2)
+            self.assertEqual(errors.getvalue(), "")
+
+    def test_rejected_existing_action_keeps_its_refusal_and_no_capability_footer(self):
+        studio, node, interface = self.fixture(["press"], succeeds=False)
+        errors = io.StringIO()
+        with patch.object(app.sys, "stderr", errors), self.assertRaisesRegex(provider.Refusal, "^app_action_refused$"):
+            studio.action(node, scroll=False)
+        interface.doAction.assert_called_once_with(0)
+        self.assertEqual(errors.getvalue(), "")
+
+    def test_accessor_failures_never_print_raw_values_or_invent_zero_actions(self):
+        for broken in ("count", "name"):
+            studio, node, interface = self.fixture(["private"])
+            if broken == "count":
+                class BrokenCount:
+                    @property
+                    def nActions(self):
+                        raise RuntimeError("PRIVATE_AX_COUNT_VALUE")
+                node.queryAction.return_value = BrokenCount()
+            else:
+                interface.getName.side_effect = RuntimeError("PRIVATE_AX_NAME_VALUE")
+            output, errors = io.StringIO(), io.StringIO()
+            with self.subTest(broken=broken), patch.object(app, "isolated_root", return_value=object()), patch.object(app, "run", side_effect=lambda _: studio.action(node, scroll=False)), patch.object(app, "_emitted_phases", set()), patch.object(app.sys, "stdout", output), patch.object(app.sys, "stderr", errors):
+                self.assertEqual(app.main(), 1)
+            self.assertNotIn("PRIVATE_AX", output.getvalue() + errors.getvalue())
+            self.assertNotIn("app-action-capabilities", errors.getvalue())
+            self.assertIn("app-diagnostic: ", errors.getvalue())
+            self.assertIn("controller_failed", errors.getvalue())
+            interface.doAction.assert_not_called()
+
+    def test_disabled_control_keeps_existing_guard_without_any_query_or_diagnostic(self):
+        studio, node, interface = self.fixture(["press"])
+        studio.enabled.return_value = False
+        errors = io.StringIO()
+        with patch.object(app.sys, "stderr", errors), self.assertRaisesRegex(provider.Refusal, "^app_control_disabled$"):
+            studio.action(node, scroll=False)
+        node.queryAction.assert_not_called()
+        interface.doAction.assert_not_called()
+        self.assertEqual(errors.getvalue(), "")
+
+    def test_each_terminal_observation_is_local_and_malformed_negative_count_is_flagged(self):
+        studio, node, _ = self.fixture(["private", "private"])
+        result, _ = self.refused(studio, node)
+        self.assertEqual(result["otherCount"], 2)
+        studio, node, _ = self.fixture()
+        result, _ = self.refused(studio, node)
+        self.assertEqual(result["otherCount"], 0)
+        studio, node, interface = self.fixture(offered=-1)
+        result, _ = self.refused(studio, node)
+        self.assertFalse(result["offeredActionCountValid"])
+        self.assertEqual(result["offeredActionCount"], 0)
+        self.assertEqual(result["examinedActionCount"], 0)
+        interface.getName.assert_not_called()
+        interface.doAction.assert_not_called()
 
 
 if __name__ == "__main__":
