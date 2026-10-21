@@ -17,7 +17,8 @@ import time
 APP_ID = 'studio.orbitpal.native-world-fixture'
 SYSTEM_EVENTS = Path('/System/Library/CoreServices/System Events.app')
 SYSTEM_EVENTS_EXECUTABLE = SYSTEM_EVENTS / 'Contents/MacOS/System Events'
-FIELDS = frozenset(('version', 'code', 'ax', 'appleEvents', 'gui', 'probePhase', 'aeFunction', 'aeStatusKind', 'targetRunning', 'matched', 'acted', 'mainVisible', 'windows'))
+SESSION_FIELDS = frozenset(('screenPresent', 'sessionPresent', 'uidMatch', 'onConsole', 'loginDone', 'lockKnown', 'lockState'))
+FIELDS = SESSION_FIELDS | frozenset(('version', 'code', 'ax', 'appleEvents', 'gui', 'probePhase', 'aeFunction', 'aeStatusKind', 'targetRunning', 'matched', 'acted', 'mainVisible', 'windows'))
 REFS = ('refs/heads/main', 'refs/heads/feat/parallel-backlog', 'refs/heads/test/native-world-macos-acceptance')
 DIRECTORY = Path(__file__).resolve().parent
 
@@ -116,7 +117,8 @@ def ui_record(raw):
     require(value['version'] == 1 and 0 <= value['code'] <= 9 and 0 <= value['windows'] <= 16, 2)
     require(0 <= value['probePhase'] <= 7, 2)
     require(0 <= value['aeStatusKind'] <= 4, 2)
-    require(all(value[k] in (0, 1) for k in FIELDS - {'version', 'code', 'windows', 'probePhase', 'aeStatusKind'}), 2)
+    require(all(0 <= value[k] <= 2 for k in SESSION_FIELDS), 2)
+    require(all(value[k] in (0, 1) for k in FIELDS - SESSION_FIELDS - {'version', 'code', 'windows', 'probePhase', 'aeStatusKind'}), 2)
     require(value['code'] != 0 or (value['probePhase'] == 6 and value['aeFunction'] == 1 and value['aeStatusKind'] == 0 and value['targetRunning'] == 1), 2)
     require(value['code'] != 3 or (value['probePhase'] == 4 and value['aeFunction'] == 1 and value['aeStatusKind'] != 0), 2)
     return value
