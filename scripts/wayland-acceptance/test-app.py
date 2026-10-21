@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 import socket
 import sqlite3
+import sys
+import time
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -1990,7 +1992,7 @@ class CompatibleNativeSelectionTests(unittest.TestCase):
         clock = [0.0] if clock is None else clock
         output = io.StringIO()
         resolve = {"side_effect": executable} if callable(executable) else {"return_value": studio.root / "acceptance-app"}
-        with patch.object(app, "process_parent", side_effect=parent or SwitchRevealTests().parents), patch.object(app.Path, "resolve", **resolve), patch.object(app, "phase") as phases, patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)), patch.object(app.sys, "stderr", output):
+        with patch.object(app, "process_parent", side_effect=parent or SwitchRevealTests().parents), patch.object(app.Path, "resolve", **resolve), patch.object(app, "phase") as phases, patch.object(app, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda delay: clock.__setitem__(0, clock[0] + delay))), patch.object(app, "sys", SimpleNamespace(stderr=output)):
             try:
                 getattr(studio, method)()
             except provider.Refusal as error:
@@ -2007,6 +2009,55 @@ class CompatibleNativeSelectionTests(unittest.TestCase):
         self.assertEqual(result["version"], 1)
         self.assertNotIn("PRIVATE", text)
         return result
+
+    def test_invoke_keeps_process_stderr_and_clocks_outside_module_capture(self):
+        _, studio, _, _, _, container, target, _, interface = self.fixture()
+        target.name += " "  # Same strict refusal path as the observed gate.
+        outer, clock, seen = io.StringIO(), [0.0], []
+        monotonic, sleep = time.monotonic, time.sleep
+        original = container.querySelection
+        def query():
+            self.assertIs(sys.stderr, outer)
+            self.assertIs(time.monotonic, monotonic)
+            self.assertIs(time.sleep, sleep)
+            self.assertIsNot(app.sys, sys)
+            self.assertIsNot(app.time, time)
+            self.assertEqual(app.time.monotonic(), clock[0])
+            if not seen:
+                print("unrelated process diagnostic", file=sys.stderr)
+                seen.append(True)
+            return original()
+        container.querySelection = query
+        with patch.object(sys, "stderr", outer):
+            error, output, _ = self.invoke(studio, clock=clock)
+        self.assertEqual(error.code, "app_control_missing")
+        self.assertEqual(seen, [True])
+        # Ambient process stderr is uncontrolled; only the module stream is exact.
+        self.assertIn("unrelated process diagnostic\n", outer.getvalue())
+        self.assertNotIn("unrelated", output)
+        self.assertEqual(self.diagnostic(output)["selectAttempts"], 0)
+        self.assertGreaterEqual(clock[0], 12)
+        self.assertLess(clock[0], 12.2)
+        interface.selectChild.assert_not_called()
+        target.press.assert_not_called()
+        self.assertIs(app.sys, sys)
+        self.assertIs(app.time, time)
+
+    def test_own_multiple_or_malformed_diagnostics_remain_strict_failures(self):
+        _, studio, _, _, _, _, target, _, _ = self.fixture()
+        target.name += " "
+        error, output, _ = self.invoke(studio)
+        self.assertEqual(error.code, "app_control_missing")
+        valid = self.diagnostic(output)
+        prefix = "app-compatible-selection: "
+        boolean = {**valid, "selectAttempts": True}
+        negative = {**valid, "selectAttempts": -1}
+        extra = {**valid, "private": "PRIVATE_PAYLOAD"}
+        for malformed in (output + output, "unrelated\n" + output, "wrong-prefix: " + json.dumps(valid),
+                prefix + "{", prefix + "{}", prefix + json.dumps(boolean),
+                prefix + json.dumps(negative), prefix + json.dumps(extra)):
+            with self.subTest(case=malformed[:40]), self.assertRaises((AssertionError, json.JSONDecodeError)):
+                self.diagnostic(malformed)
 
     def test_native_combo_or_own_menu_selection_uses_ordinary_index_and_selected_list_zero(self):
         for direct in (False, True):
