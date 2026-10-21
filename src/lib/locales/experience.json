@@ -222,7 +222,9 @@
     "Die Paketvorlage ist nicht in genau dieser aktiven Version verfügbar.": "The pack template is not available in this exact active version.",
     "Diese Aktion ist nur im Installationskontext verfügbar.": "This action is only available in the installation context.",
     "Beende zuerst die laufende Antwort.": "Finish the current response first.",
-    "Auf Paketversion {version} umstellen": "Switch to pack version {version}"
+    "Auf Paketversion {version} umstellen": "Switch to pack version {version}",
+    "Bestätigter Szenenverlauf": "Confirmed scene history",
+    "Die Reihenfolge zeigt gespeicherte native Phasen. Die Zeit bezeichnet die Einladung, nicht den Zeitpunkt jeder Phase.": "The order shows stored native phases. The time is the invitation time, not a timestamp for each phase."
   },
   "fr": {
     "Alltag deiner Figuren": "Le quotidien de vos personnages",
@@ -447,7 +449,9 @@
     "Die Paketvorlage ist nicht in genau dieser aktiven Version verfügbar.": "Le modèle du pack n’est pas disponible dans cette version active exacte.",
     "Diese Aktion ist nur im Installationskontext verfügbar.": "Cette action est réservée au contexte de l’installation.",
     "Beende zuerst die laufende Antwort.": "Terminez d’abord la réponse en cours.",
-    "Auf Paketversion {version} umstellen": "Passer à la version {version} du pack"
+    "Auf Paketversion {version} umstellen": "Passer à la version {version} du pack",
+    "Bestätigter Szenenverlauf": "Historique des scènes confirmées",
+    "Die Reihenfolge zeigt gespeicherte native Phasen. Die Zeit bezeichnet die Einladung, nicht den Zeitpunkt jeder Phase.": "L’ordre montre les phases natives enregistrées. L’heure est celle de l’invitation, pas de chaque phase."
   },
   "es": {
     "Alltag deiner Figuren": "La vida diaria de tus personajes",
@@ -672,6 +676,8 @@
     "Die Paketvorlage ist nicht in genau dieser aktiven Version verfügbar.": "La plantilla no está disponible en esta versión activa exacta.",
     "Diese Aktion ist nur im Installationskontext verfügbar.": "Esta acción solo está disponible en el contexto de la instalación.",
     "Beende zuerst die laufende Antwort.": "Termina primero la respuesta actual.",
-    "Auf Paketversion {version} umstellen": "Cambiar a la versión {version} del paquete"
+    "Auf Paketversion {version} umstellen": "Cambiar a la versión {version} del paquete",
+    "Bestätigter Szenenverlauf": "Historial de escenas confirmadas",
+    "Die Reihenfolge zeigt gespeicherte native Phasen. Die Zeit bezeichnet die Einladung, nicht den Zeitpunkt jeder Phase.": "El orden muestra las fases nativas guardadas. La hora corresponde a la invitación, no a cada fase."
   }
 }
