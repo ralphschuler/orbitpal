@@ -6,7 +6,10 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import runpy
+import secrets
+import shutil
 import signal
 import stat
 import subprocess
@@ -413,8 +416,80 @@ class HarnessSafetyTests(unittest.TestCase):
         self.assertEqual(app["WAYLAND_DISPLAY"], "orbitpal-benchmark")
         self.assertEqual(app["DBUS_SESSION_BUS_ADDRESS"], "unix:path=" + str(root / "runtime/session-bus"))
         self.assertNotEqual(app["DBUS_SESSION_BUS_ADDRESS"], compositor["DBUS_SESSION_BUS_ADDRESS"])
+        self.assertEqual(app["DBUS_SYSTEM_BUS_ADDRESS"], "unix:path=" + str(root / "runtime/nonexistent-system-bus"))
+        self.assertEqual(compositor["DBUS_SYSTEM_BUS_ADDRESS"], "unix:path=" + str(root / "compositor/runtime/system-bus"))
+        self.assertNotEqual(compositor["DBUS_SYSTEM_BUS_ADDRESS"], compositor["DBUS_SESSION_BUS_ADDRESS"])
         self.assertNotEqual(app["HOME"], compositor["HOME"])
         self.assertNotIn("PRIVATE", json.dumps(app))
+
+    def test_compositor_system_transport_is_empty_private_and_cannot_activate_host_services(self):
+        import xml.etree.ElementTree as ET
+        address = Path("/tmp") / NAME / "compositor/runtime/system-bus"
+        value = ET.fromstring(runner.compositor_system_bus(address))
+        self.assertEqual(value.tag, "busconfig")
+        self.assertEqual([child.tag for child in value], ["type", "listen", "auth", "policy"])
+        self.assertEqual(value.findtext("type"), "system")
+        self.assertEqual(value.findtext("listen"), "unix:path=" + str(address))
+        self.assertEqual(value.findtext("auth"), "EXTERNAL")
+        # No include, standard servicedir, activator, user/host transport or
+        # logind implementation. The actual service absence is preserved.
+        self.assertEqual(value.findall(".//servicedir"), [])
+        self.assertEqual(value.findall(".//include"), [])
+        self.assertEqual(value.findall(".//user"), [])
+        self.assertNotIn("login1", runner.compositor_system_bus(address))
+        for invalid in (Path("/run/dbus/system_bus_socket"), address.parent / "../system-bus",
+                        Path("/tmp") / NAME / "runtime/system-bus", Path("/tmp/other/compositor/runtime/system-bus")):
+            with self.subTest(path=str(invalid)), self.assertRaisesRegex(collect.Refusal, "^invalid_compositor_bus_address$"):
+                runner.compositor_system_bus(invalid)
+
+    @unittest.skipUnless(sys.platform == "linux" and shutil.which("dbus-daemon") and shutil.which("gdbus"),
+                         "isolated real D-Bus transport requires Linux packaged helpers")
+    def test_real_empty_compositor_bus_has_no_activatable_logind_or_host_service(self):
+        # A small unprivileged transport fixture only: no compositor, host bus,
+        # accounts, cgroups or system configuration. The production config is
+        # exercised with a fresh protected socket and no inherited environment.
+        root = Path("/tmp") / ("orbitpal-render-" + secrets.token_hex(8))
+        root.mkdir(mode=0o700)
+        child = None
+        try:
+            (root / "compositor").mkdir(mode=0o700)
+            runtime = root / "compositor/runtime"
+            runtime.mkdir(mode=0o700)
+            address = runtime / "system-bus"
+            config = root / "bus.conf"
+            config.write_text(runner.compositor_system_bus(address), encoding="ascii")
+            child = subprocess.Popen([shutil.which("dbus-daemon"), "--nofork", "--config-file=" + str(config)],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, env={"PATH": "/usr/bin:/bin"})
+            deadline = time.monotonic() + 5
+            while not address.is_socket() and time.monotonic() < deadline:
+                self.assertIsNone(child.poll())
+                time.sleep(.02)
+            self.assertTrue(address.is_socket())
+            def call(method, *args):
+                return subprocess.run([shutil.which("gdbus"), "call", "--address", "unix:path=" + str(address),
+                                       "--dest", "org.freedesktop.DBus", "--object-path", "/org/freedesktop/DBus",
+                                       "--method", "org.freedesktop.DBus." + method, *args],
+                                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      env={"PATH": "/usr/bin:/bin"}, timeout=3, check=False)
+            self.assertEqual(call("ListNames").returncode, 0)
+            activatable = call("ListActivatableNames")
+            self.assertEqual(activatable.returncode, 0)
+            # Some D-Bus versions list their own built-in daemon name. No
+            # external service may be advertised by this empty configuration.
+            self.assertLessEqual(set(re.findall(rb"'([^']+)'", activatable.stdout)), {b"org.freedesktop.DBus"})
+            start = call("StartServiceByName", "org.freedesktop.login1", "0")
+            self.assertNotEqual(start.returncode, 0)
+            self.assertIn(b"ServiceUnknown", start.stderr)
+        finally:
+            if child is not None and child.poll() is None:
+                child.terminate()
+                try:
+                    child.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=3)
+            shutil.rmtree(root)
 
     def test_only_closed_1_3_5_figure_plans_can_enter_the_launcher_or_driver(self):
         root = Path("/tmp") / NAME
@@ -1264,6 +1339,9 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                     stack.enter_context(patch.object(runner.grp, "getgrnam", side_effect=KeyError("synthetic")))
                     stack.enter_context(patch.object(runner.os, "chown"))
                     stack.enter_context(patch.object(runner, "install_bus", return_value="synthetic_private_bus"))
+                    # This test remaps literal /tmp to its synthetic root. The
+                    # exact real transport/address policy has its own test.
+                    stack.enter_context(patch.object(runner, "compositor_system_bus", return_value="synthetic_empty_bus"))
                     stack.enter_context(patch.object(runner, "wait_for"))
                     stack.enter_context(patch.object(runner, "cleanup_identity", return_value=False))
                     stack.enter_context(patch.object(runner, "remove_group", side_effect=lambda directory, _inode: runner.shutil.rmtree(directory)))

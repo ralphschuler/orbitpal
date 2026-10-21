@@ -1,17 +1,17 @@
-## New in 0.13.0
+## New in 0.14.0
 
-- Set up Desktop Life visually: drag characters, places and movement areas, then explicitly save and start the selected participants. Character windows use the native World output path; Stop invalidates pending work and late playback.
-- Add experimental local care, exploration, coordinated social actions, per-character routines and development. Actions use checked reservations and actual completion before crediting outcomes.
-- Explain current intentions and offer Quiet, Focus and Stream preferences, direct interaction controls, isolated relationships and a factual private memory album.
-- Load declarative namespaced content packs and accept bounded Twitch/YouTube event proposals and votes. Optional short social dialogue respects native budgets and falls back locally.
-- Provide these controls in German, English, French and Spanish. API connections remain installation-wide; character memories and permissions remain separate.
-- Update Tauri to 2.12.5, improve isolated native diagnostics and cache acceptance-build dependencies.
+- Choose a saved energy render profile: at most 20 FPS, pixel ratio 1 and no dynamic shadows. Hidden views avoid unnecessary GPU submissions while native Life and Stop keep running independently.
+- Select a second character explicitly for a play invitation. Studio and the native menu recheck the same social coordinator; missing or stale selections cannot become a solo rewarded activity.
+- Use the typed native Pet action when the current character has an explicitly allowed, uniquely resolved authored Pet clip. Successful frames and native acknowledgements govern completion; missing capabilities stay unavailable.
+- Read daily recaps in the local calendar, with confirmed hobby/goal milestones and access to all retained album facts and social memories. Private entries still require explicit sharing before public preview.
+- Prepare an empty private system-bus transport for the isolated GNOME renderer harness, preserving its scope and absent host services.
+- Reconcile the existing implementation against all 18 open issues and record dependency order and remaining acceptance. There were no open pull requests at the initial inventory.
 
 ## Known limits
 
-Desktop Life is experimental. Complete native movement, paired scenes, hidden operation, sleep/reconnect, monitor/DPI and OBS acceptance remain open under #72/#75 and related issues. No measured 1/3/5-character performance baseline is claimed (#66). The latest nonshipping macOS/Wayland tests still stop in their native UI/input harnesses; the Linux renderer smoke stops during isolated GNOME startup.
+Desktop Life remains experimental. Actual multi-character movement, paired scenes, hidden operation, sleep/reconnect, monitor/DPI and OBS acceptance remain open under #72/#75 and related issues. No measured 1/3/5-character hardware performance baseline is claimed (#66). The prior native macOS fixture and isolated Linux renderer smoke did not pass. The new private-bus preparation alone is not a successful renderer measurement.
 
-The memory album currently shows only the first 40 retained facts for individual management (#82). The five unmaintained transitive dependency families remain tracked in #19; this patch update does not remove them. Wayland screen context remains experimental pending complete application acceptance (#26).
+Full native interaction/menu and authored-Pet visual acceptance remain open (#81). The five unmaintained transitive dependency families remain tracked in #19. Wayland screen context remains experimental pending complete application acceptance (#26). See the issue-by-issue backlog reconciliation for exact remaining work; merging this PR does not close unproved acceptance criteria.
 
 ## Downloads and updates
 
@@ -21,4 +21,4 @@ In-app updates require explicit confirmation. Linux in-app installation uses App
 
 macOS uses the existing persistent self-signed identity and is not Apple-notarized. Windows installers have no Authenticode signature. Real installed-update permission retention remains unverified. MIT and third-party licenses are unchanged.
 
-See the [changelog](https://github.com/ralphschuler/orbitpal/blob/v0.13.0/CHANGELOG.md), [native World scope](https://github.com/ralphschuler/orbitpal/blob/v0.13.0/docs/NATIVE-WORLD-ADAPTER.md), [dependency tracking](https://github.com/ralphschuler/orbitpal/blob/v0.13.0/docs/DEPENDENCY-MAINTENANCE.md) and [release trust](https://github.com/ralphschuler/orbitpal/blob/v0.13.0/docs/RELEASE-TRUST.md).
+See the [changelog](https://github.com/ralphschuler/orbitpal/blob/v0.14.0/CHANGELOG.md), [backlog reconciliation](https://github.com/ralphschuler/orbitpal/blob/v0.14.0/docs/BACKLOG-2026-10-21.md), [render profiles](https://github.com/ralphschuler/orbitpal/blob/v0.14.0/docs/RENDER-PROFILES.md), [dependency tracking](https://github.com/ralphschuler/orbitpal/blob/v0.14.0/docs/DEPENDENCY-MAINTENANCE.md) and [release trust](https://github.com/ralphschuler/orbitpal/blob/v0.14.0/docs/RELEASE-TRUST.md).

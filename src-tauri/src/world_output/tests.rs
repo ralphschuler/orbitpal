@@ -143,6 +143,7 @@ fn frame(seq: u64, x: f64, walking: bool) -> FrameObservation {
         },
         walking,
         target_idle_frames: u16::MAX,
+        pet: None,
     }
 }
 #[test]
@@ -601,4 +602,49 @@ fn station_idle_gap_discards_the_pre_gap_duration() {
     let mut early = visual.clone();
     assert!(early.observe(&frame(14, 400.0, false), ReportKind::Completed, 1499, 1499).is_err());
     assert!(visual.observe(&frame(14, 400.0, false), ReportKind::Completed, 1500, 1500).is_ok());
+}
+
+#[test]
+fn pet_execution_requires_exact_authored_clip_progress_and_successful_frame_time() {
+    use crate::life_domain::Activity;
+    let (_,_,mut proof)=ready();
+    let target=Point::new(500_000,500_000).unwrap();
+    let clip=PetClip{action:"Pet".into(),duration_ms:1000};
+    assert!(VisualExecution::for_pet(proof.clone(),target,clip.clone(),0).is_err());
+    proof.binding.station_supported=true;
+    assert!(VisualExecution::for_activity(proof.clone(),target,Activity::Pet,1000,0).is_err());
+    assert!(VisualExecution::for_pet(proof.clone(),Point::new(600_000,500_000).unwrap(),clip.clone(),0).is_err());
+    let mut visual=VisualExecution::for_pet(proof.clone(),target,clip,0).unwrap();
+    let observed=|sequence,elapsed_ms|{let mut report=frame(sequence,400.,false);
+        report.pet=Some(PetFrame{action:"Pet".into(),elapsed_ms,finished:elapsed_ms==1000});report};
+    assert!(visual.clone().observe(&frame(2,400.,false),ReportKind::Delivered,0,0).is_err());
+    visual.observe(&observed(2,0),ReportKind::Delivered,0,0).unwrap();
+    visual.observe(&observed(3,0),ReportKind::Started,1,1).unwrap();
+    let mut wrong=observed(4,100);wrong.pet.as_mut().unwrap().action="pet".into();
+    assert!(visual.clone().observe(&wrong,ReportKind::Progress,101,101).is_err());
+    assert!(visual.clone().observe(&observed(4,900),ReportKind::Progress,101,101).is_err());
+    for (index,elapsed) in (100..=900).step_by(100).enumerate(){
+        visual.observe(&observed(index as u64+4,elapsed),ReportKind::Progress,u64::from(elapsed)+1,u64::from(elapsed)+1).unwrap();
+    }
+    assert!(visual.clone().observe(&observed(13,800),ReportKind::Progress,1001,1001).is_err());
+    let mut wrong=observed(13,1000);wrong.pet.as_mut().unwrap().finished=false;
+    assert!(visual.clone().observe(&wrong,ReportKind::Completed,1001,1001).is_err());
+    assert!(visual.clone().observe(&observed(13,900),ReportKind::Completed,1001,1001).is_err());
+    visual.observe(&observed(13,1000),ReportKind::Completed,1001,1001).unwrap();
+    let mut normal=VisualExecution::for_activity(proof,target,Activity::Play,1000,0).unwrap();
+    assert!(normal.observe(&observed(2,0),ReportKind::Started,0,0).is_err());
+}
+
+#[test]
+fn pet_wire_is_optional_for_legacy_actions_and_closed_when_supplied() {
+    let mut value=serde_json::to_value(frame(2,400.,false)).unwrap();
+    assert!(value.get("pet").is_none());
+    assert!(serde_json::from_value::<FrameObservation>(value.clone()).unwrap().pet.is_none());
+    value["pet"]=json!({"action":"Pet","elapsedMs":0,"finished":false});
+    assert!(serde_json::from_value::<FrameObservation>(value.clone()).unwrap().valid());
+    value["pet"]["script"]=json!("untrusted");
+    assert!(serde_json::from_value::<FrameObservation>(value).is_err());
+    for clip in [PetClip{action:"Wave".into(),duration_ms:1000},PetClip{action:"Pet".into(),duration_ms:0},PetClip{action:"Pet".into(),duration_ms:15001}] {
+        assert!(!clip.valid());
+    }
 }

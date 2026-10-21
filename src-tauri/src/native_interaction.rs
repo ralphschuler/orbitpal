@@ -63,6 +63,7 @@ pub struct NativeInteraction {
 struct Lease {
     gate: MenuGate,
     owner: MenuOwner,
+    play_scope: Option<crate::life_runtime::social_host::PlayRequestScope>,
     items: Vec<MenuItem<tauri::Wry>>,
     _menu: Menu<tauri::Wry>,
 }
@@ -71,10 +72,16 @@ struct MenuGate {
     nonce: String,
     bot: String,
     scope: String,
+    target_actor_id: Option<String>,
     opened: Instant,
     claimed: bool,
 }
 impl MenuGate {
+    fn request(&self, kind: InteractionKind) -> InteractionRequest {
+        InteractionRequest { kind, target_actor_id: if kind == InteractionKind::Play {
+            self.target_actor_id.clone()
+        } else { None } }
+    }
     fn claim(
         &mut self,
         event: &str,
@@ -139,10 +146,17 @@ pub(crate) fn install(app: &tauri::AppHandle) {
     app.on_menu_event(|app,event|{
     if !event.id.as_ref().starts_with("experience-menu-"){return}
     let runtime=app.state::<NativeInteraction>();
-    let selected={let Ok(mut current)=runtime.lease.lock()else{return};let Some(lease)=current.as_mut()else{return};let valid=(lease.owner.current)();let bot=lease.owner.bot.clone();let scope=lease.owner.scope.clone();let age=lease.gate.opened.elapsed().as_millis();let kind=lease.gate.claim(event.id.as_ref(),&bot,&scope,valid,age);kind.map(|kind|(current.take().unwrap().owner,kind))};
-    let Some((owner,kind))=selected else{return};let app=app.clone();tauri::async_runtime::spawn(async move{
-        if !(owner.current)(){return}let state=app.state::<AppState>();if state.updater.ensure_idle().is_err(){return}let request=InteractionRequest{kind,target_actor_id:None};
-        match crate::life_runtime::request_character_interaction(&app,&owner.bot,&request).await{Ok(result)=>{let _=app.emit_to("main","experience-interaction-result",result);},Err(_)=>{let _=app.emit_to("main","experience-interaction-result",serde_json::json!({"version":1,"botId":owner.bot,"kind":kind,"status":"declined","reason":"unavailable"}));}}
+    let selected={let Ok(mut current)=runtime.lease.lock()else{return};let Some(lease)=current.as_mut()else{return};let valid=(lease.owner.current)();let bot=lease.owner.bot.clone();let scope=lease.owner.scope.clone();let age=lease.gate.opened.elapsed().as_millis();let kind=lease.gate.claim(event.id.as_ref(),&bot,&scope,valid,age);kind.map(|kind|{let lease=current.take().unwrap();let request=lease.gate.request(kind);(lease.owner,request,lease.play_scope)})};
+    let Some((owner,request,play_scope))=selected else{return};let app=app.clone();tauri::async_runtime::spawn(async move{
+        if !(owner.current)(){return}let state=app.state::<AppState>();if state.updater.ensure_idle().is_err(){return}let kind=request.kind;
+        let outcome=if kind==InteractionKind::Play {
+            match request.target_actor_id.as_deref().zip(play_scope.as_ref()) {
+                Some((target,scope))=>crate::life_runtime::social_host::request_selected_play(&app,&owner.bot,target,scope)
+                    .map(|_|serde_json::json!({"version":1,"botId":owner.bot,"kind":kind,"status":"waiting","reason":null})),
+                None=>Err("interaction_unavailable".into()),
+            }
+        }else{crate::life_runtime::request_character_interaction(&app,&owner.bot,&request).await};
+        match outcome{Ok(result)=>{let _=app.emit_to("main","experience-interaction-result",result);},Err(_)=>{let _=app.emit_to("main","experience-interaction-result",serde_json::json!({"version":1,"botId":owner.bot,"kind":kind,"status":"declined","reason":"unavailable"}));}}
     });
 });
 }
@@ -196,9 +210,14 @@ pub async fn open_native_character_menu(
     state: State<'_, AppState>,
     bot_id: String,
     language: String,
+    target_actor_id: Option<String>,
 ) -> Result<MenuOpened, String> {
     if window.label() != "main" {
         return Err("experience_main_only".into());
+    }
+    if target_actor_id.as_deref().is_some_and(|target|
+        target == bot_id || !crate::experience::valid_id(target)) {
+        return Err("interaction_unavailable".into());
     }
     state.updater.ensure_idle()?;
     let owner = crate::life_runtime::native_interaction_owner(&app, &bot_id)?;
@@ -214,7 +233,11 @@ pub async fn open_native_character_menu(
     }
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let texts = labels(&language);
-    let choices = crate::life_runtime::native_interaction_choices(&app, &bot_id);
+    let mut choices = crate::life_runtime::native_interaction_choices(&app, &bot_id);
+    // The observer runs after choices has released Owned/Core; a retained scope
+    // supplies no reservation and cannot survive either actor/output replacement.
+    let play_scope = if choices[1] {crate::life_runtime::social_host::prepare_play(&app,&bot_id,target_actor_id.as_deref())} else {None};
+    choices[1] &= play_scope.is_some();
     let mut items = vec![];
     for (index, kind) in ["pet", "play", "home", "pause"].iter().enumerate() {
         items.push(
@@ -245,10 +268,12 @@ pub async fn open_native_character_menu(
                 nonce: nonce.clone(),
                 bot: bot_id.clone(),
                 scope: owner.scope.clone(),
+                target_actor_id,
                 opened: Instant::now(),
                 claimed: false,
             },
             owner: owner.clone(),
+            play_scope,
             items,
             _menu: menu.clone(),
         });
@@ -301,9 +326,20 @@ mod tests {
             nonce: "nonce".into(),
             bot: "nova".into(),
             scope: "owned_scope".into(),
+            target_actor_id: Some("friend".into()),
             opened: Instant::now(),
             claimed: false,
         }
+    }
+    #[test]
+    fn play_menu_retains_the_explicit_peer_and_other_choices_never_inherit_it() {
+        let g = gate();
+        assert_eq!(g.request(InteractionKind::Play).target_actor_id.as_deref(), Some("friend"));
+        for kind in [InteractionKind::Pet, InteractionKind::Home, InteractionKind::Pause] {
+            assert_eq!(g.request(kind).target_actor_id, None);
+        }
+        let mut no_peer = gate(); no_peer.target_actor_id = None;
+        assert_eq!(no_peer.request(InteractionKind::Play).target_actor_id, None);
     }
     #[test]
     fn exact_native_menu_choice_is_claimed_once() {

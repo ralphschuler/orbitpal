@@ -363,6 +363,7 @@ fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
                 if b.action_world != action.world_id().as_str()
                     || action.ordinal() > b.action_ordinal
                 {
+                    let before = b.character.clone();
                     b.action_world = action.world_id().as_str().into();
                     b.action_ordinal = action.ordinal();
                     b.character.credit(if event.kind() == SceneKind::Play {
@@ -370,6 +371,10 @@ fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
                     } else {
                         HobbyKind::Company
                     });
+                    let source = &event.source_events().ok_or("missing completed scene sources")?[i];
+                    super::experience_store::append_development_milestones(
+                        tx, id, &before, &b.character, source, event.at_ms(),
+                    )?;
                 }
             }
             Outcome::Cancelled => {
@@ -1013,9 +1018,10 @@ impl Store {
     pub(crate) fn social_credit_activity(
         &self,
         id: &str,
-        confirmed: &crate::life_domain::LifeState,
+        snapshot: &super::life_store::LifeSnapshot,
     ) -> Result<bool, String> {
         self.social_ready()?;
+        let confirmed = snapshot.state();
         let action = confirmed
             .current_action()
             .filter(|a| a.phase() == crate::life_domain::ActionPhase::Completed)
@@ -1050,6 +1056,20 @@ impl Store {
         {
             return Err("development activity not confirmed in Store".into());
         }
+        if snapshot.saved_at_ms() > actual.saved_at_ms()
+            || confirmed.revision() > actual.state().revision()
+            || confirmed.world_id() != actual.state().world_id() {
+            return Err("development activity snapshot changed".into());
+        }
+        let source = snapshot.events().iter().find(|event| {
+            event.origin() == super::life_store::EventOrigin::Live
+                && confirmed.recent_events().any(|record| record == event.record())
+                && actual.events().iter().any(|stored| stored.origin() == super::life_store::EventOrigin::Live
+                    && stored.record() == event.record())
+                && actual.state().recent_events().any(|record| record == event.record())
+                && matches!(event.record().event(), crate::life_domain::CommittedEvent::Completed { action_id }
+                    if action_id == current.intent().id())
+        }).ok_or("development activity has no live completion")?;
         let mut b = bot(&tx, id)?;
         let world = confirmed.world_id().as_str();
         if b.action_world == world && action.intent().id().ordinal() <= b.action_ordinal {
@@ -1057,7 +1077,11 @@ impl Store {
         }
         b.action_world = world.into();
         b.action_ordinal = action.intent().id().ordinal();
+        let before = b.character.clone();
         b.character.credit(hobby);
+        super::experience_store::append_development_milestones(
+            &tx, id, &before, &b.character, source.record().id(), snapshot.saved_at_ms(),
+        )?;
         b.revision = b
             .revision
             .checked_add(1)

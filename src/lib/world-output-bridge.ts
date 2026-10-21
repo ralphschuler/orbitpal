@@ -29,6 +29,7 @@ type Work = { command: Extract<WorldMotionCommand, { type: 'offer' }>; epoch: nu
   delivered: boolean; started: boolean; receipt: number; lastFrame: number;
   paused: boolean; control: number;
   observedFrame: number;
+  petElapsed: number;
   stable: { first: number; last: number; count: number } | null };
 const stampKeys = ['actorId', 'renderSessionId', 'bindingSequence',
   'worldInstanceId', 'stageId', 'configRevision', 'topologyRevision', 'layoutRevision',
@@ -51,7 +52,7 @@ function copyFrame(frame: LocalWorldFrame): FrameObservation {
   return Object.freeze({ frameSequence: frame.frameSequence, enclosureKind: frame.enclosureKind, viewport: Object.freeze({ ...frame.viewport }),
     clip: Object.freeze({ ...frame.clip }), anchor: Object.freeze({ ...frame.anchor }),
     posedBounds: Object.freeze({ ...frame.posedBounds }), walking: frame.walking,
-    targetIdleFrames: frame.targetIdleFrames });
+    targetIdleFrames: frame.targetIdleFrames, ...(frame.pet ? {pet:Object.freeze({...frame.pet})} : {}) });
 }
 type PendingFrame = { value: LocalWorldFrame; observed: number };
 
@@ -156,7 +157,7 @@ export class WorldOutputBridge {
     if (command.type === 'offer') {
       this.work = { command, epoch: this.epoch, delivered: false, started: false,
         paused: false, control: 0,
-        receipt: 0, lastFrame: 0, observedFrame: 0, stable: null };
+        receipt: 0, lastFrame: 0, observedFrame: 0, petElapsed: 0, stable: null };
       this.pending = null; this.lastSubmitted = -Infinity;
     } else if (command.type === 'terminal') {
       if (this.work && command.fence.actionId.ordinal >= this.work.command.fence.actionId.ordinal) {
@@ -174,6 +175,10 @@ export class WorldOutputBridge {
     if (!work || work.paused || !this.live(work.epoch) || !sameFence(value.fence, work.command.fence)
       || !Number.isSafeInteger(value.frameSequence) || value.frameSequence <= work.observedFrame) return;
     if (!this.binding || value.enclosureKind !== this.binding.enclosureKind) { this.fail('protocol_error'); return; }
+    const pet=work.command.petClip;
+    if(pet ? !value.pet || value.pet.action!==pet.action || !Number.isSafeInteger(value.pet.elapsedMs)
+      || value.pet.elapsedMs<work.petElapsed || value.pet.elapsedMs>pet.durationMs || value.pet.finished!==(value.pet.elapsedMs===pet.durationMs)
+      || !work.started&&(value.pet.elapsedMs!==0||value.pet.finished) : value.pet!==undefined){this.fail('protocol_error');return;}
     const now = this.now();
     if (!Number.isFinite(now) || now < 0) { this.fail('render_failed'); return; }
     work.observedFrame = value.frameSequence;
@@ -183,6 +188,7 @@ export class WorldOutputBridge {
       || work.delivered && !work.started && !['first_behavior', 'start_hold'].includes(value.purpose)
       || work.started && !['progress', 'start_hold'].includes(value.purpose)
       || value.purpose === 'start_hold' && value.walking) return;
+    if(value.pet)work.petElapsed=value.pet.elapsedMs;
     // At most one in-flight and one newest frame. Intermediate observations are
     // discarded, never replayed or given a new timestamp after native waiting.
     this.pending = { value: Object.freeze({ ...copyFrame(value), fence: work.command.fence, purpose: value.purpose }), observed: now };
@@ -206,7 +212,7 @@ export class WorldOutputBridge {
       // A completion request remains only an observation. Host derives arrival
       // from its own distinct accepted frames, elapsed time and current Store.
       const stable = work.stable;
-      kind = atTarget && stable && stable.count >= 3
+      kind = atTarget && (!work.command.petClip || value.pet?.finished===true) && stable && stable.count >= 3
         && pending.observed - stable.first >= Math.max(100, work.command.minimumActiveMs)
         && pending.observed - stable.last <= 250 ? 'completed' : 'progress';
       if (!atTarget) work.stable = null;

@@ -13,7 +13,13 @@
     "Kein Ausgabemonitor verfügbar.": "No output monitor is available.",
     "Der gewählte Ausgabemonitor ist nicht mehr verfügbar.": "The selected output monitor is no longer available.",
     "Das Betriebssystem hat die Fensterposition oder Größe nicht bestätigt. Die Klickdurchleitung bleibt zum Schutz des Desktops aktiv.": "The operating system did not confirm the window position or size. Click-through remains active to protect desktop access.",
-    "Die Modellgrenzen konnten nicht bestimmt werden.": "The model bounds could not be determined."
+    "Die Modellgrenzen konnten nicht bestimmt werden.": "The model bounds could not be determined.",
+    "Renderprofil": "Render profile",
+    "Ausgewogen": "Balanced",
+    "Energiesparend · höchstens 20 FPS": "Energy saving · up to 20 FPS",
+    "Renderprofil übernehmen": "Apply render profile",
+    "Gilt sofort für die Ausgaben dieser Figur und bleibt lokal gespeichert. Laufende Aktionen und Sprache werden nicht unterbrochen. Importierte oder kopierte Figuren beginnen ausgewogen.": "Applies immediately to this character’s outputs and stays saved locally. Current actions and speech continue. Imported or copied characters start balanced.",
+    "Das Renderprofil konnte nicht übernommen werden. Bitte neu laden.": "The render profile could not be applied. Please reload."
   },
   "fr": {
     "Die Figurgröße wird sofort im Studio, Desktop-Overlay und OBS angezeigt. Andere Entwürfe werden dabei nicht gespeichert. Dauerhaft übernehmen mit Änderungen speichern.": "La taille change immédiatement dans le Studio, la fenêtre de bureau et OBS. Les autres brouillons ne sont pas enregistrés. Utilise Enregistrer les modifications pour conserver ce réglage.",
@@ -29,7 +35,13 @@
     "Kein Ausgabemonitor verfügbar.": "Aucun écran de sortie n’est disponible.",
     "Der gewählte Ausgabemonitor ist nicht mehr verfügbar.": "L’écran de sortie sélectionné n’est plus disponible.",
     "Das Betriebssystem hat die Fensterposition oder Größe nicht bestätigt. Die Klickdurchleitung bleibt zum Schutz des Desktops aktiv.": "Le système n’a pas confirmé la position ou la taille de la fenêtre. Les clics continuent de la traverser pour garder le bureau accessible.",
-    "Die Modellgrenzen konnten nicht bestimmt werden.": "Les limites du modèle n’ont pas pu être déterminées."
+    "Die Modellgrenzen konnten nicht bestimmt werden.": "Les limites du modèle n’ont pas pu être déterminées.",
+    "Renderprofil": "Profil de rendu",
+    "Ausgewogen": "Équilibré",
+    "Energiesparend · höchstens 20 FPS": "Économie d’énergie · 20 FPS maximum",
+    "Renderprofil übernehmen": "Appliquer le profil de rendu",
+    "Gilt sofort für die Ausgaben dieser Figur und bleibt lokal gespeichert. Laufende Aktionen und Sprache werden nicht unterbrochen. Importierte oder kopierte Figuren beginnen ausgewogen.": "S’applique immédiatement aux sorties de cette figure et reste enregistré localement. Les actions et la parole en cours continuent. Les figures importées ou copiées démarrent en mode équilibré.",
+    "Das Renderprofil konnte nicht übernommen werden. Bitte neu laden.": "Le profil de rendu n’a pas pu être appliqué. Recharge les données."
   },
   "es": {
     "Die Figurgröße wird sofort im Studio, Desktop-Overlay und OBS angezeigt. Andere Entwürfe werden dabei nicht gespeichert. Dauerhaft übernehmen mit Änderungen speichern.": "El tamaño cambia al instante en Studio, la ventana de escritorio y OBS. Los demás borradores no se guardan. Usa Guardar cambios para conservar este ajuste.",
@@ -45,6 +57,12 @@
     "Kein Ausgabemonitor verfügbar.": "No hay ningún monitor de salida disponible.",
     "Der gewählte Ausgabemonitor ist nicht mehr verfügbar.": "El monitor de salida seleccionado ya no está disponible.",
     "Das Betriebssystem hat die Fensterposition oder Größe nicht bestätigt. Die Klickdurchleitung bleibt zum Schutz des Desktops aktiv.": "El sistema no confirmó la posición o el tamaño de la ventana. Los clics siguen atravesándola para mantener el escritorio accesible.",
-    "Die Modellgrenzen konnten nicht bestimmt werden.": "No se pudieron determinar los límites del modelo."
+    "Die Modellgrenzen konnten nicht bestimmt werden.": "No se pudieron determinar los límites del modelo.",
+    "Renderprofil": "Perfil de renderizado",
+    "Ausgewogen": "Equilibrado",
+    "Energiesparend · höchstens 20 FPS": "Ahorro de energía · hasta 20 FPS",
+    "Renderprofil übernehmen": "Aplicar perfil de renderizado",
+    "Gilt sofort für die Ausgaben dieser Figur und bleibt lokal gespeichert. Laufende Aktionen und Sprache werden nicht unterbrochen. Importierte oder kopierte Figuren beginnen ausgewogen.": "Se aplica al instante a las salidas de esta figura y se guarda localmente. Las acciones y la voz en curso continúan. Las figuras importadas o copiadas empiezan en modo equilibrado.",
+    "Das Renderprofil konnte nicht übernommen werden. Bitte neu laden.": "No se pudo aplicar el perfil de renderizado. Vuelve a cargar."
   }
 }

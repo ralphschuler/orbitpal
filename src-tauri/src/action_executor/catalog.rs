@@ -78,6 +78,7 @@ impl Policy {
             Activity::Socialize => (4000, 20_000, Effect::new(0, 0, 0, 1000)),
             Activity::LookAt => (200, 5000, Effect::new(0, 0, 0, 0)),
             Activity::Wave => (200, 8000, Effect::new(0, 0, 0, 0)),
+            Activity::Pet => (200, 30_000, Effect::new(0, 0, 0, 0)),
         };
         let valid_goal = match activity {
             Activity::MoveTo => matches!(goal, Goal::Point(_) | Goal::Slot { .. }),
@@ -98,7 +99,7 @@ impl Policy {
                 }
             ),
             Activity::LookAt => matches!(goal, Goal::Point(_) | Goal::Actor { .. }),
-            Activity::Wave => matches!(goal, Goal::Here(_)),
+            Activity::Wave | Activity::Pet => matches!(goal, Goal::Here(_)),
         };
         if presentation == Presentation::NativeRestDwell {
             if activity != Activity::Rest || !matches!(goal, Goal::Here(_)) {

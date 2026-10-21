@@ -237,6 +237,25 @@ mod tests{
     }
 
     #[tokio::test]
+    async fn contextual_autonomy_sends_the_confirmed_event_query_to_the_local_memory_mock(){
+        let(url,server)=mock_server(json!({"results":[]})).await;
+        let fixture=LocalStore::new();let profile=fixture.configure(&url,true);
+        let memory=crate::storage::social_store::Memory{
+            event_id:"scene_7_completed".into(),sequence:7,kind:crate::social::SceneKind::Play,
+            outcome:crate::social::Outcome::Completed,participants:["nova".into(),"blue".into()],
+            at_ms:1000,origin:"own".into(),shared:false,
+        };
+        let context=crate::autonomy_context::AutonomyContext::new("nova",&memory,None,fixture.store().social_epoch().unwrap()).unwrap();
+        let query=context.retrieval_query();
+        assert!(recall(fixture.store(),&profile,&query).await.unwrap().is_empty());
+        let(headers,body)=server.await.unwrap();
+        assert!(headers.starts_with("POST /v1/default/banks/nova/memories/recall HTTP/1.1"));
+        assert_eq!(body["query"],query);
+        assert!(query.contains("scene_7_completed"));assert!(query.contains("confirmed completed"));
+        assert!(!query.contains("PERSONA"));
+    }
+
+    #[tokio::test]
     async fn retain_sends_only_the_new_presented_turn_with_stable_idempotency(){
         let id=uuid::Uuid::new_v4().to_string();
         let(url,server)=mock_server(json!({"success":true,"async":true,"operation_id":id})).await;

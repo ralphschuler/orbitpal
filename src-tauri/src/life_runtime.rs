@@ -132,7 +132,9 @@ fn main_only(label: &str) -> Result<(), String> {
 pub fn operator_command(command: &str) -> bool {
     !matches!(
         command,
-        "get_life_care_preferences"
+        "get_render_settings"
+            | "set_render_quality"
+            | "get_life_care_preferences"
             | "get_experience_snapshot"
             | "open_native_character_menu"
             | "close_native_character_menu"
@@ -1458,6 +1460,7 @@ mod host_tests {
     #[test]
     fn operator_commands_block_dialogs_but_never_their_own_playback_or_status() {
         for command in [
+            "get_render_settings", "set_render_quality",
             "get_speech_audio",
             "report_playback",
             "cancel_speech_job",

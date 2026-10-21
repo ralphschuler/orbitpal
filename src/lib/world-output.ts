@@ -90,7 +90,10 @@ export type FrameObservation = {
   enclosureKind: EnclosureKind;
   anchor: CssPoint; posedBounds: CssRect; walking: boolean;
   targetIdleFrames: number; // bounded diagnostic only, never an arrival proof
+  pet?: PetFrame;
 };
+export type PetClip = Readonly<{ action: string; durationMs: number }>;
+export type PetFrame = Readonly<{ action: string; elapsedMs: number; finished: boolean }>;
 export type ActionReport = {
   version: 1; fence: MotionFence; receiptSequence: Counter;
   frame: FrameObservation;

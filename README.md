@@ -10,7 +10,7 @@ Your own animated AI cohost for Twitch and YouTube. A native **Tauri 2 + Rust** 
 
 **Early release:** expect rough edges and review provider settings before going live. Model runtimes, accounts, API keys and voices are supplied by you.
 
-The current source version is **0.11.1**. Consult the release notes for the version included in each published package.
+The current source version is **0.14.0**. Consult the release notes for the version included in each published package.
 
 ## What it does
 
@@ -29,7 +29,9 @@ The current source version is **0.11.1**. Consult the release notes for the vers
 
 Optional [Autopilot](docs/AUTOPILOT.md) gives each bot session-only roaming, silent gestures and occasional spontaneous speech, with quiet periods and a rolling hourly limit. Native character windows can roam across a selected monitor and briefly leave the visible stage. Prepared speech or explicit gestures wait for a fully visible, stationary return and a confirmed render frame; Stop cancels pending presentation and restores the fixed window position. Character size previews update Studio, desktop and OBS immediately. Built-in [screen context](docs/SCREEN-CONTEXT.md) can attach a fresh native screenshot before every dialog-model call, including normal chats and Autopilot, without MCP or Skills. Autonomous turns receive no general MCP control or Skill-script execution.
 
-[Native Ambient and Life sessions](docs/LIFE-RUNTIME.md) share one scheduler across Studio reloads and reconnects. Start a bot or the selected desktop layout explicitly for the current app session; starting opens the native character windows without rewriting saved Studio/OBS output choices. Ambient keeps roaming and gestures; Life maintains its confirmed local state without requiring a dialog model. World-object activities and social scenes remain tracked follow-up work. Native lock/sleep availability gates autonomous network work, with platform compatibility limits documented in the guide.
+[Native Ambient and Life sessions](docs/LIFE-RUNTIME.md) share one scheduler across Studio reloads and reconnects. Start a bot or the selected desktop layout explicitly for the current app session; starting opens the native character windows without rewriting saved Studio/OBS output choices. Ambient keeps roaming and gestures; experimental Life adds local care, exploration and coordinated social proposals without requiring a dialog model. Native visual delivery and the complete household acceptance remain open. Native lock/sleep availability gates autonomous network work, with platform compatibility limits documented in the guide. See the [18-issue implementation and acceptance review](docs/BACKLOG-2026-10-21.md).
+
+Each bot can use a saved [energy render profile](docs/RENDER-PROFILES.md), with at most 20 FPS, lower pixel density and no dynamic shadows. Hidden views skip unnecessary GPU submissions. These settings do not claim measured hardware savings or replace the outstanding performance matrix.
 
 The [shared stage editor](docs/WORLD-STATE.md) lets you explicitly select participants and save rest, meeting and play places independently of the selected bot. Drag named character handles, objects and movement-area corners on a monitor-shaped canvas; arrow keys provide the same editing actions without coordinate fields. Save the draft, or choose **Save and start Life** to save every placement and start the selected figures on the desktop. Plain Save starts no mode. Each bot's Life history remains separate.
 

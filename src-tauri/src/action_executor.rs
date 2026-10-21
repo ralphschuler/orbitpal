@@ -957,7 +957,7 @@ impl Executor {
                         }
                         (Activity::LookAt, Evidence::OrientationSettled) => true,
                         (
-                            Activity::Rest | Activity::Recharge | Activity::Snack | Activity::Play | Activity::Socialize | Activity::Wave,
+                            Activity::Rest | Activity::Recharge | Activity::Snack | Activity::Play | Activity::Socialize | Activity::Wave | Activity::Pet,
                             Evidence::VisualFinished,
                         ) => true,
                         _ => false,

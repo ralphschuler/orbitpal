@@ -82,7 +82,8 @@
     "Ungültige native Anfragefreigabe.": "Invalid native request authorization.",
     "Spontane Beiträge werden von der nativen Laufzeit geplant.": "Spontaneous contributions are scheduled by the native runtime.",
     "Snackpause": "Snack break",
-    "Gemeinsame Zeit": "Time together"
+    "Gemeinsame Zeit": "Time together",
+    "Streicheln": "Pet"
   },
   "fr": {
     "Bereit für selbstständige Beiträge.": "Prêt pour les interventions autonomes.",
@@ -167,7 +168,8 @@
     "Ungültige native Anfragefreigabe.": "Autorisation native de requête invalide.",
     "Spontane Beiträge werden von der nativen Laufzeit geplant.": "Les interventions spontanées sont planifiées par l’exécution native.",
     "Snackpause": "Pause collation",
-    "Gemeinsame Zeit": "Temps ensemble"
+    "Gemeinsame Zeit": "Temps ensemble",
+    "Streicheln": "Caresser"
   },
   "es": {
     "Bereit für selbstständige Beiträge.": "Listo para intervenciones autónomas.",
@@ -252,6 +254,7 @@
     "Ungültige native Anfragefreigabe.": "Autorización nativa de solicitud no válida.",
     "Spontane Beiträge werden von der nativen Laufzeit geplant.": "El entorno nativo programa las intervenciones espontáneas.",
     "Snackpause": "Pausa para un refrigerio",
-    "Gemeinsame Zeit": "Tiempo juntos"
+    "Gemeinsame Zeit": "Tiempo juntos",
+    "Streicheln": "Acariciar"
   }
 }

@@ -9,6 +9,8 @@ pub const DEFAULT_AGENTS: &str = "# Arbeitsanweisungen\nDu bist ein KI-Co-Host f
 pub const DEFAULT_PERSONA: &str = "# Nova\nDu bist Nova, ein neugieriger, freundlicher Roboter und Co-Host. Dein Humor ist trocken und respektvoll. Du bist offen darüber, eine KI zu sein. Vermeide lange Monologe und schließe nicht jede Antwort mit einer Frage ab.\n";
 pub const DEFAULT_SKILL: &str = "---\nname: stream-begruessung\ndescription: Begrüße neue Zuschauer, wenn der Streamer eine Begrüßung anfordert.\n---\n# Stream-Begrüßung\nBegrüße die Person mit ihrem angezeigten Namen in einem kurzen Satz. Verwende keine erfundenen persönlichen Informationen. Variiere die Formulierung. Bei unbekanntem Namen begrüße die Community gemeinsam.\n";
 
+#[path="render_settings.rs"]
+pub(crate) mod render_settings;
 #[path="usage_store.rs"]
 mod usage_store;
 #[path="life_store.rs"]

@@ -203,9 +203,50 @@ pub fn admit(root: &Path, profile: &Value, emote: &Value) -> Result<(Action, Val
     Ok((action, capabilities.avatar_binding))
 }
 
+/// A Pet Life action uses one actual authored embedded clip. Its closed native
+/// descriptor carries neither emote sound nor a procedural/VRMA fallback.
+pub(crate) fn pet_clip(root: &Path, profile: &Value) -> Result<crate::world_output::PetClip, String> {
+    pet_clip_in(&inspect(root, profile)?, profile)
+}
+fn pet_clip_in(capabilities: &Capabilities, profile: &Value) -> Result<crate::world_output::PetClip, String> {
+    let clips: Vec<_> = capabilities.actions.iter().filter(|action|
+        action.kind == "clip" && action.action.eq_ignore_ascii_case("pet")).collect();
+    let emotes: Vec<_> = profile["emotes"].as_array().into_iter().flatten().filter(|emote|
+        emote["action"].as_str().is_some_and(|action|action.eq_ignore_ascii_case("pet"))).collect();
+    let ([clip], [emote]) = (clips.as_slice(), emotes.as_slice()) else { return Err(UNAVAILABLE.into()); };
+    valid_configuration(profile, emote)?;
+    if resolve(capabilities, emote["action"].as_str().ok_or(UNAVAILABLE)?)?.action != clip.action {
+        return Err(UNAVAILABLE.into());
+    }
+    let seconds = clip.duration.filter(|duration|duration.is_finite() && *duration > 0.0 && *duration <= 15.0)
+        .ok_or(UNAVAILABLE)?;
+    let descriptor = crate::world_output::PetClip { action: clip.action.clone(), duration_ms: (seconds * 1000.0).ceil() as u32 };
+    if !descriptor.valid() { return Err(UNAVAILABLE.into()); }
+    Ok(descriptor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pet_uses_only_one_configured_real_authored_clip_and_its_actual_bounded_duration() {
+        let profile=json!({"id":"nova","emotes":[{"id":"pat","action":"pet","duration":9000}]});
+        let caps=capabilities(&[("Pet",1.2341)],"glb2",&[]);
+        assert_eq!(pet_clip_in(&caps,&profile).unwrap(),crate::world_output::PetClip{action:"Pet".into(),duration_ms:1235});
+        for caps in [capabilities(&[("Wave",1.0)],"glb2",&[]),
+            capabilities(&[("Pet",1.0),("pet",1.0)],"glb2",&[]),
+            capabilities(&[("Pet",15.001)],"glb2",&[]),capabilities(&[("Pet",0.0)],"glb2",&[])] {
+            assert!(pet_clip_in(&caps,&profile).is_err());
+        }
+        for emotes in [json!([]),json!([{"id":"pat","action":"wave"}]),
+            json!([{"id":"one","action":"Pet"},{"id":"two","action":"pet"}]),
+            json!([{"id":"pat","action":"pet","sound":"../unsafe"}])] {
+            let mut changed=profile.clone();changed["emotes"]=emotes;
+            assert!(pet_clip_in(&caps,&changed).is_err());
+        }
+        let mut procedural=caps;procedural.actions[0].kind="gesture";
+        assert!(pet_clip_in(&procedural,&profile).is_err());
+    }
     fn capabilities(animations: &[(&str,f64)], format: &str, bones: &[&str]) -> Capabilities {
         let mut info = crate::avatar_metadata::for_asset(Path::new("unused"),None).unwrap();
         info.format=format.into();info.bones=bones.iter().map(|name|(*name).into()).collect();

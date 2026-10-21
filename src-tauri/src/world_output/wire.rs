@@ -410,6 +410,25 @@ impl MotionFence {
             && self.action_id.actor_id().as_str() == self.actor_id
     }
 }
+/// Exact native-resolved authored clip, never a renderer capability grant.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PetClip {
+    pub action: String,
+    pub duration_ms: u32,
+}
+impl PetClip {
+    pub(crate) fn valid(&self) -> bool {
+        self.action.eq_ignore_ascii_case("pet") && (1..=15_000).contains(&self.duration_ms)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PetFrame {
+    pub action: String,
+    pub elapsed_ms: u32,
+    pub finished: bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FrameObservation {
@@ -422,6 +441,8 @@ pub(crate) struct FrameObservation {
     pub posed_bounds: CssRect,
     pub walking: bool,
     pub target_idle_frames: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pet: Option<PetFrame>,
 }
 impl FrameObservation {
     pub fn valid(&self) -> bool {
@@ -430,6 +451,7 @@ impl FrameObservation {
             && self.clip.valid()
             && self.anchor.valid()
             && self.posed_bounds.valid()
+            && self.pet.as_ref().is_none_or(|pet|pet.action.eq_ignore_ascii_case("pet") && pet.elapsed_ms <= 15_000)
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -580,6 +602,8 @@ pub(crate) enum MotionCommand {
         acceleration: f64,
         valid_for_ms: u64,
         minimum_active_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pet_clip: Option<PetClip>,
     },
     Pause {
         version: u16,

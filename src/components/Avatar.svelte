@@ -1,5 +1,7 @@
 <script lang="ts">
   import { t } from '../lib/i18n';
+  import {call,native} from '../lib/api';
+  import {renderSettingsByBot,acceptRenderSettings} from '../lib/render-settings';
   import { onMount, tick, untrack } from 'svelte';
   import { AvatarStage, type AvatarModelInfo, type DesktopAnchor } from '../lib/avatar';
   import type { EmotePayload } from '../lib/presentation';
@@ -33,6 +35,7 @@
   let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, outputUrl = '', onModelLoaded, autopilot, desktop, onDesktopAnchor, audioEnabled = false, audioStop = 0, onAudioPlaying,
     motionSource,worldOwner=false,worldChallenge,worldBinding,worldExposed=false,worldMirrorPosition,
     onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable,onWorldActivity }: Props = $props();
+  const renderQuality=$derived($renderSettingsByBot[profile?.id]?.quality??'balanced');
   let stationActivity = $state<WorldStationFrame>();
   function observeWorldActivity(value: WorldStationFrame | undefined) {
     stationActivity = value; onWorldActivity?.(value);
@@ -70,7 +73,7 @@
 
   onMount(() => {
     try {
-      const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying,
+      const renderer = new AvatarStage(host, { profile, renderQuality, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying,
         motionSource,worldOwner,worldChallenge,worldBinding,worldExposed,worldMirrorPosition,onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable,onWorldActivity:observeWorldActivity }, (message) => { emoteFailure = message; }, assetUrl);
       stage = renderer;
       return () => { disposed = true; ++assetRequest; renderer.dispose(); };
@@ -82,7 +85,12 @@
   });
 
   $effect(() => {
-    stage?.update({ profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying,
+    const id=profile?.id;
+    if(native&&id)void call('get_render_settings',{botId:id}).then(value=>{if(!disposed)acceptRenderSettings(value,id);}).catch(()=>{});
+  });
+
+  $effect(() => {
+    stage?.update({ profile, renderQuality, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying,
       motionSource,worldOwner,worldChallenge,worldBinding,worldExposed,worldMirrorPosition,onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable,onWorldActivity:observeWorldActivity });
   });
 

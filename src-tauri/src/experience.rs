@@ -5,6 +5,7 @@ use std::sync::Mutex;
 
 pub const MAX_FACTS: usize = 256;
 pub const MAX_TIME: u64 = 9_007_199_254_740_991;
+pub const MAX_FACT_TIME: u64 = 8_640_000_000_000_000;
 pub fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 96
@@ -123,6 +124,22 @@ pub enum FactKind {
     Invitation,
     Home,
     Pet,
+    HobbyMilestone,
+    GoalAchieved,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DevelopmentHobby {
+    Play,
+    Explore,
+    Company,
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DevelopmentMilestone {
+    pub hobby: DevelopmentHobby,
+    pub variation: u8,
+    pub goal_id: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,9 +160,24 @@ pub struct ActivityFact {
     pub at_ms: u64,
     pub source_event_ids: Vec<String>,
     pub shared: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub development: Option<DevelopmentMilestone>,
 }
 impl ActivityFact {
     pub fn validate(&self) -> Result<(), String> {
+        let development_valid = match (&self.kind, &self.development) {
+            (FactKind::HobbyMilestone, Some(change)) => {
+                (1..=3).contains(&change.variation) && change.goal_id.is_none()
+            }
+            (FactKind::GoalAchieved, Some(change)) => {
+                change.variation <= 3
+                    && change.goal_id.as_deref().is_some_and(valid_id)
+            }
+            (FactKind::HobbyMilestone | FactKind::GoalAchieved, None) => false,
+            (_, None) => true,
+            (_, Some(_)) => false,
+        } && (self.development.is_none()
+            || self.phase == FactPhase::Completed && self.actor_ids.len() == 1);
         if !valid_id(&self.id)
             || self.actor_ids.is_empty()
             || self.actor_ids.len() > 8
@@ -154,7 +186,8 @@ impl ActivityFact {
             || self.source_event_ids.is_empty()
             || self.source_event_ids.len() > 8
             || self.source_event_ids.iter().any(|s| !valid_id(s))
-            || self.at_ms > MAX_TIME
+            || self.at_ms > MAX_FACT_TIME
+            || !development_valid
         {
             return Err("experience_invalid_fact".into());
         }
@@ -564,7 +597,37 @@ mod tests {
             at_ms: 100,
             source_event_ids: vec![],
             shared: false,
+            development: None,
         };
         assert!(f.validate().is_err());
+    }
+    #[test]
+    fn development_facts_are_closed_completed_single_owner_data_and_old_facts_still_load() {
+        let old = serde_json::json!({"id":"fact","actorIds":["nova"],"kind":"rest",
+            "phase":"completed","atMs":100,"sourceEventIds":["native_source"],"shared":false});
+        let mut fact: ActivityFact = serde_json::from_value(old).unwrap();
+        assert!(fact.validate().is_ok());
+        assert!(fact.development.is_none());
+        fact.at_ms = MAX_FACT_TIME + 1;
+        assert!(fact.validate().is_err());
+        fact.at_ms = 100;
+        fact.kind = FactKind::HobbyMilestone;
+        assert!(fact.validate().is_err());
+        fact.development = Some(DevelopmentMilestone {
+            hobby: DevelopmentHobby::Explore, variation: 1, goal_id: None,
+        });
+        assert!(fact.validate().is_ok());
+        fact.phase = FactPhase::Started;
+        assert!(fact.validate().is_err());
+        fact.phase = FactPhase::Completed;
+        fact.actor_ids.push("blue".into());
+        assert!(fact.validate().is_err());
+        fact.actor_ids.pop();
+        fact.kind = FactKind::GoalAchieved;
+        assert!(fact.validate().is_err());
+        fact.development.as_mut().unwrap().goal_id = Some("practice_explore".into());
+        assert!(fact.validate().is_ok());
+        fact.development.as_mut().unwrap().variation = 4;
+        assert!(fact.validate().is_err());
     }
 }

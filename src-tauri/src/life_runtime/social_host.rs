@@ -468,13 +468,69 @@ pub(crate) fn snapshot(
     snapshot.scenes.truncate(32);
     Ok(snapshot)
 }
+/// Opaque retained menu selection. Neither IDs nor a new session with those IDs
+/// can replace the exact participants or native outputs observed at menu open.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SelectedParticipant {
+    bot: String,
+    session: String,
+    revision: u64,
+    scope: Scope,
+}
+impl SelectedParticipant {
+    fn from_actor(actor: &Actor) -> Self {
+        Self { bot: actor.participant.actor.as_str().into(), session: actor.participant.session.clone(),
+            revision: actor.participant.generation, scope: actor.scope.clone() }
+    }
+    fn current(&self, core: &super::core::Core) -> bool {
+        core.sessions.get(&self.bot).is_some_and(|session|
+            session.mode == super::core::Mode::Life && session.session_id == self.session
+                && session.revision == self.revision && !session.storage_failed && session.output)
+    }
+}
+#[derive(Clone)]
+pub(crate) struct PlayRequestScope {
+    participants: [SelectedParticipant; 2],
+    outputs: [crate::world_output::OutputProof; 2],
+}
+impl PlayRequestScope {
+    fn matches(&self, actors: [&Actor; 2], core: &super::core::Core, now: u64) -> bool {
+        self.participants == actors.map(SelectedParticipant::from_actor)
+            && self.participants.iter().all(|actor| actor.current(core))
+            && self.outputs.iter().all(|proof| core.world_outputs.check_proof(proof, now))
+    }
+}
+/// Read-only native menu offer; selection still runs the complete coordinator,
+/// reservation and per-phase native checks with this exact retained scope.
+pub(crate) fn prepare_play(app: &tauri::AppHandle, bot: &str, target: Option<&str>) -> Option<PlayRequestScope> {
+    let target = target.filter(|target| *target != bot && crate::experience::valid_id(target))?;
+    let state = app.state::<AppState>();
+    if state.life_runtime.social.busy(bot) || state.life_runtime.social.busy(target)
+        || state.overlay.has_any_pending_speech() { return None; }
+    let current = actors(app);
+    let a = current.iter().find(|actor| actor.participant.actor.as_str() == bot)?;
+    let b = current.iter().find(|actor| actor.participant.actor.as_str() == target)?;
+    if !a.station_supported || !b.station_supported || choose_slots(a, b, SceneKind::Play).is_none()
+        || [bot,target].iter().any(|id| state.store.experience_settings(id).ok().is_none_or(|settings|
+            !settings.preferences.allowed_animations.iter().any(|motion|motion=="play"))) { return None; }
+    let core = state.life_runtime.core.lock().ok()?;
+    let now = state.life_runtime.now();
+    if [bot, target].iter().any(|id| core.actions.as_ref().is_none_or(|actions| actions.actor_busy(id))) { return None; }
+    let selection = PlayRequestScope { participants: [a,b].map(SelectedParticipant::from_actor),
+        outputs: [core.world_outputs.ready(bot,now).ok()?, core.world_outputs.ready(target,now).ok()?] };
+    selection.matches([a,b], &core, now).then_some(selection)
+}
+pub(crate) fn request_selected_play(app: &tauri::AppHandle, bot: &str, target: &str, selection: &PlayRequestScope) -> Result<String,String> {
+    request_inner(app,bot,target,SceneKind::Play,None,Some(selection))
+}
+
 pub(crate) fn request(
     app: &tauri::AppHandle,
     bot: &str,
     target: &str,
     kind: SceneKind,
 ) -> Result<String, String> {
-    request_inner(app, bot, target, kind, None)
+    request_inner(app, bot, target, kind, None, None)
 }
 pub(crate) fn request_from_stream(
     app: &tauri::AppHandle,
@@ -495,6 +551,7 @@ pub(crate) fn request_from_stream(
             owner: owner.into(),
             authority,
         }),
+        None,
     )
 }
 fn request_inner(
@@ -503,6 +560,7 @@ fn request_inner(
     target: &str,
     kind: SceneKind,
     source: Option<StreamSource>,
+    selection: Option<&PlayRequestScope>,
 ) -> Result<String, String> {
     initialize(app)?;
     if bot == target {
@@ -557,6 +615,8 @@ fn request_inner(
     // Serialize final invitation publication with Stop/replacement. Root uses
     // Core -> Social -> Store, so an admitted group cannot miss synchronous Stop.
     let core = state.life_runtime.core.lock().map_err(|_| ERROR)?;
+    if selection.is_some_and(|selection| !selection.matches([&a,&b], &core, state.life_runtime.now()))
+        || selection.is_some() && state.overlay.has_any_pending_speech() { return Err(ERROR.into()); }
     for actor in [&a, &b] {
         let id = actor.participant.actor.as_str();
         if core.local_fence(id, state.life_runtime.now()).is_none()
@@ -1691,6 +1751,41 @@ async fn send_dialogue_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retained_menu_peer_is_invalid_after_stop_restart_or_revision_change() {
+        use super::super::core::{Core, Mode, SpeechConfig};
+        use crate::{life_availability::{Availability, Reason, Snapshot, Source},
+            life_domain::{ActorId, LifeState, Needs, WorldId}};
+        let mut core=Core::new(Snapshot {state:Availability::AwakeUnlocked,reason:Reason::Ready,
+            generation:1,source:Source::MacosCgSessionCompatibility});
+        let life=LifeState::new(ActorId::new("friend").unwrap(),WorldId::new("world").unwrap(),
+            Needs::new(5000,5000,5000,5000).unwrap());
+        let config=SpeechConfig {speak:false,min_ms:15_000,max_ms:15_000};
+        let first="11111111-1111-4111-8111-111111111111";
+        core.start("friend",Mode::Life,first.into(),config.clone(),Some(life.clone()),7,false,true,0).unwrap();
+        let selected=SelectedParticipant {bot:"friend".into(),session:first.into(),revision:core.sessions["friend"].revision,
+            scope:Scope {instance:"world-instance".into(),revision:1,topology:1}};
+        assert!(selected.current(&core));
+        core.stop("friend",1); assert!(!selected.current(&core));
+        core.start("friend",Mode::Life,"22222222-2222-4222-8222-222222222222".into(),
+            config,Some(life),7,false,true,2).unwrap();
+        assert!(!selected.current(&core));
+        let mut successor=selected.clone(); successor.session=core.sessions["friend"].session_id.clone();
+        assert!(successor.current(&core));
+        successor.revision+=1; assert!(!successor.current(&core));
+    }
+    #[test]
+    fn retained_menu_world_scope_distinguishes_configuration_and_topology_replacements() {
+        let selected=SelectedParticipant {bot:"friend".into(),session:"session_friend".into(),revision:1,
+            scope:Scope {instance:"world-instance".into(),revision:1,topology:1}};
+        for field in 0..3 {
+            let mut replacement=selected.clone();
+            match field {0=>replacement.scope.instance="new-world".into(),
+                1=>replacement.scope.revision+=1,_=>replacement.scope.topology+=1}
+            assert_ne!(selected,replacement);
+        }
+    }
+
     #[test]
     fn ancestor_cancels_both_jobs_and_late_bind_without_sharing_normal_completion() {
         let group = Arc::new(SceneCancellation::default());
