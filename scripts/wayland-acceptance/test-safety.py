@@ -511,6 +511,53 @@ class PrivatePamSession(unittest.TestCase):
         self.assertEqual(modules, {"pam_permit.so", "pam_deny.so", "pam_unix.so", "pam_systemd.so"})
         self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes.values()))
 
+    def selinux_stack(self):
+        files = self.stack()
+        close = ("session " + self.pam.SELINUX_CONTROL + " pam_selinux.so close\n").encode()
+        opening = ("session " + self.pam.SELINUX_CONTROL + " pam_selinux.so open\n").encode()
+        files["login"] = close + b"session required pam_loginuid.so\nsession optional pam_motd.so motd=/run/motd.dynamic\n" + opening + files["login"]
+        return files, close, opening
+
+    def test_packaged_selinux_close_open_pair_keeps_actual_systemd_module_required(self):
+        files, _, _ = self.selinux_stack()
+        hashes, modules = self.pam.session_stack(files.__getitem__)
+        self.assertEqual(set(hashes), set(self.pam.PAM_FILES))
+        self.assertIn("pam_selinux.so", modules)
+        self.assertIn("pam_systemd.so", modules)
+        files["common-session"] = files["common-session"].replace(b"session optional pam_systemd.so\n", b"")
+        with self.assertRaises(self.pam.Refused):
+            self.pam.session_stack(files.__getitem__)
+
+    def test_selinux_pair_cannot_be_missing_reversed_duplicated_or_late(self):
+        original, close, opening = self.selinux_stack()
+        login = original["login"]
+        for changed in (login.replace(close, b""), login.replace(opening, b""),
+                        opening + login[len(close):].replace(opening, close, 1),
+                        close + login, login + opening,
+                        b"session required pam_loginuid.so\n" + login):
+            files = {**original, "login": changed}
+            with self.subTest(changed_sha256=self.pam.hashlib.sha256(changed).hexdigest()), self.assertRaises(self.pam.Refused):
+                self.pam.session_stack(files.__getitem__)
+
+    def test_selinux_pair_rejects_other_controls_arguments_and_user_modules_between(self):
+        original, close, opening = self.selinux_stack()
+        for changed in (original["login"].replace(b"default=bad", b"default=ignore"),
+                        original["login"].replace(b"module_unknown=ignore", b"module_unknown=ok"),
+                        original["login"].replace(b"pam_selinux.so open", b"pam_selinux.so open debug"),
+                        original["login"].replace(close, close + b"session optional pam_systemd.so\n"),
+                        original["login"].replace(close, close + b"session required pam_env.so\n")):
+            files = {**original, "login": changed}
+            with self.subTest(changed_sha256=self.pam.hashlib.sha256(changed).hexdigest()), self.assertRaises(self.pam.Refused):
+                self.pam.session_stack(files.__getitem__)
+
+    def test_selinux_recognition_does_not_skip_installed_module_validation(self):
+        files, _, _ = self.selinux_stack()
+        modules = Mock(side_effect=lambda name: (_ for _ in ()).throw(OSError()) if name == "pam_selinux.so" else b"public-module")
+        result = self.pam.capability(files.__getitem__, lambda name: b"1.2.3", modules)
+        self.assertEqual(result["supported"], 0)
+        self.assertEqual(result["code"], 8)
+        self.assertIn(("pam_selinux.so",), [call.args for call in modules.call_args_list])
+
     def test_unknown_include_cycle_external_or_conditional_session_fails(self):
         for value in (b"@include foreign-stack\n", b"@include login\n", b"session optional pam_exec.so /host/action\n",
                       b"session [success=1 default=ignore] pam_systemd.so\n", b"session include common-session\n"):

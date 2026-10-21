@@ -19,6 +19,7 @@ import time
 
 PAM_FILES = ("login", "common-auth", "common-account", "common-session", "common-password")
 PACKAGES = ("systemd", "libpam-systemd", "login", "util-linux")
+SELINUX_CONTROL = "[success=ok ignore=ignore module_unknown=ignore default=bad]"
 MODULE_DIRECTORY = Path("/usr/lib/x86_64-linux-gnu/security")
 SESSION_ARGUMENTS = {
     "pam_systemd.so": {()}, "pam_unix.so": {()}, "pam_loginuid.so": {()},
@@ -106,10 +107,27 @@ def session_stack(read):
     visit("login")
     if "common-session" not in hashes or len(expanded) > 64:
         raise Refused()
-    index, systemd_count = 0, 0
+    index, systemd_count, selinux_phase = 0, 0, 0
     preamble = [("[default=1]", "pam_permit.so", ()), ("requisite", "pam_deny.so", ()), ("required", "pam_permit.so", ())]
     while index < len(expanded):
         control, module, arguments = expanded[index]
+        # Ubuntu's packaged login stack closes a previous SELinux context as
+        # its first session rule, then opens the fresh one before user-context
+        # modules. This exact pair is not a general bracket/jump interpreter.
+        if module == "pam_selinux.so":
+            if control != SELINUX_CONTROL:
+                raise Refused()
+            if arguments == ("close",) and selinux_phase == 0 and index == 0:
+                selinux_phase = 1
+            elif arguments == ("open",) and selinux_phase == 1:
+                selinux_phase = 2
+            else:
+                raise Refused()
+            modules.add(module)
+            index += 1
+            continue
+        if selinux_phase == 1 and module not in {"pam_loginuid.so", "pam_motd.so"}:
+            raise Refused()
         if expanded[index:index + 3] == preamble:
             modules.update(("pam_permit.so", "pam_deny.so"))
             index += 3
@@ -122,7 +140,7 @@ def session_stack(read):
             systemd_count += 1
         modules.add(module)
         index += 1
-    if systemd_count != 1:
+    if systemd_count != 1 or selinux_phase == 1:
         raise Refused()
     return hashes, modules
 

@@ -1,11 +1,24 @@
 # Opt-in actual Studio/application subset
 
-The actual-app subset **has not passed**: both real GNOME/KDE jobs built the
-embedded application and passed the separate baseline, but the verified app
-process exited before an accessible Studio cold start. Its cause is not yet
-established. Issue #26 remains open. The default workflow/run.sh path still runs
+The actual-app subset **has not passed**. In run 39572226669 both real GNOME/KDE
+jobs built the embedded application and passed the separate baseline, then the
+PAM capability preflight refused the packaged login session grammar (code 4)
+before creating an account or launching the actual app. Earlier app-start
+failures remain separate evidence. Issue #26 remains open. The default workflow/run.sh path still runs
 the separate successful `real_portal_prototype` baseline. Neither local harness
 tests nor that baseline establish the application cases below.
+
+The refused `/etc/pam.d/login` SHA-256 was
+`71b58114fcdc0e037b9700a92f14638a4a24f8480f23b03cc26740511fdd56dc` on both
+desktops. It matches the public Ubuntu `login`
+`1:4.16.0-2+really2.41.3-3ubuntu2.2` package exactly. Its first session rule
+closes the SELinux context and a later rule opens the fresh context. The launcher
+now recognizes only that exact ordered control/argument pair, with only
+`pam_loginuid`/`pam_motd` allowed between them. Both installed SELinux and systemd
+modules still require the existing owned-file validation. This is a bounded
+stock-grammar compatibility fix, not a general PAM control interpreter; the
+remaining real stack, child login1 session, selector and cleanup still require
+a fresh actual run.
 
 The manual workflow input `full_app` defaults to false. When explicitly enabled,
 each existing Ubuntu26.04 GNOME/KDE job first runs its normal baseline, then builds
