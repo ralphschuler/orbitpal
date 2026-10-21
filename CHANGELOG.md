@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.13.0 — 2026-10-21
+
+- Add experimental native Desktop Life output, local care/exploration, coordinated social actions and per-character development. Explicit Start, Stop, session identity and real output completions remain authoritative; the full native/hidden/sleep acceptance matrix is still open.
+- Add structured initiative context, isolated relationships, a factual private memory album, Quiet/Focus/Stream preferences, direct interaction controls and declarative content packs in German, English, French and Spanish.
+- Accept bounded authenticated Twitch/YouTube event proposals and votes, with optional budgeted social dialogue and local fallback. Preserve source, session, permission and late-result cancellation guards.
+- Add optional explicitly granted macOS window/cursor geometry and nonshipping native acceptance/renderer measurement tools. Wayland full-app and native resource/lifecycle validation remain experimental; fixture results are not physical acceptance.
+- Update to Tauri 2.12.5 and retain explicit upstream tracking for the five unmaintained dependency families.
+
 - Replace Life's coordinate forms with a visual desktop layout editor: drag characters, places and movement-area handles, or use arrow keys, Shift, Delete and Escape. Preserve draft protection and checked partial saves in German, English, French and Spanish.
 - Add an explicit Save-and-Start flow for the saved participants, show actual desktop character windows, and initialize missing Life state on that deliberate first start. Keep profile output choices and permissions unchanged; Stop invalidates pending starts and late playback.
 - Route Life speech through its exact session desktop output and mute the Studio model-audio mirror. Keep real playback gates for speech, subtitles and emotes. Ordinary Life windows do not yet execute native World movement; #72 remains open.

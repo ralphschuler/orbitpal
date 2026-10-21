@@ -4,6 +4,8 @@ This is the reproducible follow-up for [issue #19](https://github.com/ralphschul
 
 ## Audit snapshot
 
+This snapshot records maintenance commit `2b0aff967fc4de376da80317485f6e96546011df`, before the application-only 0.13.0 version bump. The lockfile/report hashes below refer to that exact audited snapshot.
+
 `cargo-audit 0.22.2` fetched the RustSec database online before both full lockfile scans on 2026-10-21, after the supported Tauri 2.12.5 patch update. Both reports identify revision `4b587f00996ebe5c05a73eaef105ef241e876414`, updated `2026-10-21T08:20:38+02:00`, with 1,348 advisories. Both commands exited 0; no advisory IDs, architectures or operating systems were excluded.
 
 | Lockfile | Packages | Vulnerability findings | Unmaintained warnings | Lockfile SHA-256 |
