@@ -67,8 +67,26 @@ export function parseRuntimeIntent(value:unknown, botId:string):RuntimeIntent|nu
   if(reason!==null&&!['cancelled','declined','failed','cancelling'].includes(phase))return invalid();
   return {version:1,botId:id(p.botId),sessionId:id(p.sessionId),source,activity,phase,target:parsedTarget,reason,actorIds};
 }
-export function currentRuntimeIntent(intent:RuntimeIntent|null|undefined, botId:string, active:boolean, paused:boolean):RuntimeIntent|null {
-  return active&&!paused&&intent?.botId===botId?intent:null;
+export function intentScopeKey(botId:string, sessionId:string|null):string {
+  return JSON.stringify([botId,sessionId]);
+}
+interface IntentRead {readonly epoch:number;readonly scope:string}
+/** One panel lifetime; every accepted event or newer read retires old responses. */
+export class IntentSnapshotReads {
+  private epoch=0;
+  begin(botId:string, sessionId:string|null):IntentRead {
+    return {epoch:++this.epoch,scope:intentScopeKey(botId,sessionId)};
+  }
+  invalidate():void {this.epoch++;}
+  current(read:IntentRead, botId:string, sessionId:string|null):boolean {
+    return read.epoch===this.epoch&&read.scope===intentScopeKey(botId,sessionId);
+  }
+}
+export function acceptsIntentEvent(intent:RuntimeIntent|null|undefined, botId:string, sessionId:string|null):boolean {
+  return !!sessionId&&intent?.botId===botId&&intent.sessionId===sessionId;
+}
+export function currentRuntimeIntent(intent:RuntimeIntent|null|undefined, botId:string, sessionId:string|null, active:boolean, paused:boolean):RuntimeIntent|null {
+  return active&&!paused&&acceptsIntentEvent(intent,botId,sessionId)?intent!:null;
 }
 export function intentTargetLabel(target:IntentTarget):string {
   switch(target.type) {

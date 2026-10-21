@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {currentRuntimeIntent,intentTargetLabel,parseRuntimeIntent} from './life-intent';
+import {acceptsIntentEvent,IntentSnapshotReads,intentScopeKey,currentRuntimeIntent,intentTargetLabel,parseRuntimeIntent} from './life-intent';
 import {parseExperience} from './experience';
 const action=()=>({version:1,botId:'nova',sessionId:'session_nova',source:'action',activity:'rest',phase:'execution',target:{type:'here'},reason:null,actorIds:['nova']});
 const social=()=>({...action(),source:'social',activity:'play',phase:'invitation',target:null,actorIds:['nova','friend']});
@@ -36,10 +36,46 @@ describe('current native intention',()=>{
   });
   it('hides stale runtime intention after Stop, central pause or bot selection',()=>{
     const intent=parseRuntimeIntent(action(),'nova');
-    expect(currentRuntimeIntent(intent,'nova',true,false)).toBe(intent);
-    expect(currentRuntimeIntent(intent,'nova',false,false)).toBeNull();
-    expect(currentRuntimeIntent(intent,'nova',true,true)).toBeNull();
-    expect(currentRuntimeIntent(intent,'friend',true,false)).toBeNull();
+    expect(currentRuntimeIntent(intent,'nova','session_nova',true,false)).toBe(intent);
+    expect(currentRuntimeIntent(intent,'nova','session_nova',false,false)).toBeNull();
+    expect(currentRuntimeIntent(intent,'nova','session_nova',true,true)).toBeNull();
+    expect(currentRuntimeIntent(intent,'friend','session_friend',true,false)).toBeNull();
+  });
+  it('does not revive the same bot’s old intention after a quick Stop and Start',()=>{
+    const old=parseRuntimeIntent(action(),'nova');
+    expect(currentRuntimeIntent(old,'nova','session_nova',true,false)).toBe(old);
+    expect(currentRuntimeIntent(old,'nova',null,false,false)).toBeNull();
+    expect(currentRuntimeIntent(old,'nova','session_restarted',true,false)).toBeNull();
+    const fresh=parseRuntimeIntent({...action(),sessionId:'session_restarted'},'nova');
+    expect(currentRuntimeIntent(fresh,'nova','session_restarted',true,false)).toBe(fresh);
+  });
+  it('rejects late read scopes and old/null events after same-bot replacement',async()=>{
+    const captured=intentScopeKey('nova','session_nova');
+    const lateRead=Promise.resolve(parseRuntimeIntent(action(),'nova'));
+    const current=intentScopeKey('nova','session_restarted');
+    const value=await lateRead;
+    expect(captured===current).toBe(false);
+    expect(acceptsIntentEvent(value,'nova','session_restarted')).toBe(false);
+    expect(acceptsIntentEvent(null,'nova','session_restarted')).toBe(false);
+    expect(acceptsIntentEvent(value,'nova',null)).toBe(false);
+    const fresh=parseRuntimeIntent({...social(),sessionId:'session_restarted'},'nova');
+    expect(acceptsIntentEvent(fresh,'nova','session_restarted')).toBe(true);
+  });
+  it('keeps a newer same-session event ahead of an outstanding Approach read',async()=>{
+    const reads=new IntentSnapshotReads(),ticket=reads.begin('nova','session_nova');
+    const lateRead=Promise.resolve(parseRuntimeIntent({...action(),phase:'approach'},'nova'));
+    let displayed=parseRuntimeIntent({...action(),phase:'completed'},'nova');
+    expect(acceptsIntentEvent(displayed,'nova','session_nova')).toBe(true);
+    reads.invalidate(); // The actual event handler does this before accepting the event.
+    const stale=await lateRead;
+    if(reads.current(ticket,'nova','session_nova'))displayed=stale;
+    expect(displayed?.phase).toBe('completed');
+    const beforeNull=reads.begin('nova','session_nova');
+    const scopedNullRead=reads.begin('nova','session_nova'); // Null events require this fresh host read.
+    expect(reads.current(beforeNull,'nova','session_nova')).toBe(false);
+    expect(reads.current(scopedNullRead,'nova','session_nova')).toBe(true);
+    expect(reads.current(scopedNullRead,'nova','session_restarted')).toBe(false);
+    reads.invalidate();expect(reads.current(scopedNullRead,'nova','session_nova')).toBe(false);
   });
   it('never promotes an album fact into an absent intention',()=>{
     const snapshot={version:1,botId:'nova',settings:{version:1,revision:0,preferences:{version:1,preset:'focus',volume:35,initiativeCooldownMs:60000,movementRadius:250,allowedAnimations:['idle'],intentVisible:true,desktopAnchors:false,cursorPlay:false,streamImpulses:false,impulseParticipants:[]}},paused:false,
