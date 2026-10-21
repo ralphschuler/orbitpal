@@ -13,6 +13,21 @@ separate evidence. Issue #26 remains open. The default workflow/run.sh path stil
 runs the separate successful `real_portal_prototype` baseline. Neither local
 harness tests nor that baseline establish the application cases below.
 
+In [run 39590344043](https://github.com/ralphschuler/orbitpal/actions/runs/39590344043),
+head `6702eb5e8152172af65eaaab4b5d86c834fa514e`, the GNOME baseline and
+controlled app fixtures passed, then actual-app startup refused the installed
+PAM stack before creating an account or launching the app. Its closed numeric
+record now identifies the exact rejected form in `common-password`:
+`password optional pam_gnome_keyring.so`, without arguments. The parser now
+recognizes only that observed file/type/control/module/argument combination.
+The [systemd 259.9 PAM service implementation](https://github.com/systemd/systemd/blob/v259.9/src/core/exec-invoke.c#L1299-L1307)
+calls account, credential and session operations; it never calls the password
+change operation `pam_chauthtok`. GNOME documents the module's separate
+[password-management role](https://wiki.gnome.org/Projects/GnomeKeyring/Pam/Manual).
+Auth/account/session keyring rules, other controls/files and all options remain
+refused. No PAM file, account, system service or credential setting is changed.
+This compatibility change still needs a new actual GNOME run.
+
 The refused `/etc/pam.d/login` SHA-256 was
 `71b58114fcdc0e037b9700a92f14638a4a24f8480f23b03cc26740511fdd56dc` on both
 desktops. It matches the public Ubuntu `login`
@@ -45,11 +60,16 @@ fields locate a refused non-session rule without exporting a config line:
 `stackModule` recognizes only 1 gnome-keyring, 2 exec, 3 kwallet5, 4 kwallet6;
 0 means unknown. `stackControl` is 1 required, 2 requisite, 3 sufficient,
 4 optional, 5 bracket control; `stackArguments` is 0 absent or 1 present.
-Unclassified failures and supported stacks leave these fields zero. These codes
-do not permit any new module or argument. No guessed GNOME rule is accepted.
+Unclassified failures and supported stacks leave these fields zero. The codes
+are observations, not permission to accept another module or argument.
 
 The manual workflow input `full_app` defaults to false. When explicitly enabled,
-each existing Ubuntu26.04 GNOME/KDE job first runs its normal baseline, then builds
+each existing Ubuntu26.04 GNOME/KDE job checks the installed stack with the same
+read-only capability command immediately after package installation, before any
+native compilation. An unsupported stack fails early and retains the same
+bounded numeric report; it creates no account, bus connection or PAM session.
+The actual-app launcher repeats the check before its existing account creation.
+The job otherwise first runs its normal baseline, then builds
 the actual embedded Tauri app with `pnpm tauri build --debug --no-bundle` and runs
 a fresh isolated desktop/account using:
 

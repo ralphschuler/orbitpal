@@ -618,15 +618,81 @@ class PrivatePamSession(unittest.TestCase):
 
     def test_unknown_password_module_is_still_refused_with_closed_rule_metadata(self):
         files = self.stack()
-        files["common-password"] = b"password optional pam_gnome_keyring.so\n"
+        files["common-password"] = b"password optional pam_exec.so\n"
         with self.assertRaises(self.pam.StackRefused) as failed:
             self.pam.session_stack(files.__getitem__)
         self.assertEqual(failed.exception.args, ())
         self.assertEqual(str(failed.exception), "")
         value = self.pam.capability(files.__getitem__, lambda _: b"259.9-1", lambda _: b"public-module")
         self.assertEqual((value["supported"], value["code"]), (0, 4))
-        self.assertEqual([value[key] for key in ("stackFile", "stackRule", "stackModule", "stackControl", "stackArguments")], [5, 2, 1, 4, 0])
+        self.assertEqual([value[key] for key in ("stackFile", "stackRule", "stackModule", "stackControl", "stackArguments")], [5, 2, 2, 4, 0])
+        self.assertNotIn("pam_exec", json.dumps(value))
+
+    def test_observed_optional_password_only_rule_does_not_enter_executed_modules(self):
+        files = self.stack()
+        files["common-password"] += b"password optional pam_gnome_keyring.so\n"
+        hashes, modules = self.pam.session_stack(files.__getitem__)
+        self.assertEqual(hashes["common-password"], self.pam.hashlib.sha256(files["common-password"]).hexdigest())
+        self.assertNotIn("pam_gnome_keyring.so", modules)
+        installed = Mock(return_value=b"public-module")
+        value = self.pam.capability(files.__getitem__, lambda _: b"259.9-1", installed)
+        self.assertEqual((value["supported"], value["code"]), (1, 0))
+        self.assertEqual(value["moduleCount"], 4)
+        self.assertNotIn(("pam_gnome_keyring.so",), [call.args for call in installed.call_args_list])
         self.assertNotIn("keyring", json.dumps(value))
+
+    def test_password_recognition_is_exact_file_control_module_and_no_arguments(self):
+        for file, rule in (("common-password", b"password required pam_gnome_keyring.so\n"),
+                           ("common-password", b"-password optional pam_gnome_keyring.so\n"),
+                           ("common-password", b"password requisite pam_gnome_keyring.so\n"),
+                           ("common-password", b"password sufficient pam_gnome_keyring.so\n"),
+                           ("common-password", b"password optional pam_gnome_keyring.so auto_start\n"),
+                           ("common-password", b"password optional pam_gnome_keyring.so use_authtok\n"),
+                           ("common-password", b"password optional pam_kwallet5.so\n"),
+                           ("login", b"password optional pam_gnome_keyring.so\n")):
+            files = self.stack()
+            files[file] += rule
+            with self.subTest(file=file, rule=rule), self.assertRaises(self.pam.StackRefused):
+                self.pam.session_stack(files.__getitem__)
+
+    def test_capability_entrypoint_has_no_bus_account_session_or_cleanup_operations(self):
+        from unittest.mock import patch
+        files = self.stack()
+        def read(path, _maximum):
+            return files[path.name] if path.parent == Path("/etc/pam.d") else b"public-module"
+        for supported in (True, False):
+            files["common-password"] = (b"password optional pam_gnome_keyring.so\n" if supported
+                                        else b"password optional pam_exec.so\n")
+            process = SimpleNamespace(run=Mock(return_value=SimpleNamespace(returncode=0, stdout=b"259.9-1")),
+                                      DEVNULL=subprocess.DEVNULL, PIPE=subprocess.PIPE)
+            with patch.object(self.pam, "require_job") as job, patch.object(self.pam, "public_bytes", side_effect=read), \
+                 patch.object(self.pam, "subprocess", process), patch.object(self.pam, "Bus") as bus, \
+                 patch.object(self.pam, "context") as context, patch.object(self.pam, "root_record") as cleanup, \
+                 patch.object(self.pam, "print", create=True) as output:
+                code = self.pam.main(["capability"])
+            self.assertEqual(code, 0 if supported else 1)
+            job.assert_called_once_with()
+            bus.assert_not_called(); context.assert_not_called(); cleanup.assert_not_called()
+            output.assert_called_once()
+            value = json.loads(output.call_args.args[0])
+            self.assertEqual(value["supported"], int(supported))
+            self.assertLess(len(output.call_args.args[0]), 8192)
+            self.assertEqual(len(process.run.call_args_list), 4)
+            self.assertTrue(all(call.args[0][:2] == ["/usr/bin/dpkg-query", "-W"] for call in process.run.call_args_list))
+
+    def test_full_app_installed_capability_gate_precedes_every_native_compile(self):
+        workflow = (DIRECTORY.parent.parent / ".github/workflows/wayland-acceptance.yml").read_text()
+        start = workflow.index("      - name: Check installed PAM capability before native compilation (actual-app only)")
+        end = workflow.index("      - name: Compile genuine GBM EGL", start)
+        step = workflow[start:end]
+        self.assertLess(workflow.index("sudo apt-get install -y gnome-shell"), start)
+        self.assertLess(start, workflow.index("cargo test --manifest-path"))
+        self.assertLess(start, workflow.index("pnpm tauri build"))
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.full_app", step)
+        self.assertIn("python3 scripts/wayland-acceptance/pam-session.py capability", step)
+        self.assertIn('wayland-app-$ACCEPTANCE_DESKTOP/pam-session-capability.txt', step)
+        for forbidden in ("sudo", "useradd", "systemd-run", "loginctl", "pam_read", "|| true"):
+            self.assertNotIn(forbidden, step)
 
     def test_unknown_rule_arguments_and_names_never_escape_or_become_supported(self):
         for text, module, arguments in ((b"password optional pam_gnome_keyring.so PRIVATE_ARGUMENT\n", 1, 1),

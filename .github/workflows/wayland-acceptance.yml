@@ -66,6 +66,13 @@ jobs:
           else
             sudo apt-get install -y kwin-wayland plasma-workspace qt6-wayland xdg-desktop-portal-kde libwayland-dev libwayland-bin plasma-wayland-protocols
           fi
+      - name: Check installed PAM capability before native compilation (actual-app only)
+        if: github.event_name == 'workflow_dispatch' && inputs.full_app
+        env:
+          ACCEPTANCE_DESKTOP: ${{ matrix.desktop }}
+        run: |
+          install -d -m 0700 "$RUNNER_TEMP/wayland-app-$ACCEPTANCE_DESKTOP"
+          python3 scripts/wayland-acceptance/pam-session.py capability > "$RUNNER_TEMP/wayland-app-$ACCEPTANCE_DESKTOP/pam-session-capability.txt"
       - name: Compile genuine GBM EGL rendering capability check
         run: |
           cc -std=c11 -Wall -Wextra -Werror scripts/wayland-acceptance/render-probe.c $(pkg-config --cflags --libs gbm egl glesv2 libdrm) -o "$RUNNER_TEMP/orbitpal-wayland-render-probe"

@@ -111,6 +111,13 @@ def session_stack(read):
                 other = re.fullmatch(r"-?(auth|account|password)\s+(\[[^\]]{1,128}\]|required|requisite|sufficient|optional)\s+(pam_[a-z0-9_]+\.so)(?:\s+([^#]{1,256}))?", line)
                 if not other:
                     raise StackRefused(name, 1)
+                # Observed GNOME stock password-only rule. systemd v259.9's
+                # PAMName path never calls pam_chauthtok; it still executes
+                # account/session and auth credential hooks. Do not permit
+                # this module in those stacks, another file, or with options.
+                if not line.startswith("-") and (name, other[1], other[2], other[3], other[4]) == (
+                        "common-password", "password", "optional", "pam_gnome_keyring.so", None):
+                    continue
                 if other[3] not in NON_SESSION_MODULES:
                     raise StackRefused(name, 2, other[3], other[2], bool(other[4]))
                 continue
