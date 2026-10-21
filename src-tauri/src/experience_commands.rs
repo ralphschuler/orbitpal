@@ -1,6 +1,6 @@
 //! Operator UI entry points; none accepts facts, native receipts or platform impulses.
 use crate::{
-    content_packs::{Installed, Manifest, Preview},
+    content_packs::{ContentRef, Installed, Manifest, Preview},
     experience::{self, ExperienceRuntime, InteractionRequest, Preferences, Snapshot},
     AppState,
 };
@@ -127,6 +127,20 @@ pub fn list_content_packs(
 ) -> Result<Vec<Installed>, String> {
     main_only(&window)?;
     state.store.content_packs()
+}
+#[tauri::command]
+pub fn create_content_pack_character(
+    window: tauri::WebviewWindow,
+    state: State<'_, AppState>,
+    reference: ContentRef,
+) -> Result<serde_json::Value, String> {
+    main_only(&window)?;
+    state.updater.ensure_idle()?;
+    let _idle = state.generation.try_lock().map_err(|_| "experience_busy")?;
+    let profile = state.store.create_content_pack_character(&reference)?;
+    Ok(
+        serde_json::json!({"version":1,"botId":profile["id"],"name":profile["name"],"contentRef":profile["contentRef"]}),
+    )
 }
 #[tauri::command]
 pub fn preview_content_pack(

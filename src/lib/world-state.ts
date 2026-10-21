@@ -1,3 +1,4 @@
+import {parseContentRef,type ContentRef} from './content-reference';
 import { publicActor, type PublicActor } from './life-runtime';
 export const worldReasons = {
   database:'Die gemeinsame Bühne ist vorübergehend nicht verfügbar.',
@@ -15,14 +16,14 @@ export type AnchorKind=keyof typeof anchorKinds;
 export interface WorldPoint {x:number;y:number}
 export interface WorldRegion {min:WorldPoint;max:WorldPoint}
 export interface WorldSlot {id:string;position:WorldPoint}
-export interface WorldAnchor {id:string;kind:AnchorKind;position:WorldPoint;slots:WorldSlot[]}
+export interface WorldAnchor {id:string;kind:AnchorKind;position:WorldPoint;slots:WorldSlot[];contentRef?:ContentRef}
 export interface WorldConfig {schemaVersion:1;stageId:string;revision:number;safeRegion:WorldRegion;members:string[];anchors:WorldAnchor[]}
 export interface WorldRecord {config:WorldConfig;outputBinding:{monitorId:string|null}}
 export interface WorldSettings {version:1;instanceId:string;availability:'ready'|'not_initialized'|'unavailable';reason:keyof typeof worldReasons|null;record:WorldRecord|null}
 export interface WorldSnapshot {schemaVersion:1;stageId:string;configRevision:number;sequence:number;safeRegion:WorldRegion;anchors:WorldAnchor[];actors:{actorId:string;position:WorldPoint;life:PublicActor|null}[];occupied:{slotId:string;actorId:string}[]}
 export interface WorldState {version:1;instanceId:string;availability:WorldSettings['availability'];reason:WorldSettings['reason'];snapshot:WorldSnapshot|null}
 export interface PointDraft {x:string;y:string}
-export interface WorldDraft {stageId:string;revision:number;monitorId:string;members:string[];safeRegion:{min:PointDraft;max:PointDraft};anchors:{id:string;kind:AnchorKind;position:PointDraft;slots:{id:string;position:PointDraft}[]}[]}
+export interface WorldDraft {stageId:string;revision:number;monitorId:string;members:string[];safeRegion:{min:PointDraft;max:PointDraft};anchors:{id:string;kind:AnchorKind;position:PointDraft;slots:{id:string;position:PointDraft}[];contentRef?:ContentRef}[]}
 export const invalidWorld=()=>new Error('Die Bühnenangaben sind ungültig. Prüfe Bewegungsbereich, Plätze und Teilnehmer.');
 function object(value:unknown):Record<string,unknown>{if(!value||typeof value!=='object'||Array.isArray(value))throw invalidWorld();return value as Record<string,unknown>;}
 function number(value:unknown,min=0,max=Number.MAX_SAFE_INTEGER):number{if(typeof value!=='number'||!Number.isSafeInteger(value)||value<min||value>max)throw invalidWorld();return value;}
@@ -33,7 +34,7 @@ function point(value:unknown):WorldPoint{const item=object(value);return{x:numbe
 function region(value:unknown):WorldRegion{const item=object(value),min=point(item.min),max=point(item.max);if(min.x>=max.x||min.y>=max.y)throw invalidWorld();return{min,max};}
 function inside(p:WorldPoint,r:WorldRegion):void{if(p.x<r.min.x||p.y<r.min.y||p.x>r.max.x||p.y>r.max.y)throw invalidWorld();}
 function anchors(value:unknown,safe:WorldRegion):WorldAnchor[]{
-  const result=list(value,64).map(raw=>{const item=object(raw),kind=item.kind;if(typeof kind!=='string'||!Object.hasOwn(anchorKinds,kind))throw invalidWorld();const position=point(item.position);inside(position,safe);const slots=list(item.slots,128).map(raw=>{const slot=object(raw),position=point(slot.position);inside(position,safe);return{id:id(slot.id),position};});if(!slots.length)throw invalidWorld();return{id:id(item.id),kind:kind as AnchorKind,position,slots};});
+  const result=list(value,64).map(raw=>{const item=object(raw),kind=item.kind;if(typeof kind!=='string'||!Object.hasOwn(anchorKinds,kind))throw invalidWorld();const position=point(item.position);inside(position,safe);const slots=list(item.slots,128).map(raw=>{const slot=object(raw),position=point(slot.position);inside(position,safe);return{id:id(slot.id),position};});if(!slots.length)throw invalidWorld();return{id:id(item.id),kind:kind as AnchorKind,position,slots,...(item.contentRef==null?{}:{contentRef:parseContentRef(item.contentRef)})};});
   unique(result.map(anchor=>anchor.id));const slots=result.flatMap(anchor=>anchor.slots);if(slots.length>128)throw invalidWorld();unique(slots.map(slot=>slot.id));return result;
 }
 export function parseWorldConfig(value:unknown):WorldConfig{const item=object(value);if(item.schemaVersion!==1)throw invalidWorld();const safeRegion=region(item.safeRegion),members=list(item.members,64).map(id);unique(members);return{schemaVersion:1,stageId:id(item.stageId),revision:number(item.revision),safeRegion,members,anchors:anchors(item.anchors,safeRegion)};}

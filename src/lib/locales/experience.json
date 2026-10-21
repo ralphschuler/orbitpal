@@ -214,7 +214,15 @@
     "Nur Nachrichten aus deiner verbundenen Twitch- oder YouTube-Verbindung dürfen Spiel- oder Grußvorschläge senden. Chattexte ändern keine Rechte und starten Life nicht.": "Only messages from your connected Twitch or YouTube connection may propose play or greetings. Chat text cannot change permissions or start Life.",
     "In die Warteschlange aufgenommen": "Added to queue",
     "Befehle:": "Commands:",
-    "Vote-Befehle sind einzelne Vorschläge, keine ausgezählte Abstimmung. Aufnahme in die Warteschlange bestätigt noch keine Ausführung.": "Vote commands are individual proposals, not a counted poll. Admission to the queue does not confirm execution."
+    "Vote-Befehle sind einzelne Vorschläge, keine ausgezählte Abstimmung. Aufnahme in die Warteschlange bestätigt noch keine Ausführung.": "Vote commands are individual proposals, not a counted poll. Admission to the queue does not confirm execution.",
+    "Aus aktiven Inhaltspaketen": "From active content packs",
+    "Paketobjekt · Vorlage derzeit nicht aktiv": "Pack object · template currently inactive",
+    "Figur „{name}“ anlegen": "Create character “{name}”",
+    "Neue Figur angelegt. Wähle sie in der Figurenliste und füge sie der Bühne hinzu. Sie wird dadurch nicht gestartet.": "Character created. Choose it in the character list and add it to the stage. This does not start it.",
+    "Die Paketvorlage ist nicht in genau dieser aktiven Version verfügbar.": "The pack template is not available in this exact active version.",
+    "Diese Aktion ist nur im Installationskontext verfügbar.": "This action is only available in the installation context.",
+    "Beende zuerst die laufende Antwort.": "Finish the current response first.",
+    "Auf Paketversion {version} umstellen": "Switch to pack version {version}"
   },
   "fr": {
     "Alltag deiner Figuren": "Le quotidien de vos personnages",
@@ -431,7 +439,15 @@
     "Nur Nachrichten aus deiner verbundenen Twitch- oder YouTube-Verbindung dürfen Spiel- oder Grußvorschläge senden. Chattexte ändern keine Rechte und starten Life nicht.": "Seuls les messages de votre connexion Twitch ou YouTube peuvent proposer des jeux ou salutations. Le texte du chat ne modifie pas les autorisations et ne démarre pas Life.",
     "In die Warteschlange aufgenommen": "Ajoutés à la file",
     "Befehle:": "Commandes :",
-    "Vote-Befehle sind einzelne Vorschläge, keine ausgezählte Abstimmung. Aufnahme in die Warteschlange bestätigt noch keine Ausführung.": "Les commandes vote sont des propositions individuelles, sans dépouillement. L’ajout à la file ne confirme pas l’exécution."
+    "Vote-Befehle sind einzelne Vorschläge, keine ausgezählte Abstimmung. Aufnahme in die Warteschlange bestätigt noch keine Ausführung.": "Les commandes vote sont des propositions individuelles, sans dépouillement. L’ajout à la file ne confirme pas l’exécution.",
+    "Aus aktiven Inhaltspaketen": "Depuis les packs de contenu actifs",
+    "Paketobjekt · Vorlage derzeit nicht aktiv": "Objet de pack · modèle actuellement inactif",
+    "Figur „{name}“ anlegen": "Créer le personnage « {name} »",
+    "Neue Figur angelegt. Wähle sie in der Figurenliste und füge sie der Bühne hinzu. Sie wird dadurch nicht gestartet.": "Personnage créé. Choisissez-le dans la liste et ajoutez-le à la scène. Il ne démarre pas automatiquement.",
+    "Die Paketvorlage ist nicht in genau dieser aktiven Version verfügbar.": "Le modèle du pack n’est pas disponible dans cette version active exacte.",
+    "Diese Aktion ist nur im Installationskontext verfügbar.": "Cette action est réservée au contexte de l’installation.",
+    "Beende zuerst die laufende Antwort.": "Terminez d’abord la réponse en cours.",
+    "Auf Paketversion {version} umstellen": "Passer à la version {version} du pack"
   },
   "es": {
     "Alltag deiner Figuren": "La vida diaria de tus personajes",
@@ -648,6 +664,14 @@
     "Nur Nachrichten aus deiner verbundenen Twitch- oder YouTube-Verbindung dürfen Spiel- oder Grußvorschläge senden. Chattexte ändern keine Rechte und starten Life nicht.": "Solo los mensajes de tu conexión de Twitch o YouTube pueden proponer juegos o saludos. El chat no cambia permisos ni inicia Life.",
     "In die Warteschlange aufgenommen": "Añadidos a la cola",
     "Befehle:": "Comandos:",
-    "Vote-Befehle sind einzelne Vorschläge, keine ausgezählte Abstimmung. Aufnahme in die Warteschlange bestätigt noch keine Ausführung.": "Los comandos vote son propuestas individuales, no una votación contabilizada. Entrar en la cola no confirma la ejecución."
+    "Vote-Befehle sind einzelne Vorschläge, keine ausgezählte Abstimmung. Aufnahme in die Warteschlange bestätigt noch keine Ausführung.": "Los comandos vote son propuestas individuales, no una votación contabilizada. Entrar en la cola no confirma la ejecución.",
+    "Aus aktiven Inhaltspaketen": "De paquetes de contenido activos",
+    "Paketobjekt · Vorlage derzeit nicht aktiv": "Objeto de paquete · plantilla inactiva",
+    "Figur „{name}“ anlegen": "Crear personaje «{name}»",
+    "Neue Figur angelegt. Wähle sie in der Figurenliste und füge sie der Bühne hinzu. Sie wird dadurch nicht gestartet.": "Personaje creado. Elígelo en la lista y añádelo al escenario. Esto no lo inicia.",
+    "Die Paketvorlage ist nicht in genau dieser aktiven Version verfügbar.": "La plantilla no está disponible en esta versión activa exacta.",
+    "Diese Aktion ist nur im Installationskontext verfügbar.": "Esta acción solo está disponible en el contexto de la instalación.",
+    "Beende zuerst die laufende Antwort.": "Termina primero la respuesta actual.",
+    "Auf Paketversion {version} umstellen": "Cambiar a la versión {version} del paquete"
   }
 }

@@ -1,4 +1,5 @@
-import { canonicalToPercent, percentToCanonical, type PointDraft, type WorldDraft, type WorldPoint, type WorldRegion, type WorldSnapshot } from './world-state';
+import {parseContentRef,type ContentRef} from './content-reference';
+import { anchorKinds,type AnchorKind,canonicalToPercent, percentToCanonical, type PointDraft, type WorldDraft, type WorldPoint, type WorldRegion, type WorldSnapshot } from './world-state';
 
 /** Local editing geometry only. These values never grant runtime/output authority. */
 export const EDITOR_EDGE = 1_000_000;
@@ -64,7 +65,7 @@ export function cloneEditorModel(model: EditorModel): EditorModel {
   return {
     draft: { ...model.draft, members: [...model.draft.members],
       safeRegion: { min: { ...model.draft.safeRegion.min }, max: { ...model.draft.safeRegion.max } },
-      anchors: model.draft.anchors.map(anchor => ({ ...anchor, position: { ...anchor.position }, slots: anchor.slots.map(slot => ({ ...slot, position: { ...slot.position } })) })) },
+      anchors: model.draft.anchors.map(anchor => ({ ...anchor, ...(anchor.contentRef?{contentRef:{...anchor.contentRef}}:{}),position: { ...anchor.position }, slots: anchor.slots.map(slot => ({ ...slot, position: { ...slot.position } })) })) },
     positions: Object.fromEntries(Object.entries(model.positions).map(([id, point]) => [id, { ...point }])),
   };
 }
@@ -127,4 +128,24 @@ export function removeEditorTarget(model: EditorModel, target: EditorTarget): Ed
     if (anchor && anchor.slots.length > 1) anchor.slots = anchor.slots.filter(slot => slot.id !== target.id);
   }
   return next;
+}
+
+
+/** Place a base or versioned package object through the same visual geometry. */
+export function addEditorObject(model:EditorModel,kind:AnchorKind,suffix:string,reference?:ContentRef):EditorModel {
+  if(!Object.hasOwn(anchorKinds,kind)||!/^[A-Za-z0-9_-]{1,89}$/.test(suffix))throw Error('pack_invalid_reference');
+  if(model.draft.anchors.length>=64||model.draft.anchors.reduce((n,a)=>n+a.slots.length,0)>=128)return model;
+  const id=`anchor_${suffix}`,slotId=`slot_${suffix}`;
+  if(model.draft.anchors.some(a=>a.id===id||a.slots.some(s=>s.id===slotId)))return model;
+  const contentRef=reference?parseContentRef(reference):undefined,next=cloneEditorModel(model),region=editorRegion(model.draft),position=editorSpawn(region,model.draft.anchors.length+8);
+  const seat={x:position.x,y:Math.min(region.max.y,position.y+80_000)};
+  next.draft.anchors.push({id,kind,position:writeEditorPoint(position),slots:[{id:slotId,position:writeEditorPoint(seat)}],...(contentRef?{contentRef}:{})});
+  return next;
+}
+
+/** Explicit version migration changes only provenance, never geometry or authority. */
+export function migrateEditorObject(model:EditorModel,anchorId:string,reference:ContentRef,kind:AnchorKind):EditorModel {
+  const ref=parseContentRef(reference),anchor=model.draft.anchors.find(a=>a.id===anchorId),old=anchor?.contentRef;
+  if(!anchor||!old||anchor.kind!==kind||old.packageId!==ref.packageId||old.templateId!==ref.templateId||ref.packageVersion<=old.packageVersion)return model;
+  const next=cloneEditorModel(model);next.draft.anchors.find(a=>a.id===anchorId)!.contentRef=ref;return next;
 }

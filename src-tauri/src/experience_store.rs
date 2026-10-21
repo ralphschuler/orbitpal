@@ -1,7 +1,7 @@
 //! Child module of storage: bounded typed settings/facts and declarative manifests.
 use super::Store;
 use crate::{
-    content_packs::{self, Installed, Manifest},
+    content_packs::{self, ContentRef, Installed, Manifest},
     experience::{ActivityFact, Preferences, Settings, MAX_FACTS, MAX_TIME},
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -71,6 +71,40 @@ fn source_id(id: &crate::life_domain::EventId) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(serde_json::to_vec(id).map_err(storage)?);
     Ok(format!("life_{digest:x}"))
+}
+fn pack_character<'a>(
+    packs: &'a [Installed],
+    reference: &ContentRef,
+) -> Result<&'a content_packs::Character, String> {
+    packs
+        .iter()
+        .find(|p| {
+            p.active
+                && p.manifest.id == reference.package_id
+                && p.manifest.version == reference.package_version
+        })
+        .and_then(|p| {
+            p.manifest
+                .characters
+                .iter()
+                .find(|c| c.id == reference.template_id)
+        })
+        .ok_or_else(|| "pack_inactive_template".into())
+}
+/// Only a fresh UUID directory created by this call is eligible for rollback.
+struct NewCharacterDirectory {
+    path: std::path::PathBuf,
+    committed: bool,
+}
+impl Drop for NewCharacterDirectory {
+    fn drop(&mut self) {
+        if !self.committed
+            && std::fs::symlink_metadata(&self.path)
+                .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
+        {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 }
 impl Store {
     fn experience_owner(&self, bot: &str) -> Result<serde_json::Value, String> {
@@ -343,6 +377,101 @@ impl Store {
         tx.commit().map_err(storage)?;
         Ok(facts)
     }
+    /// Explicit Main creation only. No current selection, credentials, API defaults or Life state are inherited.
+    pub fn create_content_pack_character(
+        &self,
+        reference: &ContentRef,
+    ) -> Result<serde_json::Value, String> {
+        use serde_json::json;
+        if self.fixed_profile.is_some() {
+            return Err("experience_invalid_scope".into());
+        }
+        let template = pack_character(&self.content_packs()?, reference)?.clone();
+        let mut profile: serde_json::Value =
+            serde_json::from_str(super::DEFAULT_PROFILE).map_err(storage)?;
+        let id = super::new_bot_id(&template.name);
+        profile["id"] = json!(id);
+        profile["name"] = json!(template.name);
+        profile["tagline"] = json!("");
+        profile["avatar"]["assetPath"] = json!(template.avatar);
+        profile["contentRef"] = serde_json::to_value(reference).map_err(storage)?;
+        for section in ["model", "voice", "stt", "hindsight"] {
+            profile[section]["apiKeyId"] = json!("");
+        }
+        profile["model"]["toolsEnabled"] = json!(false);
+        profile["voice"]["enabled"] = json!(false);
+        profile["mcpServers"] = json!([]);
+        profile["skillsEnabled"] = json!([]);
+        profile["allowSkillScripts"] = json!(false);
+        profile["screenContext"] = json!({"enabled":false,"displayId":""});
+        profile["wakeWord"]["enabled"] = json!(false);
+        profile["hindsight"]["enabled"] = json!(false);
+        profile["hindsight"]["bankId"] = json!("");
+        profile["autopilot"]["speak"] = json!(false);
+        profile["autopilot"]["instructions"] = json!("");
+        profile["chat"]["mode"] = json!("manual");
+        profile["chat"]["autoReply"] = json!(false);
+        profile["chat"]["trigger"] = json!(format!("@{}", super::bot_slug(&template.name)));
+        for platform in ["twitch", "youtube"] {
+            profile["chat"][platform]["sendReplies"] = json!(false);
+        }
+        for (platform, key) in [
+            ("twitch", "secretId"),
+            ("youtube", "apiKeyId"),
+            ("youtube", "sendSecretId"),
+        ] {
+            profile["chat"][platform][key] = json!("");
+        }
+        profile["output"]["mode"] = json!("studio");
+        profile["output"]["streamingEnabled"] = json!(false);
+        if let Some(emotes) = profile["emotes"].as_array_mut() {
+            for emote in emotes {
+                emote["allowChat"] = json!(false);
+            }
+        }
+        super::life_store::strip_profile_payload(&mut profile);
+        super::validate_profile(&profile)?;
+        // Reserve only this new path. Creating it first keeps ensure_profile's
+        // legacy Skill migration outside our transaction and leaves no grants.
+        let directory = self.profile_dir(&profile)?;
+        std::fs::create_dir(&directory).map_err(storage)?;
+        let mut created = NewCharacterDirectory {
+            path: directory,
+            committed: false,
+        };
+        self.ensure_profile(&profile)?;
+        let mut db = self.db.lock().map_err(storage)?;
+        super::social_store::initialize(&mut db)?;
+        let tx = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let packs = read::<Vec<Installed>>(&tx, "content-packs-v1")?.unwrap_or_default();
+        content_packs::validate_catalog(&packs)?;
+        let current = pack_character(&packs, reference)?;
+        // Re-resolve the actual catalog after filesystem preparation, under the
+        // same transaction that makes the new owner and initial traits visible.
+        if current.name != template.name
+            || current.avatar != template.avatar
+            || current.sociability != template.sociability
+            || current.rest_preference != template.rest_preference
+        {
+            return Err("experience_stale_revision".into());
+        }
+        tx.execute(
+            "INSERT INTO bot_profiles(id,profile) VALUES(?1,?2)",
+            params![id, profile.to_string()],
+        )
+        .map_err(storage)?;
+        super::social_store::seed_template_character(
+            &tx,
+            &id,
+            current.sociability,
+            current.rest_preference,
+        )?;
+        tx.commit().map_err(storage)?;
+        created.committed = true;
+        Ok(profile)
+    }
     pub fn content_packs(&self) -> Result<Vec<Installed>, String> {
         let db = self.db.lock().map_err(storage)?;
         let packs = read::<Vec<Installed>>(&db, "content-packs-v1")?.unwrap_or_default();
@@ -448,6 +577,97 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0.root);
         }
+    }
+    fn template_ref() -> ContentRef {
+        ContentRef {
+            package_id: "desk-garden".into(),
+            package_version: 1,
+            template_id: "desk-garden:sprout".into(),
+        }
+    }
+    fn install_garden(store: &Store, active: bool) {
+        let manifest =
+            Manifest::parse(include_str!("../../public/content-packs/desk-garden.json")).unwrap();
+        store.install_content_pack(manifest).unwrap();
+        if active {
+            store
+                .set_content_pack_active("desk-garden", 1, true)
+                .unwrap();
+        }
+    }
+    #[test]
+    fn character_template_is_explicit_fresh_and_never_selects_or_inherits_permissions() {
+        let f = Fixture::new();
+        let selected = f.0.profile().unwrap();
+        install_garden(&f.0, true);
+        let created = f.0.create_content_pack_character(&template_ref()).unwrap();
+        let id = created["id"].as_str().unwrap();
+        assert_ne!(created["id"], selected["id"]);
+        assert_eq!(f.0.profile().unwrap(), selected);
+        assert_eq!(created["name"], "Sprout");
+        assert_eq!(created["avatar"]["assetPath"], "builtin:robot-expressive");
+        assert_eq!(
+            created["contentRef"],
+            serde_json::to_value(template_ref()).unwrap()
+        );
+        for section in ["model", "voice", "stt", "hindsight"] {
+            assert_eq!(created[section]["apiKeyId"], "");
+        }
+        assert_eq!(created["chat"]["twitch"]["secretId"], "");
+        assert_eq!(created["chat"]["youtube"]["apiKeyId"], "");
+        assert_eq!(created["chat"]["youtube"]["sendSecretId"], "");
+        for (section, key) in [
+            ("model", "toolsEnabled"),
+            ("voice", "enabled"),
+            ("wakeWord", "enabled"),
+            ("screenContext", "enabled"),
+            ("hindsight", "enabled"),
+            ("chat", "autoReply"),
+            ("autopilot", "speak"),
+            ("output", "streamingEnabled"),
+        ] {
+            assert_eq!(created[section][key], false);
+        }
+        assert_eq!(created["mcpServers"], serde_json::json!([]));
+        assert_eq!(created["skillsEnabled"], serde_json::json!([]));
+        assert_eq!(created["allowSkillScripts"], false);
+        assert!(f.0.load_life(id).unwrap().is_none());
+        assert!(f.0.experience_facts(id).unwrap().is_empty());
+        let social = f.0.social_snapshot(id).unwrap();
+        assert_eq!(social.development.traits.sociability, 450);
+        assert_eq!(social.development.traits.rest_preference, 600);
+        assert!(social.memories.is_empty());
+        assert!(social.relationships.is_empty());
+    }
+    #[test]
+    fn inactive_missing_and_wrong_version_templates_never_create_profiles() {
+        let f = Fixture::new();
+        install_garden(&f.0, false);
+        let count = f.0.list_bots().unwrap().len();
+        assert!(f.0.create_content_pack_character(&template_ref()).is_err());
+        f.0.set_content_pack_active("desk-garden", 1, true).unwrap();
+        let mut wrong = template_ref();
+        wrong.package_version = 2;
+        assert!(f.0.create_content_pack_character(&wrong).is_err());
+        wrong = template_ref();
+        wrong.template_id = "desk-garden:unknown".into();
+        assert!(f.0.create_content_pack_character(&wrong).is_err());
+        f.0.set_content_pack_active("desk-garden", 2, false)
+            .unwrap();
+        assert!(f.0.create_content_pack_character(&template_ref()).is_err());
+        assert_eq!(f.0.list_bots().unwrap().len(), count);
+    }
+    #[test]
+    fn scoped_profile_context_cannot_create_a_template_owner() {
+        let f = Fixture::new();
+        install_garden(&f.0, true);
+        let id = f.0.profile().unwrap()["id"].as_str().unwrap().to_owned();
+        assert!(f
+            .0
+            .scoped(&id)
+            .unwrap()
+            .create_content_pack_character(&template_ref())
+            .is_err());
     }
     #[test]
     fn missing_settings_inherit_only_saved_speech_intent() {

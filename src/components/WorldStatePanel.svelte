@@ -3,6 +3,7 @@
   import { Map, Play, RefreshCw, Save, Square, Users } from '@lucide/svelte';
   import { call, native, onEvent, prettyError } from '../lib/api';
   import { t, locale, formatNumber } from '../lib/i18n';
+  import {activeObjectTemplates,type PackObjectTemplate} from '../lib/content-templates';
   import {lifeSceneParticipants,LIFE_SCENE_OVER_LIMIT} from '../lib/life-scene-participants';
   import { draftWorld, invalidWorld, newWorldDraft, parseWorldSettings, parseWorldState, placeWorld, saveWorld, worldDraft, worldDraftChanged, worldReasons, type WorldDraft, type WorldRecord, type WorldSettings, type WorldState } from '../lib/world-state';
   import { containsEditorPoint, writeEditorPoint, type ActorPositions } from '../lib/world-editor';
@@ -25,6 +26,7 @@
     selectedBotId = '', outputUrl = '', executionBlocked = true, registerWorld = unavailable, onMove = unavailable,onSlotMove=unavailable,
     onStart, onStop, active = false, starting = false }: Props = $props();
   const uid = $props.id();
+  let objectTemplates=$state<PackObjectTemplate[]>([]);
   let settings = $state<WorldSettings>();
   let confirmedState = $state<WorldState>();
   let baseline = $state<WorldRecord | null>(null);
@@ -35,7 +37,7 @@
   let error = $state(''), message = $state(''), unconfirmed = $state(false);
   let form = $state<HTMLFormElement>();
   let previewOpen=$state(false);
-  let alive = false, operation = 0, startGeneration = 0;
+  let alive = false, operation = 0, startGeneration = 0,templateRequest=0;
   const participants = $derived(lifeSceneParticipants(draft?.members??[]));
   const configDirty = $derived(!!draft && worldDraftChanged(draft, baseline));
   const dirty = $derived(configDirty || Object.keys(positions).length > 0 || gestureActive);
@@ -66,6 +68,7 @@
     } catch (cause) { if (alive && ticket === operation) { error = prettyError(cause); unconfirmed = true; } }
     finally { if (alive && ticket === operation) pending = false; }
   }
+  async function refreshTemplates(){const ticket=++templateRequest;try{const templates=activeObjectTemplates(await call('list_content_packs'));if(alive&&ticket===templateRequest)objectTemplates=templates;}catch{if(alive&&ticket===templateRequest)objectTemplates=[];}}
   function prepare() {
     if (settings?.availability !== 'not_initialized' || draft || pending || disabled) return;
     draft = newWorldDraft(`stage_${crypto.randomUUID()}`); baseline = null; message = '';
@@ -161,11 +164,12 @@
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); event.stopPropagation(); if (!pending && !gestureActive) save(); }
   }
   onMount(() => {
-    alive = true; if (visible) void refresh();
+    alive = true; if (visible) void refresh();void refreshTemplates();
+    const stopPacks=onEvent('content-packs-changed',()=>{void refreshTemplates();});
     const stopEvents = onEvent('cohost://world-state', value => { if (!alive) return; try { acceptPublic(value); } catch (cause) { error = prettyError(cause); unconfirmed = true; } });
     window.addEventListener('keydown', shortcut, { capture: true });
     const timer = setInterval(() => { if (visible && settings && !error) void refresh(); }, 5000);
-    return () => { alive = false; ++operation; ++startGeneration; clearInterval(timer); void stopEvents.then(unlisten => unlisten()); window.removeEventListener('keydown', shortcut, { capture: true }); onDirtyChange(false); onBusyChange(false); };
+    return () => { alive = false; ++operation; ++startGeneration; clearInterval(timer);void stopPacks.then(fn=>fn()); void stopEvents.then(unlisten => unlisten()); window.removeEventListener('keydown', shortcut, { capture: true }); onDirtyChange(false); onBusyChange(false); };
   });
 </script>
 
@@ -183,7 +187,7 @@
       <fieldset disabled={pending || disabled}>
         <legend class="sr-only">{$t('Bühnenentwurf bearbeiten')}</legend>
         <div class="editor-context"><p>{$t('Deine Anordnung gilt beim nächsten Start. Speichern allein startet Life nicht.')}</p><label for={`${uid}-monitor`}>{$t('Zielmonitor')}<select id={`${uid}-monitor`} bind:value={draft.monitorId} onchange={() => message = ''}><option value="">{$t('Sicherer Ersatzmonitor · automatisch geprüft')}</option>{#if draft.monitorId && !displays.some(display => display.id === draft?.monitorId)}<option value={draft.monitorId}>{$t('Gespeicherter Monitor · derzeit nicht verfügbar')}</option>{/if}{#each displays as display (display.id)}<option value={display.id}>{display.name}</option>{/each}</select></label></div>
-        <WorldSceneEditor {draft} {positions} {snapshot} {bots} active={visible} disabled={pending || disabled} onChange={edit} onGestureChange={value => gestureActive = value}/>
+        <WorldSceneEditor {draft} {positions} {snapshot} {bots} {objectTemplates} active={visible} disabled={pending || disabled} onChange={edit} onGestureChange={value => gestureActive = value}/>
       </fieldset>
       {#if participants.overLimit}<p id={`${uid}-participant-limit`} class="world-warning" role="status">{$t(LIFE_SCENE_OVER_LIMIT,{count:participants.count,limit:participants.limit})}</p>{/if}
       <div class="world-actions">
