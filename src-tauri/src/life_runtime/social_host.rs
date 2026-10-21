@@ -264,7 +264,12 @@ fn actors(app: &tauri::AppHandle) -> Vec<Actor> {
             life,
         });
     }
-    result.sort_by(|a, b| a.participant.actor.cmp(&b.participant.actor));
+    result.sort_by(|a, b| {
+        a.participant
+            .actor
+            .as_str()
+            .cmp(b.participant.actor.as_str())
+    });
     result
 }
 fn kind_anchor(kind: SceneKind) -> AnchorKind {

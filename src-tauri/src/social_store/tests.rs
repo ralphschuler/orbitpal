@@ -322,7 +322,7 @@ fn terminal_pair_and_scene_commit_atomically_and_accept_retained_actual_completi
             old.state().revision(),
             0,
             LifeEvent::Plan {
-                activity: Activity::Idle,
+                activity: Activity::LookAt,
                 completion_effect: NeedEffect::default(),
             },
             event.at_ms() + 1,
