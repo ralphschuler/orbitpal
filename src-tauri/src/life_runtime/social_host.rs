@@ -14,12 +14,54 @@ use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Arc, Mutex, Weak,
     },
 };
 use tauri::Manager;
 const ERROR: &str = "social_native_unavailable";
 const LEASE_MS: u64 = 120_000;
+#[derive(Default)]
+struct SceneCancellation {
+    cancelled: AtomicBool,
+    bound: Mutex<Vec<Weak<AtomicBool>>>,
+}
+impl SceneCancellation {
+    fn stop(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        if let Ok(bound) = self.bound.lock() {
+            for token in bound.iter().filter_map(Weak::upgrade) {
+                token.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+}
+/// Native-only ancestor cancellation; each real action keeps its own token.
+#[derive(Clone)]
+pub(crate) struct SceneActionGuard {
+    group: Arc<SceneCancellation>,
+    bot: String,
+}
+impl SceneActionGuard {
+    pub(crate) fn actor(&self) -> &str {
+        &self.bot
+    }
+    pub(crate) fn current(&self) -> bool {
+        !self.group.cancelled.load(Ordering::SeqCst)
+    }
+    pub(crate) fn bind(&self, cancel: &Arc<AtomicBool>) -> Result<(), String> {
+        let mut bound = self.group.bound.lock().map_err(|_| ERROR)?;
+        bound.retain(|weak| {
+            weak.upgrade()
+                .is_some_and(|token| !token.load(Ordering::SeqCst))
+        });
+        if !self.current() || bound.len() >= 4 {
+            cancel.store(true, Ordering::SeqCst);
+            return Err(ERROR.into());
+        }
+        bound.push(Arc::downgrade(cancel));
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Scope {
     instance: String,
@@ -110,6 +152,7 @@ struct Memory {
     initialized: bool,
     coordinator: Coordinator,
     scopes: BTreeMap<String, [Scope; 2]>,
+    groups: BTreeMap<String, Arc<SceneCancellation>>,
     leases: BTreeMap<String, Vec<Reservation>>,
     terminal: BTreeMap<String, Directive>,
     errors: BTreeMap<String, SceneView>,
@@ -118,6 +161,26 @@ struct Memory {
     conversations: BTreeMap<String, ConversationContext>,
     turns: BTreeMap<String, Turn>,
     next_initiative: u64,
+}
+impl Memory {
+    fn cancel_scene(&mut self, id: &str, reason: Reason, now: u64) -> Result<(), String> {
+        if let Some(group) = self.groups.get(id) {
+            group.stop();
+        }
+        self.coordinator.cancel(id, reason, now)
+    }
+    fn stop_terminals(&self) {
+        for scene in self
+            .coordinator
+            .views_all()
+            .into_iter()
+            .filter(|s| matches!(s.phase, Phase::Cancelled | Phase::Declined))
+        {
+            if let Some(group) = self.groups.get(&scene.id) {
+                group.stop();
+            }
+        }
+    }
 }
 #[derive(Default)]
 pub(crate) struct SocialRuntime {
@@ -141,7 +204,10 @@ impl SocialRuntime {
             .retain(|_, turn| !turn.participants.iter().any(|id| id == bot));
         let scenes = m.coordinator.views(bot);
         for scene in scenes.into_iter().filter(|s| !s.phase.terminal()) {
-            m.coordinator.cancel(&scene.id, Reason::Operator, now)?;
+            if let Some(group) = m.groups.get(&scene.id) {
+                group.stop();
+            }
+            m.cancel_scene(&scene.id, Reason::Operator, now)?;
         }
         Ok(())
     }
@@ -391,8 +457,10 @@ pub(crate) fn request(
         state.life_runtime.social_now(),
     )?;
     m.scopes.insert(scene.id.clone(), [a.scope, b.scope]);
+    m.groups
+        .insert(scene.id.clone(), Arc::new(SceneCancellation::default()));
     if let Err(error) = state.store.social_save_scene(&scene) {
-        m.coordinator.cancel(
+        m.cancel_scene(
             &scene.id,
             Reason::Unavailable,
             state.life_runtime.social_now(),
@@ -402,6 +470,27 @@ pub(crate) fn request(
     drop(m);
     publish(app, &scene.participants);
     Ok(scene.id)
+}
+fn scene_guard(app: &tauri::AppHandle, id: &str, bot: &str) -> Result<SceneActionGuard, String> {
+    let state = app.state::<AppState>();
+    let m = state.life_runtime.social.memory.lock().map_err(|_| ERROR)?;
+    if !m
+        .coordinator
+        .views(bot)
+        .iter()
+        .any(|s| s.id == id && matches!(s.phase, Phase::Approach | Phase::Execution))
+    {
+        return Err(ERROR.into());
+    }
+    let group = m.groups.get(id).cloned().ok_or(ERROR)?;
+    let guard = SceneActionGuard {
+        group,
+        bot: bot.into(),
+    };
+    if !guard.current() {
+        return Err(ERROR.into());
+    }
+    Ok(guard)
 }
 pub(crate) fn respond(
     app: &tauri::AppHandle,
@@ -435,8 +524,10 @@ pub(crate) fn cancel_scene(app: &tauri::AppHandle, bot: &str, id: &str) -> Resul
     if !m.coordinator.views(bot).iter().any(|s| s.id == id) {
         return Err(ERROR.into());
     }
-    m.coordinator
-        .cancel(id, Reason::Operator, state.life_runtime.social_now())
+    if let Some(group) = m.groups.get(id) {
+        group.stop();
+    }
+    m.cancel_scene(id, Reason::Operator, state.life_runtime.social_now())
 }
 pub(crate) fn cancel_actor(app: &tauri::AppHandle, bot: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
@@ -465,13 +556,20 @@ fn reserve(
     let state = app.state::<AppState>();
     let runtime = &state.life_runtime;
     let core = runtime.core.lock().map_err(|_| ERROR)?;
+    let current = crate::world_hub::current_actors(&core);
+    let stamps = scene
+        .participants
+        .iter()
+        .map(|bot| {
+            current
+                .iter()
+                .find(|a| a.stamp.actor_id().as_str() == bot)
+                .map(|a| a.stamp.clone())
+                .ok_or(ERROR)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut reserved = Vec::new();
-    for (bot, slot) in scene.participants.iter().zip(slots) {
-        let stamp = crate::world_hub::current_actors(&core)
-            .into_iter()
-            .find(|a| a.stamp.actor_id().as_str() == bot)
-            .ok_or(ERROR)?
-            .stamp;
+    for ((bot, slot), stamp) in scene.participants.iter().zip(slots).zip(stamps) {
         match state.world.reserve_current(
             &core,
             &state.store,
@@ -522,7 +620,22 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>();
-        let _ = drive(&app).await;
+        if drive(&app).await.is_err() {
+            if let Ok(mut m) = state.life_runtime.social.memory.lock() {
+                for scene in m
+                    .coordinator
+                    .views_all()
+                    .into_iter()
+                    .filter(|scene| !scene.phase.terminal())
+                {
+                    let _ = m.cancel_scene(
+                        &scene.id,
+                        Reason::Unavailable,
+                        state.life_runtime.social_now(),
+                    );
+                }
+            }
+        }
         state
             .life_runtime
             .social
@@ -568,7 +681,7 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                 })
             });
             if changed {
-                m.coordinator.cancel(&scene.id, Reason::Unavailable, now)?;
+                m.cancel_scene(&scene.id, Reason::Unavailable, now)?;
             }
         }
         m.coordinator.reconcile(
@@ -578,6 +691,7 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                 .collect::<Vec<_>>(),
             now,
         )?;
+        m.stop_terminals();
         for actor in &current {
             for scene in m.coordinator.views(actor.participant.actor.as_str()) {
                 if !scene.phase.terminal() {
@@ -625,8 +739,32 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
         let directives = {
             let mut m = runtime.social.memory.lock().map_err(|_| ERROR)?;
             let mut work = m.coordinator.drain();
-            work.extend(m.terminal.values().cloned());
-            m.terminal.clear();
+            for directive in &work {
+                if let Directive::Terminal { scene, event, .. } = directive {
+                    if event.outcome() != Outcome::Completed {
+                        if let Some(group) = m.groups.get(&scene.id) {
+                            group.stop();
+                        }
+                    }
+                    m.terminal.insert(scene.id.clone(), directive.clone());
+                }
+            }
+            let already = work
+                .iter()
+                .filter_map(|d| {
+                    if let Directive::Terminal { scene, .. } = d {
+                        Some(scene.id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            work.extend(
+                m.terminal
+                    .iter()
+                    .filter(|(id, _)| !already.contains(id))
+                    .map(|(_, directive)| directive.clone()),
+            );
             work
         };
         if directives.is_empty() {
@@ -687,8 +825,11 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                                     .memory
                                     .lock()
                                     .map_err(|_| ERROR)?
-                                    .coordinator
-                                    .cancel(&scene.id, Reason::Unavailable, runtime.social_now())?;
+                                    .cancel_scene(
+                                        &scene.id,
+                                        Reason::Unavailable,
+                                        runtime.social_now(),
+                                    )?;
                                 continue;
                             }
                         }
@@ -704,12 +845,14 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                             .and_then(|leases| leases.iter().find(|r| r.bot == *bot))
                             .map(|r| r.lease.clone())
                             .ok_or(ERROR)?;
+                        let guard = scene_guard(app, &scene.id, bot)?;
                         let planned = start_slot_activity(
                             app,
                             bot,
                             activity,
                             slots[i].clone(),
                             Some(lease.clone()),
+                            Some(guard),
                         )
                         .await;
                         let old = runtime
@@ -741,7 +884,7 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                                     .bind_action(&scene.id, &life, runtime.social_now())
                                     .is_err()
                                 {
-                                    m.coordinator.cancel(
+                                    m.cancel_scene(
                                         &scene.id,
                                         Reason::Unavailable,
                                         runtime.social_now(),
@@ -749,7 +892,7 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                                 }
                             }
                             Err(_) => {
-                                m.coordinator.cancel(
+                                m.cancel_scene(
                                     &scene.id,
                                     Reason::Unavailable,
                                     runtime.social_now(),
@@ -829,6 +972,10 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                         }
                         m.errors.insert(scene.id.clone(), failed);
                         m.coordinator.released(&scene.id)?;
+                        m.terminal.remove(&scene.id);
+                        if let Some(group) = m.groups.remove(&scene.id) {
+                            group.stop();
+                        }
                         m.leases.remove(&scene.id);
                         m.actions.remove(&scene.id);
                         m.scopes.remove(&scene.id);
@@ -848,6 +995,10 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                     m.leases.remove(&scene.id);
                     m.scopes.remove(&scene.id);
                     m.coordinator.released(&scene.id)?;
+                    m.terminal.remove(&scene.id);
+                    if let Some(group) = m.groups.remove(&scene.id) {
+                        group.stop();
+                    }
                     drop(m);
                     if event.outcome() == Outcome::Completed {
                         let _ = start_conversation(app, event);

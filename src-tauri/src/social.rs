@@ -232,6 +232,12 @@ impl Coordinator {
     pub(crate) fn busy(&self, bot: &str) -> bool {
         self.busy.contains_key(bot)
     }
+    pub(crate) fn views_all(&self) -> Vec<SceneView> {
+        self.scenes
+            .values()
+            .map(|scene| scene.view.clone())
+            .collect()
+    }
     pub(crate) fn views(&self, bot: &str) -> Vec<SceneView> {
         self.scenes
             .values()
