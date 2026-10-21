@@ -272,7 +272,7 @@ class HarnessSafetyTests(unittest.TestCase):
 
     def test_bus_refusal_classifies_only_the_exact_service_metadata_without_reading_it(self):
         cases = [(stat.S_IFLNK | 0o777, 0), (stat.S_IFREG | 0o666, 0), (stat.S_IFREG | 0o644, 1001)]
-        for service in runner.SERVICES:
+        for service in ("org.a11y.Bus",):
             for mode, uid in cases:
                 with patch.object(runner.Path, "lstat", return_value=SimpleNamespace(st_mode=mode, st_uid=uid)), patch.object(runner, "bounded") as read:
                     with self.assertRaises(runner.BusServiceRefusal) as caught:
@@ -1075,6 +1075,110 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                 self.assertEqual(result, 0 if missing is None else 1)
                 self.assertEqual(record["reason"], None if missing is None else "numeric_artifact_invalid")
                 self.assertTrue(any(argv[:3] == ["/usr/sbin/ip", "netns", "delete"] for argv in calls))
+
+
+class DconfActivatorTests(unittest.TestCase):
+    def metadata(self, *, mode=stat.S_IFREG | 0o755, uid=0, inode=42, size=100):
+        return SimpleNamespace(st_mode=mode, st_uid=uid, st_ino=inode, st_dev=1,
+                               st_nlink=1, st_size=size, st_mtime_ns=2, st_ctime_ns=3)
+
+    @contextmanager
+    def native(self, *, before=None, after=None, named=None, header=b"\x7fELF", directories=None):
+        before = before or self.metadata()
+        directories = directories or [self.metadata(mode=stat.S_IFDIR | 0o755)] * 3
+        with ExitStack() as stack:
+            opening = stack.enter_context(patch.object(runner.os, "open", side_effect=[10, 11, 12, 13]))
+            stack.enter_context(patch.object(runner.os, "fstat", side_effect=directories + [before, after or before]))
+            read = stack.enter_context(patch.object(runner.os, "read", return_value=header))
+            lookup = stack.enter_context(patch.object(runner.os, "stat", return_value=named or before))
+            close = stack.enter_context(patch.object(runner.os, "close"))
+            yield opening, read, lookup, close
+
+    def test_declared_dconf_never_reads_or_repairs_the_writable_package_descriptor(self):
+        # The observed package descriptor can contain arbitrary text. It is not
+        # a source at all: only repo constants and the independently vetted ELF.
+        with (patch.object(runner, "bounded") as read, patch.object(runner.Path, "lstat") as descriptor,
+              patch.object(runner, "checked_dconf_executable") as vetted, patch.object(runner.os, "chmod") as chmod):
+            value = runner.checked_service("ca.desrt.dconf")
+        self.assertEqual(value, "[D-BUS Service]\nName=ca.desrt.dconf\nExec=/usr/libexec/dconf-service\n")
+        vetted.assert_called_once_with("/usr/libexec/dconf-service")
+        read.assert_not_called(); descriptor.assert_not_called(); chmod.assert_not_called()
+        self.assertNotIn("SystemdService", value); self.assertNotIn("User=", value)
+
+    def test_fallback_is_only_for_an_absent_fixed_candidate_not_an_untrusted_one(self):
+        with patch.object(runner, "checked_dconf_executable", side_effect=[FileNotFoundError(), None]) as vet:
+            self.assertEqual(runner.declared_dconf_service(), "[D-BUS Service]\nName=ca.desrt.dconf\nExec=/usr/lib/dconf/dconf-service\n")
+            self.assertEqual([call.args[0] for call in vet.call_args_list], list(runner.SERVICES["ca.desrt.dconf"]))
+        for error in (collect.Refusal("untrusted_bus_activator"), PermissionError(), OSError("PRIVATE")):
+            with patch.object(runner, "checked_dconf_executable", side_effect=error) as vet:
+                with self.assertRaises(type(error)):
+                    runner.declared_dconf_service()
+                self.assertEqual(vet.call_count, 1)
+        with patch.object(runner, "checked_dconf_executable", side_effect=FileNotFoundError()):
+            with self.assertRaisesRegex(collect.Refusal, "^missing_bus_activator$"):
+                runner.declared_dconf_service()
+
+    def test_native_elf_is_opened_through_retained_nofollow_parents_and_closed(self):
+        executable = runner.SERVICES["ca.desrt.dconf"][0]
+        with self.native() as (opening, read, lookup, close):
+            runner.checked_dconf_executable(executable)
+        self.assertEqual([call.args[0] for call in opening.call_args_list], ["/", "usr", "libexec", "dconf-service"])
+        for call in opening.call_args_list:
+            self.assertTrue(call.args[1] & os.O_NOFOLLOW)
+            self.assertTrue(call.args[1] & os.O_CLOEXEC)
+        self.assertEqual([call.kwargs.get("dir_fd") for call in opening.call_args_list], [None, 10, 11, 12])
+        self.assertTrue(opening.call_args_list[-1].args[1] & os.O_NONBLOCK)
+        read.assert_called_once_with(13, 4)
+        lookup.assert_called_once_with(executable, follow_symlinks=False)
+        self.assertEqual([call.args[0] for call in close.call_args_list], [13, 12, 11, 10])
+
+    def test_untrusted_parent_directory_cannot_reach_the_binary_read(self):
+        good = self.metadata(mode=stat.S_IFDIR | 0o755)
+        for index in range(3):
+            for bad in (self.metadata(mode=stat.S_IFDIR | 0o777), self.metadata(mode=stat.S_IFDIR | 0o700), self.metadata(mode=stat.S_IFDIR | 0o755, uid=1001), self.metadata(mode=stat.S_IFLNK | 0o777)):
+                directories = [good] * 3; directories[index] = bad
+                with self.subTest(index=index, mode=bad.st_mode, uid=bad.st_uid), self.native(directories=directories) as (opening, read, _, close):
+                    with self.assertRaisesRegex(collect.Refusal, "^untrusted_bus_activator$"):
+                        runner.checked_dconf_executable(runner.SERVICES["ca.desrt.dconf"][0])
+                    read.assert_not_called()
+                    self.assertEqual(close.call_count, opening.call_count)
+
+    def test_native_file_rejects_writable_foreign_nonregular_nonexecutable_and_setid(self):
+        cases = [self.metadata(mode=stat.S_IFREG | mode) for mode in (0o775, 0o757, 0o644, 0o4755, 0o2755)]
+        cases += [self.metadata(uid=1001), self.metadata(mode=stat.S_IFIFO | 0o755), self.metadata(mode=stat.S_IFLNK | 0o755), self.metadata(size=3)]
+        for bad in cases:
+            with self.subTest(mode=bad.st_mode, uid=bad.st_uid, size=bad.st_size), self.native(before=bad) as (_, read, lookup, close):
+                with self.assertRaisesRegex(collect.Refusal, "^untrusted_bus_activator$"):
+                    runner.checked_dconf_executable(runner.SERVICES["ca.desrt.dconf"][0])
+                read.assert_not_called(); lookup.assert_not_called(); self.assertEqual(close.call_count, 4)
+
+    def test_absent_or_symlink_parent_open_closes_every_retained_ancestor(self):
+        good = self.metadata(mode=stat.S_IFDIR | 0o755)
+        for error in (FileNotFoundError(), OSError("closed symlink refusal")):
+            with patch.object(runner.os, "open", side_effect=[10, 11, error]), patch.object(runner.os, "fstat", return_value=good), patch.object(runner.os, "close") as close, patch.object(runner.os, "read") as read:
+                with self.assertRaises(type(error)):
+                    runner.checked_dconf_executable(runner.SERVICES["ca.desrt.dconf"][0])
+                self.assertEqual([call.args[0] for call in close.call_args_list], [11, 10])
+                read.assert_not_called()
+
+    def test_no_script_substitution_or_replacement_during_read_can_pass(self):
+        for patching in ({"header": b"#!/b"}, {"after": self.metadata(inode=99)}, {"named": self.metadata(inode=99)}, {"named": self.metadata(mode=stat.S_IFLNK | 0o755)}):
+            with self.subTest(patching=patching), self.native(**patching) as (_, _, _, close):
+                with self.assertRaisesRegex(collect.Refusal, "^untrusted_bus_activator$"):
+                    runner.checked_dconf_executable(runner.SERVICES["ca.desrt.dconf"][0])
+                self.assertEqual(close.call_count, 4)
+        with self.native() as (_, _, lookup, close):
+            lookup.side_effect = FileNotFoundError()
+            with self.assertRaisesRegex(collect.Refusal, "^untrusted_bus_activator$"):
+                runner.checked_dconf_executable(runner.SERVICES["ca.desrt.dconf"][0])
+            self.assertEqual(close.call_count, 4)
+
+    def test_unknown_executable_or_arguments_are_rejected_before_any_filesystem_lookup(self):
+        for executable in ("/bin/sh", "/usr/libexec/dconf-service --session", "/tmp/dconf-service", "dconf-service"):
+            with self.subTest(executable=executable), patch.object(runner.os, "open") as opening:
+                with self.assertRaisesRegex(collect.Refusal, "^unsupported_bus_activator$"):
+                    runner.checked_dconf_executable(executable)
+                opening.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -79,9 +79,74 @@ def service_entry(service, raw):
     return executable, "[D-BUS Service]\nName=" + service + "\nExec=" + executable + "\n"
 
 
+def checked_dconf_executable(executable):
+    """Vetted fixed native activator, independent of any packaged descriptor.
+
+    The fresh fixture UID cannot replace a protected ancestor or executable.
+    Retained no-follow directory/file FDs also reject check/open/read swaps.
+    """
+    if executable not in SERVICES["ca.desrt.dconf"]:
+        refuse("unsupported_bus_activator")
+    descriptors = []
+    native_opened = False
+    identity = lambda info: (info.st_dev, info.st_ino, info.st_uid, info.st_mode,
+                             info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    try:
+        current = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        descriptors.append(current)
+        parts = Path(executable).parts[1:]
+        for component in parts[:-1]:
+            info = os.fstat(current)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or not info.st_mode & 0o001:
+                refuse("untrusted_bus_activator")
+            current = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                              dir_fd=current)
+            descriptors.append(current)
+        parent = os.fstat(current)
+        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 or parent.st_mode & 0o022 or not parent.st_mode & 0o001:
+            refuse("untrusted_bus_activator")
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=current)
+        descriptors.append(descriptor)
+        native_opened = True
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_mode & 0o022 \
+                or before.st_mode & 0o6000 or not before.st_mode & 0o001 or before.st_size < 4:
+            refuse("untrusted_bus_activator")
+        if os.read(descriptor, 4) != b"\x7fELF":
+            refuse("untrusted_bus_activator")
+        try:
+            named = os.stat(executable, follow_symlinks=False)
+        except OSError:
+            refuse("untrusted_bus_activator")
+        if identity(before) != identity(os.fstat(descriptor)) or identity(before) != identity(named):
+            refuse("untrusted_bus_activator")
+    except FileNotFoundError:
+        if native_opened:
+            refuse("untrusted_bus_activator")
+        raise
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def declared_dconf_service():
+    # Only these reviewed Name/Exec pairs are authored by this trusted source.
+    # Never read, follow, copy or repair the observed writable package descriptor.
+    for executable in SERVICES["ca.desrt.dconf"]:
+        try:
+            checked_dconf_executable(executable)
+        except FileNotFoundError:
+            continue
+        return "[D-BUS Service]\nName=ca.desrt.dconf\nExec=" + executable + "\n"
+    refuse("missing_bus_activator")
+
+
 def checked_service(service):
     if service not in SERVICES:
         refuse("unsupported_bus_activator")
+    if service == "ca.desrt.dconf":
+        return declared_dconf_service()
     source = Path("/usr/share/dbus-1/services") / (service + ".service")
     info = source.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:

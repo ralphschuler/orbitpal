@@ -92,7 +92,7 @@ jobs:
             librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev libpipewire-0.3-dev \
             libclang-dev patchelf gnome-shell dbus at-spi2-core dconf-service \
             libgl1-mesa-dri libegl1 libgles2 gsettings-desktop-schemas iproute2 procps passwd
-      - name: Check exact packaged bus services before the cold build
+      - name: Check isolated bus activators before the cold build
         shell: bash
         run: |
           set -euo pipefail
