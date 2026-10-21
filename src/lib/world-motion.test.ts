@@ -12,7 +12,7 @@ function binding(overrides: Partial<MotionBinding> = {}): MotionBinding {
     safeCenters: { left: 20, top: 40, right: 980, bottom: 760 }, maximumFootprint: { width: 40, height: 80 },
     position: { x: 500, y: 400 }, groundBasis: { right: { x: .01, z: 0 }, down: { x: 0, z: .02 } },
     referenceLocal: { x: 0, y: 1.45, z: 0 }, envelopeExtents: { left: 20, top: 40, right: 20, bottom: 40 },
-    profileScale: 1, effectiveScale: 1, modelForwardYaw: 0, scale: 1, reducedMotion: false, walkSupported: true, ...overrides };
+    profileScale: 1, effectiveScale: 1, modelForwardYaw: 0, scale: 1, reducedMotion: false, walkSupported: true, stationSupported: false, ...overrides };
 }
 function fence(value: MotionBinding, ordinal = 1): MotionFence {
   return { actorId: value.actorId, renderSessionId: value.renderSessionId, bindingSequence: value.bindingSequence,
@@ -21,7 +21,7 @@ function fence(value: MotionBinding, ordinal = 1): MotionFence {
     measurementRevision: value.measurementRevision, referenceRevision: value.referenceRevision, actionId: { actorId: value.actorId, worldId: value.sourceWorldId, ordinal }, deliveryId: `delivery-${ordinal}` };
 }
 function offer(value: MotionBinding, target: CssPoint = { x: 600, y: 400 }, sequence = 1, ordinal = 1): MotionOffer {
-  return { version: 1, type: 'offer', sequence, fence: fence(value, ordinal), activity: 'move_to', from: value.position,
+  return { version: 1, type: 'offer', sequence, fence: fence(value, ordinal), activity: 'move_to', minimumActiveMs: 0, from: value.position,
     target, maximumSpeed: 100, acceleration: 500, validForMs: 10_000 };
 }
 function evidence(value: MotionBinding, proposal: MotionProposal, now: number, frameSequence = 1): RenderEvidence {
@@ -44,6 +44,50 @@ function commit(follower: WorldMotionFollower, value: MotionBinding, now: number
 }
 
 describe('strict local motion protocol', () => {
+  it('retains the full saved care duration only for bounded stationary offers', () => {
+    const value=binding({stationSupported:true});
+    const command={...offer(value),activity:'play',minimumActiveMs:600_000,validForMs:615_000};
+    expect(parseWorldMotionCommand(command)).not.toBeNull();
+    expect(parseWorldMotionCommand({...command,minimumActiveMs:600_001})).toBeNull();
+    expect(parseWorldMotionCommand({...command,validForMs:615_001})).toBeNull();
+    expect(parseWorldMotionCommand({...command,activity:'move_to',minimumActiveMs:0})).toBeNull();
+    expect(parseWorldMotionCommand({...command,activity:'move_to',minimumActiveMs:1,validForMs:30_000})).toBeNull();
+  });
+  it('accepts an actual asymmetric 700/100 envelope in 1080px while keeping symmetric metadata consistent',()=>{
+    const value=binding({viewport:{width:1000,height:1080},position:{x:500,y:864},
+      envelopeExtents:{left:40,top:700,right:60,bottom:100},maximumFootprint:{width:120,height:1400},
+      safeCenters:{left:40,top:700,right:940,bottom:980}});
+    expect(parseMotionBinding(value)).not.toBeNull();
+    for(const target of [{x:40,y:864},{x:940,y:864},{x:500,y:700},{x:500,y:980}]){
+      const {follower,move}=running(target,value),proposal=follower.sample(16,.016)!;
+      expect(follower.snapshot().groundDistance).toBe(0);
+      const e={...evidence(value,proposal,16),posedBounds:{left:proposal.position.x-40,top:proposal.position.y-700,right:proposal.position.x+60,bottom:proposal.position.y+100}};
+      expect(follower.afterSuccessfulRender(proposal.token,e)).not.toBeNull();
+      expect(follower.snapshot().groundDistance).toBeGreaterThan(0);
+      expect(follower.snapshot().position).not.toEqual(move.target); // no target/arrival teleport
+    }
+  });
+  it('rejects each asymmetric target outside its allowed edge and never banks a failed current hull',()=>{
+    const value=binding({viewport:{width:1000,height:1080},position:{x:500,y:864},
+      envelopeExtents:{left:40,top:700,right:60,bottom:100},maximumFootprint:{width:120,height:1400},
+      safeCenters:{left:40,top:700,right:940,bottom:980}});
+    for(const target of [{x:39.9,y:864},{x:940.1,y:864},{x:500,y:699.9},{x:500,y:980.1}]){
+      const follower=new WorldMotionFollower();expect(follower.bind(value,0)).toBe(true);
+      expect(follower.receive(offer(value,target),0)).toBe('rejected');expect(follower.sample(16,.016)).toBeNull();expect(follower.snapshot().groundDistance).toBe(0);
+    }
+    const {follower}=running({x:600,y:864},value),proposal=follower.sample(16,.016)!;
+    const e={...evidence(value,proposal,16),posedBounds:{left:proposal.position.x-40,top:proposal.position.y-700.3,right:proposal.position.x+60,bottom:proposal.position.y+100}};
+    expect(follower.afterSuccessfulRender(proposal.token,e)).toBeNull();expect(follower.snapshot().groundDistance).toBe(0);
+  });
+  it('does not relax one-edge overflow, malformed extents or symmetric metadata consistency',()=>{
+    const base=binding({viewport:{width:1000,height:1080},position:{x:500,y:864},
+      envelopeExtents:{left:40,top:700,right:60,bottom:100},maximumFootprint:{width:120,height:1400},
+      safeCenters:{left:40,top:700,right:940,bottom:980}});
+    for(const value of [binding({...base,safeCenters:{...base.safeCenters,left:39.9}}),binding({...base,safeCenters:{...base.safeCenters,top:699.9}}),
+      binding({...base,safeCenters:{...base.safeCenters,right:940.1}}),binding({...base,safeCenters:{...base.safeCenters,bottom:980.1}}),
+      binding({...base,envelopeExtents:{...base.envelopeExtents,top:-1}}),binding({...base,envelopeExtents:{...base.envelopeExtents,top:981},maximumFootprint:{width:120,height:1962}}),
+      binding({...base,maximumFootprint:{width:120,height:800}})])expect(parseMotionBinding(value)).toBeNull();
+  });
   it('copies and freezes valid binding/command data instead of retaining mutable wire objects', () => {
     const source = binding(), command = offer(source);
     const parsed = parseMotionBinding(source)!, parsedCommand = parseWorldMotionCommand(command)!;
@@ -65,7 +109,7 @@ describe('strict local motion protocol', () => {
     }
     for (const mutate of [
       (v: any) => v.sequence = 1.1, (v: any) => v.activity = 'shell', (v: any) => v.target.x = NaN,
-      (v: any) => v.validForMs = 60_001, (v: any) => v.maximumSpeed = 501,
+      (v: any) => v.validForMs = 75_001, (v: any) => v.maximumSpeed = 501,
       (v: any) => v.fence.actionId.actorId = 'other', (v: any) => v.extra = true,
     ]) {
       const value = structuredClone(offer(binding())); mutate(value); expect(parseWorldMotionCommand(value)).toBeNull();
@@ -347,7 +391,7 @@ describe('pause and render-binding invalidation', () => {
     expect(follower.bind({ ...next, bindingSequence: 3 }, 1000)).toBe(false);
   });
   it('reduced motion or unavailable walk support never selects teleportation or invented gait', () => {
-    for (const value of [binding({ reducedMotion: true }), binding({ walkSupported: false })]) {
+    for (const value of [binding({ reducedMotion: true }), binding({ walkSupported: false, stationSupported: false })]) {
       const follower = new WorldMotionFollower(); follower.bind(value, 0);
       expect(follower.receive(offer(value), 0)).toBe('rejected');
       expect(follower.sample(16, .016)).toBeNull();

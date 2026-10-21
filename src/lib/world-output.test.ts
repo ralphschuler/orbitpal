@@ -13,7 +13,7 @@ function binding(): MotionBinding {
     maximumFootprint: { width: 40, height: 80 }, envelopeExtents: { left: 20, top: 40, right: 20, bottom: 40 },
     referenceLocal: { x: 0, y: 1, z: 0 }, position: { x: 500, y: 400 },
     groundBasis: { right: { x: .01, z: 0 }, down: { x: 0, z: .02 } }, modelForwardYaw: 0,
-    profileScale: 1, effectiveScale: 1, scale: 1, reducedMotion: false, walkSupported: true };
+    profileScale: 1, effectiveScale: 1, scale: 1, reducedMotion: false, walkSupported: true, stationSupported: false };
 }
 function stamp(value = binding()): BindingStamp {
   const { actorId, sourceWorldId, renderSessionId, bindingSequence, worldInstanceId, stageId,

@@ -6,7 +6,7 @@ import vm from 'node:vm';
 const context = {module: {exports: {}}};
 const source = readFileSync(new URL('./ui.js', import.meta.url), 'utf8');
 new vm.Script(source).runInNewContext(context);
-const {matchesButton, one} = context.module.exports;
+const {matchesButton, one, nativeTree} = context.module.exports;
 const node = (role, name, children = [], value = name) => ({role: () => role, name: () => name, value: () => value, children});
 const walk = root => [root, ...root.children];
 const match = (value, actor) => matchesButton(value, '', actor, walk);
@@ -48,7 +48,11 @@ function probe(options = {}) {
   }});
   const $ = {
     AXIsProcessTrusted: () => options.ax !== false,
-    NSRunningApplication: {runningApplicationsWithBundleIdentifier(id) {
+    NSRunningApplication: {runningApplicationWithProcessIdentifier(pid) {
+      assert.equal(pid, 42);
+      return {isTerminated: false, bundleIdentifier: 'studio.orbitpal.native-world-fixture',
+        bundleURL: {path: '/owned/Fixture.app'}, executableURL: {path: '/owned/Fixture.app/Contents/MacOS/native_world_fixture'}};
+    }, runningApplicationsWithBundleIdentifier(id) {
       calls.push('target'); fail('target'); targetReads++;
       assert.equal(id, 'com.apple.systemevents');
       return {count: options.targetAbsent ? 0 : options.ambiguousTarget ? 2 : 1, objectAtIndex(index) {
@@ -100,10 +104,16 @@ function probe(options = {}) {
       }
     },
   };
-  const ctx = {module: {exports: {}}, ObjC, $, Application() { applicationCalls++; throw new Error('NO_APPLICATION_QUERY'); }};
+  const ctx = {module: {exports: {}}, ObjC, $, Application(id) {
+    applicationCalls++; assert.equal(id, 'com.apple.systemevents');
+    if (!options.surface) throw new Error('NO_APPLICATION_QUERY');
+    return options.surface;
+  }};
   new vm.Script(source).runInNewContext(ctx);
-  const raw = ctx.module.exports.run(['probe', '0', '/', '/']);
-  assert.equal(applicationCalls, 0, 'probe never reaches System Events application queries');
+  const operation = options.operation || 'probe';
+  const raw = ctx.module.exports.run(operation === 'probe' ? ['probe', '0', '/', '/']
+    : [operation, '42', '/owned/Fixture.app', '/owned/Fixture.app/Contents/MacOS/native_world_fixture']);
+  assert.equal(applicationCalls, operation === 'probe' ? 0 : 1, 'only explicit controlled UI doubles reach System Events');
   assert.equal(raw.includes('PRIVATE'), false, 'native exception text is withheld');
   return {record: JSON.parse(raw), calls, bindings, sleeps};
 }
@@ -226,4 +236,85 @@ for (const stage of ['sessionBind', 'session', 'class', 'unwrap', 'release']) {
   assert.equal(calls.filter(value => value === 'release').length, ['class', 'unwrap', 'release'].includes(stage) ? 1 : 0);
   assert.equal(calls.includes('screens'), false);
 }
+// The actual UI path uses batched role metadata and operation-local children.
+// These doubles throw if the scan asks for children of terminal text/images.
+function surfaceTree(extra = {}) {
+  const counts = {children: 0, batch: 0, role: 0, name: 0, windows: 0, clicks: 0};
+  function item(role, name, children = [], value = name) {
+    const result = {_role: role, children, role() { counts.role++; return role; },
+      name() { counts.name++; return typeof name === 'function' ? name() : name; }, value: () => value,
+      position: () => [120, 130], size: () => [100, 30], enabled: () => true};
+    const collection = () => {
+      counts.children++;
+      assert.equal(['AXStaticText', 'AXImage'].includes(role), false, 'terminal content is not expanded');
+      return result.children;
+    };
+    collection.role = () => { counts.batch++; return result.children.map(child => child._role); };
+    result.uiElements = collection;
+    return result;
+  }
+  const label = item('AXStaticText', 'Fixture Nova');
+  const autopilot = item('AXButton', extra.label || 'Autopilot', [item('AXImage', '')]);
+  const actor = item('AXButton', '', [item('AXGroup', '', [label])]);
+  const content = item(extra.containerRole || 'AXWebArea', '', [autopilot, actor,
+    ...Array.from({length: extra.leaves ?? 800}, () => item('AXStaticText', 'PRIVATE_UNUSED_TEXT'))]);
+  if (extra.duplicate) content.children.push(item('AXButton', 'Autopilot'));
+  const main = item('AXWindow', 'OrbitPal Native World Fixture', [content]);
+  main.position = () => [100, 100]; main.size = () => [800, 700];
+  const owner = {windows() { counts.windows++; return [main]; },
+    menuBars: () => [{}, {menuBarItems: () => [{}]}]};
+  let frontmost = false;
+  Object.defineProperty(owner, 'frontmost', {get: () => () => frontmost, set: value => { frontmost = value; }});
+  const surface = {applicationProcesses: {whose(query) { assert.equal(query.unixId, 42); assert.deepEqual(Object.keys(query), ['unixId']); return () => [owner]; }},
+    click(value) { assert.equal(value, extra.operation === 'nova' ? actor : autopilot); counts.clicks++; }};
+  return {surface, counts, main, content, actor, autopilot, label, item};
+}
+const inspectSurface = surfaceTree();
+const inspected = probe({operation: 'inspect', surface: inspectSurface.surface});
+assert.equal(inspected.record.code, 0); assert.equal(inspected.record.matched, 1);
+assert.equal(inspected.record.acted, 0); assert.equal(inspectSurface.counts.clicks, 0);
+assert.equal(inspectSurface.counts.windows, 2, 'one diagnostic window read, one fresh button Main');
+assert.ok(inspectSurface.counts.children < 10, '800 static leaves do not cause 800 child queries');
+assert.ok(inspectSurface.counts.role < 5, 'roles are batched rather than queried for every leaf');
+assert.ok(inspectSurface.counts.name < 10, 'unrelated static text is never named');
+const actorSurface = surfaceTree({operation: 'nova'});
+const actorReply = probe({operation: 'nova', surface: actorSurface.surface});
+assert.equal(actorReply.record.code, 0); assert.equal(actorReply.record.acted, 1);
+assert.equal(actorSurface.counts.clicks, 1);
+assert.ok(actorSurface.counts.children < 15, 'actor subtree is shared during discovery; only selected target is freshly re-read');
+const duplicateSurface = surfaceTree({duplicate: true});
+assert.equal(probe({operation: 'autopilot', surface: duplicateSurface.surface}).record.code, 5);
+assert.equal(duplicateSurface.counts.clicks, 0);
+const unknownContainer = surfaceTree({containerRole: 'AXUnknownContainer'});
+assert.equal(probe({operation: 'inspect', surface: unknownContainer.surface}).record.code, 0, 'unknown containers remain searched');
+const tooLarge = surfaceTree({leaves: 1200});
+assert.equal(probe({operation: 'autopilot', surface: tooLarge.surface}).record.code, 5);
+assert.equal(tooLarge.counts.clicks, 0, 'capacity never permits a truncated uniqueness scan');
+const changedLabel = surfaceTree();
+let labelReads = 0;
+changedLabel.autopilot.name = () => ++labelReads === 1 ? 'Autopilot' : 'PRIVATE_CHANGED';
+assert.equal(probe({operation: 'autopilot', surface: changedLabel.surface}).record.code, 5);
+assert.equal(changedLabel.counts.clicks, 0, 'fresh exact selected label is mandatory');
+const changedActor = surfaceTree({operation: 'nova'});
+let actorReads = 0;
+changedActor.label.name = () => ++actorReads === 1 ? 'Fixture Nova' : 'Fixture Blue';
+changedActor.label.value = () => 'Fixture Blue';
+assert.equal(probe({operation: 'nova', surface: changedActor.surface}).record.code, 5);
+assert.equal(changedActor.counts.clicks, 0, 'selected actor text is freshly re-read');
+const ambiguousActor = surfaceTree({operation: 'nova'});
+ambiguousActor.content.children.push(ambiguousActor.item('AXButton', '', [ambiguousActor.item('AXStaticText', 'Fixture Nova')]));
+assert.equal(probe({operation: 'nova', surface: ambiguousActor.surface}).record.code, 5);
+assert.equal(ambiguousActor.counts.clicks, 0, 'actor discovery still requires uniqueness');
+const mismatched = surfaceTree();
+mismatched.content.uiElements.role = () => [];
+assert.equal(probe({operation: 'autopilot', surface: mismatched.surface}).record.code, 5);
+assert.equal(mismatched.counts.clicks, 0, 'changed collection metadata cannot authorize action');
+const unknownRole = surfaceTree();
+unknownRole.content.uiElements.role = () => unknownRole.content.children.map(() => null);
+assert.equal(probe({operation: 'autopilot', surface: unknownRole.surface}).record.code, 5);
+assert.equal(unknownRole.counts.clicks, 0, 'untyped native role metadata refuses');
+const sharedBudget = {nodes: 1199};
+const budgetTree = surfaceTree({leaves: 0});
+assert.throws(() => nativeTree(budgetTree.main, sharedBudget).walk(budgetTree.main));
+console.log('native_world_macos_batched_inspection_passed');
 console.log('native_world_macos_probe_stub_passed');

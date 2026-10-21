@@ -75,3 +75,23 @@ fn counter_exhaustion_and_poison_cancel_retained_atoms_without_successor(){
     // private Arc cycle after checking denial; no production recovery exists.
     h.0.owner.lock().unwrap().take();
 }
+
+#[test]
+fn dialog_scheduling_without_exact_live_handoff_cannot_bypass_any_retained_owner() {
+    let hub=super::super::PresentationHub::default();
+    let handle=register(&hub.native,"nova");
+    assert!(!hub.blocks_dialog_scheduling(&[],0));
+    let owner=reserve(&hub.native,&handle);
+    assert!(hub.blocks_dialog_scheduling(&[],0),"pending ownership requires cleanup before a dialog");
+    owner.cancelled();
+    assert!(hub.blocks_dialog_scheduling(&[],1),"cancel does not release its physical charge");
+    release(&hub.native,&owner);
+    assert!(!hub.blocks_dialog_scheduling(&[],2));
+    // A different retained constructor must be considered too; there is no
+    // selected-bot-only shortcut. No synthetic native Live proof is created.
+    let other=register(&hub.native,"other");let retained=reserve(&hub.native,&other);
+    assert!(hub.blocks_dialog_scheduling(&[],2));
+    assert!(hub.admit_dialog().is_err(),"strict playback admission remains unchanged");
+    release(&hub.native,&retained);
+    assert!(hub.admit_dialog().is_ok());
+}

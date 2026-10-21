@@ -1,0 +1,7 @@
+import {describe,it,expect} from 'vitest';
+import {estimatedRate,rateText,parseDialoguePolicy,parseDialogueSettings} from './social-dialogue-settings';
+const policy=()=>({modelEnabled:false,estimatedMicrosPerMillion:null,maxTurns:2,durationMs:30000,tokenLimit:300000,costLimitMicros:10000,dailyTokenLimit:1000000,dailyCostLimitMicros:100000,cooldownMs:60000});
+describe('bounded social dialogue preferences',()=>{
+ it('keeps model opt-in distinct from availability and rejects wrong bot or unknown bounds',()=>{const s={version:1,botId:'nova',dialogue:{version:1,revision:0,policy:policy()}};expect(parseDialogueSettings(s,'nova').policy.modelEnabled).toBe(false);expect(()=>parseDialogueSettings(s,'blue')).toThrow();for(const patch of [{maxTurns:5},{durationMs:60001},{estimatedMicrosPerMillion:0},{tokenLimit:1000001},{costLimitMicros:1000001},{dailyTokenLimit:10000001},{dailyCostLimitMicros:10000001},{cooldownMs:0}])expect(()=>parseDialoguePolicy({...policy(),...patch})).toThrow();});
+ it('parses user-declared rates exactly without pretending unknown price is zero',()=>{expect(estimatedRate('')).toBeNull();for(const [input,micros]of [['3.00',3000000],['0,000001',1],['1000',1000000000]]as const){expect(estimatedRate(input)).toBe(micros);expect(estimatedRate(rateText(micros))).toBe(micros);}for(const bad of ['0','-1','1e3','1.0000001','1001'])expect(()=>estimatedRate(bad)).toThrow();});
+});

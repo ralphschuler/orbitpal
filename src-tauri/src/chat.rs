@@ -11,7 +11,20 @@ use tokio_tungstenite::{connect_async_tls_with_config, tungstenite::Message, Con
 type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub use crate::chat_route::ChatRoute;
 use crate::chat_route::ConnectionContext;
-struct Running { cancel: Arc<AtomicBool>, task: JoinHandle<()>, app: tauri::AppHandle, context: Arc<Mutex<ConnectionContext>> }
+struct Running {
+    impulse_cancel: Arc<crate::chat_route::ImpulseCancellation>,
+    cancel: Arc<AtomicBool>,
+    task: JoinHandle<()>,
+    app: tauri::AppHandle,
+    context: Arc<Mutex<ConnectionContext>>,
+}
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.impulse_cancel.cancel();
+        self.cancel.store(true, Ordering::SeqCst);
+        self.task.abort();
+    }
+}
 #[derive(Default)]
 pub struct ChatHub { tasks: Mutex<HashMap<String, Running>> }
 
@@ -34,6 +47,7 @@ async fn sleep(cancel: &AtomicBool, duration: Duration) -> bool {
 
 impl ChatHub {
     pub async fn connect(&self, platform: &str, profile: &Value, secret: Option<String>, write_secret: Option<String>, app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
         if !matches!(platform, "twitch" | "youtube") { return Err("Unbekannte Chatplattform.".into()); }
         let config = profile["chat"][platform].clone();
         let secret = secret.filter(|s| !s.trim().is_empty()).ok_or_else(|| if platform == "twitch" { "Bitte einen Twitch-Benutzertoken mit user:read:chat speichern.".to_string() } else { "Bitte einen YouTube-Data-API-Key speichern.".to_string() })?;
@@ -44,12 +58,13 @@ impl ChatHub {
             return Err("YouTube benötigt eine Live-Video-URL/ID oder Live-Chat-ID.".into());
         }
         let mut tasks = self.tasks.lock().await;
-        if let Some(previous) = tasks.remove(platform) { previous.cancel.store(true, Ordering::Relaxed); previous.task.abort(); }
+        if let Some(previous) = tasks.remove(platform) { previous.impulse_cancel.cancel();previous.cancel.store(true, Ordering::Relaxed); previous.task.abort(); }
         let cancel = Arc::new(AtomicBool::new(false));
         let task_cancel = cancel.clone();
         let task_app = app.clone();
         let writer = if platform == "twitch" { Some(secret.clone()) } else { write_secret };
         let context = Arc::new(Mutex::new(ConnectionContext::new(platform, profile, writer, cancel.clone())?));
+        let impulse_cancel=context.lock().await.impulse_cancellation();
         let task_context = context.clone();
         let name = platform.to_string();
         connection(&app, platform, "connecting", "Verbindung wird hergestellt …", &context.lock().await.public_owner());
@@ -60,7 +75,7 @@ impl ChatHub {
                 match result { Ok(()) => connection(&task_app, &name, "disconnected", "Verbindung beendet.", &task_context.lock().await.public_owner()), Err(error) => connection(&task_app, &name, "error", &error, &task_context.lock().await.public_owner()) }
             }
         });
-        tasks.insert(platform.to_string(), Running { cancel, task, app, context });
+        tasks.insert(platform.to_string(), Running { impulse_cancel,cancel, task, app, context });
         Ok(())
     }
     /// Resolve only an opaque identifier emitted by the active connection. User
@@ -71,9 +86,26 @@ impl ChatHub {
         let route=running.context.lock().await.route(platform,id,responder);
         route
     }
+    /// Check the actual retained authenticated receive connection, independently of reply rights.
+    pub(crate) async fn current_impulse_source(
+        &self,
+        source: &crate::chat_route::ImpulseSource,
+        store: &crate::storage::Store,
+    ) -> bool {
+        let Ok(owner) = store.bot_profile(source.owner()) else {
+            return false;
+        };
+        let tasks = self.tasks.lock().await;
+        let Some(running) = tasks.get(source.platform()).filter(|r| !r.task.is_finished()) else {
+            return false;
+        };
+        let current = running.context.lock().await;
+        current.impulse_source_current(source, &owner)
+    }
     /// Called only once, after the admitted speech job actually starts playing.
     /// All destination fields and the token come from its original connection.
     pub async fn send(&self, route:&ChatRoute, store:&crate::storage::Store, message:&str, job_cancel:&AtomicBool)->Result<(),String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
         let (context,cancel)={
             let tasks=self.tasks.lock().await;
             let running=tasks.get(route.platform()).filter(|running|!running.task.is_finished()).ok_or("Chatantwort benötigt ihre ursprüngliche aktive Verbindung.")?;
@@ -100,7 +132,7 @@ impl ChatHub {
     pub async fn disconnect(&self, platform: &str) -> Result<(), String> {
         if !matches!(platform, "twitch" | "youtube") { return Err("Unbekannte Chatplattform.".into()); }
         if let Some(running) = self.tasks.lock().await.remove(platform) {
-            running.cancel.store(true, Ordering::Relaxed);
+            running.impulse_cancel.cancel();running.cancel.store(true, Ordering::Relaxed);
             running.task.abort();
             running.context.lock().await.disconnected();
             connection(&running.app, platform, "disconnected", "Getrennt.", &running.context.lock().await.public_owner());
@@ -110,7 +142,7 @@ impl ChatHub {
 }
 impl Drop for ChatHub {
     fn drop(&mut self) {
-        if let Ok(tasks) = self.tasks.try_lock() { for running in tasks.values() { running.cancel.store(true, Ordering::Relaxed); running.task.abort(); } }
+        if let Ok(tasks) = self.tasks.try_lock() { for running in tasks.values() { running.impulse_cancel.cancel();running.cancel.store(true, Ordering::Relaxed); running.task.abort(); } }
     }
 }
 
@@ -330,6 +362,7 @@ async fn emit_twitch(app: &tauri::AppHandle, event: &Value, seen: &mut Seen, own
         if content.is_empty() { system.to_string() } else if system.is_empty() { content.to_string() } else { format!("{system} {content}") }
     } else { details["message"]["text"].as_str().unwrap_or("").to_string() };
     if message.is_empty() { return; }
+    crate::platform_impulses::observe_message(app,context,"twitch",&reply_route_id,id,if kind=="channel.chat.message"{"message"}else{"notification"},&message,event["metadata"]["message_timestamp"].as_str().unwrap_or(""),details["chatter_user_id"].as_str().unwrap_or("")).await;
     let user = details["chatter_user_name"].as_str().filter(|s| !s.is_empty()).unwrap_or("Twitch");
     let _ = app.emit("cohost://chat", json!({"id":id,"platform":"twitch","replyRouteId":reply_route_id,"user":user,"userId":details["chatter_user_id"].as_str().unwrap_or(""),"text":message,"createdAt":event["metadata"]["message_timestamp"],"eventType":if kind == "channel.chat.notification" { details["notice_type"].as_str().unwrap_or("notification") } else { "message" }}));
 }
@@ -415,6 +448,7 @@ async fn youtube(config: Value, key: String, app: tauri::AppHandle, cancel: Arc<
                 let message = snippet["displayMessage"].as_str().or_else(|| snippet["textMessageDetails"]["messageText"].as_str()).unwrap_or("");
                 if message.is_empty() { continue; }
                 let Some(reply_route_id)=context.lock().await.incoming_route(snippet["liveChatId"].as_str().unwrap_or(&live_chat_id)) else {continue;};
+                crate::platform_impulses::observe_message(&app,&context,"youtube",&reply_route_id,id,kind,message,snippet["publishedAt"].as_str().unwrap_or(""),item["authorDetails"]["channelId"].as_str().unwrap_or("")).await;
                 let _ = app.emit("cohost://chat",json!({"id":id,"platform":"youtube","replyRouteId":reply_route_id,"user":item["authorDetails"]["displayName"].as_str().unwrap_or("YouTube"),"userId":item["authorDetails"]["channelId"].as_str().unwrap_or(""),"text":message,"createdAt":snippet["publishedAt"],"eventType":kind}));
             }
         }

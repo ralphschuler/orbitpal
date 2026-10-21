@@ -104,7 +104,9 @@ def start_system_events(deadline):
             os.close(fd)
 
 
-def ui_record(raw):
+def ui_record(raw, diagnostic=None):
+    if diagnostic is not None:
+        diagnostic['transportPhase'] = 3 # Decode an existing captured reply.
     require(len(raw) <= 2048, 2)
     def pairs(items):
         result = {}
@@ -113,6 +115,8 @@ def ui_record(raw):
             result[key] = value
         return result
     value = json.loads(raw, object_pairs_hook=pairs)
+    if diagnostic is not None:
+        diagnostic['transportPhase'] = 4 # Validate the same closed schema.
     require(type(value) is dict and set(value) == FIELDS and all(type(v) is int for v in value.values()), 2)
     require(value['version'] == 1 and 0 <= value['code'] <= 9 and 0 <= value['windows'] <= 16, 2)
     require(0 <= value['probePhase'] <= 7, 2)
@@ -124,17 +128,45 @@ def ui_record(raw):
     return value
 
 
-def ui(operation, deadline, child=None, app=None):
-    remaining = deadline - time.monotonic()
-    require(remaining > 0, 3)
-    if child is not None:
-        require(child.poll() is None, 4) # Retained actual child: no PID reuse.
-    args = [operation, str(child.pid) if child else '0', str(app) if app else '/', str(app / 'Contents/MacOS/native_world_fixture') if app else '/']
-    result = subprocess.run(['/usr/bin/osascript', '-l', 'JavaScript', str(DIRECTORY / 'ui.js'), *args],
-                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            timeout=min(5, remaining), check=False)
-    require(result.returncode == 0 and time.monotonic() < deadline, 3)
-    return ui_record(result.stdout)
+def ui(operation, deadline, child=None, app=None, diagnostic=None):
+    if diagnostic is not None:
+        diagnostic['transportPhase'] = 1 # Existing deadline/owned-child checks.
+        diagnostic['exceptionKind'] = 0
+    try:
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, 3)
+        if child is not None:
+            require(child.poll() is None, 4) # Retained actual child: no PID reuse.
+        args = [operation, str(child.pid) if child else '0', str(app) if app else '/', str(app / 'Contents/MacOS/native_world_fixture') if app else '/']
+        if diagnostic is not None:
+            diagnostic['transportPhase'] = 2 # Same single bounded native client.
+        result = subprocess.run(['/usr/bin/osascript', '-l', 'JavaScript', str(DIRECTORY / 'ui.js'), *args],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                timeout=min(5, remaining), check=False)
+        require(result.returncode == 0 and time.monotonic() < deadline, 3)
+        record = ui_record(result.stdout, diagnostic)
+        if diagnostic is not None:
+            diagnostic['transportPhase'] = 5 # Reply passed every schema guard.
+            diagnostic['lastUiObserved'] = 1
+            diagnostic['lastUiStage'] = diagnostic['stage']
+            diagnostic['lastUiRecord'] = dict(record)
+        return record
+    except subprocess.TimeoutExpired:
+        if diagnostic is not None:
+            diagnostic['exceptionKind'] = 1
+        raise
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        if diagnostic is not None:
+            diagnostic['exceptionKind'] = 2
+        raise
+    except Refused:
+        if diagnostic is not None:
+            diagnostic['exceptionKind'] = 3 if diagnostic['transportPhase'] in (3, 4) else 4
+        raise
+    except Exception:
+        if diagnostic is not None:
+            diagnostic['exceptionKind'] = 4
+        raise
 
 
 def package(binary, evidence):
@@ -184,7 +216,8 @@ def validated_report(path):
 
 def execute(binary, evidence):
     child, app, success, cleanup = None, None, False, 0
-    status = {'version': 1, 'code': 0, 'stage': 0, 'normalQuit': 0, 'forcedCleanup': 0, 'fixturePassed': 0}
+    status = {'version': 1, 'code': 0, 'stage': 0, 'normalQuit': 0, 'forcedCleanup': 0, 'fixturePassed': 0,
+              'transportPhase': 0, 'exceptionKind': 0, 'lastUiObserved': 0, 'lastUiStage': 0}
     deadline = time.monotonic() + 150 # Fixture itself retains its original180s.
     try:
         require(not list(evidence.glob('world-native-macos-actual-run-*')), 6)
@@ -200,7 +233,7 @@ def execute(binary, evidence):
             # Reacquisition only for a not-yet-present actual frame/control.
             end = min(deadline, time.monotonic() + 12)
             while time.monotonic() < end:
-                record = ui(operation, end, child, app)
+                record = ui(operation, end, child, app, status)
                 if record['code'] == 0:
                     return
                 require(record['code'] in (6, 9) and record['acted'] == 0, 7)
@@ -242,6 +275,8 @@ def execute(binary, evidence):
         status['code'] = error.code
     except Exception:
         status['code'] = 10
+        if status['exceptionKind'] == 0:
+            status['exceptionKind'] = 4
     finally:
         if child is not None and child.poll() is None:
             status['forcedCleanup'] = 1

@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
 # Exact fixed commands, after trusted launch.py's cgroup/netns/UID transition.
 set -euo pipefail
+# Dynamic FD-close redirections require the hosted Linux Bash, never macOS3.2.
+[[ "${BASH_VERSINFO[0]}" -ge 4 ]]
+diagnostic_fd="${1:-}"
+[[ $# -le 1 ]]
+if [[ -n "$diagnostic_fd" ]]; then
+  [[ "${ORBITPAL_BENCH_DOMAIN:-}" == compositor && "$diagnostic_fd" =~ ^[1-9][0-9]{0,9}$ && "$diagnostic_fd" -ge 3 ]]
+fi
 [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted && "${RUNNER_OS:-}" == Linux ]]
-[[ "${ORBITPAL_NATIVE_RENDER_BENCH:-}" == disposable-linux-only && $(id -u) -gt 1000 ]]
+if [[ -n "$diagnostic_fd" ]]; then
+  # The anonymous channel is never inherited by unrelated fixed helpers.
+  [[ "${ORBITPAL_NATIVE_RENDER_BENCH:-}" == disposable-linux-only && $(id -u {diagnostic_fd}>&-) -gt 1000 ]]
+else
+  [[ "${ORBITPAL_NATIVE_RENDER_BENCH:-}" == disposable-linux-only && $(id -u) -gt 1000 ]]
+fi
 : "${ORBITPAL_BENCH_ROOT:?}" "${ORBITPAL_BENCH_DOMAIN:?}" "${ORBITPAL_BENCH_MODE:?}"
 root="$ORBITPAL_BENCH_ROOT"
 [[ "$root" =~ ^/tmp/orbitpal-render-[0-9a-f]{16}$ && -O "$root" && ! -L "$root" ]]
@@ -26,19 +38,29 @@ if [[ "$ORBITPAL_BENCH_DOMAIN" == compositor ]]; then
   home="$root/compositor"
   [[ "$DBUS_SESSION_BUS_ADDRESS" == "unix:path=$home/runtime/session-bus" ]]
   [[ "$XDG_RUNTIME_DIR" == "$home/runtime" && "$HOME" == "$home/home" ]]
-  dbus-daemon --nofork --config-file="$root/compositor-bus.conf" >/dev/null 2>&1 &
+  if [[ -n "$diagnostic_fd" ]]; then
+    dbus-daemon --nofork --config-file="$root/compositor-bus.conf" >/dev/null 2>&1 {diagnostic_fd}>&- &
+  else
+    dbus-daemon --nofork --config-file="$root/compositor-bus.conf" >/dev/null 2>&1 &
+  fi
   bus_pid=$!
   for ((attempt=0; attempt<150; attempt++)); do
     [[ -S "$home/runtime/session-bus" ]] && break
     kill -0 "$bus_pid" 2>/dev/null || exit 1
-    sleep .1
+    if [[ -n "$diagnostic_fd" ]]; then sleep .1 {diagnostic_fd}>&-; else sleep .1; fi
   done
   [[ -S "$home/runtime/session-bus" ]]
   # Same real headless GNOME path as the separate Wayland acceptance baseline.
   # No host display/DRM permission, portal, capture or test grant is used.
-  gnome-shell --wayland --headless --virtual-monitor=1280x960 \
-    --wayland-display=orbitpal-benchmark --no-x11 >/dev/null 2>&1 &
+  if [[ -n "$diagnostic_fd" ]]; then
+    gnome-shell --wayland --headless --virtual-monitor=1280x960 \
+      --wayland-display=orbitpal-benchmark --no-x11 >/dev/null 2>&"$diagnostic_fd" {diagnostic_fd}>&- &
+  else
+    gnome-shell --wayland --headless --virtual-monitor=1280x960 \
+      --wayland-display=orbitpal-benchmark --no-x11 >/dev/null 2>&1 &
+  fi
   workload_pid=$!
+  if [[ -n "$diagnostic_fd" ]]; then exec {diagnostic_fd}>&-; diagnostic_fd=; fi
   workload_status=0
   wait "$workload_pid" || workload_status=$?
   workload_pid=

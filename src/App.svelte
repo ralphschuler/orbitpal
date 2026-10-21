@@ -14,13 +14,17 @@
   import LifeRuntimePanel from './components/LifeRuntimePanel.svelte';
   import LifeActionsPanel from './components/LifeActionsPanel.svelte';
   import WorldStatePanel from './components/WorldStatePanel.svelte';
+  import ExperiencePanel from './components/ExperiencePanel.svelte';
+  import SocialPanel from './components/SocialPanel.svelte';
+  import CarePreferencesPanel from './components/CarePreferencesPanel.svelte';
+  import ContentPacksPanel from './components/ContentPacksPanel.svelte';
   import UsageBudgetPanel from './components/UsageBudgetPanel.svelte';
   import ScreenContextPanel from './components/ScreenContextPanel.svelte';
   import { prepareScreenSession } from './lib/screen-session';
   import {LifeOutputVersions,type LifeOutput} from './lib/life-output';
   import {applyOverlayVisibility} from './lib/overlay-visibility';
   import { LifeUI } from './lib/life-ui';
-  import { actionChanged, requestQuietRest, requestLifeMove } from './lib/life-actions';
+  import { actionChanged, requestQuietRestForOutput, requestLifeMove,requestNativeLifeMove,requestNativeLifeSlot } from './lib/life-actions';
   import {lifeStartContext} from './lib/life-start-context';
   import {lifeSceneParticipants,LIFE_SCENE_OVER_LIMIT} from './lib/life-scene-participants';
   import {parseWorldSettings} from './lib/world-state';
@@ -80,6 +84,12 @@
   let apiMetadataEpoch = 0;
   function acceptApiSnapshot(value:ApiSnapshot|undefined){++apiMetadataEpoch;apiSnapshot=value;}
   async function refreshApiConnections(){const epoch=++apiMetadataEpoch;try{const value=await getApiConnections(call);if(appAlive&&epoch===apiMetadataEpoch)apiSnapshot=value;}catch{if(appAlive&&epoch===apiMetadataEpoch)apiSnapshot=undefined;}}
+  let experienceDirty=$state(false),socialDirty=$state(false),careDirty=$state(false);
+  let experienceBusy=$state(false),socialBusy=$state(false),careBusy=$state(false);
+  type ExperienceDraftPanel={saveDraft:()=>Promise<void>;discardDraft:()=>void};
+  let experiencePanel=$state<ExperienceDraftPanel>(),socialPanel=$state<ExperienceDraftPanel>(),carePanel=$state<ExperienceDraftPanel>();
+  const lifePreferencesDirty=$derived(experienceDirty||socialDirty||careDirty);
+  const lifePreferencesBusy=$derived(experienceBusy||socialBusy||careBusy);
   let worldDirty = $state(false);
   let worldBusy = $state(false);
   let worldPanel = $state<{saveDraft:()=>Promise<void>;cancelPendingStart:()=>void}>();
@@ -416,7 +426,7 @@
   type Confirmation = {title:string;message:string;confirmLabel:string;action:()=>void|Promise<void>;danger?:boolean;dismissBeforeAction?:boolean};
   let confirmation = $state<Confirmation>();
   let confirming = $state(false);
-  const hasUnsavedChanges = $derived(dirty||documentDirty||extensionDirty||worldDirty||apiAccessDirty);
+  const hasUnsavedChanges = $derived(dirty||documentDirty||extensionDirty||worldDirty||apiAccessDirty||lifePreferencesDirty);
   function confirmWorldDiscard(action:()=>void){confirmation={title:translate('Bühnenentwurf verwerfen?'),message:translate('Nicht gespeicherte Bühnenangaben und Positionsentwürfe werden verworfen. Der bestätigte native Zustand bleibt bestehen.'),confirmLabel:translate('Entwurf verwerfen'),action,danger:true,dismissBeforeAction:true};}
   function requestDiscard(action:()=>void) {
     confirmation={title:translate('Entwurf verwerfen?'),message:translate('Deine Änderungen in der Bibliothek wurden noch nicht gespeichert. Beim Fortfahren gehen sie verloren.'),confirmLabel:translate('Entwurf verwerfen'),action,danger:true,dismissBeforeAction:true};
@@ -443,7 +453,7 @@
   const autopilotBlocker = $derived(speechBlocker({
     permission:!!$systemPermission, update:updateInstalling, starting:autopilotPending, reply:(busy||speaking||speechPreparing)&&!nativeOwnOutput,
     sound:foregroundEmotePlaying&&!nativeOwnSound||externalForeignSound, recording:microphone||microphoneStarting,
-    transcription:transcribing, saving:saving||worldBusy||apiAccessBusy, botChange:switchingBot||creatingBot,
+    transcription:transcribing, saving:saving||worldBusy||apiAccessBusy||lifePreferencesBusy, botChange:switchingBot||creatingBot,
     extensions:extensionEditing||extensionBusy, botDialog:botDialog||!!confirmation||confirming||shortcutHelp||$operatorDialogActive, updatesDialog:updatesOpen, unsaved:hasUnsavedChanges||usageBudgetDirty,
     draft:!!message.trim(), secretDraft:Object.values(secretInputs).some(value=>!!value.trim()),
   }));
@@ -463,7 +473,7 @@
     const target=profile.id,revision=operatorRevision,epoch=turnEpoch,reporter=lifeUi;
     const current=()=>appAlive&&profile.id===target&&operatorRevision===revision&&turnEpoch===epoch&&lifeUi===reporter&&!quietRestBlocked;
     if(!current())throw actionChanged();
-    return requestQuietRest(call,reporter,target,current,()=>{nativeOperatorPending=false;lifeActivity=false;});
+    return requestQuietRestForOutput(call,reporter,target,current,()=>{nativeOperatorPending=false;lifeActivity=false;});
   }
   async function registerWorld(request:Omit<RegisterWorldActor,'studioProof'>){
     const reporter=lifeUi,target=profile.id,revision=operatorRevision,epoch=turnEpoch;
@@ -475,12 +485,19 @@
       return call('register_world_output',{request:{...request,studioProof:proof}});
     });
   }
-  async function startWorldMove(targetPoint:CanonicalPoint){
+  async function startWorldMove(targetPoint:CanonicalPoint,nativeOwner=false){
     if(quietRestBlocked||!lifeUi)throw new Error(translate('Beende zuerst Eingaben, Ausgaben und offene Änderungen. Eine sichtbare Bewegung erfordert einen bereits gestarteten Life-Modus.'));
     invalidateNativePlayback();
     const target=profile.id,revision=operatorRevision,epoch=turnEpoch,reporter=lifeUi;
     const current=()=>appAlive&&page==='autopilot'&&profile.id===target&&operatorRevision===revision&&turnEpoch===epoch&&lifeUi===reporter&&!quietRestBlocked;
+    if(nativeOwner)return requestNativeLifeMove(call,target,targetPoint,current);
     return requestLifeMove(call,reporter,target,targetPoint,current,()=>{nativeOperatorPending=false;lifeActivity=false;});
+  }
+  async function startWorldSlot(slotId:string){
+    if(quietRestBlocked)throw actionChanged();
+    invalidateNativePlayback();const target=profile.id,revision=operatorRevision,epoch=turnEpoch;
+    const current=()=>appAlive&&page==='autopilot'&&profile.id===target&&operatorRevision===revision&&turnEpoch===epoch&&!quietRestBlocked;
+    return requestNativeLifeSlot(call,target,slotId,current);
   }
   async function reportLife(activity=false) {
     if(!native||!lifeMounted||!lifeUi)return;
@@ -497,7 +514,7 @@
     Object.keys(autopilots).length||lifeRuntime?.sessions.some(session=>session.active) ? $t("Pausiere zuerst alle Autopiloten.") :
     running ? $t("Pausiere zuerst die automatischen Chat-Antworten.") :
     hasUnsavedChanges || usageBudgetDirty || message.trim() || Object.values(secretInputs).some(value=>!!value.trim()) ? $t("Speichere deine Änderungen und sende oder leere Entwürfe vor der Installation.") :
-    saving || worldBusy || apiAccessBusy || switchingBot || creatingBot || autopilotPending || extensionEditing || botDialog ? $t("Schließe zuerst laufende Bearbeitungen und Speichervorgänge.") : ''
+    saving || worldBusy || apiAccessBusy || lifePreferencesBusy || switchingBot || creatingBot || autopilotPending || extensionEditing || botDialog ? $t("Schließe zuerst laufende Bearbeitungen und Speichervorgänge.") : ''
   );
   const currentPage = $derived(nav.find(n => n.id === page));
 
@@ -683,7 +700,8 @@
     catch(e){notify(prettyError(e),true);return false;}
   }
   async function saveContext(){
-    if(saving||worldBusy||apiAccessBusy||switchingBot||extensionBusy)return;
+    if(saving||worldBusy||apiAccessBusy||lifePreferencesBusy||switchingBot||extensionBusy)return;
+    if(lifePreferencesDirty){if(experienceDirty)await experiencePanel?.saveDraft();if(socialDirty)await socialPanel?.saveDraft();if(careDirty)await carePanel?.saveDraft();return;}
     if(page==='api-access'){await apiPanel?.saveDraft();return;}
     if(page==='autopilot'&&worldDirty){await worldPanel?.saveDraft();return;}
     if(page==='extensions'){window.dispatchEvent(new CustomEvent('cohost:save-extension'));return;}
@@ -708,12 +726,14 @@
     if(action==='send'&&!busy&&!microphone&&!microphoneStarting&&!transcribing&&message.trim())await sendOwn();
   }
   async function selectBot(id:string){
+    if(lifePreferencesDirty||lifePreferencesBusy){notify(translate('Speichere oder verwirf zuerst die Alltagsvorlieben.'));return;}
     if(busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||apiAccessBusy||autopilotPending){notify(translate("Beende zuerst die laufende Antwort, Aufnahme oder Speicherung."));return;}
     if(id===profile.id){botMenu=false;return;}
     systemPermission.cancel();chatScheduler.cancel();switchingBot=true;wakeStopSignal++;
     try{if(!await saveCurrentBot())return;player?.stop();await call('select_bot',{id});await refresh();cliStatus='';partial='';emotion='neutral';botMenu=false;log(translate('{name} zum Bearbeiten ausgewählt.',{name:profile.name}));}catch(e){notify(prettyError(e),true);}finally{switchingBot=false;}
   }
   async function createBot(){
+    if(lifePreferencesDirty||lifePreferencesBusy){notify(translate('Speichere oder verwirf zuerst die Alltagsvorlieben.'));return;}
     if(!botName.trim()||creatingBot||switchingBot||saving||apiAccessBusy)return;
     systemPermission.cancel();chatScheduler.cancel();wakeStopSignal++;creatingBot=true;
     try{
@@ -1067,7 +1087,13 @@
     cleanup.push(registerOperatorDialogBarrier(ensureOperatorBarrier));
     if(native)void lifeListeners.then(async()=>{if(disposed)return;await refresh();if(disposed)return;await lifeUi.connect();if(disposed)return;lifeMounted=true;await refreshLifeRuntime();await reportLife();}).catch(error=>{if(!disposed){lifeMounted=true;lifeError=prettyError(error);}});
     let lastActivity=0;
-    const activity=(event:Event)=>{if(!event.isTrusted)return;++operatorRevision;nativeOperatorPending=true;invalidateNativePlayback();lifeActivity=true;const now=Date.now();if(now-lastActivity>=500){lastActivity=now;void reportLife(true);}};
+    const activity=(event:Event)=>{if(!event.isTrusted)return;
+      // Only these explicit operator buttons use the native-intent handler,
+      // which cancels pending work while retaining its exact physical owner.
+      // The World target picker only chooses local geometry. The submit
+      // command performs native admission; all text edits, dialogs and other
+      // input keep the ordinary global cancellation path below.
+      if(event.target instanceof Element&&event.target.closest('button[data-native-life-command]'))return;++operatorRevision;nativeOperatorPending=true;invalidateNativePlayback();lifeActivity=true;const now=Date.now();if(now-lastActivity>=500){lastActivity=now;void reportLife(true);}};
     for(const name of ['pointerdown','keydown','input']){window.addEventListener(name,activity,{capture:true});cleanup.push(()=>window.removeEventListener(name,activity,{capture:true}));}
     const heartbeat=setInterval(()=>{void reportLife();},2000);cleanup.push(()=>clearInterval(heartbeat));
     subscribe('cohost://autopilot',acceptAutopilot);
@@ -1162,10 +1188,17 @@
       {#if page==='extensions'}<div class="scope-strip shared"><span>{$t('Für alle Bots installiert')}</span><p>{$t("Freigaben rechts gelten ausschließlich für den gewählten Bot.")}</p></div>{/if}
 
       <div class="page-heading"><div><h1>{$t(headings[page])}</h1><p>{$t(subheadings[page])}</p></div>{#if page==='studio'}<button class="button primary" class:running onclick={toggleRunning}>{#if running}<Pause size={16}/>{$t("Cohost pausieren")}{:else}<Play size={16} fill="currentColor"/>{$t("Cohost starten")}{/if}</button>{/if}</div>
+      {#if lifePreferencesDirty}<div class="scope-strip shared"><span>{$t('Alltagsvorlieben warten auf Speichern oder Verwerfen.')}</span><button class="text-link" onclick={()=>navigate('autopilot')}>{$t('Zu den Alltagsvorlieben')}</button><button class="text-link" disabled={lifePreferencesBusy} onclick={()=>{experiencePanel?.discardDraft();socialPanel?.discardDraft();carePanel?.discardDraft();}}>{$t('Entwurf verwerfen')}</button></div>{/if}
       {#if worldDirty&&page!=='autopilot'}<div class="scope-strip shared"><span>{$t('Gemeinsamer Bühnenentwurf wartet auf Speichern oder Verwerfen.')}</span><button class="text-link" onclick={()=>navigate('autopilot')}>{$t('Zum Bühnenentwurf')}</button></div>{/if}
       <div class="wake-control" hidden={page!=='studio'&&!profile.wakeWord?.enabled}><WakeWord {permissionContext} sttConfig={profile.stt} bind:config={profile.wakeWord} botId={profile.id} sttProvider={profile.stt.provider} blocked={updateInstalling||busy||speaking||speechPreparing||emoteSoundPlaying||externalEmotePlaying||microphone||microphoneStarting||transcribing} stopSignal={wakeStopSignal} onTrigger={text=>runMessage(text,'microphone','Streamer',profile.id,undefined,false)} onError={message=>notify(message,true)} onConfigChange={()=>persist(true)} onActiveChange={active=>wakeActive=active}/></div>
 
-      <div hidden={page!=='autopilot'}><WorldStatePanel bind:this={worldPanel} {bots} selectedBotId={profile.id} outputUrl={overlayUrl} displays={outputDisplays} visible={page==='autopilot'} disabled={updateInstalling||saving||switchingBot||creatingBot} executionBlocked={quietRestBlocked} registerWorld={registerWorld} onStart={startLifeScene} onStop={stopAll} active={!!lifeRuntime?.sessions.some(session=>session.active)} starting={autopilotPending} onMove={startWorldMove} onDirtyChange={value=>worldDirty=value} onBusyChange={value=>worldBusy=value} confirmDiscard={confirmWorldDiscard}/></div>
+      <div hidden={page!=='autopilot'}><WorldStatePanel bind:this={worldPanel} {bots} selectedBotId={profile.id} outputUrl={overlayUrl} displays={outputDisplays} visible={page==='autopilot'} disabled={updateInstalling||saving||switchingBot||creatingBot} executionBlocked={quietRestBlocked} registerWorld={registerWorld} onStart={startLifeScene} onStop={stopAll} active={!!lifeRuntime?.sessions.some(session=>session.active)} starting={autopilotPending} onMove={startWorldMove} onSlotMove={startWorldSlot} onDirtyChange={value=>worldDirty=value} onBusyChange={value=>worldBusy=value} confirmDiscard={confirmWorldDiscard}/></div>
+
+      <div hidden={page!=='autopilot'}>{#key profile.id}
+        <ExperiencePanel bind:this={experiencePanel} botId={profile.id} lifeSessionId={selectedLifeSession?.active&&selectedLifeSession.mode==='life'?selectedLifeSession.sessionId:null} {bots} active={!!selectedLifeSession?.active} disabled={saving||switchingBot||creatingBot||updateInstalling} onDirtyChange={value=>experienceDirty=value} onBusyChange={value=>experienceBusy=value}/>
+        <SocialPanel bind:this={socialPanel} botId={profile.id} {bots} active={!!selectedLifeSession?.active} disabled={saving||switchingBot||creatingBot||updateInstalling} onDirtyChange={value=>socialDirty=value} onBusyChange={value=>socialBusy=value}/>
+        <CarePreferencesPanel bind:this={carePanel} botId={profile.id} disabled={saving||switchingBot||creatingBot||updateInstalling} onDirtyChange={value=>careDirty=value} onBusyChange={value=>careBusy=value}/>
+      {/key}<ContentPacksPanel disabled={saving||switchingBot||creatingBot||updateInstalling} onCreated={async()=>{bots=await call<any[]>('list_bots');}}/></div>
 
       {#if page==='studio'}
         <section class="crew-panel"><div class="crew-heading"><div><h2>{$t("Deine Stream-Crew")} <HelpTip text={$t("Der Live-Chat ist die gemeinsame Eingabe. Eigene Ansprache und Antwortmodus legst du pro Bot unter Verbindungen fest. Antworten werden nacheinander gesprochen.")}/><span>{$t('{count} Ausgaben aktiv',{count:formatNumber(liveBots.length,$locale)})}</span></h2></div><button class="button secondary small" disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending} onclick={()=>{botDialog=true;botCopy=false;botCharacter='nova'}}><Plus size={14}/>{$t("Bot hinzufügen")}</button></div><div class="crew-list">{#each bots as bot}<article class="crew-card" class:editing={bot.id===profile.id}><button class="crew-identity" onclick={()=>selectBot(bot.id)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending}><span class="bot-initial">{bot.name.charAt(0)}</span><span><strong>{bot.name}</strong><small>{bot.id===profile.id?$t("Zum Bearbeiten ausgewählt"):bot.profile?.model?.provider||$t("Eigenes Profil")}</small></span></button><div class="crew-actions"><button class="button small" class:secondary={!(botEnabled(bot))} class:live-output={botEnabled(bot)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending} onclick={()=>toggleBotLive(bot)}><Monitor size={12}/>{botEnabled(bot)?$t("Ausgabe beenden"):$t("Figur zeigen")}</button><button class="icon-button" title={$t('Eigener OBS-Link für {name}',{name:bot.name})} aria-label={$t('Eigener OBS-Link für {name}',{name:bot.name})} onclick={()=>copyBotObs(bot)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending}><Copy size={14}/></button></div></article>{/each}</div></section>
@@ -1219,9 +1252,9 @@
               <p class="field-note">{$t('Mit default verwendet die CLI ihren Standard. Installiere {provider} separat und melde dich dort im Terminal an. Die App nutzt diesen CLI-Zugang.',{provider:profile.model.provider==='codex'?'Codex':'Claude Code'})}</p>
               <p class="inline-note"><CircleHelp size={16}/>{$t("Das Programm läuft auf deinem Rechner. Die Modellverarbeitung erfolgt über den in der CLI eingerichteten Anbieter.")}</p>
             {:else}
-              <label>{$t("API-Basis-URL")}<input bind:value={profile.model.baseUrl}/></label>
+              <label for="dialog-api-base-url">{$t("API-Basis-URL")}<input id="dialog-api-base-url" aria-label={$t("API-Basis-URL")} bind:value={profile.model.baseUrl}/></label>
               <CredentialSelector botId={profile.id} purpose="dialog" config={profile.model} snapshot={apiSnapshot} disabled={saving||apiAccessBusy||updateInstalling} onChange={value=>profile.model.apiKeyId=value} onManage={()=>navigate('api-access')}/>
-              <label>{$t("Modell")}<div class="input-action"><input bind:value={profile.model.model} list="models" placeholder={$t("Modellnamen eintragen")}/><button class="button secondary" onclick={loadModels} disabled={loadingModels}>{loadingModels?$t("Lädt …"):$t("Modelle laden")}</button></div><datalist id="models">{#each modelList as model}<option value={model}></option>{/each}</datalist></label>
+              <label for="dialog-model-name">{$t("Modell")}<div class="input-action"><input id="dialog-model-name" aria-label={$t("Modell")} bind:value={profile.model.model} list="models" placeholder={$t("Modellnamen eintragen")}/><button class="button secondary" onclick={loadModels} disabled={loadingModels}>{loadingModels?$t("Lädt …"):$t("Modelle laden")}</button></div><datalist id="models">{#each modelList as model}<option value={model}></option>{/each}</datalist></label>
               <label>{$t("Kreativität")} <span>{formatNumber(Number(profile.model.temperature),$locale,{minimumFractionDigits:1,maximumFractionDigits:1})}</span><input type="range" min="0" max="1.5" step="0.1" bind:value={profile.model.temperature}/></label>
               <div class="field-with-help"><div class="field-label"><label for="cohost-field-3">{$t("Maximale Antwortlänge")} </label><HelpTip text={$t("Begrenzt die vom API-Modell erzeugten Tokens. Kürzere Antworten werden meist schneller gesprochen. Ein sehr kleines Limit kann Antworten abschneiden.")}/></div><select id="cohost-field-3" bind:value={profile.model.maxTokens}><option value={256}>{$t("Kurz · 256 Tokens")}</option><option value={512}>{$t("Normal · 512 Tokens")}</option><option value={1024}>{$t("Ausführlich · 1.024 Tokens")}</option></select></div>
             {/if}

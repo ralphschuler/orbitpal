@@ -27,10 +27,21 @@ export type BindingStamp = {
   configRevision: Counter; topologyRevision: Counter; layoutRevision: Counter;
   assetRevision: Counter; measurementRevision: Counter; referenceRevision: Counter;
 };
+export type NativePhysicalPolicy = Readonly<{
+  kind: 'native_physical_iso_v1'; referencePhysicalHeight: number;
+  physicalWidth: number; physicalHeight: number; scaleFactor: number;
+  normalCamera: 'full' | 'portrait'; normalVerticalSpan: number; verticalSpan: number;
+}>;
+/** Host-prescribed normalized rig coordinate, not a posed centre or feet. */
+export const NATIVE_RIG_REFERENCE=Object.freeze({x:0,y:1.45,z:0});
+export type WorldCameraPolicy =
+  | { cameraPolicy?: never; nativeFraming?: never }
+  | { cameraPolicy: 'native_physical_iso_v1'; nativeFraming: NativePhysicalPolicy };
 export type MeasurementChallenge = {
   id: PublicId; expiresInMs: 5000; expected: BindingStamp;
   enclosureKind: EnclosureKind;
-  cameraPolicy: 'world_iso_v1'; profileScale: number; effectiveScale: number;
+  cameraPolicy: 'world_iso_v1' | 'native_physical_iso_v1'; nativeFraming?: NativePhysicalPolicy;
+  profileScale: number; effectiveScale: number;
   expectedReferenceLocal: LocalReference | null;
 };
 export type MotionBinding = BindingStamp & {
@@ -38,10 +49,10 @@ export type MotionBinding = BindingStamp & {
   envelopeExtents: EnvelopeExtents; referenceLocal: LocalReference;
   position: CssPoint; groundBasis: GroundBasis; modelForwardYaw: number;
   profileScale: number; effectiveScale: number; scale: number;
-  reducedMotion: boolean; walkSupported: boolean;
+  reducedMotion: boolean; walkSupported: boolean; stationSupported: boolean;
 };
 /** Native policy wrapper; the reusable pure motion contract stays separate. */
-export type NativeMotionBinding = MotionBinding & { enclosureKind: EnclosureKind };
+export type NativeMotionBinding = MotionBinding & { enclosureKind: EnclosureKind } & WorldCameraPolicy;
 export type RegisteredWorldActor = {
   version: 1; renderSessionId: PublicId; bindingSequence: Counter;
   surfaceId: PublicId; role: 'owner_candidate' | 'mirror';
@@ -62,7 +73,7 @@ export type RenderMeasurement = {
   viewport: CssSize; clip: CssRect; anchor: CssPoint; posedBounds: CssRect;
   envelopeExtents: EnvelopeExtents; referenceLocal: LocalReference;
   groundBasis: GroundBasis; modelForwardYaw: number; appliedModelScale: number;
-  reducedMotion: boolean; walkSupported: boolean;
+  reducedMotion: boolean; walkSupported: boolean; stationSupported?: boolean;
 };
 export type MeasurementAck = {
   version: 1; frameSequence: Counter; output: RegisteredWorldActor;
@@ -87,7 +98,7 @@ export type ActionReport = {
   | { kind: 'delivered' }
   | { kind: 'started' }
   | { kind: 'progress' }
-  | { kind: 'completed' } // MoveTo only; native derives Evidence::Arrived
+  | { kind: 'completed' } // Native derives arrival/visual finish from its stored activity.
 );
 export type ActionReportAck = {
   version: 1; receiptSequence: Counter;
@@ -158,25 +169,68 @@ function reference(value: unknown): LocalReference {
   return Object.freeze({ x: finite(data.x, -1e6, 1e6), y: finite(data.y, -1e6, 1e6), z: finite(data.z, -1e6, 1e6) });
 }
 export function parseMeasurementChallenge(value: unknown): MeasurementChallenge {
-  const data = fields(value, ['id', 'expiresInMs', 'expected', 'enclosureKind', 'cameraPolicy', 'profileScale', 'effectiveScale', 'expectedReferenceLocal']);
-  if (data.expiresInMs !== 5000 || data.cameraPolicy !== 'world_iso_v1' || data.enclosureKind !== WORLD_ENCLOSURE_KIND) throw invalid();
-  return Object.freeze({ id: id(data.id), expiresInMs: 5000, expected: stamp(data.expected), cameraPolicy: 'world_iso_v1',
+  const native = nativeCamera(value);
+  const data = fields(value, ['id', 'expiresInMs', 'expected', 'enclosureKind', 'cameraPolicy', 'profileScale', 'effectiveScale', 'expectedReferenceLocal', ...(native ? ['nativeFraming'] : [])]);
+  if (data.expiresInMs !== 5000 || !['world_iso_v1','native_physical_iso_v1'].includes(String(data.cameraPolicy)) || data.enclosureKind !== WORLD_ENCLOSURE_KIND) throw invalid();
+  const expectedReferenceLocal=data.expectedReferenceLocal===null?null:reference(data.expectedReferenceLocal);
+  if(native&&(!expectedReferenceLocal||expectedReferenceLocal.x!==0||expectedReferenceLocal.y!==1.45||expectedReferenceLocal.z!==0))throw invalid();
+  return Object.freeze({ id: id(data.id), expiresInMs: 5000, expected: stamp(data.expected), cameraPolicy: native ? 'native_physical_iso_v1' : 'world_iso_v1',
+    ...(native ? { nativeFraming: parseNativePhysicalPolicy(data.nativeFraming) } : {}),
     enclosureKind: WORLD_ENCLOSURE_KIND,
     profileScale: finite(data.profileScale, .3, 2.5), effectiveScale: finite(data.effectiveScale, .3, 2.5),
-    expectedReferenceLocal: data.expectedReferenceLocal === null ? null : reference(data.expectedReferenceLocal) });
+    expectedReferenceLocal });
 }
 /** Validate the native policy before passing the separate pure motion contract
  * to its existing parser. Missing/unknown kinds never acquire a default. */
 export function parseWorldMotionBinding(value: unknown): NativeMotionBinding | null {
   try {
+    const native = nativeCamera(value);
+    const policy = ownValue(value, 'cameraPolicy');
     const data = fields(value, [...stampKeys, 'enclosureKind', 'viewport', 'safeCenters', 'maximumFootprint',
       'envelopeExtents', 'referenceLocal', 'position', 'groundBasis', 'modelForwardYaw',
-      'profileScale', 'effectiveScale', 'scale', 'reducedMotion', 'walkSupported']);
+      'profileScale', 'effectiveScale', 'scale', 'reducedMotion', 'walkSupported',
+      ...(ownValue(value, 'stationSupported') !== undefined ? ['stationSupported'] : []),
+      ...(native ? ['cameraPolicy','nativeFraming'] : [])]);
     if (data.enclosureKind !== WORLD_ENCLOSURE_KIND) return null;
-    const { enclosureKind: _kind, ...motion } = data;
+    if (policy !== undefined && !native) return null;
+    const { enclosureKind: _kind, cameraPolicy: _camera, nativeFraming: _framing, ...motion } = data;
     const binding = parseMotionBinding(motion);
-    return binding ? Object.freeze({ ...binding, enclosureKind: WORLD_ENCLOSURE_KIND }) : null;
+    const nativeFraming=native?parseNativePhysicalPolicy(data.nativeFraming):undefined;
+    if(binding&&nativeFraming){
+      const unit=nativeFraming.verticalSpan/binding.viewport.height/binding.scale;
+      const close=(a:number,b:number)=>Number.isFinite(a)&&Math.abs(a-b)<=Math.max(1,Math.abs(b))*1e-9;
+      if(Math.abs(binding.viewport.width-nativeFraming.physicalWidth/nativeFraming.scaleFactor)>.5
+        ||Math.abs(binding.viewport.height-nativeFraming.physicalHeight/nativeFraming.scaleFactor)>.5
+        ||binding.scale!==binding.effectiveScale||!close(binding.groundBasis.right.x,unit)||!close(binding.groundBasis.right.z,0)
+        ||!close(binding.groundBasis.down.x,0)||!close(binding.groundBasis.down.z,unit/.5)
+        ||binding.referenceLocal.x!==0||binding.referenceLocal.y!==1.45||binding.referenceLocal.z!==0)return null;
+    }
+    if(!binding)return null;
+    return nativeFraming?Object.freeze({...binding,enclosureKind:WORLD_ENCLOSURE_KIND,cameraPolicy:'native_physical_iso_v1',nativeFraming})
+      :Object.freeze({...binding,enclosureKind:WORLD_ENCLOSURE_KIND});
   } catch { return null; }
+}
+function ownValue(value: unknown, key: string): unknown {
+  if (!value || typeof value !== 'object') return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value,key);
+  if (!descriptor) return undefined;
+  if (!Object.hasOwn(descriptor,'value')) throw invalid();
+  return descriptor.value;
+}
+function nativeCamera(value: unknown): boolean { return ownValue(value,'cameraPolicy') === 'native_physical_iso_v1'; }
+export function parseNativePhysicalPolicy(value: unknown): NativePhysicalPolicy {
+  const data=fields(value,['kind','referencePhysicalHeight','physicalWidth','physicalHeight','scaleFactor','normalCamera','normalVerticalSpan','verticalSpan']);
+  if(data.kind!=='native_physical_iso_v1')throw invalid();
+  const normalCamera=oneOf(data.normalCamera,['full','portrait'] as const);
+  const normalVerticalSpan=finite(data.normalVerticalSpan,Number.MIN_VALUE,1e6);
+  const physicalHeight=count(data.physicalHeight,1,1e6),referencePhysicalHeight=count(data.referencePhysicalHeight,1,1e6);
+  const verticalSpan=finite(data.verticalSpan,Number.MIN_VALUE,1e6);
+  const expected=2*(normalCamera==='full'?Math.hypot(.55,.7,7.6):Math.hypot(.35,.48,5.4))*Math.tan(32*Math.PI/360);
+  const close=(a:number,b:number)=>Math.abs(a-b)<=1e-8;
+  if(!close(normalVerticalSpan,expected)||!close(verticalSpan,expected*physicalHeight/referencePhysicalHeight))throw invalid();
+  return Object.freeze({kind:'native_physical_iso_v1',referencePhysicalHeight,
+    physicalWidth:count(data.physicalWidth,1,1e6),physicalHeight,scaleFactor:finite(data.scaleFactor,.25,8),
+    normalCamera,normalVerticalSpan,verticalSpan});
 }
 /** Exact closed wire shapes; accessors/prototype properties never become grants. */
 export function parseRegisteredWorldActor(value: unknown): RegisteredWorldActor {

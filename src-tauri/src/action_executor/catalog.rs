@@ -10,6 +10,22 @@ pub(crate) struct Effect {
     social: i16,
 }
 impl Effect {
+    pub(crate) fn care(activity: Activity, goal: &Goal, config: &crate::life_self_care::CareConfig) -> Result<Self, ActionError> {
+        config.validate().map_err(|_| ActionError::UnsupportedCapability)?;
+        let [energy, nourishment, engagement, social] = config.restore_units.map(|v| v as i16);
+        let mut effect = match activity {
+            Activity::Rest => Self::new(energy, 0, 0, 0),
+            Activity::Recharge => Self::new(energy * 2, 0, 0, 0),
+            Activity::Snack => Self::new(0, nourishment, 0, 0),
+            Activity::Play => Self::new(0, 0, engagement, 0),
+            Activity::Socialize => Self::new(0, 0, 0, social),
+            _ => return Err(ActionError::UnsupportedCapability),
+        };
+        if matches!(goal, Goal::Here(_)) {
+            effect = Self::new(effect.energy / 2, effect.nourishment / 2, effect.engagement / 2, effect.social / 2);
+        }
+        Ok(effect)
+    }
     const fn new(energy: i16, nourishment: i16, engagement: i16, social: i16) -> Self {
         Self {
             energy,
@@ -53,24 +69,28 @@ impl Policy {
         goal: &Goal,
         presentation: Presentation,
     ) -> Result<Self, ActionError> {
-        let (minimum_active_ms, maximum_run_ms, effect) = match activity {
+        let (minimum_active_ms, maximum_run_ms, mut effect) = match activity {
             Activity::MoveTo => (0, 30_000, Effect::new(0, 0, 0, 0)),
             Activity::Rest => (10_000, 30_000, Effect::new(500, 0, 0, 0)),
             Activity::Recharge => (15_000, 40_000, Effect::new(1000, 0, 0, 0)),
+            Activity::Snack => (8000, 30_000, Effect::new(0, 1500, 0, 0)),
             Activity::Play => (1000, 15_000, Effect::new(0, 0, 500, 0)),
+            Activity::Socialize => (4000, 20_000, Effect::new(0, 0, 0, 1000)),
             Activity::LookAt => (200, 5000, Effect::new(0, 0, 0, 0)),
             Activity::Wave => (200, 8000, Effect::new(0, 0, 0, 0)),
         };
         let valid_goal = match activity {
             Activity::MoveTo => matches!(goal, Goal::Point(_) | Goal::Slot { .. }),
-            Activity::Rest | Activity::Recharge => matches!(
+            Activity::Rest | Activity::Recharge => matches!(goal, Goal::Here(_)) || matches!(
                 goal,
                 Goal::Slot {
                     kind: crate::world_state::AnchorKind::Rest,
                     ..
                 }
             ),
-            Activity::Play => matches!(
+            Activity::Snack => matches!(goal, Goal::Here(_)) || matches!(goal, Goal::Slot { kind: crate::world_state::AnchorKind::Snack, .. }),
+            Activity::Socialize => matches!(goal, Goal::Here(_)) || matches!(goal, Goal::Slot { kind: crate::world_state::AnchorKind::Meeting, .. }),
+            Activity::Play => matches!(goal, Goal::Here(_)) || matches!(
                 goal,
                 Goal::Slot {
                     kind: crate::world_state::AnchorKind::Play,
@@ -94,6 +114,9 @@ impl Policy {
         }
         if !valid_goal {
             return Err(ActionError::InvalidGoal);
+        }
+        if matches!(goal, Goal::Here(_)) && matches!(activity, Activity::Rest | Activity::Recharge | Activity::Snack | Activity::Play | Activity::Socialize) {
+            effect = Effect::new(effect.energy / 2, effect.nourishment / 2, effect.engagement / 2, effect.social / 2);
         }
         Ok(Self {
             activity,

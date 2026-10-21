@@ -37,7 +37,7 @@ jobs:
           [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/test/native-render-benchmark-smoke ]]
           [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ && "$REVIEWED_SHA" == "$DISPATCH_SHA" ]]
           [[ "$RUNNER_TEMP" == /* && -d "$RUNNER_TEMP" && ! -L "$RUNNER_TEMP" ]]
-          printf 'CARGO_TARGET_DIR=%s/native-render-benchmark-build\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CARGO_TARGET_DIR=%s/src-tauri/target/native-render-benchmark\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -55,9 +55,21 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          cache: pnpm
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: stable
+      - name: Cache locked native dependencies (rebuild workspace crates)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri -> target/native-render-benchmark
+          shared-key: native-render-benchmark-linux-dependencies
+          cache-all-crates: false
+          cache-workspace-crates: false
+          cache-bin: false
+          # A failed GUI qualification still produced reusable dependencies.
+          cache-on-failure: true
+          save-if: ${{ github.repository == 'ralphschuler/orbitpal' && github.event_name == 'workflow_dispatch' }}
       - name: Install packaged build and private software-compositor prerequisites
         shell: bash
         run: |
@@ -141,7 +153,7 @@ jobs:
           assert (root / 'process.ndjson').is_file() and (root / 'collector-summary.json').is_file()
           print('Native software-GPU smoke scope and cleanup passed; no issue #66 acceptance.')
           PY
-      - name: Upload only the six fixed validated metadata files, including available failure evidence
+      - name: Upload fixed numeric evidence and separate failed compositor diagnostic
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -153,5 +165,7 @@ jobs:
             ${{ runner.temp }}/native-render-benchmark-smoke/collector-failure.json
             ${{ runner.temp }}/native-render-benchmark-smoke/fixture-manifest.json
             ${{ runner.temp }}/native-render-benchmark-smoke/fixture-result.json
+            ${{ runner.temp }}/native-render-benchmark-smoke/compositor-startup-diagnostic.json
+            ${{ runner.temp }}/native-render-benchmark-smoke/compositor-startup-diagnostic.txt
           if-no-files-found: warn
           retention-days: 7

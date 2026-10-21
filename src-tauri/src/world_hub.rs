@@ -7,7 +7,7 @@ use crate::{
 };
 use serde_json::json;
 use state::DisplaySample;
-pub(crate) use state::{current_actors, output_window, ActionContext, NativeActor, TopologySample};
+pub(crate) use state::{current_actors, output_window, ActionContext, ActionSlotTarget, NativeActor, SlotReservation, TopologySample};
 pub use state::{PublicWorld, WorldHub, WorldSettings};
 use std::{
     sync::atomic::Ordering,
@@ -81,14 +81,21 @@ impl WorldHub {
 }
 pub fn publish(app: &tauri::AppHandle) {
     let state = app.state::<crate::AppState>();
+    // This read acquires Core only after its constructor/Scene observations and
+    // releases it before WorldHub, Store and every event emission below.
+    let semantic = state.life_runtime.semantic_mirrors().ok();
+    if let Some(packet) = &semantic {
+        let _ = app.emit_to("main", "cohost://world-semantic-mirrors", packet);
+    }
     if let Ok(snapshot) = state.world.snapshot() {
         let _ = app.emit_to("main", "cohost://world-state", snapshot);
     }
     for id in state.world.output_targets() {
         if let Ok(profile) = state.store.bot_profile(&id) {
-            let event = state.world.output_event(&id, &profile).unwrap_or_else(
+            let mut event = state.world.output_event(&id, &profile).unwrap_or_else(
                 || json!({"kind":"world-state","botId":id,"world":null,"arena":null}),
             );
+            event["semanticMirror"] = serde_json::to_value(semantic.as_ref().map(|packet| packet.for_actor(&id))).unwrap_or(serde_json::Value::Null);
             state.overlay.publish(app, event);
         }
     }
@@ -181,5 +188,20 @@ pub(crate) fn action_fixture_topology(ticket: u64) -> state::TopologySample {
         observed: std::time::Instant::now(),
         displays: vec![],
         fingerprint: vec![],
+    }
+}
+
+/// A controlled display observation for actual Slot reservations. The older
+/// Point-only fixture intentionally has no display; that cannot grant a Slot.
+/// This helper performs no monitor/GUI query and confers no Native Scene proof.
+#[cfg(test)]
+pub(crate) fn action_slot_fixture_topology(ticket: u64) -> state::TopologySample {
+    state::TopologySample {
+        ticket,
+        observed: std::time::Instant::now(),
+        displays: vec![DisplaySample {
+            geometry: OutputGeometry::new("slot-fixture-monitor", 0, 0, 1600, 1200, 2.0).unwrap(),
+        }],
+        fingerprint: vec![("slot-fixture-monitor".into(), 0, 0, 1600, 1200, 2.0_f64.to_bits())],
     }
 }

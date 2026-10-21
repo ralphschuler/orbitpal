@@ -2,7 +2,8 @@
 """Disposable hosted-Linux fixture provisioning. No normal app is launched.
 
 Root code stays in the trusted checkout. The fresh account never runs a root
-script from its writable root. Raw subprocess output is discarded, not logged.
+script from its writable root. App output is discarded; only a failed-run,
+bounded/redacted fixed-compositor stderr diagnostic may be exported separately.
 """
 import configparser
 import grp
@@ -22,6 +23,7 @@ import sys
 import time
 
 from collect import PinnedDirectory, Refusal, bounded, checked_root, measurement_mode, membership, numeric_pids, refuse, scoped_pids, uid_inventory
+from compositor_diagnostic import CompositorDiagnostic
 
 
 SOURCE = Path(__file__).resolve().parent
@@ -32,6 +34,7 @@ SERVICES = {
     "org.a11y.Bus": ("/usr/libexec/at-spi-bus-launcher", "/usr/lib/at-spi2-core/at-spi-bus-launcher"),
     "ca.desrt.dconf": ("/usr/libexec/dconf-service", "/usr/lib/dconf/dconf-service"),
 }
+TRUSTED_SOURCES = ("runner.py", "launch.py", "collect.py", "session.sh", "compositor_diagnostic.py")
 _interrupted = False
 
 
@@ -60,7 +63,7 @@ def command(argv):
 
 
 def trusted_sources():
-    for name in ("runner.py", "launch.py", "collect.py", "session.sh"):
+    for name in TRUSTED_SOURCES:
         path = SOURCE / name
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o022:
@@ -433,6 +436,7 @@ def execute(mode, binary, output):
     phase = 0
     compositor = collector = app = None
     bootstrap = None
+    diagnostic = None
     try:
         for lookup in (pwd.getpwnam, grp.getgrnam):
             try:
@@ -498,10 +502,15 @@ def execute(mode, binary, output):
                     "kernelRelease": platform.release(), "architecture": platform.machine(),
                     "physicalGpuPermissionsChanged": False, "nativeLaneOnly": True,
                     "sourceHashes": {name.replace(".", "_"): sha256(SOURCE / name)
-                                     for name in ("runner.py", "launch.py", "collect.py", "session.sh")}}
+                                     for name in TRUSTED_SOURCES}}
         def launch(domain):
-            return subprocess.Popen(["/usr/bin/python3", str(SOURCE / "launch.py"), str(root), domain,
-                                     str(uid), str(gid), mode, str(root_files.fd)], pass_fds=(root_files.fd,),
+            arguments = ["/usr/bin/python3", str(SOURCE / "launch.py"), str(root), domain,
+                         str(uid), str(gid), mode, str(root_files.fd)]
+            descriptors = (root_files.fd,)
+            if domain == "compositor":
+                arguments.append(str(diagnostic.writer))
+                descriptors += (diagnostic.writer,)
+            return subprocess.Popen(arguments, pass_fds=descriptors,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Pin every directory that root will write after the workload starts.
         root_files = PinnedDirectory(root)
@@ -512,7 +521,11 @@ def execute(mode, binary, output):
         root_exposed = True
         checked_root(str(root), uid, root_files)
         phase = 1
-        compositor = launch("compositor")
+        diagnostic = CompositorDiagnostic(deadline)
+        try:
+            compositor = launch("compositor")
+        finally:
+            diagnostic.close_writer()
         children.append(compositor)
         phase = 2
         socket = root / "compositor/runtime/orbitpal-benchmark"
@@ -637,6 +650,19 @@ def execute(mode, binary, output):
         for directory in (runtime_files, root_files):
             if directory is not None:
                 directory.close()
+        if diagnostic is not None:
+            try:
+                diagnostic.finish()
+            except Exception:
+                diagnostic.stop.set()  # Never replace the primary fixture result.
+    if diagnostic is not None:
+        try:
+            diagnostic.export_failed(output, failed=failure is not None,
+                                     writers_stopped=cleanup_ok and groups_drained and children_reaped and identity_cleaned,
+                                     redactions=((str(root), "<fixture>"), (str(SOURCE.parent.parent), "<checkout>"),
+                                                 (str(output.parent), "<runner-temp>"), ("/home/runner", "<runner-home>")))
+        except Exception:
+            pass  # Supplemental diagnostic failure never replaces the original result.
     result = {"version": 1, "passed": failure is None and cleanup_ok, "reason": failure,
               "cleanupConfirmed": cleanup_ok, "durationSeconds": time.monotonic() - start,
               "fullIssue66Acceptance": False, "hardwarePerformanceBaseline": False}

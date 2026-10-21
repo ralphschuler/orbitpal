@@ -193,6 +193,12 @@ impl OutputGeometry {
     pub fn id(&self) -> &str {
         &self.id
     }
+    pub(crate) fn physical_bounds(&self) -> (i32, i32, u32, u32) {
+        (self.x, self.y, self.width, self.height)
+    }
+    pub(crate) fn scale_factor(&self) -> f64 {
+        self.scale
+    }
 }
 pub fn choose_output<'a>(
     outputs: &'a [OutputGeometry],

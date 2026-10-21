@@ -5,12 +5,12 @@ import * as THREE from 'three';
 import { configureDesktopCamera } from './desktop-framing';
 import { DistanceWalkClock } from './avatar-locomotion';
 import { containsPosedEnvelope, WorldMotionFollower, type MotionBinding,
-  type MotionFence, type MotionOffer, type MotionProposal, type ReceiveResult, type WorldMotionCommand } from './world-motion';
+  type MotionFence, type MotionOffer, type MotionProposal, type ReceiveResult, type StationActivity, type WorldMotionCommand } from './world-motion';
 import { CONSERVATIVE_ENCLOSURE_KIND, WorldRenderGeometry, type GeometryBinding, type GeometryFrame, type GeometryMeasurement,
   type RenderPort, type SurfaceObservation } from './world-render-geometry';
-import { parseWorldMotionBinding } from './world-output';
+import { parseMeasurementChallenge, parseWorldMotionBinding } from './world-output';
 import type { NativeMotionBinding, CanonicalPoint, EnvelopeExtents, LocalReference, MeasurementChallenge,
-  RenderMeasurement, WorldAdapterIdentity, WorldAdapterReason, LocalWorldFrame } from './world-output';
+  NativePhysicalPolicy, RenderMeasurement, WorldAdapterIdentity, WorldAdapterReason, LocalWorldFrame } from './world-output';
 
 export interface WorldAvatarOptions {
   worldOwner?: boolean; worldChallenge?: MeasurementChallenge; worldBinding?: NativeMotionBinding;
@@ -19,7 +19,11 @@ export interface WorldAvatarOptions {
   onWorldMeasurement?: (report: RenderMeasurement) => void;
   onWorldFrame?: (frame: LocalWorldFrame) => void;
   onWorldUnavailable?: (identity: WorldAdapterIdentity, reason: WorldAdapterReason) => void;
+  onWorldActivity?: (activity: WorldStationFrame | undefined) => void;
 }
+/** Display-only successful-frame observation; never an action receipt. */
+export type WorldStationFrame = Readonly<{ activity: StationActivity; activeMs: number;
+  minimumActiveMs: number; position: Readonly<{ x: number; y: number }> }>;
 export type WorldPoseSnapshot = { restore(): void };
 export type WorldTrial = Readonly<{ frame: GeometryFrame; proposal: MotionProposal | null;
   walking: boolean; cycles: number; calibration: boolean; generation: number; snapshot: WorldPoseSnapshot }>;
@@ -34,9 +38,11 @@ const equalReference = (a: LocalReference, b: LocalReference) => a.x === b.x && 
 const equalFence = (a: MotionFence, b: MotionFence) => stamp({ ...a, sourceWorldId:a.actionId.worldId }) === stamp({ ...b, sourceWorldId:b.actionId.worldId })
   && a.deliveryId === b.deliveryId && a.actionId.ordinal === b.actionId.ordinal;
 const emptyEnvelope = (): EnvelopeExtents => ({ left:0,top:0,right:0,bottom:0 });
-export function configureWorldCamera(camera: THREE.OrthographicCamera, width: number, height: number): boolean {
+export function configureWorldCamera(camera: THREE.OrthographicCamera, width: number, height: number, framing?:NativePhysicalPolicy): boolean {
   if (![width,height].every(n=>Number.isFinite(n)&&n>0&&n<=1_000_000)) return false;
-  camera.left=-4*width/height;camera.right=4*width/height;camera.top=4;camera.bottom=-4;
+  if(framing&&(Math.abs(width-framing.physicalWidth/framing.scaleFactor)>.5||Math.abs(height-framing.physicalHeight/framing.scaleFactor)>.5))return false;
+  const half=(framing?.verticalSpan??8)/2;
+  camera.left=-half*width/height;camera.right=half*width/height;camera.top=half;camera.bottom=-half;
   camera.near=.05;camera.far=100;configureDesktopCamera(camera);return true;
 }
 /** Remove presentation/parent facing from an actually discovered asset axis. */
@@ -84,6 +90,8 @@ export class WorldAvatarController {
   private follower=new WorldMotionFollower();private offer?:MotionOffer;private firstFrame=0;private firstFrameAt=0;private started=false;
   private delivered=false;private frameSequence=0;private clock=new DistanceWalkClock();private stride=1;
   private forward=0;private viewport={width:0,height:0};private reduced=false;
+  private framing?:NativePhysicalPolicy;private policyKey='';
+  private stationSince:number|undefined;private stationLast:number|undefined;
   constructor(readonly root:THREE.Group,readonly heading:THREE.Group,readonly offset:THREE.Group){}
   get identity():WorldAdapterIdentity|undefined{
     const value=this.accepted??this.challenge?.expected;
@@ -96,18 +104,25 @@ export class WorldAvatarController {
   update(options:WorldAvatarOptions,now:number):void{
     if(this.options.worldOwner&&!options.worldOwner)this.cancel('cancelled');
     this.options=options;
-    const challenge=options.worldChallenge,nativeBinding=options.worldBinding?parseWorldMotionBinding(options.worldBinding):undefined;
+    if(!options.worldOwner||!options.worldExposed)this.clearStation();
+    let challenge:MeasurementChallenge|undefined;
+    try{challenge=options.worldChallenge?parseMeasurementChallenge(options.worldChallenge):undefined;}catch{this.cancel('stale_binding');return;}
+    const nativeBinding=options.worldBinding?parseWorldMotionBinding(options.worldBinding):undefined;
     // Policy is checked before stamp/owner/unchanged-binding early returns.
     // A missing or changed kind cannot retain a previously accepted action.
     if(challenge&&challenge.enclosureKind!==CONSERVATIVE_ENCLOSURE_KIND||options.worldBinding&&!nativeBinding){this.cancel('stale_binding');return;}
     let binding:MotionBinding|undefined;
     if(nativeBinding){
-      const {enclosureKind,...pureBinding}=nativeBinding;
+      const {enclosureKind,cameraPolicy:_camera,nativeFraming:_framing,...pureBinding}=nativeBinding;
       if(enclosureKind!==CONSERVATIVE_ENCLOSURE_KIND){this.cancel('stale_binding');return;}
       binding=pureBinding; // The pure follower parser never accepts wire tags.
     }
     const key=challenge?stamp(challenge.expected):binding?stamp(binding):'';
-    if(key!==this.key){this.reset();this.key=key;this.blocked=false;this.generation++;}
+    const framing=challenge?.nativeFraming??nativeBinding?.nativeFraming;
+    const policyKey=JSON.stringify([framing??null]);
+    if(key&&key===this.key&&policyKey!==this.policyKey){this.cancel('stale_binding');return;}
+    if(challenge&&nativeBinding&&JSON.stringify(challenge.nativeFraming??null)!==JSON.stringify(nativeBinding.nativeFraming??null)){this.cancel('stale_binding');return;}
+    if(key!==this.key){this.reset();this.key=key;this.policyKey=policyKey;this.framing=framing;this.blocked=false;this.generation++;}
     if(challenge&&challenge.id!==this.challenge?.id){
       this.challenge=challenge;this.challengeAt=now;this.sentChallenge='';
       if(this.reference&&challenge.expectedReferenceLocal&&!equalReference(this.reference,challenge.expectedReferenceLocal))this.cancel('stale_binding');
@@ -125,20 +140,26 @@ export class WorldAvatarController {
     }
   }
   private reset():void{
+    this.clearStation();
     this.probe=new WorldRenderGeometry(CONSERVATIVE_ENCLOSURE_KIND);this.geometryBinding=undefined;this.reference=undefined;this.envelope=emptyEnvelope();
     this.calibration=-1;this.prepared=false;this.sentChallenge='';this.challenge=undefined;this.accepted=undefined;
     this.follower.dispose();this.follower=new WorldMotionFollower();this.offer=undefined;this.firstFrame=0;this.started=false;this.delivered=false;this.clock.reset();
     this.heading.position.set(0,0,0);this.heading.rotation.set(0,0,0);this.offset.position.set(0,0,0);
   }
   cancel(reason:WorldAdapterReason='cancelled'):void{
+    this.clearStation();
     const notify=!this.blocked;
     this.blocked=true;this.generation++;this.follower.invalidate();this.offer=undefined;this.delivered=false;this.started=false;
     const identity=this.identity;if(identity&&notify)this.options.onWorldUnavailable?.(identity,reason);
   }
-  dispose():void{this.blocked=true;this.generation++;this.follower.dispose();this.probe.invalidate();}
+  dispose():void{this.clearStation();this.blocked=true;this.generation++;this.follower.dispose();this.probe.invalidate();}
+  private clearStation():void{
+    this.stationSince=undefined;this.stationLast=undefined;this.options.onWorldActivity?.(undefined);
+  }
   command(command:WorldMotionCommand,now:number):ReceiveResult{
     if(!this.options.worldOwner||this.blocked||!this.accepted)return 'stale';
     const result=this.follower.receive(command,now);
+    if(result==='accepted')this.clearStation();
     if(result==='accepted'&&command.type==='offer'){this.offer=command;this.delivered=false;this.firstFrame=0;this.started=false;this.clock.reset(command.fence.deliveryId);}
     if(result==='accepted'&&command.type==='terminal'&&this.offer
       &&command.fence.actionId.ordinal>=this.offer.fence.actionId.ordinal){this.offer=undefined;this.delivered=false;this.started=false;}
@@ -154,7 +175,7 @@ export class WorldAvatarController {
     this.started=true;return true;
   }
   prepare(now:number,width:number,height:number,ready:boolean,stride:number,walkSupported:boolean,forward:number,reduced:boolean):WorldTrial|null{
-    if(!configureWorldCamera(this.camera,width,height))return null;
+    if(!configureWorldCamera(this.camera,width,height,this.framing)){this.cancel('surface_unavailable');return null;}
     const resized=this.viewport.width>0&&(this.viewport.width!==width||this.viewport.height!==height);
     if(resized||this.reduced!==reduced&&!!this.geometryBinding){this.viewport={width,height};this.cancel('surface_unavailable');return null;}
     this.viewport={width,height};this.reduced=reduced;this.forward=forward;this.stride=stride;
@@ -183,7 +204,7 @@ export class WorldAvatarController {
       // must be acknowledged before any displacement or distance-gait credit.
       proposal=this.follower.sample(now,renewal||!this.started?0:.05);
       if(!proposal){snapshot.restore();this.cancel('cancelled');return null;}
-      walking=proposal.walking||!this.firstFrame;cycles+=proposal.groundDistance/stride;yaw=proposal.yaw;
+      walking=proposal.walking||!this.firstFrame&&this.offer.activity==='move_to';cycles+=proposal.groundDistance/stride;yaw=proposal.yaw;
     }else if(!this.prepared&&this.calibration>=0){walking=true;cycles=(this.calibration%4)/4;yaw=Math.floor(this.calibration/4)*Math.PI/4;}
     const anchor=proposal?.position??(this.accepted?(this.follower.snapshot().position??this.accepted.position):this.mirrorAnchor());
     const reference=this.reference??{x:0,y:0,z:0};
@@ -231,7 +252,13 @@ export class WorldAvatarController {
       if(this.options.worldOwner)this.publishMeasurement(challenge,m);
       return 'committed';
     }
-    if(!this.options.worldOwner||!this.options.worldExposed||!this.offer||!this.accepted)return 'committed';
+    if(!this.options.worldOwner||!this.options.worldExposed||!this.offer||!this.accepted){this.clearStation();return 'committed';}
+    if(this.offer.activity!=='move_to'&&this.started&&idleFrames>0&&!walking){
+      if(this.stationLast===undefined||now<this.stationLast||now-this.stationLast>250)this.stationSince=now;
+      this.stationLast=now;
+      this.options.onWorldActivity?.({activity:this.offer.activity,minimumActiveMs:this.offer.minimumActiveMs,
+        activeMs:Math.min(this.offer.minimumActiveMs,Math.max(0,now-this.stationSince!)),position:{...m.position}});
+    }else this.clearStation();
     if(trial.proposal){
       if(!this.firstFrame){this.firstFrame=m.frame.frameSequence;this.firstFrameAt=now;purpose='first_behavior';}
       else purpose=this.started?'progress':'start_hold';
@@ -246,6 +273,7 @@ export class WorldAvatarController {
     this.sentChallenge=challenge.id;
     this.options.onWorldMeasurement?.({version:1,enclosureKind:CONSERVATIVE_ENCLOSURE_KIND,challengeId:challenge.id,frameSequence:m.frame.frameSequence,
       viewport:m.viewport,clip:m.clip,anchor:m.position,posedBounds:m.posedBounds,envelopeExtents:{...this.envelope},referenceLocal:{...this.reference},
-      groundBasis:m.groundBasis,modelForwardYaw:this.forward,appliedModelScale:this.root.scale.x,reducedMotion:this.reduced,walkSupported:true});
+      groundBasis:m.groundBasis,modelForwardYaw:this.forward,appliedModelScale:this.root.scale.x,reducedMotion:this.reduced,walkSupported:true,
+      stationSupported:typeof this.options.onWorldActivity==='function'});
   }
 }

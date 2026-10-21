@@ -1,4 +1,37 @@
-# World output — selected Studio MoveTo (#72, still open)
+# World output and station activities (#72, still open)
+
+The bundled adapter supports walking to a native-issued target followed by a
+visible idle activity for Rest, Recharge, Snack, Play or Socialize. It displays
+the localized activity and progress at the actor's measured anchor. It uses no
+invented gesture or synthetic arrival. LookAt and Wave are not advertised by
+this station adapter. The current native-owner route and its remaining platform
+qualification are described in [Native World adapter](NATIVE-WORLD-ADAPTER.md).
+
+An Offer includes the host's closed activity and `minimumActiveMs`. The exact
+action identity cannot be reused with another activity, duration or target.
+`stationSupported` is an explicit measurement capability and defaults to false
+for older adapters. A changed capability cannot renew an existing binding.
+The host still chooses the allowed activity, duration, goal and completion effect;
+no report can supply an activity, reward or native authority.
+
+Completion requires distinct accepted visible stationary target frames spanning
+at least the host's minimum duration, with no gap over 250 ms. The existing
+MoveTo arrival floor remains 100 ms. Pause, Resume, exposure loss and invalidation
+discard the prior station span; late control-era ACKs cannot restore it. A local
+timer never completes an activity. A Here fallback is an activity at the current
+position, not a claim that a station was visited. Native admission determines
+whether that fallback is allowed and which reduced effect it may commit.
+
+Focused synthetic protocol/geometry tests exercise these boundaries. They do not
+establish native visible pixels, real station arrival, multi-actor choreography,
+OBS CEF behavior or the full #72/#75 platform acceptance.
+
+## Earlier selected Studio foundation
+
+The checkpoint below records the original selected-Studio implementation and
+its validation limits. Its native-route placeholders predate the current
+[Native World adapter](NATIVE-WORLD-ADAPTER.md); use that document for the present
+native ownership, dispatch and readiness behavior.
 
 The Studio now mounts an explicitly opened 3D World view, its Avatar adapter and
 the native registration/receipt bridge. For the selected bot, the operator can

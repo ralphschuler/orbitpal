@@ -70,7 +70,10 @@ wait_for 'private PipeWire socket' test -S "$XDG_RUNTIME_DIR/pipewire-0"
 start wireplumber wireplumber
 if [[ "$ORBITPAL_ACCEPTANCE_DESKTOP" == gnome ]]; then
   export XDG_CURRENT_DESKTOP=GNOME
-  start compositor gnome-shell --wayland --headless --virtual-monitor=1280x960 --wayland-display=orbitpal-acceptance --no-x11
+  monitor=1280x960
+  if [[ "${ORBITPAL_ACCEPTANCE_MODE:-prototype}" == app ]]; then monitor=1920x1200; fi
+  start compositor gnome-shell --wayland --headless --virtual-monitor="$monitor" --wayland-display=orbitpal-acceptance --no-x11
+  export ORBITPAL_ACCEPTANCE_COMPOSITOR_PID="${pids[-1]}"
   wait_for 'GNOME compositor' dbus_name org.gnome.Mutter.ScreenCast
   backend_package=xdg-desktop-portal-gnome
 else
@@ -80,7 +83,10 @@ else
   kbuildsycoca6 --noincremental >"$root/kde-cache.txt" 2>&1
   # Exact categories only, retained through the existing bounded text collector.
   # Keep KWin's normal executable/interface permission filter enabled.
-  start compositor env QT_LOGGING_RULES='kwin_core.debug=true;KWIN_UTILS.debug=true' kwin_wayland --virtual --width 1280 --height 960 --output-count 1 --socket orbitpal-acceptance --no-lockscreen --no-global-shortcuts
+  width=1280; height=960
+  if [[ "${ORBITPAL_ACCEPTANCE_MODE:-prototype}" == app ]]; then width=1920; height=1200; fi
+  start compositor env QT_LOGGING_RULES='kwin_core.debug=true;KWIN_UTILS.debug=true' kwin_wayland --virtual --width "$width" --height "$height" --output-count 1 --socket orbitpal-acceptance --no-lockscreen --no-global-shortcuts
+  export ORBITPAL_ACCEPTANCE_COMPOSITOR_PID="${pids[-1]}"
   wait_for 'KWin compositor' dbus_name org.kde.KWin
   # The exact real compositor must use OpenGL. QPainter is insufficient for its
   # output screencast implementation; never count that fallback as acceptance.
@@ -123,6 +129,10 @@ wait_for 'private desktop portal owner' dbus_owner org.freedesktop.portal.Deskto
 grep -q org.freedesktop.portal.ScreenCast "$root/portal-interfaces.txt"
 start desktop /usr/bin/python3 "$root/harness/desktop.py"
 wait_for 'synthetic surface/controller' test -f "$root/control/ready"
+if [[ "${ORBITPAL_ACCEPTANCE_MODE:-prototype}" == app ]]; then
+  bash "$root/harness/app-session.sh"
+  exit
+fi
 "$root/acceptance-test" --ignored --exact screen_portal::acceptance::real_portal_prototype --nocapture --test-threads=1
 # libtest returns success for a mistyped filter that ran zero tests. Only the
 # actual final assertion writes this fresh private receipt.

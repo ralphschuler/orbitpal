@@ -21,7 +21,7 @@ function binding(): MotionBinding {
     maximumFootprint: { width: 40, height: 80 }, envelopeExtents: { left: 20, top: 40, right: 20, bottom: 40 },
     referenceLocal: { x: 0, y: 1, z: 0 }, position: { x: 500, y: 400 },
     groundBasis: { right: { x: .01, z: 0 }, down: { x: 0, z: .02 } }, modelForwardYaw: 0,
-    profileScale: 1, effectiveScale: 1, scale: 1, reducedMotion: false, walkSupported: true };
+    profileScale: 1, effectiveScale: 1, scale: 1, reducedMotion: false, walkSupported: true, stationSupported: false };
 }
 function stamp(value = binding()): BindingStamp {
   const { actorId, sourceWorldId, renderSessionId, bindingSequence, worldInstanceId, stageId,
@@ -41,7 +41,7 @@ function offer(value = binding(), ordinal = 1, sequence = ordinal): MotionOffer 
   const { sourceWorldId: _sourceWorldId, ...fields } = stamp(value);
   const fence: MotionFence = { ...fields, actionId: { actorId: value.actorId, worldId: value.sourceWorldId, ordinal },
     deliveryId: `delivery-${ordinal}` };
-  return { version: 1, sequence, fence, type: 'offer', activity: 'move_to', from: value.position,
+  return { version: 1, sequence, fence, type: 'offer', activity: 'move_to', minimumActiveMs: 0, from: value.position,
     target: { x: 600, y: 400 }, maximumSpeed: 100, acceleration: 500, validForMs: 10_000 };
 }
 function frame(move: MotionOffer, frameSequence: number, purpose: LocalWorldFrame['purpose'], atTarget = false): LocalWorldFrame {
@@ -124,7 +124,7 @@ describe('registered World bridge ownership and ACK barriers', () => {
       clip: { left: 0, top: 0, right: 1000, bottom: 800 }, anchor: h.value.position,
       posedBounds: { left: 480, top: 360, right: 520, bottom: 440 }, envelopeExtents: h.value.envelopeExtents,
       referenceLocal: h.value.referenceLocal, groundBasis: h.value.groundBasis, modelForwardYaw: 0,
-      appliedModelScale: 1, reducedMotion: false, walkSupported: true };
+      appliedModelScale: 1, reducedMotion: false, walkSupported: true, stationSupported: false };
     h.bridge.measurement({ ...report, enclosureKind: 'exact_submitted_geometry_v1' } as unknown as RenderMeasurement);
     await drain(); expect(h.failed).toEqual(['protocol_error']);
     expect(h.calls.some(call => call.command === 'report_world_measurement')).toBe(false); h.bridge.dispose();
@@ -205,7 +205,7 @@ describe('registered World bridge ownership and ACK barriers', () => {
       viewport: h.value.viewport, clip: { left: 0, top: 0, right: 1000, bottom: 800 }, anchor: h.value.position,
       posedBounds: { left: 480, top: 360, right: 520, bottom: 440 }, envelopeExtents: h.value.envelopeExtents,
       referenceLocal: h.value.referenceLocal, groundBasis: h.value.groundBasis, modelForwardYaw: 0,
-      appliedModelScale: 1, reducedMotion: false, walkSupported: true });
+      appliedModelScale: 1, reducedMotion: false, walkSupported: true, stationSupported: false });
     await drain();
     expect(h.changed.some(next => next.readiness.state === 'ready')).toBe(false);
     expect(h.failed).toEqual(['measurement_unavailable']);
@@ -336,5 +336,46 @@ describe('registration lifecycle epochs, Stop and renewal', () => {
     h.bridge.frame(frame(move, 1, 'delivery')); await drain();
     expect(h.reports()).toEqual([]); expect(h.adapter.beginWorldAfterDelivered).not.toHaveBeenCalled();
     expect(h.adapter.cancelWorld).toHaveBeenCalled(); h.bridge.dispose();
+  });
+});
+
+
+describe('station duration uses accepted target frames, never a completion timer', () => {
+  async function stationStarted(h:ReturnType<typeof harness>) {
+    h.value.stationSupported=true; await h.bridge.refresh();
+    const command:MotionOffer={...offer(h.value),activity:'play',minimumActiveMs:1000,target:h.value.position};
+    expect(h.bridge.receive(command)).toBe('accepted');
+    h.bridge.frame(frame(command,1,'delivery'));await drain();
+    h.clock.now=16;h.bridge.frame(frame(command,2,'first_behavior'));await drain();return command;
+  }
+  it('waits for the full sustained target span and no elapsed timer can add a completion',async()=>{
+    const h=harness(),command=await stationStarted(h);let sequence=2;
+    for(const now of [100,300,500,700,900]){h.clock.now=now;h.bridge.frame(frame(command,++sequence,'progress',true));await drain();}
+    expect(h.reports().some(report=>report.kind==='completed')).toBe(false);
+    const count=h.reports().length;vi.advanceTimersByTime(2000);await drain();expect(h.reports()).toHaveLength(count);
+    h.clock.now=1100;h.bridge.frame(frame(command,++sequence,'progress',true));await drain();
+    expect(h.reports().at(-1)?.kind).toBe('completed');h.bridge.dispose();
+  });
+  it('does not count paused frames or carry the pre-pause span across resume',async()=>{
+    const h=harness(),command=await stationStarted(h);let sequence=2;
+    for(const now of [100,300]){h.clock.now=now;h.bridge.frame(frame(command,++sequence,'progress',true));await drain();}
+    h.clock.now=350;expect(h.bridge.receive({version:1,type:'pause',sequence:2,fence:command.fence})).toBe('accepted');
+    const count=h.reports().length;h.clock.now=600;h.bridge.frame(frame(command,++sequence,'progress',true));await drain();expect(h.reports()).toHaveLength(count);
+    h.clock.now=1000;expect(h.bridge.receive({version:1,type:'resume',sequence:3,fence:command.fence})).toBe('accepted');
+    for(const now of [1000,1200,1400,1600,1800]){h.clock.now=now;h.bridge.frame(frame(command,++sequence,'progress',true));await drain();}
+    expect(h.reports().some(report=>report.kind==='completed')).toBe(false);
+    h.clock.now=2000;h.bridge.frame(frame(command,++sequence,'progress',true));await drain();
+    expect(h.reports().at(-1)?.kind).toBe('completed');h.bridge.dispose();
+  });
+  it('a pre-pause in-flight progress ACK cannot restore the old dwell after resume',async()=>{
+    const h=harness(),command=await stationStarted(h),pending=deferred<ActionReportAck>();
+    h.state.action=()=>pending.promise;h.clock.now=100;h.bridge.frame(frame(command,3,'progress',true));const old=h.reports().at(-1)!;
+    h.clock.now=110;h.bridge.receive({version:1,type:'pause',sequence:2,fence:command.fence});
+    h.clock.now=120;h.bridge.receive({version:1,type:'resume',sequence:3,fence:command.fence});
+    h.state.action=async report=>ack(report);pending.resolve(ack(old));await drain();
+    let sequence=3;for(const now of [300,500,700,900,1100]){h.clock.now=now;h.bridge.frame(frame(command,++sequence,'progress',true));await drain();}
+    expect(h.reports().some(report=>report.kind==='completed')).toBe(false);
+    h.clock.now=1300;h.bridge.frame(frame(command,++sequence,'progress',true));await drain();
+    expect(h.reports().at(-1)?.kind).toBe('completed');h.bridge.dispose();
   });
 });

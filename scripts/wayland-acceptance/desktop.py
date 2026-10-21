@@ -26,6 +26,7 @@ ROOT = Path(os.environ["ORBITPAL_ACCEPTANCE_ROOT"])
 CONTROL = ROOT / "control"
 DESKTOP = os.environ["ORBITPAL_ACCEPTANCE_DESKTOP"]
 KDE6 = os.environ.get("KDE_SESSION_VERSION") == "6"
+APP_MODE = os.environ.get("ORBITPAL_ACCEPTANCE_MODE") == "app"
 TITLES = {"gnome": "Share Screen", "kde": "Screen Sharing"}
 
 
@@ -143,6 +144,9 @@ def action(node):
 def chooser():
     # A private AT-SPI bus contains only this generated desktop and its portal.
     # AdwWindow is a FRAME, not necessarily a DIALOG; match the upstream title.
+    # App mode also contains Studio: a matching content/title cannot authorize
+    # consent. Require the exact backend PID from this private session for both
+    # desktops; an unexpected GNOME chooser owner fails instead of broadening.
     TRACE.log("chooser.registry.begin")
     desktop = pyatspi.Registry.getDesktop(0)
     TRACE.log("chooser.registry.end")
@@ -157,8 +161,8 @@ def chooser():
                 if node is application:
                     TRACE.log("chooser.application.name", index=index, name=name)
                 if chooser_title(name) and visible(node):
-                    if KDE6 and (node.getRole() not in (pyatspi.ROLE_FRAME, pyatspi.ROLE_DIALOG)
-                                 or node.get_process_id() != int(os.environ["ORBITPAL_ACCEPTANCE_PORTAL_PID"])):
+                    if (KDE6 or APP_MODE) and (node.getRole() not in (pyatspi.ROLE_FRAME, pyatspi.ROLE_DIALOG)
+                                              or node.get_process_id() != int(os.environ["ORBITPAL_ACCEPTANCE_PORTAL_PID"])):
                         continue
                     TRACE.log("chooser.dialog.found", name=name)
                     return node
@@ -370,12 +374,15 @@ def pointer_click(node, dialog):
         completed = subprocess.run([str(helper), str(x), str(y)], capture_output=True, timeout=6, check=False)
         TRACE.log("pointer.invoke.end", code=completed.returncode)
         if completed.returncode != 0:
-            print("KDE pointer helper: " + completed.stderr.decode("utf-8", errors="replace")[:1000], flush=True)
+            if APP_MODE:
+                print("KDE pointer helper rejected input", flush=True)
+            else:
+                print("KDE pointer helper: " + completed.stderr.decode("utf-8", errors="replace")[:1000], flush=True)
             raise RuntimeError("Private compositor pointer input was rejected")
         print("Genuine KDE chooser pointer click", flush=True)
         return True
     except (RuntimeError, AttributeError, KeyError, ValueError, OSError, NotImplementedError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
-        TRACE.log("pointer.rejected", reason=f"{type(error).__name__}: {error}")
+        TRACE.log("pointer.rejected", reason="input_unavailable" if APP_MODE else f"{type(error).__name__}: {error}")
         return False
 
 
@@ -412,6 +419,8 @@ def pointer_escape(dialog):
 def text_tree():
     rows = []
     for app in children(pyatspi.Registry.getDesktop(0)):
+        if APP_MODE and app.get_process_id() != int(os.environ["ORBITPAL_ACCEPTANCE_PORTAL_PID"]):
+            continue  # Never dump the real Studio's editable fields.
         for node in walk(app, 160):
             try:
                 if visible(node):
@@ -456,6 +465,15 @@ class Desktop:
     def draw(self, _widget, context):
         context.set_source_rgb(*self.color)
         context.paint()
+        if APP_MODE and self.pending in ("red", "blue"):
+            # App mode keeps this real surface behind the actual Studio. ACK
+            # follows the actual GTK draw; the received JPEG is the final oracle.
+            GLib.idle_add(self.draw_ack, self.sequence, self.pending)
+
+    def draw_ack(self, sequence, color):
+        if self.sequence == sequence and self.pending == color:
+            self.ack()
+        return False
 
     def ack(self, error=None):
         TRACE.log("ack.begin", error=bool(error))
@@ -480,9 +498,11 @@ class Desktop:
                     TRACE.begin(self.sequence, self.pending)
                     if self.pending in ("red", "blue"):
                         self.color = (0.82, 0.12, 0.24) if self.pending == "red" else (0.12, 0.24, 0.82)
-                        self.window.present()
+                        if not APP_MODE:
+                            self.window.present()
                         self.surface.queue_draw()
-                        GLib.timeout_add(250, self.ack)
+                        if not APP_MODE:
+                            GLib.timeout_add(250, self.ack)
             if self.pending in ("allow", "cancel"):
                 TRACE.log("chooser.poll.begin")
                 dialog = chooser()
@@ -547,7 +567,10 @@ class Desktop:
                     self.ack("Real chooser/action unavailable; inspect bounded text-only chooser-tree.txt")
         except Exception as error:
             # This contains only synthetic UI metadata, never screen pixels.
-            print(f"Desktop controller failed: {type(error).__name__}: {error}", file=sys.stderr, flush=True)
+            if APP_MODE:
+                print("Desktop controller failed", file=sys.stderr, flush=True)
+            else:
+                print(f"Desktop controller failed: {type(error).__name__}: {error}", file=sys.stderr, flush=True)
             if self.pending:
                 self.ack("Synthetic controller failed; see text diagnostic")
             return False

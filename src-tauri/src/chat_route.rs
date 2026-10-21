@@ -12,6 +12,131 @@ fn binding(profile: &Value, platform: &str) -> Value {
     Value::Object(result)
 }
 
+/// Exact native route cancellation; jobs retain their own cancellation flags.
+#[derive(Default)]
+struct ImpulseRoute {
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    jobs: std::sync::Mutex<Vec<std::sync::Weak<std::sync::atomic::AtomicBool>>>,
+}
+impl ImpulseRoute {
+    fn cancel(&self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+        for weak in jobs.drain(..) {
+            if let Some(job) = weak.upgrade() {
+                job.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+    fn bind(&self, job: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<(), String> {
+        use std::sync::atomic::Ordering::SeqCst;
+        if self.cancel.load(SeqCst) {
+            job.store(true, SeqCst);
+            return Err("impulse_source_cancelled".into());
+        }
+        let Ok(mut jobs) = self.jobs.lock() else {
+            job.store(true, SeqCst);
+            return Err("impulse_source_unavailable".into());
+        };
+        jobs.retain(|weak| weak.upgrade().is_some_and(|job| !job.load(SeqCst)));
+        if self.cancel.load(SeqCst) {
+            job.store(true, SeqCst);
+            return Err("impulse_source_cancelled".into());
+        }
+        let weak=std::sync::Arc::downgrade(job);
+        if !jobs.iter().any(|old|std::sync::Weak::ptr_eq(old,&weak)) {
+            if jobs.len()>=64 {
+                job.store(true,SeqCst);
+                return Err("impulse_source_cancelled".into());
+            }
+            jobs.push(weak);
+        }
+        if self.cancel.load(SeqCst) {
+            job.store(true, SeqCst);
+            return Err("impulse_source_cancelled".into());
+        }
+        Ok(())
+    }
+}
+#[derive(Default)]
+pub(crate) struct ImpulseCancellation(std::sync::Mutex<std::sync::Arc<ImpulseRoute>>);
+impl ImpulseCancellation {
+    pub(crate) fn cancel(&self) {
+        self.0.lock().unwrap_or_else(|p| p.into_inner()).cancel();
+    }
+    fn renew(&self) {
+        match self.0.lock() {
+            Ok(mut route) => {
+                route.cancel();
+                *route = std::sync::Arc::new(ImpulseRoute::default());
+            }
+            // A poisoned registry never yields a new source, but must still
+            // revoke jobs already retained by the old route.
+            Err(poison) => poison.into_inner().cancel(),
+        }
+    }
+    fn token(&self) -> Option<std::sync::Arc<ImpulseRoute>> {
+        self.0.lock().ok().map(|route| route.clone())
+    }
+}
+/// Native-only, never serialized, never constructed from a browser route string.
+#[derive(Clone)]
+pub(crate) struct ImpulseSource {
+    platform: String,
+    owner: String,
+    generation: String,
+    config: Value,
+    route_cancel: std::sync::Arc<ImpulseRoute>,
+    connection_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl ImpulseSource {
+    pub(crate) fn owner(&self) -> &str {
+        &self.owner
+    }
+    pub(crate) fn platform(&self) -> &str {
+        &self.platform
+    }
+    pub(crate) fn current_profile(&self, profile: &Value) -> bool {
+        !self
+            .route_cancel
+            .cancel
+            .load(std::sync::atomic::Ordering::SeqCst)
+            && !self
+                .connection_cancel
+                .load(std::sync::atomic::Ordering::SeqCst)
+            && profile["id"].as_str() == Some(self.owner.as_str())
+            && binding(profile, &self.platform) == self.config
+    }
+    #[cfg(test)]
+    fn cancellation(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.route_cancel.cancel.clone()
+    }
+    pub(crate) fn bind_cancel(
+        &self,
+        job: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<(), String> {
+        if self
+            .connection_cancel
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            job.store(true, std::sync::atomic::Ordering::SeqCst);
+            return Err("impulse_source_cancelled".into());
+        }
+        self.route_cancel.bind(job)?;
+        if self.connection_cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            job.store(true, std::sync::atomic::Ordering::SeqCst);
+            return Err("impulse_source_cancelled".into());
+        }
+        Ok(())
+    }
+    pub(crate) fn same_route(&self, other: &Self) -> bool {
+        self.platform == other.platform
+            && self.owner == other.owner
+            && self.generation == other.generation
+            && self.config == other.config
+            && std::sync::Arc::ptr_eq(&self.route_cancel, &other.route_cancel)
+    }
+}
 pub struct ConnectionContext {
     pub connected: bool,
     pub user_id: Option<String>,
@@ -24,6 +149,7 @@ pub struct ConnectionContext {
     write_token: Option<String>,
     generation: String,
     channel: String,
+    impulse_cancel:std::sync::Arc<ImpulseCancellation>,
 }
 
 /// Never serialized or returned to a model/renderer. Captured when a real queued
@@ -69,15 +195,50 @@ impl ConnectionContext {
         Ok(Self { connected:false, user_id:None, platform:platform.into(), owner_id:owner_id.into(),
             owner_name:owner["name"].as_str().unwrap_or("Cohost").into(), config:binding(owner,platform),
             write_enabled:owner["chat"][platform]["sendReplies"]==true,
-            write_token:write_token.filter(|token|!token.trim().is_empty()), generation:String::new(), channel:String::new(), cancel })
+            write_token:write_token.filter(|token|!token.trim().is_empty()), generation:String::new(), channel:String::new(), impulse_cancel:std::sync::Arc::new(ImpulseCancellation::default()), cancel })
+    }
+    pub(crate) fn impulse_cancellation(&self) -> std::sync::Arc<ImpulseCancellation> {
+        self.impulse_cancel.clone()
+    }
+    pub(crate) fn owner_id(&self) -> &str {
+        &self.owner_id
+    }
+    pub(crate) fn impulse_source(
+        &self,
+        platform: &str,
+        route: &str,
+        owner: &Value,
+    ) -> Option<ImpulseSource> {
+        if platform != self.platform
+            || self.route_id() != Some(route)
+            || owner["id"].as_str() != Some(self.owner_id.as_str())
+            || binding(owner, platform) != self.config
+            || self.cancel.load(std::sync::atomic::Ordering::SeqCst)
+            || serde_json::to_vec(&self.config).ok()?.len() > 8192
+        {
+            return None;
+        }
+        let source = ImpulseSource {
+            platform: self.platform.clone(),
+            owner: self.owner_id.clone(),
+            generation: self.generation.clone(),
+            config: self.config.clone(),
+            route_cancel: self.impulse_cancel.token()?,
+            connection_cancel: self.cancel.clone(),
+        };
+        source.current_profile(owner).then_some(source)
+    }
+    pub(crate) fn impulse_source_current(&self, source: &ImpulseSource, owner: &Value) -> bool {
+        self.impulse_source(&source.platform, &source.generation, owner)
+            .is_some_and(|current| current.same_route(source))
     }
     pub fn write_token(&self) -> Option<&str> { if self.write_enabled { self.write_token.as_deref() } else { None } }
     pub fn mark_connected(&mut self, channel: &str) {
         // A retry/reconnect never revives a queued message from a prior session.
-        if !self.connected || self.channel != channel { self.generation=uuid::Uuid::new_v4().to_string(); }
+        if !self.connected || self.channel != channel { self.impulse_cancel.renew();self.generation=uuid::Uuid::new_v4().to_string(); }
         self.connected=true; self.channel=channel.into();
     }
-    pub fn disconnected(&mut self) { self.connected=false; self.generation.clear(); }
+    pub fn disconnected(&mut self) { self.impulse_cancel.cancel();self.connected=false; self.generation.clear(); }
     pub fn public_owner(&self) -> Value { json!({"ownerBotId":self.owner_id,"ownerName":self.owner_name}) }
     pub fn incoming_route(&self, channel:&str)->Option<String> {
         if self.cancel.load(std::sync::atomic::Ordering::SeqCst) || channel!=self.channel {return None;}
@@ -210,4 +371,144 @@ mod tests {
         }
     }
 
+}
+
+#[cfg(test)]
+mod impulse_route_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    fn profile() -> Value {
+        json!({"id":"owner","chat":{"twitch":{"clientId":"client","broadcasterId":"channel","userId":"account","secretId":"reference","sendReplies":false}}})
+    }
+    #[test]
+    fn repeated_exact_job_bind_is_idempotent_even_at_capacity_and_still_revocable() {
+        let route=ImpulseRoute::default();
+        let jobs=(0..64).map(|_|Arc::new(AtomicBool::new(false))).collect::<Vec<_>>();
+        for job in &jobs {route.bind(job).unwrap();}
+        for _ in 0..3 {route.bind(&jobs[0]).unwrap();}
+        assert_eq!(route.jobs.lock().unwrap().len(),64);
+        let additional=Arc::new(AtomicBool::new(false));
+        assert!(route.bind(&additional).is_err());assert!(additional.load(Ordering::SeqCst));
+        route.cancel();assert!(jobs.iter().all(|job|job.load(Ordering::SeqCst)));
+        assert!(route.bind(&jobs[0]).is_err());
+    }
+    #[test]
+    fn native_read_source_requires_actual_route_and_owner_binding_not_reply_rights() {
+        let p = profile();
+        let mut c =
+            ConnectionContext::new("twitch", &p, None, Arc::new(AtomicBool::new(false))).unwrap();
+        assert!(c.impulse_source("twitch", "invented", &p).is_none());
+        c.mark_connected("channel");
+        let token = c.route_id().unwrap().to_owned();
+        let source = c.impulse_source("twitch", &token, &p).unwrap();
+        assert!(source.current_profile(&p));
+        let mut changed = p.clone();
+        changed["chat"]["twitch"]["broadcasterId"] = json!("other");
+        assert!(!source.current_profile(&changed));
+        assert!(c.impulse_source("youtube", &token, &p).is_none());
+    }
+    #[test]
+    fn exact_disconnect_and_reconnect_synchronously_cancel_old_native_job() {
+        let p = profile();
+        let mut c =
+            ConnectionContext::new("twitch", &p, None, Arc::new(AtomicBool::new(false))).unwrap();
+        c.mark_connected("channel");
+        let old = c
+            .impulse_source("twitch", c.route_id().unwrap(), &p)
+            .unwrap();
+        let retained = old.cancellation();
+        assert!(!retained.load(Ordering::SeqCst));
+        c.disconnected();
+        assert!(retained.load(Ordering::SeqCst));
+        c.mark_connected("channel");
+        let new = c
+            .impulse_source("twitch", c.route_id().unwrap(), &p)
+            .unwrap();
+        assert!(!old.same_route(&new));
+        assert!(!old.current_profile(&p));
+        assert!(new.current_profile(&p));
+        c.impulse_cancellation().cancel();
+        assert!(new.cancellation().load(Ordering::SeqCst));
+    }
+    #[test]
+    fn receive_source_cannot_borrow_another_owner_or_invented_route() {
+        let p = profile();
+        let mut c = ConnectionContext::new("twitch", &p, None, Arc::new(AtomicBool::new(false))).unwrap();
+        c.mark_connected("channel");
+        let mut other = p.clone();
+        other["id"] = json!("other");
+        assert!(c.impulse_source("twitch", c.route_id().unwrap(), &other).is_none());
+        assert!(c.impulse_source("twitch", "browser-forged", &p).is_none());
+        let source = c.impulse_source("twitch", c.route_id().unwrap(), &p).unwrap();
+        let job = Arc::new(AtomicBool::new(false));
+        source.bind_cancel(&job).unwrap();
+        c.mark_connected("replacement-channel");
+        assert!(job.load(Ordering::SeqCst));
+        assert!(!source.current_profile(&p));
+    }
+    #[test]
+    fn cancellation_still_closes_retained_token_after_registry_poison() {
+        let p = profile();
+        let mut c =
+            ConnectionContext::new("twitch", &p, None, Arc::new(AtomicBool::new(false))).unwrap();
+        c.mark_connected("channel");
+        let source = c
+            .impulse_source("twitch", c.route_id().unwrap(), &p)
+            .unwrap();
+        let registry = c.impulse_cancellation();
+        let poison = registry.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poison.0.lock().unwrap();
+            panic!("controlled fixture poison")
+        })
+        .join();
+        // Even reconnect cannot revive a poisoned cancellation registry.
+        c.disconnected();
+        c.mark_connected("channel");
+        assert!(source.cancellation().load(Ordering::SeqCst));
+        assert!(c.impulse_source("twitch", c.route_id().unwrap(), &p).is_none());
+        registry.cancel();
+        assert!(source.cancellation().load(Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+mod impulse_bound_job_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    #[test]
+    fn normal_job_completion_does_not_cancel_native_connection() {
+        let route = ImpulseRoute::default();
+        let a = Arc::new(AtomicBool::new(false));
+        route.bind(&a).unwrap();
+        a.store(true, Ordering::SeqCst);
+        assert!(!route.cancel.load(Ordering::SeqCst));
+        let b = Arc::new(AtomicBool::new(false));
+        route.bind(&b).unwrap();
+        assert!(!b.load(Ordering::SeqCst));
+        route.cancel();
+        assert!(b.load(Ordering::SeqCst));
+    }
+    #[test]
+    fn source_cancels_all_live_jobs_and_bounds_retention() {
+        let route = ImpulseRoute::default();
+        let jobs: Vec<_> = (0..64).map(|_| Arc::new(AtomicBool::new(false))).collect();
+        for job in &jobs {
+            route.bind(job).unwrap();
+        }
+        let overflow = Arc::new(AtomicBool::new(false));
+        assert!(route.bind(&overflow).is_err());
+        assert!(overflow.load(Ordering::SeqCst));
+        route.cancel();
+        assert!(jobs.iter().all(|job| job.load(Ordering::SeqCst)));
+        let late = Arc::new(AtomicBool::new(false));
+        assert!(route.bind(&late).is_err());
+        assert!(late.load(Ordering::SeqCst));
+    }
 }

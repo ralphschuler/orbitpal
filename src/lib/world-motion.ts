@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-/** Pure, currently unwired World motion adapter. Inputs are authorized LOCAL
+/** Pure World motion adapter. Inputs are authorized LOCAL
  * CSS targets: no canonical/DPI conversion, DOM, native APIs, timers or random
  * goals. A mathematical target is never a successful-render/arrival receipt. */
 import type { CssPoint as WirePoint, CssSize as WireSize, CssRect as WireRect,
@@ -13,17 +13,20 @@ export type ActionId = Readonly<WireActionId>;
 export type GroundBasis = Readonly<WireBasis>;
 export type MotionBinding = Readonly<WireBinding>;
 export type MotionFence = Readonly<WireFence>;
+export const STATION_ACTIVITIES = ['rest', 'recharge', 'snack', 'play', 'socialize'] as const;
+export type StationActivity = typeof STATION_ACTIVITIES[number];
 type Header = Readonly<{ version: 1; sequence: number; fence: MotionFence }>;
 export type MotionOffer = Header & Readonly<{
-  type: 'offer'; activity: 'move_to'; from: CssPoint; target: CssPoint;
+  type: 'offer'; activity: 'move_to' | StationActivity; from: CssPoint; target: CssPoint;
   maximumSpeed: number; acceleration: number; validForMs: number;
+  minimumActiveMs: number;
 }>;
 export type WorldMotionCommand = MotionOffer
   | (Header & Readonly<{ type: 'pause' | 'resume' }>)
   | (Header & Readonly<{ type: 'terminal'; status: 'completed' | 'cancelled' | 'failed' }>);
 export type MotionPhase = 'unavailable' | 'idle' | 'offered' | 'running' | 'paused' | 'at_target';
 export type MotionReason = 'unregistered' | 'invalid_binding' | 'binding_changed' | 'invalid_clock'
-  | 'frame_gap' | 'render_failed' | 'invalid_render' | 'unsupported_walk' | 'reduced_motion'
+  | 'frame_gap' | 'render_failed' | 'invalid_render' | 'unsupported_walk' | 'unsupported_activity' | 'reduced_motion'
   | 'conflicting_offer' | 'superseded' | 'deadline' | 'disconnected' | 'counter_exhausted';
 export type ReceiveResult = 'accepted' | 'duplicate' | 'stale' | 'rejected';
 export type Direction8 = 'right' | 'down_right' | 'down' | 'down_left' | 'left' | 'up_left' | 'up' | 'up_right';
@@ -125,10 +128,12 @@ function fence(value: unknown): MotionFence | null {
   return Object.freeze({ ...data, actionId: action }) as MotionFence;
 }
 export function parseMotionBinding(value: unknown): MotionBinding | null {
-  const data = fields(value, bindingKeys);
+  const hasStation = value !== null && typeof value === 'object' && Object.hasOwn(value, 'stationSupported');
+  const data = fields(value, [...bindingKeys, ...(hasStation ? ['stationSupported'] : [])]);
   if (!data || !['actorId', 'sourceWorldId', 'renderSessionId', 'worldInstanceId', 'stageId'].every(key => id(data[key]))
     || !['bindingSequence', 'configRevision', 'topologyRevision', 'layoutRevision', 'assetRevision', 'measurementRevision', 'referenceRevision'].every(key => counter(data[key]))
     || typeof data.reducedMotion !== 'boolean' || typeof data.walkSupported !== 'boolean'
+    || hasStation && typeof data.stationSupported !== 'boolean'
     || !finite(data.modelForwardYaw, -Math.PI, Math.PI) || !finite(data.scale, 0.01, 100)
     || !finite(data.profileScale, .3, 2.5) || !finite(data.effectiveScale, .3, 2.5)) return null;
   const viewport = size(data.viewport), safeCenters = rect(data.safeCenters), maximumFootprint = size(data.maximumFootprint), position = point(data.position), groundBasis = basis(data.groundBasis);
@@ -137,18 +142,22 @@ export function parseMotionBinding(value: unknown): MotionBinding | null {
     || Math.abs(maximumFootprint.width - 2 * Math.max(envelopeExtents.left, envelopeExtents.right)) > 1e-7
     || Math.abs(maximumFootprint.height - 2 * Math.max(envelopeExtents.top, envelopeExtents.bottom)) > 1e-7
     || safeCenters.right > viewport.width || safeCenters.bottom > viewport.height || !inside(position, safeCenters)
-    || maximumFootprint.width > viewport.width || maximumFootprint.height > viewport.height
-    || safeCenters.left < maximumFootprint.width / 2 || safeCenters.top < maximumFootprint.height / 2
-    || safeCenters.right > viewport.width - maximumFootprint.width / 2
-    || safeCenters.bottom > viewport.height - maximumFootprint.height / 2) return null;
-  return Object.freeze({ ...data, viewport, safeCenters, maximumFootprint, position, groundBasis, referenceLocal, envelopeExtents }) as MotionBinding;
+    // maximumFootprint remains symmetric metadata. Feasibility follows the
+    // actual all-pose asymmetric envelope around the immutable rig reference.
+    || envelopeExtents.left + envelopeExtents.right > viewport.width
+    || envelopeExtents.top + envelopeExtents.bottom > viewport.height
+    || safeCenters.left < envelopeExtents.left || safeCenters.top < envelopeExtents.top
+    || safeCenters.right > viewport.width - envelopeExtents.right
+    || safeCenters.bottom > viewport.height - envelopeExtents.bottom) return null;
+  return Object.freeze({ ...data, stationSupported: hasStation ? data.stationSupported : false,
+    viewport, safeCenters, maximumFootprint, position, groundBasis, referenceLocal, envelopeExtents }) as MotionBinding;
 }
 export function parseWorldMotionCommand(value: unknown): WorldMotionCommand | null {
   if (typeof value !== 'object' || value === null) return null;
   const typeDescriptor = Object.getOwnPropertyDescriptor(value, 'type');
   const type = typeDescriptor && Object.hasOwn(typeDescriptor, 'value') ? typeDescriptor.value : undefined;
   const common = ['version', 'sequence', 'fence', 'type'];
-  const keys = type === 'offer' ? [...common, 'activity', 'from', 'target', 'maximumSpeed', 'acceleration', 'validForMs']
+  const keys = type === 'offer' ? [...common, 'activity', 'from', 'target', 'maximumSpeed', 'acceleration', 'validForMs', 'minimumActiveMs']
     : type === 'terminal' ? [...common, 'status'] : type === 'pause' || type === 'resume' ? common : null;
   const data = keys && fields(value, keys);
   if (!data || data.version !== 1 || !counter(data.sequence)) return null;
@@ -156,8 +165,14 @@ export function parseWorldMotionCommand(value: unknown): WorldMotionCommand | nu
   if (!identity) return null;
   if (type === 'offer') {
     const from = point(data.from), target = point(data.target);
-    return data.activity === 'move_to' && from && target && finite(data.maximumSpeed, 0.01, WORLD_MAX_SPEED)
-      && finite(data.acceleration, 0.01, 5000) && counter(data.validForMs) && data.validForMs <= 60_000
+    const activity = data.activity === 'move_to' || STATION_ACTIVITIES.includes(data.activity as StationActivity);
+    const minimum = Number.isSafeInteger(data.minimumActiveMs) && finite(data.minimumActiveMs, 0, 600_000)
+      && (data.activity === 'move_to' ? data.minimumActiveMs === 0 : data.minimumActiveMs > 0)
+      && Number(data.minimumActiveMs) < Number(data.validForMs);
+    return activity && minimum && from && target && finite(data.maximumSpeed, 0.01, WORLD_MAX_SPEED)
+      && finite(data.acceleration, 0.01, 5000) && counter(data.validForMs)
+      && data.validForMs <= (data.activity === 'move_to' ? 75_000
+        : Math.max(data.activity === 'recharge' ? 40_000 : 30_000, Number(data.minimumActiveMs) + 15_000))
       ? Object.freeze({ ...data, from, target, fence: identity }) as MotionOffer : null;
   }
   if (type === 'terminal' && (typeof data.status !== 'string' || !['completed', 'cancelled', 'failed'].includes(data.status))) return null;
@@ -259,6 +274,7 @@ export class WorldMotionFollower {
       if (this.work && sameAction(this.work.offer.fence, command.fence)) {
         const current = this.work.offer;
         if (!samePoint(current.from, command.from) || !samePoint(current.target, command.target)
+          || current.activity !== command.activity || current.minimumActiveMs !== command.minimumActiveMs
           || current.maximumSpeed !== command.maximumSpeed || current.acceleration !== command.acceleration || current.validForMs !== command.validForMs) {
           this.lastSequence = command.sequence; this.stopWork('conflicting_offer'); return 'rejected';
         }
@@ -268,6 +284,7 @@ export class WorldMotionFollower {
       if (this.work && command.fence.actionId.ordinal <= this.work.offer.fence.actionId.ordinal) return 'stale';
       this.lastSequence = command.sequence;
       if (!binding.walkSupported || binding.reducedMotion) { this.stopWork(binding.reducedMotion ? 'reduced_motion' : 'unsupported_walk'); this.terminalOrdinal = Math.max(this.terminalOrdinal, command.fence.actionId.ordinal); return 'rejected'; }
+      if (command.activity !== 'move_to' && !binding.stationSupported) { this.stopWork('unsupported_activity'); this.terminalOrdinal = Math.max(this.terminalOrdinal, command.fence.actionId.ordinal); return 'rejected'; }
       if (!this.position || !samePoint(this.position, command.from, RENDER_TOLERANCE) || !inside(command.from, binding.safeCenters) || !inside(command.target, binding.safeCenters)) { this.stopWork('invalid_render'); this.terminalOrdinal = Math.max(this.terminalOrdinal, command.fence.actionId.ordinal); return 'rejected'; }
       if (this.work) this.stopWork('superseded');
       if (!this.change()) return 'rejected';

@@ -13,6 +13,7 @@ const MAX_AUDIO: usize = 25 * 1024 * 1024;
 pub struct Completion { pub text: String, pub tool_calls: Vec<Value> }
 
 fn client() -> Result<Client, String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     Client::builder().retry(reqwest::retry::never()).redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180)).build().map_err(|_| "HTTP-Client konnte nicht erstellt werden.".into())
 }
@@ -180,7 +181,7 @@ fn completion_body(config:&Value,messages:Vec<Value>,tools:Vec<Value>)->Result<(
 /// snapshots on the official TLS endpoint. Unknown models, aliases, proxies and
 /// coding CLI internals have no claimed hard bound. Includes images/framing;
 /// adding the enforced output cap again errs conservatively.
-fn token_upper(config:&Value)->Option<u64>{
+pub(crate) fn token_upper(config:&Value)->Option<u64>{
     if matches!(field(config,"provider","compatible"),"codex"|"claude-code"|"anthropic"){return None;}
     let url=Url::parse(&endpoint(config,"chat/completions").ok()?).ok()?;
     if url.scheme()!="https"||url.host_str()!=Some("api.openai.com")||url.port_or_known_default()!=Some(443)||url.path()!="/v1/chat/completions"||!url.username().is_empty()||url.password().is_some()||url.query().is_some()||url.fragment().is_some(){return None;}
@@ -196,26 +197,44 @@ fn dialog_cost(config:&Value,messages:&[Value])->Result<crate::usage_budget::Cos
     Ok(if matches!(field(config,"provider","compatible"),"codex"|"claude-code"){crate::usage_budget::Cost::cli_dialog(count,bytes)}else{crate::usage_budget::Cost::dialog(count,bytes,token_upper(config))})
 }
 pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>, usage:(&crate::storage::Store,&crate::usage_budget::Context),authority:&crate::life_runtime::cloud::CloudAuthority) -> Result<Completion, String> {
+    complete_mode(config,messages,tools,api_key,app,turn_id,cancel,usage,authority,true).await
+}
+/// Buffer closed-schema social replies until validation; partial JSON is never presented.
+pub(crate) async fn complete_silent(config:&Value,messages:Vec<Value>,api_key:Option<String>,app:tauri::AppHandle,turn_id:String,cancel:Arc<AtomicBool>,usage:(&crate::storage::Store,&crate::usage_budget::Context),authority:&crate::life_runtime::cloud::CloudAuthority)->Result<Completion,String>{
+    if matches!(field(config,"provider","compatible"),"codex"|"claude-code"){return Err("Social dialogue requires a bounded HTTP model".into());}
+    complete_mode(config,messages,Vec::new(),api_key,app,turn_id,cancel,usage,authority,false).await
+}
+fn autonomous_output(app:&tauri::AppHandle,context:&crate::usage_budget::Context)->Result<(),String>{
+    if context.origin!=crate::usage_budget::Origin::Autopilot||crate::life_runtime::experience_allows_output(app,&context.bot_id){Ok(())}else{Err("Autonomer Beitrag ist durch die aktuellen Ruhe-Einstellungen gesperrt.".into())}
+}
+async fn complete_mode(config:&Value,messages:Vec<Value>,tools:Vec<Value>,api_key:Option<String>,app:tauri::AppHandle,turn_id:String,cancel:Arc<AtomicBool>,usage:(&crate::storage::Store,&crate::usage_budget::Context),authority:&crate::life_runtime::cloud::CloudAuthority,preview:bool)->Result<Completion,String>{
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen.".into());}
     let cost=dialog_cost(config,&messages)?;
     let (store,context)=usage;
     if !authority.matches(context,&cancel){return Err("Ungültige native Anfragefreigabe.".into());}
+    autonomous_output(&app,context)?;
     let permit=authority.admit().await?;
-    let operation=async {let mut observed=None;let result=async{permit.check()?;complete_inner(config,messages,tools,api_key,app,turn_id,cancel,&mut observed).await}.await;(result,observed)};
+    autonomous_output(&app,context)?;
+    let operation=async {let mut observed=None;let result=async{
+        permit.check()?;autonomous_output(&app,context)?;
+        let result=complete_inner(config,messages,tools,api_key,app.clone(),turn_id,cancel,&mut observed,preview).await?;
+        permit.check()?;autonomous_output(&app,context)?;Ok(result)
+    }.await;(result,observed)};
     store.metered_usage(context,cost,operation).await
 }
-async fn complete_inner(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>, observed:&mut Option<u64>) -> Result<Completion, String> {
+async fn complete_inner(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>, observed:&mut Option<u64>,preview:bool) -> Result<Completion, String> {
     if matches!(field(config,"provider","compatible"), "claude-code" | "codex") {
         return crate::cli_provider::complete(config,messages,tools,api_key,app,turn_id,cancel).await;
     }
     let (body,anthropic,has_images)=completion_body(config,messages,tools)?;
-    let _ = app.emit("cohost://agent", json!({"kind":"status","turnId":turn_id,"status":"thinking"}));
+    if preview {let _ = app.emit("cohost://agent", json!({"kind":"status","turnId":turn_id,"status":"thinking"}));}
     let mut request = client()?.post(endpoint(config, if anthropic { "messages" } else { "chat/completions" })?).json(&body);
     if anthropic { request = request.header("anthropic-version", "2023-06-01"); }
     let response = cancellable(&cancel, authorize(request, &api_key, anthropic).send()).await?.map_err(|_| "Dialoganbieter ist nicht erreichbar oder hat das Zeitlimit überschritten.".to_string())?;
     if has_images&&matches!(response.status().as_u16(),400|415|422){return Err(format!("Bildanfrage wurde vom Dialoganbieter abgelehnt (HTTP {}). Das ausgewählte Modell und der Endpoint müssen Vision und die übergebenen Bildformate unterstützen; es wird keine reine Textanalyse als Bildanalyse ausgegeben.",response.status().as_u16()));}
     let response = checked(response, "Dialogmodell").await?;
-    completion_stream(response.bytes_stream(),&cancel,anthropic,body["stream_options"]["include_usage"].as_bool()==Some(true),USAGE_TRAILER_GRACE,observed,|text|emit_delta(&app,&turn_id,text)).await
+    completion_stream(response.bytes_stream(),&cancel,anthropic,body["stream_options"]["include_usage"].as_bool()==Some(true),USAGE_TRAILER_GRACE,observed,|text|{if preview {emit_delta(&app,&turn_id,text)}}).await
 }
 
 /// Stream parser independent of AppHandle. A completed choice must not wait
@@ -342,6 +361,7 @@ pub async fn models(config: &Value, api_key: Option<String>) -> Result<Vec<Strin
 }
 
 pub async fn synthesize(config: &Value, text: &str, api_key: Option<String>) -> Result<Value, String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     if text.trim().is_empty() || text.len() > 20_000 { return Err("Sprachtext ist leer oder zu lang (maximal 20.000 Bytes).".into()); }
     let provider = field(config, "provider", "system");
     if provider == "system" { return Err("Systemstimme wird in der Oberfläche abgespielt.".into()); }
@@ -385,6 +405,7 @@ fn validated_usage(value:&Value)->Option<u64>{
 }
 
 pub async fn transcribe(config: &Value, audio_base64: &str, mime_type: &str, api_key: Option<String>) -> Result<String, String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     crate::transcription::transcribe(config,audio_base64,mime_type,api_key).await
 }
 

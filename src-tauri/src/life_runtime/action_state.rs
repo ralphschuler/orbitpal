@@ -21,6 +21,7 @@ pub(crate) struct UiProof {
 }
 #[derive(Clone)]
 pub(crate) struct RestIntent {
+    pub native: Option<super::native_scene_actions::NativeIntent>,
     pub move_target: Option<crate::world_state::coordinates::Point>,
     pub serial: u64,
     pub bot: String,
@@ -55,7 +56,15 @@ pub(crate) struct WorldActionFence {
 }
 #[derive(Clone)]
 pub(crate) struct NativeJob {
+    /// Host scene metadata only; it grants neither completion nor effects.
+    pub grouped: bool,
+    pub content: Option<super::content_host::ContentUse>,
+    pub window_rest: Option<super::desktop_places::WindowRestGuard>,
+    pub stream_source: Option<crate::platform_impulses::StreamActionFence>,
     pub visual: Option<crate::world_output::VisualExecution>,
+    pub native_permit: Option<super::native_scene::NativeActionPermit>,
+    pub native_rest_output: Option<crate::world_output::OutputProof>,
+    pub slot: Option<crate::world_hub::SlotReservation>,
     pub authority: NativeAuthority,
     pub key: JobKey,
     pub fence: LocalFence,
@@ -65,6 +74,8 @@ pub(crate) struct NativeJob {
     pub cancel: Arc<AtomicBool>,
 }
 pub(crate) struct NativeActions {
+    pub fact_pending: BTreeMap<String, (crate::storage::life_store::LifeSnapshot, u8)>,
+    pub fact_notifications: std::collections::BTreeSet<String>,
     pub executor: Executor,
     pub jobs: BTreeMap<String, NativeJob>,
     pub instance_id: String,
@@ -75,6 +86,8 @@ impl NativeActions {
     pub fn new() -> Self {
         let id = uuid::Uuid::new_v4().to_string();
         Self {
+            fact_pending: Default::default(),
+            fact_notifications: Default::default(),
             executor: Executor::new(id.clone()).expect("native UUID"),
             jobs: BTreeMap::new(),
             instance_id: id,
@@ -118,7 +131,7 @@ impl NativeActions {
         self.changed();
     }
     pub fn actor_busy(&self, id: &str) -> bool {
-        self.jobs.get(id).is_some_and(|job| {
+        self.fact_pending.contains_key(id) || self.jobs.get(id).is_some_and(|job| {
             self.executor.status(&job.key).is_some_and(|status| {
                 !matches!(
                     status,
@@ -130,6 +143,7 @@ impl NativeActions {
         })
     }
     pub fn forget(&mut self, id: &str) {
+        if self.fact_pending.contains_key(id) { return; }
         if let Ok(actor) = ActorId::new(id) {
             if self.executor.forget_terminal(&actor) {
                 self.jobs.remove(id);

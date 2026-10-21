@@ -9,7 +9,7 @@ const MAX_ACTIVE: usize = 8;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LayoutError { Unavailable, Stale, Busy, Expired, Geometry, Capacity, Dispatch, Persistence }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LayoutPhase { Reserved, Expanding, Prepared, Restoring, Released, Guarded }
+pub(crate) enum LayoutPhase { Reserved, Expanding, Prepared, PromotionPending, Live, Restoring, Released, Guarded }
 #[derive(Clone, Debug)]
 pub(crate) struct LayoutSample {
     pub bounds: Bounds,
@@ -126,6 +126,15 @@ impl NativePresentations {
     pub(super) fn handle(&self,bot:&str)->Result<LayoutHandle,LayoutError>{self.lock()?.records.iter().find(|r|r.bot==bot&&r.current.load(Ordering::SeqCst)&&!r.destroyed.load(Ordering::SeqCst)).cloned().map(LayoutHandle).ok_or(LayoutError::Stale)}
     pub(super) fn guarded(&self,bot:&str)->bool{self.lock().map(|state|state.records.iter().any(|r|r.bot==bot&&r.current.load(Ordering::SeqCst)&&r.owner.lock().map(|o|o.is_some()).unwrap_or(true))).unwrap_or(true)}
     pub(super) fn any_work(&self)->bool{self.lock().map(|state|state.records.iter().any(|r|r.owner.lock().map(|o|o.is_some()).unwrap_or(true))).unwrap_or(true)}
+    /// Healthy Live owners may yield to a future dialog scheduling attempt.
+    /// Every physical owner must have its exact native receipt; all preparing,
+    /// restoring, unowned or stale states still block. This never releases work.
+    pub(super) fn blocks_dialog_scheduling(&self,handoffs:&[crate::life_runtime::native_scene::NativeDialogueHandoff],now:u64)->bool{
+        self.lock().map(|state|state.records.iter().any(|record|{
+            record.owner.lock().map(|slot|slot.as_ref().is_some_and(|owner|
+                !handoffs.iter().any(|receipt|receipt.matches_owner(owner,now)))).unwrap_or(true)
+        })).unwrap_or(true)
+    }
     pub(super) fn reserve(&self,handle:&LayoutHandle,sample:&LayoutSample,issued:u64,deadline:u64,cancel:Arc<AtomicBool>)->Result<Arc<LayoutOwner>,LayoutError>{
         let state=self.lock()?;
         if state.serial>=crate::life_domain::MAX_COUNTER{for record in &state.records{Self::cancel_record(record);}return Err(LayoutError::Unavailable);}
@@ -135,7 +144,7 @@ impl NativePresentations {
         let mut slot=handle.0.owner.lock().map_err(|_|LayoutError::Unavailable)?;
         if slot.is_some()||cancel.load(Ordering::SeqCst)||deadline.checked_sub(issued)!=Some(5000){return Err(LayoutError::Busy);}
         let normal_monitor=sample.displays.iter().find(|display|display.id==sample.monitor).ok_or(LayoutError::Geometry)?.clone();
-        let owner=Arc::new(LayoutOwner{handle:handle.clone(),cancel,issued,deadline,normal_monitor,state:Mutex::new(Owned{phase:LayoutPhase::Reserved,normal:Some(Normal{bounds:sample.bounds,expanded:false,changed_move:false,changed_size:false,restore:None}),fields:None,moved:None,resized:None,in_flight:false,main_serial:0,geometry_queued:false,click_dirty:false}),wake:tokio::sync::Notify::new()});
+        let owner=Arc::new(LayoutOwner{handle:handle.clone(),cancel,issued,deadline,normal_monitor,state:Mutex::new(Owned{phase:LayoutPhase::Reserved,normal:Some(Normal{bounds:sample.bounds,expanded:false,changed_move:false,changed_size:false,restore:None}),fields:None,moved:None,resized:None,in_flight:false,main_serial:0,geometry_queued:false,click_dirty:false,surface:None}),wake:tokio::sync::Notify::new()});
         *slot=Some(owner.clone());Ok(owner)
     }
     pub(super) fn retire(&self,bot:&str,signals:&Arc<WindowSignals>){if let Ok(mut state)=self.lock(){for record in &state.records{if record.bot==bot&&Arc::ptr_eq(&record.signals,signals){record.current.store(false,Ordering::SeqCst);record.destroyed.store(true,Ordering::SeqCst);Self::cancel_record(record);}}Self::reap(&mut state);}}
@@ -156,6 +165,7 @@ impl NativePresentations {
 struct Owned {
     phase:LayoutPhase,normal:Option<Normal>,fields:Option<LayoutFields>,moved:Option<FieldRequest>,resized:Option<FieldRequest>,
     in_flight:bool,main_serial:u64,geometry_queued:bool,click_dirty:bool,
+    surface:Option<Arc<crate::life_runtime::native_layout::SurfaceCell>>,
 }
 pub(crate) struct LayoutOwner {
     handle:LayoutHandle,pub(crate) cancel:Arc<AtomicBool>,pub(crate) issued:u64,pub(crate) deadline:u64,
@@ -166,6 +176,36 @@ impl LayoutOwner {
     fn lock(&self)->Result<std::sync::MutexGuard<'_,Owned>,LayoutError>{self.state.lock().map_err(|_|{self.cancelled();LayoutError::Unavailable})}
     pub(crate) fn handle(&self)->&LayoutHandle{&self.handle}
     pub(crate) fn valid(&self,now:u64)->bool{self.handle.current()&&!self.cancel.load(Ordering::SeqCst)&&now>=self.issued&&now<=self.deadline}
+    pub(crate) fn begin_promotion(&self,cell:&Arc<crate::life_runtime::native_layout::SurfaceCell>,now:u64)->Result<(),LayoutError>{
+        let mut state=self.lock()?;
+        if state.phase!=LayoutPhase::Prepared||state.surface.is_some()||!self.valid(now)||!cell.matches(&self.cancel,self.issued,self.deadline){return Err(LayoutError::Stale);}
+        if state.fields.is_none(){return Err(LayoutError::Stale);}
+        state.surface=Some(cell.clone());state.phase=LayoutPhase::PromotionPending;Ok(())
+    }
+    pub(crate) fn pending_retained(&self,cell:&Arc<crate::life_runtime::native_layout::SurfaceCell>,now:u64)->bool{self.valid(now)&&self.lock().is_ok_and(|state|state.phase==LayoutPhase::PromotionPending&&state.surface.as_ref().is_some_and(|s|Arc::ptr_eq(s,cell))&&cell.retained_current(now))}
+    pub(crate) fn promotion_current(&self,cell:&Arc<crate::life_runtime::native_layout::SurfaceCell>,now:u64)->bool{
+        self.valid(now)&&self.lock().is_ok_and(|state|state.phase==LayoutPhase::PromotionPending&&!state.in_flight&&state.surface.as_ref().is_some_and(|s|Arc::ptr_eq(s,cell))&&cell.pending_current(now)&&state.fields.as_ref().is_some_and(|fields|self.handle.signals().begin_getter_check(fields).is_ok()))
+    }
+    pub(crate) fn commit_live(&self,cell:&Arc<crate::life_runtime::native_layout::SurfaceCell>,frame:u64,received:u64,now:u64,clock:&impl Fn()->u64)->Result<(),LayoutError>{
+        let mut state=self.lock()?;
+        if state.phase!=LayoutPhase::PromotionPending||state.in_flight||!self.valid(now)||state.surface.as_ref().is_none_or(|s|!Arc::ptr_eq(s,cell)){return Err(LayoutError::Stale);}
+        self.handle.signals().begin_getter_check(state.fields.as_ref().ok_or(LayoutError::Stale)?).map_err(|_|LayoutError::Geometry)?;
+        cell.commit(frame,received,now,clock)?;state.phase=LayoutPhase::Live;Ok(())
+    }
+    pub(crate) fn live_current(&self,cell:&Arc<crate::life_runtime::native_layout::SurfaceCell>,now:u64)->bool{
+        self.handle.current()&&!self.cancel.load(Ordering::SeqCst)&&self.lock().is_ok_and(|state|state.phase==LayoutPhase::Live&&state.surface.as_ref().is_some_and(|s|Arc::ptr_eq(s,cell))&&cell.live_current(now)&&state.fields.as_ref().is_some_and(|fields|self.handle.signals().begin_getter_check(fields).is_ok()))
+    }
+    /// Serialize expiry with the promotion publication point. Once cleanup
+    /// wins this decision, no late accepted calibration can make it Live.
+    pub(crate) fn cleanup_required(&self,now:u64)->bool{
+        let Ok(state)=self.lock()else{return true;};
+        let expired=if state.phase==LayoutPhase::Live{state.surface.as_ref().is_none_or(|cell|!cell.retained_current(now))}else{now<self.issued||now>self.deadline};
+        let required=expired||!self.handle.current()||self.cancel.load(Ordering::SeqCst)||self.destroyed();
+        if required{if let Some(cell)=&state.surface{cell.revoke();}self.cancelled();}required
+    }
+    fn operation_current(&self,state:&Owned,now:u64)->bool{if state.phase==LayoutPhase::Live{self.handle.current()&&!self.cancel.load(Ordering::SeqCst)&&state.surface.as_ref().is_some_and(|cell|cell.retained_current(now))}else{self.valid(now)}}
+    pub(crate) fn observation_wait(&self,now:u64)->Option<u64>{self.lock().ok().and_then(|state|if self.operation_current(&state,now){if state.phase==LayoutPhase::Live{Some(250)}else{self.deadline.checked_sub(now)}}else{None})}
+    pub(crate) fn verify_surface_getter(&self,fence:GetterFence,bounds:Bounds,now:u64)->Result<(),LayoutError>{let state=self.lock()?;if !matches!(state.phase,LayoutPhase::Live|LayoutPhase::PromotionPending)||!self.operation_current(&state,now){return Err(LayoutError::Expired);}self.handle.signals().match_getter(state.fields.as_ref().ok_or(LayoutError::Stale)?,fence,bounds).map_err(|_|LayoutError::Geometry)?;state.surface.as_ref().ok_or(LayoutError::Stale)?.confirm_geometry(now)}
     pub(crate) fn cancelled(&self){self.cancel.store(true,Ordering::SeqCst);self.wake.notify_waiters();}
     pub(crate) fn in_flight(&self)->bool{self.lock().map(|s|s.in_flight).unwrap_or(true)}
     pub(crate) fn phase(&self)->LayoutPhase{self.lock().map(|s|s.phase).unwrap_or(LayoutPhase::Guarded)}
@@ -180,8 +220,8 @@ impl LayoutOwner {
     pub(crate) fn begin_main(self:&Arc<Self>,cleanup:bool,now:u64)->Result<MainPermit,LayoutError>{
         let mut state=self.lock()?;
         if state.main_serial>=crate::life_domain::MAX_COUNTER{self.cancelled();return Err(LayoutError::Unavailable);}
-        if state.in_flight{return Err(LayoutError::Busy);}
-        if !cleanup&&!self.valid(now){return Err(LayoutError::Expired);}
+        if state.in_flight||(!cleanup&&state.phase==LayoutPhase::PromotionPending){return Err(LayoutError::Busy);}
+        if !cleanup&&!self.operation_current(&state,now){return Err(LayoutError::Expired);}
         state.main_serial+=1;state.in_flight=true;Ok(MainPermit{owner:self.clone(),serial:state.main_serial,phase:state.phase})
     }
     pub(crate) fn expand_field(&self,resize:bool,target:Bounds,now:u64)->Result<(),LayoutError>{
@@ -206,7 +246,7 @@ impl LayoutOwner {
     pub(crate) fn normalize_target(&self,target:Bounds)->Result<(),LayoutError>{if self.handle.0.window.normalize(target)?==target{Ok(())}else{Err(LayoutError::Geometry)}}
     fn observe(&self,moved:Option<(i32,i32)>,resized:Option<(u32,u32)>)->bool{
         let Ok(state)=self.lock()else{return false;};
-        if matches!(state.phase,LayoutPhase::Expanding|LayoutPhase::Prepared)&&!self.cancel.load(Ordering::SeqCst){
+        if matches!(state.phase,LayoutPhase::Expanding|LayoutPhase::Prepared|LayoutPhase::PromotionPending|LayoutPhase::Live)&&!self.cancel.load(Ordering::SeqCst){
             let fact=if let Some((x,y))=moved{self.handle.signals().observe_move_fact(x,y)}else if let Some((w,h))=resized{self.handle.signals().observe_resize_fact(w,h)}else{return false};
             let request=if moved.is_some(){state.moved.as_ref()}else{state.resized.as_ref()};
             let accepted=match (state.fields.as_ref(),request,fact){(Some(fields),Some(request),Ok(fact))=>self.handle.signals().matches_request(fields,request,&fact).unwrap_or(false),_=>false};
@@ -260,7 +300,7 @@ fn apply_window_policy(window:&dyn LayoutWindow,clicks:bool,top:bool,apply_top:b
 struct NormalLoan {owner:Arc<LayoutOwner>,normal:Option<Normal>}
 impl Drop for NormalLoan {fn drop(&mut self){if let Ok(mut state)=self.owner.state.lock(){state.normal=self.normal.take();}}}
 pub(crate) struct MainPermit {owner:Arc<LayoutOwner>,serial:u64,phase:LayoutPhase}
-impl MainPermit {pub(crate) fn allowed(&self,cleanup:bool,now:u64)->bool{self.owner.state.lock().map(|s|s.in_flight&&s.main_serial==self.serial&&s.phase==self.phase&&(cleanup||self.owner.valid(now))).unwrap_or(false)}}
+impl MainPermit {pub(crate) fn allowed(&self,cleanup:bool,now:u64)->bool{self.owner.state.lock().map(|s|s.in_flight&&s.main_serial==self.serial&&(s.phase==self.phase||(!cleanup&&self.phase==LayoutPhase::Prepared&&s.phase==LayoutPhase::PromotionPending&&s.surface.is_some()))&&(cleanup||self.owner.operation_current(&s,now))).unwrap_or(false)}}
 impl Drop for MainPermit {fn drop(&mut self){if let Ok(mut state)=self.owner.state.lock(){if state.main_serial==self.serial{state.in_flight=false;}}self.owner.wake.notify_waiters();}}
 struct RetainedOps<'a>{window:&'a dyn LayoutWindow,signals:&'a Arc<WindowSignals>}
 impl WindowOps for RetainedOps<'_>{

@@ -70,3 +70,45 @@ export async function requestLifeMove(invoke:ActionsInvoke,reporter:Pick<LifeUI,
   if(!next.runtime||next.runtime.presentation!=='visual'||!next.confirmed||next.confirmed.activity!=='move_to'||!sameAction(next.runtime.actionId,next.confirmed.actionId))throw invalid();
   return next;
 }
+
+/** Host-minted main-window intent, not a renderer grant. No caller-supplied
+ * owner/source/measurement can replace the actual NativeActionPermit factory. */
+async function prepareNativeAction(invoke:ActionsInvoke,botId:string,current:()=>boolean):Promise<string|null>{
+  if(!current())throw actionChanged();
+  const raw=await invoke('prepare_native_life_action',{botId:id(botId)});
+  if(!current())throw actionChanged();
+  if(raw===null)return null;
+  if(!raw||typeof raw!=='object'||Array.isArray(raw))throw invalid();
+  const descriptors=Object.getOwnPropertyDescriptors(raw);
+  if(Object.getPrototypeOf(raw)!==Object.prototype||Reflect.ownKeys(descriptors).length!==3
+    ||['version','intentId','expiresInMs'].some(key=>!Object.hasOwn(descriptors,key)||!Object.hasOwn(descriptors[key],'value')))throw invalid();
+  const item=raw as {version:unknown;intentId:unknown;expiresInMs:unknown};
+  if(item.version!==1||item.expiresInMs!==2000||typeof item.intentId!=='string'||!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(item.intentId))throw invalid();
+  return item.intentId;
+}
+async function nativeAction(invoke:ActionsInvoke,botId:string,current:()=>boolean,args:Record<string,unknown>,rest=false):Promise<LifeActionsSnapshot|undefined>{
+  const bot=id(botId),nativeIntentId=await prepareNativeAction(invoke,bot,current);
+  if(!nativeIntentId)throw actionChanged();
+  if(!current())throw actionChanged();
+  const raw=await invoke(rest?'start_life_rest':'start_life_move',{botId:bot,nativeIntentId,...args});
+  if(!current())return;
+  const next=parseLifeActions(raw,bot);
+  if(!next.runtime||!next.confirmed||!sameAction(next.runtime.actionId,next.confirmed.actionId)
+    ||next.confirmed.activity!==(rest?'rest':'move_to')||next.runtime.presentation!==(rest?'native_rest_dwell':'visual'))throw invalid();
+  return next;
+}
+export function requestNativeLifeMove(invoke:ActionsInvoke,botId:string,target:{x:number;y:number},current:()=>boolean){
+  const point={x:count(target.x),y:count(target.y)};if(point.x>1_000_000||point.y>1_000_000)throw invalid();
+  return nativeAction(invoke,botId,current,{target:point});
+}
+export function requestNativeLifeSlot(invoke:ActionsInvoke,botId:string,slotId:string,current:()=>boolean){return nativeAction(invoke,botId,current,{slotId:id(slotId)});}
+export async function requestQuietRestForOutput(invoke:ActionsInvoke,reporter:Pick<LifeUI,'reportProof'>,botId:string,current:()=>boolean,onProof:()=>void=()=>{}){
+  const bot=id(botId),nativeIntentId=await prepareNativeAction(invoke,bot,current);
+  if(nativeIntentId===null)return requestQuietRest(invoke,reporter,bot,current,onProof);
+  if(!current())throw actionChanged();onProof();
+  const raw=await invoke('start_life_rest',{botId:bot,nativeIntentId});
+  if(!current())return;
+  const next=parseLifeActions(raw,bot);
+  if(!next.runtime||next.runtime.presentation!=='native_rest_dwell'||!next.confirmed||next.confirmed.activity!=='rest'||!sameAction(next.runtime.actionId,next.confirmed.actionId))throw invalid();
+  return next;
+}

@@ -255,7 +255,7 @@ fn check_bot(db: &Connection, bot_id: &str) -> Result<(), LifeStoreError> {
     }
     Ok(())
 }
-fn read(db: &Connection, bot_id: &str) -> Result<Option<LifeSnapshot>, LifeStoreError> {
+pub(super) fn read(db: &Connection, bot_id: &str) -> Result<Option<LifeSnapshot>, LifeStoreError> {
     // Recheck live metadata: a future schema introduced by another connection
     // cannot be read or overwritten through a previously opened Store.
     let metadata = {

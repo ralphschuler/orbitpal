@@ -13,6 +13,7 @@ use serde_json::json;
 use std::sync::atomic::Ordering;
 fn source() -> NativeSource {
     NativeSource {
+        route: SourceRoute::Studio,
         context: WorldActionFence {
             session: SessionStamp::new(ActorId::new("nova").unwrap(), "life-session", 1).unwrap(),
             source_world: WorldId::new("lineage").unwrap(),
@@ -35,6 +36,7 @@ fn source() -> NativeSource {
         effective_scale: 1.0,
         native_walk: true,
         owner: true,
+        native_framing: None,
     }
 }
 fn request() -> RegisterWorldActor {
@@ -105,6 +107,7 @@ fn measurement(challenge: &MeasurementChallenge, seq: u64) -> RenderMeasurement 
         applied_model_scale: 1.0,
         reduced_motion: false,
         walk_supported: true,
+        station_supported: false,
     }
 }
 fn ready() -> (Registry, NativeSource, OutputProof) {
@@ -492,4 +495,110 @@ fn faster_stationary_cadence_preserves_first_frame_span_and_does_not_count_deliv
         .is_ok());
     assert_eq!(visual.stable.len(), 3);
     assert_eq!(visual.stable.front().unwrap().1, 20);
+}
+
+
+#[test]
+fn studio_unregister_keeps_exact_scope_revokes_and_removes_before_fresh_successor() {
+    let (mut registry, source, proof) = ready();
+    let request = UnregisterWorldActor {
+        version: 1,
+        render_session_id: proof.binding.render_session_id.clone(),
+        binding_sequence: proof.binding.binding_sequence,
+    };
+    assert!(!registry.unregister(&request, "other-ui"));
+    let mut wrong = request.clone();
+    wrong.binding_sequence += 1;
+    assert!(!registry.unregister(&wrong, "studio"));
+    assert!(!proof.cancel.load(Ordering::SeqCst));
+    assert!(registry.ready("nova", 10).is_ok());
+    assert!(registry.unregister(&request, "studio"));
+    assert!(proof.cancel.load(Ordering::SeqCst));
+    assert!(registry.status("nova", 10).is_none());
+    assert!(!registry.unregister(&request, "studio"));
+    let (next, next_cancel, created) = registry.register(&self::request(), source, 11).unwrap();
+    assert!(created);
+    assert_ne!(next.render_session_id, request.render_session_id);
+    assert!(!registry.unregister(&request, "studio"));
+    assert!(!next_cancel.load(Ordering::SeqCst));
+    assert!(matches!(next.readiness, Readiness::AwaitingMeasurement { .. }));
+    // Status never issues a measurement challenge. The new registration reply
+    // above carries it; until its actual measurement, status stays unavailable.
+    let status = registry.status("nova", 11).unwrap();
+    assert_eq!(status.render_session_id, next.render_session_id);
+    assert_eq!(status.binding_sequence, next.binding_sequence);
+    assert!(matches!(status.readiness, Readiness::Unavailable { reason: RenderReason::Expired }));
+}
+
+#[test]
+fn studio_owner_candidate_never_becomes_a_native_semantic_owner() {
+    // Exercise the real Registry admission with the existing synthetic Studio
+    // source; even owner=true and measured Studio data supply no Native route.
+    let mut registry = Registry::default();
+    let (reply, _, _) = registry.register(&request(), source(), 0).unwrap();
+    assert!(matches!(reply.role, RenderRole::OwnerCandidate));
+    let system = crate::life_availability::Snapshot {
+        state: crate::life_availability::Availability::Unknown,
+        reason: crate::life_availability::Reason::Initializing,
+        generation: 1, source: crate::life_availability::Source::Unsupported,
+    };
+    let core = crate::life_runtime::core::Core::new(system);
+    assert!(registry.semantic_mirrors(&core, 0).is_empty());
+    let challenge = challenge(&reply);
+    registry.measurement(&measurement(&challenge, 1), &source(), 0, 0).unwrap();
+    assert!(registry.semantic_mirrors(&core, 0).is_empty());
+    assert!(core.sessions.is_empty());
+}
+
+
+#[test]
+fn legacy_measurement_cannot_gain_station_capability_by_omission() {
+    let mut registry = Registry::default();
+    let (reply, _, _) = registry.register(&request(), source(), 0).unwrap();
+    let report = measurement(&challenge(&reply), 2);
+    let mut value = serde_json::to_value(report).unwrap();
+    value.as_object_mut().unwrap().remove("stationSupported");
+    let decoded: RenderMeasurement = serde_json::from_value(value.clone()).unwrap();
+    assert!(!decoded.station_supported);
+    value["stationSupported"] = json!("true");
+    assert!(serde_json::from_value::<RenderMeasurement>(value).is_err());
+}
+
+#[test]
+fn station_execution_requires_explicit_capability_and_a_full_accepted_idle_span() {
+    use crate::life_domain::Activity;
+    let (_, _, mut proof) = ready();
+    let target = Point::new(500_000, 500_000).unwrap();
+    assert!(VisualExecution::for_activity(proof.clone(), target, Activity::Play, 1000, 0).is_err());
+    proof.binding.station_supported = true; // Controlled Studio observation only.
+    assert!(VisualExecution::for_activity(proof.clone(), target, Activity::Wave, 1000, 0).is_err());
+    assert!(VisualExecution::for_activity(proof.clone(), target, Activity::Play, 0, 0).is_err());
+    assert!(VisualExecution::for_activity(proof.clone(), target, Activity::Play, 600_001, 0).is_err());
+    assert_eq!(VisualExecution::for_activity(proof.clone(), target, Activity::Play, 600_000, 0).unwrap().minimum_active_ms, 600_000);
+    let mut visual = VisualExecution::for_activity(proof, target, Activity::Play, 1000, 0).unwrap();
+    visual.observe(&frame(2, 400.0, false), ReportKind::Started, 0, 0).unwrap();
+    for (index, now) in (100..=900).step_by(100).enumerate() {
+        visual.observe(&frame(index as u64 + 3, 400.0, false), ReportKind::Progress, now, now).unwrap();
+    }
+    let mut early = visual.clone();
+    assert!(early.observe(&frame(12, 400.0, false), ReportKind::Completed, 999, 999).is_err());
+    assert!(visual.observe(&frame(12, 400.0, false), ReportKind::Completed, 1000, 1000).is_ok());
+    assert_eq!(visual.activity, Activity::Play);
+}
+
+#[test]
+fn station_idle_gap_discards_the_pre_gap_duration() {
+    use crate::life_domain::Activity;
+    let (_, _, mut proof) = ready(); proof.binding.station_supported = true;
+    let mut visual = VisualExecution::for_activity(proof, Point::new(500_000, 500_000).unwrap(), Activity::Play, 1000, 0).unwrap();
+    visual.observe(&frame(2, 400.0, false), ReportKind::Started, 0, 0).unwrap();
+    visual.observe(&frame(3, 400.0, false), ReportKind::Progress, 100, 100).unwrap();
+    visual.observe(&frame(4, 400.0, false), ReportKind::Progress, 500, 500).unwrap();
+    assert_eq!(visual.stable.front().unwrap().1, 500);
+    for (index, now) in (600..=1400).step_by(100).enumerate() {
+        visual.observe(&frame(index as u64 + 5, 400.0, false), ReportKind::Progress, now, now).unwrap();
+    }
+    let mut early = visual.clone();
+    assert!(early.observe(&frame(14, 400.0, false), ReportKind::Completed, 1499, 1499).is_err());
+    assert!(visual.observe(&frame(14, 400.0, false), ReportKind::Completed, 1500, 1500).is_ok());
 }

@@ -154,7 +154,9 @@ impl Capabilities {
         native_rest_dwell_opt_in: bool,
     ) -> Result<Self, ActionError> {
         if visual.len() > 6
-            || visual.iter().any(|(_, ms)| *ms > 60_000)
+            || visual.iter().any(|(kind, ms)| *ms > if matches!(kind,
+                Activity::Rest | Activity::Recharge | Activity::Snack | Activity::Play | Activity::Socialize
+            ) { crate::life_self_care::MAX_CARE_DURATION_MS } else { 60_000 })
             || visual.iter().enumerate().any(|(index, (kind, _))| {
                 visual[..index].iter().any(|(previous, _)| previous == kind)
             })
@@ -183,6 +185,16 @@ pub(crate) struct PreparedPlan {
     intent: ActionIntent,
 }
 impl PreparedPlan {
+    pub(crate) fn visual_minimum(activity: Activity, goal: &Goal) -> Result<u64, ActionError> {
+        Ok(Policy::for_request(activity, goal, Presentation::Visual)?.minimum_active_ms)
+    }
+    pub(crate) fn care_visual_minimum(activity: Activity, goal: &Goal, config: &crate::life_self_care::CareConfig) -> Result<u64, ActionError> {
+        config.validate().map_err(|_|ActionError::UnsupportedCapability)?;
+        if !matches!(activity, Activity::Rest | Activity::Recharge | Activity::Snack | Activity::Play | Activity::Socialize) {
+            return Err(ActionError::UnsupportedCapability);
+        }
+        Ok(Self::visual_minimum(activity, goal)?.max(config.minimum_duration_ms))
+    }
     pub fn new(
         authority: NativeAuthority,
         before: &LifeState,
@@ -192,6 +204,30 @@ impl PreparedPlan {
         presentation: Presentation,
         capabilities: &Capabilities,
     ) -> Result<Self, ActionError> {
+        Self::configured(authority, before, random, activity, goal, presentation, capabilities, None)
+    }
+    pub(crate) fn care(
+        authority: NativeAuthority,
+        before: &LifeState,
+        random: RandomState,
+        activity: Activity,
+        goal: Goal,
+        presentation: Presentation,
+        capabilities: &Capabilities,
+        config: &crate::life_self_care::CareConfig,
+    ) -> Result<Self, ActionError> {
+        Self::configured(authority, before, random, activity, goal, presentation, capabilities, Some(config))
+    }
+    fn configured(
+        authority: NativeAuthority,
+        before: &LifeState,
+        random: RandomState,
+        activity: Activity,
+        goal: Goal,
+        presentation: Presentation,
+        capabilities: &Capabilities,
+        care: Option<&crate::life_self_care::CareConfig>,
+    ) -> Result<Self, ActionError> {
         before.validate().map_err(|_| ActionError::InvalidState)?;
         if before.actor_id() != authority.actor()
             || before.world_id() != &authority.source_world
@@ -200,6 +236,11 @@ impl PreparedPlan {
             return Err(ActionError::WrongAuthority);
         }
         let mut policy = Policy::for_request(activity, &goal, presentation)?;
+        if let Some(config) = care {
+            if presentation != Presentation::Visual { return Err(ActionError::UnsupportedCapability); }
+            policy.effect = catalog::Effect::care(activity, &goal, config)?;
+            policy.minimum_active_ms = Self::care_visual_minimum(activity, &goal, config)?;
+        }
         match presentation {
             Presentation::Visual => {
                 let minimum = capabilities
@@ -209,6 +250,7 @@ impl PreparedPlan {
                     .map(|(_, minimum)| *minimum)
                     .ok_or(ActionError::UnsupportedCapability)?;
                 policy.minimum_active_ms = policy.minimum_active_ms.max(minimum);
+                if care.is_some() { policy.maximum_run_ms=policy.maximum_run_ms.max(policy.minimum_active_ms.saturating_add(15_000)); }
                 if policy.minimum_active_ms >= policy.maximum_run_ms {
                     return Err(ActionError::UnsupportedCapability);
                 }
@@ -915,7 +957,7 @@ impl Executor {
                         }
                         (Activity::LookAt, Evidence::OrientationSettled) => true,
                         (
-                            Activity::Rest | Activity::Recharge | Activity::Play | Activity::Wave,
+                            Activity::Rest | Activity::Recharge | Activity::Snack | Activity::Play | Activity::Socialize | Activity::Wave,
                             Evidence::VisualFinished,
                         ) => true,
                         _ => false,
@@ -1418,6 +1460,19 @@ impl Executor {
             Ok(())
         })
     }
+    /// Read-only bound of this exact admitted job in the native monotonic clock.
+    /// Before Start, even the latest allowed delivery cannot run past this
+    /// installed bound. Later reads never allocate or refresh a deadline.
+    pub(crate) fn execution_deadline(&self, authority: &NativeAuthority, key: &JobKey) -> Result<u64, ActionError> {
+        let job = self.job(authority, key)?;
+        match job.status {
+            Status::AwaitingDelivery | Status::Delivered => job.delivery_deadline
+                .checked_add(job.policy.maximum_run_ms).filter(|deadline| *deadline <= MAX_COUNTER)
+                .ok_or(ActionError::Exhausted),
+            Status::Started | Status::Paused => Ok(job.run_deadline),
+            _ => Err(ActionError::InvalidTransition),
+        }
+    }
     pub fn status(&self, key: &JobKey) -> Option<Status> {
         self.jobs
             .get(key.actor.as_str())
@@ -1438,6 +1493,10 @@ impl Executor {
                 active_ms: job.active_ms,
                 terminal_committed: job.terminal_committed,
             })
+    }
+    /// Display-only observation of the exact existing job, never action admission.
+    pub(crate) fn goal(&self, key: &JobKey) -> Option<&Goal> {
+        self.jobs.get(key.actor.as_str()).filter(|job| &job.key == key).map(|job| &job.goal)
     }
     pub fn take_dispatch(&mut self) -> Option<Dispatch> {
         self.outbox.pop_front()

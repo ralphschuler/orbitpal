@@ -21,6 +21,7 @@ impl From<String> for ExchangeError {fn from(message:String)->Self {Self {messag
 impl From<&str> for ExchangeError {fn from(message:&str)->Self {message.to_owned().into()}}
 impl McpHub {
     pub async fn connect(&self,config:&Value,token:Option<String>)->Result<Vec<Value>,String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
         let id=config["id"].as_str().filter(|s|crate::storage::valid_id(s)).ok_or("MCP-Server benötigt eine gültige ID")?.to_owned();
         self.disconnect(&id).await;
         let transport=match config["transport"].as_str().unwrap_or("stdio") {
@@ -102,6 +103,7 @@ impl McpHub {
     }
     pub async fn connected(&self,id:&str)->bool {self.sessions.lock().await.contains_key(id)}
     pub async fn call(&self,id:&str,name:&str,args:Value)->Result<Value,String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
         let connection=self.sessions.lock().await.get(id).cloned().ok_or("MCP-Server ist nicht verbunden")?;
         let mut session=connection.lock().await;
         if !session.tools.iter().any(|t|t["name"].as_str()==Some(name)) {return Err("Werkzeug wurde vom MCP-Server nicht angeboten".into());}

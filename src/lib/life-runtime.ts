@@ -21,7 +21,7 @@ export const systemReasons = {
   monitor_disconnected: 'Die Systemüberwachung ist getrennt. Selbstständige Anfragen sind gesperrt.',
   unsupported: 'Dieses System unterstützt die native Verfügbarkeitsprüfung nicht.',
 } as const;
-export const activityLabels = { move_to: 'Unterwegs', rest: 'Ruhen', recharge: 'Aufladen', play: 'Spielen', look_at: 'Umschauen', wave: 'Winken' } as const;
+export const activityLabels = { move_to: 'Unterwegs', rest: 'Ruhen', recharge: 'Aufladen', play: 'Spielen', snack: 'Snackpause', socialize: 'Gemeinsame Zeit', look_at: 'Umschauen', wave: 'Winken' } as const;
 export const phaseLabels = { planned: 'Geplant', started: 'Gestartet', completed: 'Abgeschlossen', cancelled: 'Abgebrochen' } as const;
 type LifeReason = keyof typeof lifeReasons;
 type SystemReason = keyof typeof systemReasons;

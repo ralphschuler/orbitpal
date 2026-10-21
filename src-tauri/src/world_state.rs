@@ -146,6 +146,7 @@ impl WorkIdentity {
 #[serde(rename_all = "snake_case")]
 pub enum AnchorKind {
     Rest,
+    Snack,
     Meeting,
     Play,
 }
@@ -174,8 +175,14 @@ pub struct Anchor {
     position: Point,
     #[serde(deserialize_with = "bounded::<_, _, MAX_SLOTS>")]
     slots: Vec<Slot>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    content_ref: Option<crate::content_packs::ContentRef>,
 }
 impl Anchor {
+    pub fn id(&self)->&AnchorId { &self.id }
+    pub fn content_ref(&self)->Option<&crate::content_packs::ContentRef> {self.content_ref.as_ref()}
+    pub fn kind(&self) -> AnchorKind { self.kind }
+    pub fn slots(&self) -> &[Slot] { &self.slots }
     pub fn new(
         id: AnchorId,
         kind: AnchorKind,
@@ -190,6 +197,7 @@ impl Anchor {
             kind,
             position,
             slots,
+            content_ref: None,
         })
     }
 }
@@ -270,6 +278,7 @@ impl WorldConfig {
     pub fn members(&self) -> &[ActorId] {
         &self.0.members
     }
+    pub fn anchors(&self) -> &[Anchor] { &self.0.anchors }
     pub fn safe_region(&self) -> Rect {
         self.0.safe_region
     }
@@ -302,6 +311,7 @@ impl WorldConfig {
             }
         }
         for anchor in &wire.anchors {
+            if anchor.content_ref.as_ref().is_some_and(|reference|reference.validate().is_err()) {return Err(WorldError::InvalidConfig);}
             if !valid_id(anchor.id.as_str())
                 || !anchors.insert(&anchor.id)
                 || !wire.safe_region.contains(anchor.position)
@@ -342,6 +352,9 @@ pub struct SlotLease {
     resource_generation: u64,
     member: MemberHandle,
     work: WorkIdentity,
+}
+impl SlotLease {
+    pub(crate) fn slot_id(&self) -> &SlotId { &self.slot }
 }
 #[derive(Clone)]
 struct Participant {
@@ -447,6 +460,10 @@ impl WorldState {
         self.actors
             .get(actor.as_str())
             .and_then(|actor| actor.handle.clone())
+    }
+    /// Current validated resource geometry only; this grants no reservation.
+    pub(crate) fn slot_geometry(&self, slot: &SlotId) -> Option<(AnchorKind, Point)> {
+        self.resources.get(slot).map(|resource| (resource.kind, resource.position))
     }
     fn identity(&mut self) -> Result<u64, WorldError> {
         let id = self.next_identity;

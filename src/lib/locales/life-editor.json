@@ -85,7 +85,12 @@
     "Desktop-Vorschau": "Desktop preview",
     "Deine Anordnung gilt beim nächsten Start. Speichern allein startet Life nicht.": "Your layout applies at the next start. Saving alone does not start Life.",
     "Life kann bis zu {limit} Figuren gleichzeitig starten.": "Life can start up to {limit} characters at the same time.",
-    "Diese Anordnung enthält {count} Figuren. Life unterstützt höchstens {limit} gleichzeitig. Entferne Figuren aus der Anordnung, um Life zu starten. Deine gespeicherte Anordnung wird nicht automatisch gekürzt.": "This layout contains {count} characters. Life supports at most {limit} at the same time. Remove characters from the layout to start Life. Your saved layout will not be trimmed automatically."
+    "Diese Anordnung enthält {count} Figuren. Life unterstützt höchstens {limit} gleichzeitig. Entferne Figuren aus der Anordnung, um Life zu starten. Deine gespeicherte Anordnung wird nicht automatisch gekürzt.": "This layout contains {count} characters. Life supports at most {limit} at the same time. Remove characters from the layout to start Life. Your saved layout will not be trimmed automatically.",
+    "Snackplatz": "Snack spot",
+    "Stelle Ruheplätze, Snackplätze, Treffpunkte und Spielobjekte auf.": "Add rest spots, snack spots, meeting points and play objects.",
+    "Aus aktiven Inhaltspaketen": "From active content packs",
+    "Paketobjekt · Vorlage derzeit nicht aktiv": "Pack object · template currently inactive",
+    "Auf Paketversion {version} umstellen": "Switch to pack version {version}"
   },
   "fr": {
     "{name} auf dem Desktop": "{name} sur votre bureau",
@@ -173,7 +178,12 @@
     "Desktop-Vorschau": "Aperçu du bureau",
     "Deine Anordnung gilt beim nächsten Start. Speichern allein startet Life nicht.": "Votre disposition s’applique au prochain démarrage. Enregistrer ne démarre pas Life.",
     "Life kann bis zu {limit} Figuren gleichzeitig starten.": "Life peut démarrer jusqu’à {limit} personnages en même temps.",
-    "Diese Anordnung enthält {count} Figuren. Life unterstützt höchstens {limit} gleichzeitig. Entferne Figuren aus der Anordnung, um Life zu starten. Deine gespeicherte Anordnung wird nicht automatisch gekürzt.": "Cette disposition contient {count} personnages. Life en prend en charge au maximum {limit} en même temps. Retirez des personnages de la disposition pour démarrer Life. Votre disposition enregistrée ne sera pas réduite automatiquement."
+    "Diese Anordnung enthält {count} Figuren. Life unterstützt höchstens {limit} gleichzeitig. Entferne Figuren aus der Anordnung, um Life zu starten. Deine gespeicherte Anordnung wird nicht automatisch gekürzt.": "Cette disposition contient {count} personnages. Life en prend en charge au maximum {limit} en même temps. Retirez des personnages de la disposition pour démarrer Life. Votre disposition enregistrée ne sera pas réduite automatiquement.",
+    "Snackplatz": "Lieu de collation",
+    "Stelle Ruheplätze, Snackplätze, Treffpunkte und Spielobjekte auf.": "Ajoutez des lieux de repos, de collation, de rencontre et des objets de jeu.",
+    "Aus aktiven Inhaltspaketen": "Depuis les packs de contenu actifs",
+    "Paketobjekt · Vorlage derzeit nicht aktiv": "Objet de pack · modèle actuellement inactif",
+    "Auf Paketversion {version} umstellen": "Passer à la version {version} du pack"
   },
   "es": {
     "{name} auf dem Desktop": "{name} en tu escritorio",
@@ -261,6 +271,11 @@
     "Desktop-Vorschau": "Vista previa del escritorio",
     "Deine Anordnung gilt beim nächsten Start. Speichern allein startet Life nicht.": "La distribución se aplica en el próximo inicio. Guardar no inicia Life.",
     "Life kann bis zu {limit} Figuren gleichzeitig starten.": "Life puede iniciar hasta {limit} personajes a la vez.",
-    "Diese Anordnung enthält {count} Figuren. Life unterstützt höchstens {limit} gleichzeitig. Entferne Figuren aus der Anordnung, um Life zu starten. Deine gespeicherte Anordnung wird nicht automatisch gekürzt.": "Esta distribución contiene {count} personajes. Life admite como máximo {limit} a la vez. Quita personajes de la distribución para iniciar Life. La distribución guardada no se reducirá automáticamente."
+    "Diese Anordnung enthält {count} Figuren. Life unterstützt höchstens {limit} gleichzeitig. Entferne Figuren aus der Anordnung, um Life zu starten. Deine gespeicherte Anordnung wird nicht automatisch gekürzt.": "Esta distribución contiene {count} personajes. Life admite como máximo {limit} a la vez. Quita personajes de la distribución para iniciar Life. La distribución guardada no se reducirá automáticamente.",
+    "Snackplatz": "Lugar de refrigerio",
+    "Stelle Ruheplätze, Snackplätze, Treffpunkte und Spielobjekte auf.": "Añade lugares de descanso, de refrigerio, de encuentro y objetos de juego.",
+    "Aus aktiven Inhaltspaketen": "De paquetes de contenido activos",
+    "Paketobjekt · Vorlage derzeit nicht aktiv": "Objeto de paquete · plantilla inactiva",
+    "Auf Paketversion {version} umstellen": "Cambiar a la versión {version} del paquete"
   }
 }

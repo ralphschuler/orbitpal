@@ -80,7 +80,9 @@
     "Die native Ausgabe wurde abgebrochen.": "Native output was cancelled.",
     "Stimme des Wiedergabeauftrags fehlt.": "The playback job has no voice configuration.",
     "Ungültige native Anfragefreigabe.": "Invalid native request authorization.",
-    "Spontane Beiträge werden von der nativen Laufzeit geplant.": "Spontaneous contributions are scheduled by the native runtime."
+    "Spontane Beiträge werden von der nativen Laufzeit geplant.": "Spontaneous contributions are scheduled by the native runtime.",
+    "Snackpause": "Snack break",
+    "Gemeinsame Zeit": "Time together"
   },
   "fr": {
     "Bereit für selbstständige Beiträge.": "Prêt pour les interventions autonomes.",
@@ -163,7 +165,9 @@
     "Die native Ausgabe wurde abgebrochen.": "La sortie native a été annulée.",
     "Stimme des Wiedergabeauftrags fehlt.": "La tâche de lecture n’a pas de configuration vocale.",
     "Ungültige native Anfragefreigabe.": "Autorisation native de requête invalide.",
-    "Spontane Beiträge werden von der nativen Laufzeit geplant.": "Les interventions spontanées sont planifiées par l’exécution native."
+    "Spontane Beiträge werden von der nativen Laufzeit geplant.": "Les interventions spontanées sont planifiées par l’exécution native.",
+    "Snackpause": "Pause collation",
+    "Gemeinsame Zeit": "Temps ensemble"
   },
   "es": {
     "Bereit für selbstständige Beiträge.": "Listo para intervenciones autónomas.",
@@ -246,6 +250,8 @@
     "Die native Ausgabe wurde abgebrochen.": "Se canceló la salida nativa.",
     "Stimme des Wiedergabeauftrags fehlt.": "La tarea de reproducción no tiene configuración de voz.",
     "Ungültige native Anfragefreigabe.": "Autorización nativa de solicitud no válida.",
-    "Spontane Beiträge werden von der nativen Laufzeit geplant.": "El entorno nativo programa las intervenciones espontáneas."
+    "Spontane Beiträge werden von der nativen Laufzeit geplant.": "El entorno nativo programa las intervenciones espontáneas.",
+    "Snackpause": "Pausa para un refrigerio",
+    "Gemeinsame Zeit": "Tiempo juntos"
   }
 }

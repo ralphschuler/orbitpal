@@ -12,11 +12,13 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import collect
+import compositor_diagnostic
 import launch
 import runner
 import qualification
@@ -1222,9 +1224,14 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                     elif argv[:3] == ["/usr/sbin/ip", "netns", "delete"]:
                         (namespaces / argv[3]).unlink()
                 def popen(argv, **kwargs):
-                    self.assertEqual(kwargs["pass_fds"], (int(argv[-1]),))
+                    is_launcher = argv[1].endswith("launch.py")
+                    is_compositor = is_launcher and argv[3] == "compositor"
+                    witness = int(argv[7] if is_launcher else argv[-1])
+                    self.assertEqual(kwargs["pass_fds"], (witness, int(argv[8])) if is_compositor else (witness,))
+                    if is_compositor:
+                        self.assertTrue(stat.S_ISFIFO(os.fstat(int(argv[8])).st_mode))
                     # This FD really denotes the pre-workload fixture directory.
-                    self.assertEqual((os.fstat(int(argv[-1])).st_dev, os.fstat(int(argv[-1])).st_ino),
+                    self.assertEqual((os.fstat(witness).st_dev, os.fstat(witness).st_ino),
                                      (fixture.stat().st_dev, fixture.stat().st_ino))
                     if argv[1].endswith("launch.py") and argv[3] == "app":
                         for name in required:
@@ -1278,6 +1285,185 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                 if missing == "collector_exit_empty":
                     self.assertFalse((output / "fixture-manifest.json").exists())
                 self.assertTrue(any(argv[:3] == ["/usr/sbin/ip", "netns", "delete"] for argv in calls))
+
+
+class CompositorDiagnosticTests(unittest.TestCase):
+    def capture(self, raw):
+        value = compositor_diagnostic.CompositorDiagnostic(time.monotonic() + 5)
+        writer = os.dup(value.writer)  # Only a synthetic producer, never GNOME.
+        value.close_writer()
+        try:
+            for start in range(0, len(raw), 4096):
+                chunk = raw[start:start + 4096]
+                self.assertEqual(os.write(writer, chunk), len(chunk))
+        finally:
+            os.close(writer)
+            value.finish()
+        self.assertTrue(value.finished)
+        self.assertTrue(value.eof)
+        return value
+
+    def test_real_pipe_keeps_fatal_tail_and_bounded_utf8_export_after_drain(self):
+        value = self.capture(b"startup warning\n" * 15000 + "fatal: \u00e9chec final\n".encode("utf-8"))
+        self.assertEqual(len(value.tail), compositor_diagnostic.LIMIT)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            value.export_failed(output, failed=True, writers_stopped=True, redactions=())
+            text = (output / compositor_diagnostic.TEXT_NAME).read_bytes()
+            metadata = json.loads((output / compositor_diagnostic.META_NAME).read_text())
+            self.assertLessEqual(len(text), 65536)
+            self.assertTrue(text.decode("utf-8").endswith("fatal: \u00e9chec final\n"))
+            self.assertTrue(metadata["truncated"])
+            self.assertTrue(metadata["captureComplete"])
+            self.assertFalse(metadata["measurementQualified"])
+            self.assertEqual(metadata["tailBytes"], len(text))
+            self.assertEqual(value.tail, bytearray())
+
+    def test_sanitizer_redacts_known_paths_controls_ansi_and_utf8_expansion(self):
+        raw = b"\x1b[31m/tmp/fixed/private\x1b[0m /checkout/a /home/runner/cache\x00\x07\x7f" + "\u202efatal\r\n".encode("utf-8")
+        text, truncated = compositor_diagnostic.sanitize_tail(raw, (("/tmp/fixed", "<fixture>"),
+                                                                 ("/checkout", "<checkout>"), ("/home/runner", "<runner-home>")))
+        self.assertEqual(text, b"<fixture>/private <checkout>/a <runner-home>/cachefatal\n")
+        self.assertFalse(truncated)
+        text, truncated = compositor_diagnostic.sanitize_tail(b"\xff" * 65530 + b"FATAL!", ())
+        self.assertLessEqual(len(text), 65536)
+        self.assertTrue(text.decode("utf-8").endswith("FATAL!"))
+        self.assertTrue(truncated)
+
+    def test_actual_child_inherits_only_write_end_and_other_child_cannot_write_it(self):
+        value = compositor_diagnostic.CompositorDiagnostic(time.monotonic() + 5)
+        self.assertFalse(os.get_inheritable(value.reader))
+        self.assertFalse(os.get_inheritable(value.writer))
+        child = """import os, sys
+w, r = map(int, sys.argv[1:])
+try: os.fstat(r)
+except OSError: pass
+else: raise SystemExit(9)
+os.dup2(w, 2); os.close(w)
+os.write(1, b'NOT_CAPTURED_STDOUT')
+os.write(2, b'fixed synthetic stderr')
+"""
+        try:
+            result = subprocess.run([sys.executable, "-I", "-c", child, str(value.writer), str(value.reader)],
+                                    pass_fds=(value.writer,), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, env={}, timeout=3, check=False)
+            self.assertEqual(result.returncode, 0)
+            unrelated = "import os,sys\ntry: os.write(int(sys.argv[1]), b'NOT_CAPTURED_APP')\nexcept OSError: pass\nelse: raise SystemExit(9)"
+            result = subprocess.run([sys.executable, "-I", "-c", unrelated, str(value.writer)],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    env={}, timeout=3, check=False)
+            self.assertEqual(result.returncode, 0)
+        finally:
+            value.finish()
+        self.assertEqual(bytes(value.tail), b"fixed synthetic stderr")
+        self.assertTrue(value.eof)
+
+    def test_actual_production_shell_redirection_routes_only_fixed_command_stderr(self):
+        version = subprocess.run(["bash", "-c", 'printf "%s" "${BASH_VERSINFO[0]}"'],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 timeout=3, check=False)
+        if version.returncode != 0 or not version.stdout.isdigit() or int(version.stdout) < 4:
+            self.skipTest("Actual redirection requires the guarded hosted Linux Bash4+; local macOS Bash3.2 cannot qualify it")
+        source = Path(launch.__file__).with_name("session.sh").read_text()
+        # Execute the actual redirection/parent-close block with only a shell
+        # function producer; no system service, UID guard or app is executed.
+        block = source.split("  # Same real headless GNOME path", 1)[1]
+        block = block[block.index('  if [[ -n "$diagnostic_fd" ]]'):block.index("  workload_status=0")]
+        value = compositor_diagnostic.CompositorDiagnostic(time.monotonic() + 5)
+        script = 'diagnostic_fd="$1"\ngnome-shell() { printf NOT_CAPTURED_STDOUT; printf fixed_shell_stderr >&2; }\n' + block + '\nwait "$workload_pid"\n'
+        try:
+            result = subprocess.run(["bash", "-c", script, "synthetic", str(value.writer)], pass_fds=(value.writer,),
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    timeout=3, check=False)
+            self.assertEqual(result.returncode, 0)
+        finally:
+            value.finish()
+        self.assertEqual(bytes(value.tail), b"fixed_shell_stderr")
+        self.assertTrue(value.eof)
+
+    def test_pipe_validator_rejects_regular_foreign_open_modes_and_invalid_ids(self):
+        good = SimpleNamespace(st_mode=stat.S_IFIFO | 0o600, st_uid=0)
+        with patch.object(compositor_diagnostic.os, "fstat", return_value=good), \
+                patch.object(compositor_diagnostic.fcntl, "fcntl", return_value=os.O_WRONLY):
+            compositor_diagnostic.checked_write_pipe(9)
+        for bad, flags in ((SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0), os.O_WRONLY),
+                           (SimpleNamespace(st_mode=stat.S_IFIFO | 0o600, st_uid=1001), os.O_WRONLY),
+                           (SimpleNamespace(st_mode=stat.S_IFIFO | 0o620, st_uid=0), os.O_WRONLY), (good, os.O_RDONLY)):
+            with patch.object(compositor_diagnostic.os, "fstat", return_value=bad), \
+                    patch.object(compositor_diagnostic.fcntl, "fcntl", return_value=flags), self.assertRaises(collect.Refusal):
+                compositor_diagnostic.checked_write_pipe(9)
+        for descriptor in (True, 0, 1, 2, -1, 2**31, "PRIVATE"):
+            with patch.object(compositor_diagnostic.os, "fstat") as lookup, self.assertRaises(collect.Refusal):
+                compositor_diagnostic.checked_write_pipe(descriptor)
+            lookup.assert_not_called()
+
+    def test_app_launcher_rejects_diagnostic_descriptor_before_any_pipe_or_root_lookup(self):
+        arguments = ["launch.py", "/not-opened", "app", "23456", "23457", "smoke", "8", "9"]
+        with patch.object(launch.sys, "argv", arguments), patch.object(launch.sys, "platform", "linux"), \
+                patch.object(launch.os, "geteuid", return_value=0), patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Linux"}), \
+                patch.object(launch, "checked_write_pipe") as pipe, patch.object(launch, "PinnedDirectory") as directory:
+            with self.assertRaisesRegex(collect.Refusal, "^invalid_launcher_arguments$"):
+                launch.main()
+            pipe.assert_not_called()
+            directory.assert_not_called()
+
+    def test_failed_and_confirmed_writer_drain_are_both_required_before_artifact_write(self):
+        for failed, drained in ((False, True), (True, False), (True, None)):
+            value = self.capture(b"PRIVATE_STARTUP")
+            with patch.object(compositor_diagnostic, "PinnedDirectory") as directory:
+                value.export_failed(Path("/not-opened"), failed=failed, writers_stopped=drained, redactions=())
+                directory.assert_not_called()
+            self.assertEqual(value.tail, bytearray())
+
+    def test_original_deadline_and_unobserved_eof_never_become_complete_capture(self):
+        expired = time.monotonic() - 1
+        first = compositor_diagnostic.CompositorDiagnostic(expired)
+        first.finish()
+        self.assertEqual(first.deadline, expired)
+        self.assertTrue(first.deadline_reached)
+        second = compositor_diagnostic.CompositorDiagnostic(time.monotonic() + 5)
+        writer = os.dup(second.writer)  # An unclosed synthetic writer is not EOF.
+        try:
+            second.finish()
+            self.assertFalse(second.eof)
+            for value in (first, second):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output = Path(temporary)
+                    value.export_failed(output, failed=True, writers_stopped=True, redactions=())
+                    self.assertFalse((output / compositor_diagnostic.TEXT_NAME).exists())
+                    self.assertFalse(json.loads((output / compositor_diagnostic.META_NAME).read_text())["captureComplete"])
+        finally:
+            os.close(writer)
+
+    def test_diagnostic_never_makes_rejected_numeric_evidence_valid(self):
+        value = self.capture(b"fixed fatal")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source, output = root / "source", root / "output"
+            source.mkdir(); output.mkdir()
+            (source / "native.ndjson").write_bytes(b"")
+            with collect.PinnedDirectory(source) as files:
+                with self.assertRaisesRegex(collect.Refusal, "^empty_numeric_artifact$"):
+                    runner.export_numeric(files, output, native_uid=os.getuid(), writers_stopped=True)
+            value.export_failed(output, failed=True, writers_stopped=True, redactions=())
+            self.assertEqual(sorted(path.name for path in output.iterdir()),
+                             sorted((compositor_diagnostic.META_NAME, compositor_diagnostic.TEXT_NAME)))
+
+    def test_private_reader_errors_are_not_formatted_or_exported(self):
+        class PrivateError(Exception):
+            def __str__(self):
+                raise AssertionError("private exception must not be formatted")
+        with patch.object(compositor_diagnostic.select, "select", side_effect=PrivateError("PRIVATE_NATIVE_PAYLOAD")):
+            value = compositor_diagnostic.CompositorDiagnostic(time.monotonic() + 5)
+            value.finish()
+        self.assertTrue(value.read_failed)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            value.export_failed(output, failed=True, writers_stopped=True, redactions=())
+            metadata = (output / compositor_diagnostic.META_NAME).read_text()
+            self.assertNotIn("PRIVATE", metadata)
+            self.assertFalse(json.loads(metadata)["captureComplete"])
+            self.assertFalse((output / compositor_diagnostic.TEXT_NAME).exists())
 
 
 class BootstrapDiagnosticTests(unittest.TestCase):

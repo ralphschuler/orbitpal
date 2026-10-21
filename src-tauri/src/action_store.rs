@@ -28,13 +28,18 @@ pub(crate) fn matches(
     studio: bool,
 ) -> bool {
     (!studio || selected(db, bot))
-        && profile(db, bot).and_then(|value| token(&value)).as_ref() == Ok(expected_profile)
+        && profile_current(db, bot, expected_profile)
         && world_store::load(db, true)
             .ok()
             .flatten()
             .and_then(|record| serde_json::to_value(record).ok())
             .as_ref()
             == Some(expected_world)
+}
+/// Reads only the caller's already-held connection/transaction. In particular,
+/// a stream owner may differ from the actor whose action is being committed.
+pub(crate) fn profile_current(db:&Connection,bot:&str,expected:&ProfileToken)->bool {
+    profile(db,bot).and_then(|value|token(&value)).as_ref()==Ok(expected)
 }
 impl Store {
     pub(crate) fn action_profile_token(
