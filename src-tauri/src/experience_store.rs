@@ -255,7 +255,15 @@ impl Store {
         let tx = db
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage)?;
-        let (sequence,kind,outcome,participants,at):(u64,String,String,String,u64)=tx.query_row("SELECT sequence,CASE WHEN length(CAST(kind AS BLOB))<=16 THEN kind END,CASE WHEN length(CAST(outcome AS BLOB))<=16 THEN outcome END,CASE WHEN length(CAST(participants AS BLOB))<=512 THEN participants END,at_ms FROM social_memories WHERE owner=?1 AND event_id=?2",params![bot,event.id()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(storage)?;
+        let (sequence,kind,outcome,participants,at):(i64,String,String,String,i64)=tx.query_row("SELECT sequence,CASE WHEN length(CAST(kind AS BLOB))<=16 THEN kind END,CASE WHEN length(CAST(outcome AS BLOB))<=16 THEN outcome END,CASE WHEN length(CAST(participants AS BLOB))<=512 THEN participants END,at_ms FROM social_memories WHERE owner=?1 AND event_id=?2",params![bot,event.id()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(storage)?;
+        let sequence = u64::try_from(sequence)
+            .ok()
+            .filter(|n| *n <= MAX_TIME)
+            .ok_or("experience_corrupt")?;
+        let at = u64::try_from(at)
+            .ok()
+            .filter(|n| *n <= MAX_TIME)
+            .ok_or("experience_corrupt")?;
         let members: Vec<String> =
             serde_json::from_str(&participants).map_err(|_| "experience_corrupt")?;
         let actual_kind = serde_json::to_value(event.kind()).map_err(storage)?;
