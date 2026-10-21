@@ -294,6 +294,99 @@ class Guards(unittest.TestCase):
             child.terminate.assert_not_called()
             self.assertFalse(list(evidence.glob('world-native-macos-actual-run-*')))
 
+    def transport_execution(self, outputs):
+        # Exercise real execute -> perform -> ui -> ui_record. Only the actual
+        # child/native subprocesses and clock are doubles; own packaging is real.
+        with tempfile.TemporaryDirectory() as raw:
+            evidence, clock = Path(raw), [0.0]
+            binary = evidence / 'binary'; binary.write_bytes(b'\xcf\xfa\xed\xfe'); binary.chmod(0o700)
+            child = Mock(pid=42, returncode=None)
+            child.poll.side_effect = lambda: child.returncode
+            child.terminate.side_effect = lambda: setattr(child, 'returncode', -15)
+            child.wait.return_value = -15
+            native = Mock(side_effect=outputs)
+            process = SimpleNamespace(Popen=Mock(return_value=child), run=native,
+                DEVNULL=runner.subprocess.DEVNULL, PIPE=runner.subprocess.PIPE,
+                TimeoutExpired=runner.subprocess.TimeoutExpired)
+            time = SimpleNamespace(monotonic=lambda: clock[0],
+                sleep=lambda delay: clock.__setitem__(0, clock[0] + delay))
+            with patch.dict(runner.os.environ, {'REVIEWED_SHA': 'a' * 40}), \
+                 patch.object(runner, 'subprocess', process), patch.object(runner, 'time', time), \
+                 patch.object(runner, 'validated_report') as validate:
+                self.assertEqual(runner.execute(binary, evidence), 1)
+            record = json.loads((evidence / 'controller.json').read_text())
+            self.assertNotIn('PRIVATE', json.dumps(record))
+            self.assertEqual((record['forcedCleanup'], record['normalQuit'], record['fixturePassed'], record['cleanupUnconfirmed']), (1, 0, 0, 0))
+            child.terminate.assert_called_once_with(); child.kill.assert_not_called(); validate.assert_not_called()
+            self.assertFalse((evidence / 'OrbitPalNativeWorldFixture.app').exists())
+            for call in native.call_args_list:
+                self.assertEqual(call.args[0][:3], ['/usr/bin/osascript', '-l', 'JavaScript'])
+                self.assertEqual(call.kwargs['timeout'], 5)
+                self.assertEqual(call.kwargs['stderr'], process.DEVNULL)
+                self.assertEqual(call.kwargs['stdin'], process.DEVNULL)
+            return record, native.call_args_list, clock[0]
+
+    def test_real_transport_timeout_never_formats_native_body_or_arguments(self):
+        class PrivateTimeout(runner.subprocess.TimeoutExpired):
+            def __str__(self): raise AssertionError('exception must never be formatted')
+        timeout = PrivateTimeout('PRIVATE_ARG', 5, output=b'PRIVATE_BODY', stderr=b'PRIVATE_STDERR')
+        record, calls, _ = self.transport_execution([timeout])
+        self.assertEqual((record['stage'], record['code'], record['transportPhase'], record['exceptionKind']), (1, 10, 2, 1))
+        self.assertEqual((record['lastUiObserved'], record['lastUiStage']), (0, 0))
+        self.assertNotIn('lastUiRecord', record); self.assertEqual(len(calls), 1)
+
+    def test_real_transport_decode_and_schema_failures_keep_private_reply_out(self):
+        cases = [(b'PRIVATE_NOT_JSON', 10, 3, 2), (b'\xff', 10, 3, 2),
+                 (json.dumps({**self.record(), 'PRIVATE_FIELD': 1}).encode(), 2, 4, 3),
+                 (b'{"version":1,"version":1}', 2, 3, 3), (b'P' * 2049, 2, 3, 3),
+                 ((json.dumps(self.record()) + '\n' + json.dumps(self.record())).encode(), 10, 3, 2)]
+        for raw, code, phase, kind in cases:
+            with self.subTest(code=code, phase=phase, kind=kind):
+                record, calls, _ = self.transport_execution([SimpleNamespace(returncode=0, stdout=raw)])
+                self.assertEqual((record['code'], record['transportPhase'], record['exceptionKind']), (code, phase, kind))
+                self.assertEqual(record['lastUiObserved'], 0); self.assertNotIn('lastUiRecord', record)
+                self.assertEqual(len(calls), 1)
+
+    def test_real_transport_other_exception_is_closed_and_structured_ui_refusal_is_retained(self):
+        class PrivateError(Exception):
+            def __str__(self): raise AssertionError('exception must never be formatted')
+        record, calls, _ = self.transport_execution([PrivateError('PRIVATE_NATIVE_ERROR')])
+        self.assertEqual((record['code'], record['transportPhase'], record['exceptionKind']), (10, 2, 4))
+        self.assertEqual(record['lastUiObserved'], 0); self.assertEqual(len(calls), 1)
+        reply = {**self.record(), 'code': 8}
+        record, calls, _ = self.transport_execution([SimpleNamespace(returncode=0, stdout=json.dumps(reply).encode())])
+        self.assertEqual((record['code'], record['transportPhase'], record['exceptionKind']), (7, 5, 0))
+        self.assertEqual((record['lastUiObserved'], record['lastUiStage']), (1, 1))
+        self.assertEqual(record['lastUiRecord'], reply); self.assertEqual(len(calls), 1)
+
+    def test_nonzero_native_client_exit_is_not_parsed_or_retried(self):
+        record, calls, elapsed = self.transport_execution([
+            SimpleNamespace(returncode=1, stdout=b'PRIVATE_NATIVE_BODY')])
+        self.assertEqual((record['code'], record['transportPhase'], record['exceptionKind']), (3, 2, 4))
+        self.assertEqual(record['lastUiObserved'], 0); self.assertNotIn('lastUiRecord', record)
+        self.assertEqual(len(calls), 1); self.assertEqual(elapsed, 0)
+
+    def test_real_retry_preserves_last_valid_reply_and_original_sleep_before_timeout(self):
+        reply = {**self.record(), 'code': 9}
+        record, calls, elapsed = self.transport_execution([
+            SimpleNamespace(returncode=0, stdout=json.dumps(reply).encode()),
+            runner.subprocess.TimeoutExpired('PRIVATE_ARG', 5, output=b'PRIVATE_BODY')])
+        self.assertEqual((record['stage'], record['code'], record['transportPhase'], record['exceptionKind']), (1, 10, 2, 1))
+        self.assertEqual((record['lastUiObserved'], record['lastUiStage']), (1, 1))
+        self.assertEqual(record['lastUiRecord'], reply); self.assertEqual(len(calls), 2)
+        self.assertEqual(elapsed, .25)
+        self.assertTrue(all(call.args[0][-4] == 'inspect' for call in calls))
+
+    def test_later_failed_ui_does_not_relabel_an_earlier_validated_record(self):
+        reply = self.record()
+        record, calls, _ = self.transport_execution([
+            SimpleNamespace(returncode=0, stdout=json.dumps(reply).encode()),
+            runner.subprocess.TimeoutExpired('PRIVATE_ARG', 5)])
+        self.assertEqual((record['stage'], record['lastUiStage']), (2, 1))
+        self.assertEqual((record['code'], record['exceptionKind']), (10, 1))
+        self.assertEqual(record['lastUiRecord'], reply)
+        self.assertEqual([call.args[0][-4] for call in calls], ['inspect', 'autopilot'])
+
     def test_native_source_has_no_app_script_or_permission_mutator(self):
         source = (DIRECTORY / 'ui.js').read_text()
         for forbidden in ('executeScript(', '.eval(', 'invoke(', 'tccutil', 'CGEventPost', 'keyCode(', 'keystroke('):
