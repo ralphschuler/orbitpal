@@ -26,7 +26,7 @@ vi.mock('./avatar-loader', () => ({ createAvatarLoader: () => ({ dispose() {} })
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); observed.draws = []; });
 
-function cadence(fps: unknown, instrumented: boolean) {
+function cadence(fps: unknown, instrumented: boolean, callbacks = 120, offsetMs = 1) {
   let now = 0, scheduled = 0;
   let next: FrameRequestCallback | undefined;
   vi.stubGlobal('performance', { now: () => now });
@@ -43,10 +43,8 @@ function cadence(fps: unknown, instrumented: boolean) {
     motionSource: 'fixed', speaking: false, level: 0, emotion: 'neutral', transparent: false, audioEnabled: false },
   undefined, undefined, instrumented ? observation => observations.push(observation) : undefined);
   expect(observed.draws).toEqual([]); // Constructor call at t=0 is not a draw or RAF callback.
-  for (let frame = 1; frame <= 120; frame++) {
-    // A fixed 1ms callback offset avoids making exact binary rounding at a
-    // fractional interval boundary part of this target-rate regression.
-    now = frame * 1000 / 120 + 1;
+  for (let frame = 1; frame <= callbacks; frame++) {
+    now = frame * 1000 / 120 + offsetMs;
     const callback = next;
     expect(callback).toBeTypeOf('function');
     next = undefined;
@@ -55,7 +53,7 @@ function cadence(fps: unknown, instrumented: boolean) {
   const draws = [...observed.draws];
   stage.dispose();
   expect(next).toBeUndefined();
-  expect(scheduled).toBe(121); // Frame-rate limiting never changes RAF scheduling.
+  expect(scheduled).toBe(callbacks + 1); // Frame-rate limiting never changes RAF scheduling.
   return { draws, observations };
 }
 
@@ -73,4 +71,21 @@ it.each([30, 60, undefined, 17])('keeps the existing production cadence without 
   const { draws, observations } = cadence(fps, false);
   expect(draws).toHaveLength(fps === 30 ? 30 : 60);
   expect(observations).toEqual([]);
+});
+
+it.each([20, 30, 60])('does not duplicate fractional deadline ticks at exact 120Hz (%ifps)', fps => {
+  const seconds = 10, callbacks = 120 * seconds;
+  const { draws, observations } = cadence(fps, true, callbacks, 0);
+  // Test the real RAF/render path, including 1000/120 and 1000/30 rounding.
+  // One boundary frame is permitted; repeated early draws are not.
+  expect(draws.length).toBeGreaterThanOrEqual(fps * seconds - 1);
+  expect(draws.length).toBeLessThanOrEqual(fps * seconds + 1);
+  expect(draws[0]).toBeCloseTo(1000 / fps);
+  expect(draws.at(-1)).toBeCloseTo(seconds * 1000);
+  for (let index = 1; index < draws.length; index++) {
+    expect(draws[index] - draws[index - 1]).toBeGreaterThanOrEqual(1000 / fps - 0.5);
+  }
+  expect(observations.filter(observation => observation.kind === 'raf')).toHaveLength(callbacks);
+  expect(observations.filter(observation => observation.kind === 'submitted')).toHaveLength(draws.length);
+  expect(observations.filter(observation => observation.kind === 'failure')).toEqual([]);
 });
