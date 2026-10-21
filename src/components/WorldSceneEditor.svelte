@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { Check, Gamepad2, Maximize2, Moon, Plus, Trash2, UserRound, Users } from '@lucide/svelte';
   import { t, locale, formatNumber } from '../lib/i18n';
+  import {lifeSceneParticipants,LIFE_SCENE_LIMIT_HINT} from '../lib/life-scene-participants';
   import { anchorKinds, type AnchorKind, type WorldDraft, type WorldSnapshot } from '../lib/world-state';
   import { canvasPoint, cloneEditorModel, editorActors, editorRegion, editorSpawn, moveEditorTarget, nudgeEditorTarget, readEditorPoint, removeEditorTarget, targetKey, targetPoint, writeEditorPoint, type ActorPositions, type CanvasRect, type EditorCorner, type EditorModel, type EditorTarget } from '../lib/world-editor';
 
@@ -20,6 +21,7 @@
   let gesture = $state<Gesture | null>(null);
   const region = $derived(editorRegion(draft));
   const actors = $derived(editorActors(draft, snapshot, positions));
+  const participants = $derived(lifeSceneParticipants(draft.members));
   const slots = $derived(draft.anchors.reduce((count, anchor) => count + anchor.slots.length, 0));
   const selectedPoint = $derived(selected ? targetPoint({ draft, positions }, selected, actors) : null);
   const chosenAnchor = $derived.by(() => {
@@ -40,7 +42,7 @@
   function member(id: string) {
     if (disabled || !active) return;
     if (!draft.members.includes(id)) {
-      if (draft.members.length >= 64) return;
+      if (!participants.canAdd) return;
       const next = cloneEditorModel(model());
       if (!snapshot?.actors.some(actor => actor.actorId === id)) next.positions = { ...next.positions, [id]: editorSpawn(region, next.draft.members.length) };
       next.draft.members.push(id); update(next);
@@ -134,8 +136,9 @@
     </div>
     {#if tab === 'actors'}
       <p class="tray-note">{$t('Wähle eine Figur und ziehe sie an ihren Platz.')}</p>
+      <p class="tray-note">{$t(LIFE_SCENE_LIMIT_HINT,{limit:participants.limit})}</p>
       <div class="tray-list">{#each bots as bot (bot.id)}
-        <button type="button" class="tray-item" class:chosen={selected?.kind === 'actor' && selected.id === bot.id} disabled={disabled || !draft.members.includes(bot.id) && draft.members.length >= 64} onclick={() => member(bot.id)}>
+        <button type="button" class="tray-item" class:chosen={selected?.kind === 'actor' && selected.id === bot.id} disabled={disabled || !draft.members.includes(bot.id) && !participants.canAdd} onclick={() => member(bot.id)}>
           <span class="actor-avatar">{bot.name.slice(0, 1)}</span><span class="tray-name">{bot.name}</span>
           {#if draft.members.includes(bot.id)}<Check size={14} aria-label={$t('Auf der Bühne')}/>{:else}<Plus size={14} aria-label={$t('Hinzufügen')}/>{/if}
         </button>
