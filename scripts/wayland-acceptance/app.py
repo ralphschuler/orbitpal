@@ -22,9 +22,14 @@ PHASES = frozenset((
     "studio_import_accessibility", "studio_read_pid", "studio_verify_process",
     "studio_verify_executable", "studio_wait_cold_start", "studio_registry_query",
     "studio_read_initial_state", "actual_studio_coldstart", "configure_real_voice_off",
+    "configure_voice_navigation", "configure_voice_navigation_done", "configure_voice_switch",
     "configure_real_model_and_grants", "actual_portal_ready", "fresh_red_presented",
     "fresh_blue_presented", "held_stop_received", "held_stop_cancelled",
     "held_images_off_received", "held_disable_received",
+))
+SWITCH_CONTROLS = frozenset((
+    "Enable speech output", "Enable tool calls", "Send images to the model",
+    "Include the screen with every request",
 ))
 TRACEBACK_METADATA_LIMIT = 32
 OWNED_SOURCES = {
@@ -215,9 +220,9 @@ class Studio:
         self.database = root / "data/studio.streamer-ai.cohost/cohost.sqlite3"
         self.frame = None
 
-    def nodes(self):
+    def nodes(self, include_offscreen=False, frame=None):
         phase("studio_registry_query")
-        desktop = self.a.Registry.getDesktop(0)
+        desktop = frame if frame is not None else self.a.Registry.getDesktop(0)
         verified = {}  # One traversal only; no stale PID ownership cache.
         for node in walk(desktop):
             try:
@@ -227,17 +232,18 @@ class Studio:
                 if not verified[pid]:
                     continue
                 state = node.getState()
-                if state.contains(self.a.STATE_SHOWING) and state.contains(self.a.STATE_VISIBLE):
+                if state.contains(self.a.STATE_VISIBLE) and (include_offscreen or state.contains(self.a.STATE_SHOWING)):
                     yield node
             except (RuntimeError, AttributeError):
                 continue
 
-    def find(self, name, roles):
+    def find(self, name, roles, include_offscreen=False, frame=None):
         matches = []
         # The actual implicit label wraps both input and Load models button.
         # WebKit can include that button in the input's computed accessible name.
         names = {"Model", "Model Load models"} if name == "Model" else {name}
-        for node in self.nodes():
+        nodes = self.nodes(include_offscreen=include_offscreen, frame=frame) if include_offscreen or frame is not None else self.nodes()
+        for node in nodes:
             try:
                 if node.name in names and node.getRole() in roles:
                     matches.append(node)
@@ -264,13 +270,14 @@ class Studio:
         state = node.getState()
         return state.contains(self.a.STATE_SENSITIVE) and state.contains(self.a.STATE_ENABLED)
 
-    def action(self, node):
+    def action(self, node, scroll=True):
         if not self.enabled(node):
             raise Refusal("app_control_disabled")
-        try:
-            node.queryComponent().scrollTo(self.a.SCROLL_ANYWHERE)
-        except (RuntimeError, AttributeError, NotImplementedError):
-            pass
+        if scroll:
+            try:
+                node.queryComponent().scrollTo(self.a.SCROLL_ANYWHERE)
+            except (RuntimeError, AttributeError, NotImplementedError):
+                pass
         interface = node.queryAction()
         for index in range(min(interface.nActions, 8)):
             if interface.getName(index).lower() in ("click", "press", "toggle", "select"):
@@ -292,10 +299,57 @@ class Studio:
 
     def switch(self, name, enabled):
         roles = {self.a.ROLE_CHECK_BOX, self.a.ROLE_TOGGLE_BUTTON, getattr(self.a, "ROLE_SWITCH", -1)}
-        node = self.one(name, roles)
+        roles.discard(-1)
+        locate = self.switch_control(name, roles)
+        node = self.wait(locate, "app_control_missing")
         if node.getState().contains(self.a.STATE_CHECKED) != enabled:
-            self.action(node)
-        self.wait(lambda: self.one(name, roles).getState().contains(self.a.STATE_CHECKED) == enabled, "app_switch_not_changed")
+            self.action(node, scroll=False)  # Already reacquired after scrolling.
+        self.wait(lambda: (node := locate()) is not None and node.getState().contains(self.a.STATE_CHECKED) == enabled, "app_switch_not_changed")
+
+    def switch_control(self, name, roles):
+        """Reveal only fixed source controls, never activate an offscreen node."""
+        if name not in SWITCH_CONTROLS:
+            raise Refusal("app_control_missing")
+        attempts = 0
+
+        def frame():
+            process_parent(self.pid)
+            try:
+                executable = (Path("/proc") / str(self.pid) / "exe").resolve(strict=True)
+            except (FileNotFoundError, ProcessLookupError):
+                raise Refusal("app_process_exited") from None
+            if executable != self.root / "acceptance-app":
+                raise Refusal("unexpected_app_executable")
+            frames = [node for node in self.nodes()
+                      if node.getRole() in (self.a.ROLE_FRAME, self.a.ROLE_WINDOW) and node.name == "OrbitPal"]
+            if len(frames) != 1:
+                raise Refusal("ambiguous_app_window")
+            if not frames[0].getState().contains(self.a.STATE_ACTIVE):
+                raise Refusal("app_window_not_active")
+            return frames[0]
+
+        def locate():
+            nonlocal attempts
+            current = frame()
+            candidate = self.find(name, roles, include_offscreen=True, frame=current)
+            if candidate is None:
+                return None
+            if candidate.getState().contains(self.a.STATE_SHOWING):
+                return candidate
+            if attempts >= 2:
+                return None
+            attempts += 1
+            try:
+                if candidate.queryComponent().scrollTo(self.a.SCROLL_ANYWHERE) is not True:
+                    raise Refusal("app_action_refused")
+            except (RuntimeError, AttributeError, NotImplementedError):
+                raise Refusal("app_action_unavailable") from None
+            # Recheck process/executable/frame and query a fresh SHOWING node;
+            # the old offscreen accessible is never used for an action/state.
+            node = self.find(name, roles, include_offscreen=True, frame=frame())
+            return node if node is not None and node.getState().contains(self.a.STATE_SHOWING) else None
+
+        return locate
 
     def compatible(self):
         node = self.one("Integration", {self.a.ROLE_COMBO_BOX})
@@ -443,7 +497,10 @@ def run(root):
     nonce = uuid.uuid4().hex[:16]
     with Receiver(nonce) as receiver:
         phase("configure_real_voice_off")
+        phase("configure_voice_navigation")
         studio.button("Character & voice")
+        phase("configure_voice_navigation_done")
+        phase("configure_voice_switch")
         studio.switch("Enable speech output", False)
         studio.save(lambda value: value["voice"]["enabled"] is False)
         studio.button("Models")

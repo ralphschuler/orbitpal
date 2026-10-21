@@ -803,5 +803,135 @@ class RuntimeDiagnosticTests(unittest.TestCase):
                 runtime.private_control(root)
 
 
+class SwitchRevealTests(unittest.TestCase):
+    """Exercise actual Studio walk/find/reveal/action with synthetic AT-SPI."""
+    class Node:
+        def __init__(self, name, role, states=(), pid=41, children=()):
+            self.name, self.role, self.states, self.pid = name, role, set(states), pid
+            self.children = list(children)
+            self.scroll = Mock(return_value=True)
+            self.press = Mock(side_effect=self.toggle)
+
+        def __iter__(self):
+            return iter(self.children)
+
+        def get_process_id(self):
+            return self.pid
+
+        def getRole(self):
+            return self.role
+
+        def getState(self):
+            return SimpleNamespace(contains=lambda state: state in self.states)
+
+        def queryComponent(self):
+            return SimpleNamespace(scrollTo=self.scroll)
+
+        def queryAction(self):
+            return SimpleNamespace(nActions=1, getName=lambda _: "toggle", doAction=self.press)
+
+        def toggle(self, _):
+            self.states.symmetric_difference_update({"checked"})
+            return True
+
+    def fixture(self, controls):
+        studio = app.Studio.__new__(app.Studio)
+        studio.pid, studio.root = 41, Path("/disposable")
+        frame = self.Node("OrbitPal", 10, ("visible", "showing", "active"), children=controls)
+        desktop = self.Node("private desktop", 0, pid=1, children=[frame])
+        studio.a = SimpleNamespace(ROLE_FRAME=10, ROLE_WINDOW=11, ROLE_CHECK_BOX=3,
+                                   ROLE_TOGGLE_BUTTON=4, ROLE_PUSH_BUTTON=5,
+                                   STATE_VISIBLE="visible", STATE_SHOWING="showing", STATE_ACTIVE="active",
+                                   STATE_CHECKED="checked", STATE_ENABLED="enabled", STATE_SENSITIVE="sensitive",
+                                   SCROLL_ANYWHERE=0, Registry=SimpleNamespace(getDesktop=lambda _: desktop))
+        return studio, frame, desktop
+
+    def parents(self, pid):
+        return {41: 1, 42: 41, 99: 1}.get(pid, 1)
+
+    def test_real_switch_reveals_then_acts_only_on_fresh_showing_owned_control(self):
+        old = self.Node("Enable speech output", 3, ("visible", "checked", "enabled", "sensitive"), pid=42)
+        fresh = self.Node(old.name, 3, ("visible", "showing", "checked", "enabled", "sensitive"), pid=42)
+        studio, frame, _ = self.fixture([old])
+        def reveal(_):
+            frame.children = [fresh]
+            return True
+        old.scroll.side_effect = reveal
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"):
+            studio.switch("Enable speech output", False)
+        old.scroll.assert_called_once_with(0)
+        old.press.assert_not_called()
+        fresh.scroll.assert_not_called()  # No second scroll/stale target before activation.
+        fresh.press.assert_called_once_with(0)
+        self.assertNotIn("checked", fresh.states)
+
+    def test_hidden_foreign_wrong_role_and_outside_studio_candidates_cannot_be_revealed(self):
+        for kind in ("hidden", "foreign", "wrong_role", "other_window"):
+            node = self.Node("Enable speech output", 5 if kind == "wrong_role" else 3,
+                             () if kind == "hidden" else ("visible",), pid=99 if kind == "foreign" else 42)
+            studio, frame, desktop = self.fixture([] if kind == "other_window" else [node])
+            if kind == "other_window":
+                desktop.children.append(self.Node("avatar-nova", 10, ("visible", "showing"), children=[node]))
+            with self.subTest(kind=kind), patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"):
+                self.assertIsNone(studio.switch_control(node.name, {3, 4})())
+            node.scroll.assert_not_called()
+            node.press.assert_not_called()
+
+    def test_visible_duplicate_remains_ambiguous_even_if_one_is_already_showing(self):
+        a = self.Node("Enable speech output", 3, ("visible", "showing"))
+        b = self.Node(a.name, 3, ("visible",))
+        studio, _, _ = self.fixture([a, b])
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), self.assertRaisesRegex(provider.Refusal, "ambiguous_app_control"):
+            studio.switch_control(a.name, {3, 4})()
+        a.press.assert_not_called()
+        b.scroll.assert_not_called()
+
+    def test_failed_scroll_and_success_without_showing_never_activate(self):
+        for succeeds in (False, True):
+            node = self.Node("Enable speech output", 3, ("visible",))
+            studio, _, _ = self.fixture([node])
+            node.scroll.return_value = succeeds
+            with self.subTest(scroll=succeeds), patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"):
+                locate = studio.switch_control(node.name, {3, 4})
+                if succeeds:
+                    for _ in range(5):
+                        self.assertIsNone(locate())
+                    self.assertEqual(node.scroll.call_count, 2)
+                else:
+                    with self.assertRaisesRegex(provider.Refusal, "app_action_refused"):
+                        locate()
+            node.press.assert_not_called()
+
+    def test_executable_or_active_frame_change_after_scroll_blocks_reacquisition(self):
+        for change in ("executable", "inactive", "duplicate_frame"):
+            node = self.Node("Enable speech output", 3, ("visible",))
+            studio, frame, desktop = self.fixture([node])
+            executable = [studio.root / "acceptance-app"]
+            def reveal(_):
+                node.states.add("showing")
+                if change == "executable":
+                    executable[0] = Path("/disposable/foreign-app")
+                elif change == "inactive":
+                    frame.states.discard("active")
+                else:
+                    desktop.children.append(self.Node("OrbitPal", 10, ("visible", "showing", "active")))
+                return True
+            node.scroll.side_effect = reveal
+            expected = {"executable": "unexpected_app_executable", "inactive": "app_window_not_active", "duplicate_frame": "ambiguous_app_window"}[change]
+            with self.subTest(change=change), patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", side_effect=lambda **_: executable[0]), patch.object(app, "phase"), self.assertRaisesRegex(provider.Refusal, expected):
+                studio.switch_control(node.name, {3, 4})()
+            node.press.assert_not_called()
+
+    def test_reveal_never_guesses_names_or_roles(self):
+        node = self.Node("Enable speech output extra", 3, ("visible",))
+        studio, _, _ = self.fixture([node])
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"):
+            self.assertIsNone(studio.switch_control("Enable speech output", {3, 4})())
+            with self.assertRaisesRegex(provider.Refusal, "app_control_missing"):
+                studio.switch_control(node.name, {3, 4})
+        node.scroll.assert_not_called()
+        node.press.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
