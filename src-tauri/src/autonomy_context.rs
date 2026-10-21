@@ -61,6 +61,21 @@ impl AutonomyContext {
             epoch,
         })
     }
+    pub(crate) fn opportunity(owner: &str, turn: &str, epoch: u64) -> Result<Self, String> {
+        if !crate::storage::valid_id(owner) || !crate::storage::valid_id(turn) {
+            return Err("invalid native opportunity".into());
+        }
+        Ok(Self {
+            version: 1,
+            event_id: format!("opportunity_{turn}"),
+            owner_id: owner.into(),
+            goal: None,
+            events: vec![],
+            participants: vec![owner.into()],
+            allowed_facts: vec![],
+            epoch,
+        })
+    }
     pub(crate) fn from_goal(owner: &str, goal: &Goal, epoch: u64) -> Result<Self, String> {
         if !crate::storage::valid_id(owner)
             || !crate::storage::valid_id(&goal.id)
@@ -81,7 +96,7 @@ impl AutonomyContext {
     }
     pub(crate) fn retrieval_query(&self) -> String {
         let Some(fact) = self.events.first() else {
-            return self.goal.as_ref().map(|goal|format!("OrbitPal current local goal {:?}, confirmed progress {} of {}; not an experienced event",goal.kind,goal.progress,goal.target)).unwrap_or_default();
+            return self.goal.as_ref().map(|goal|format!("OrbitPal current local goal {:?}, confirmed progress {} of {}; not an experienced event",goal.kind,goal.progress,goal.target)).unwrap_or_else(||"OrbitPal quiet native opportunity for this character; no external event or observation is confirmed".into());
         };
         let kind = match fact.kind {
             SceneKind::Greeting => "greeting",

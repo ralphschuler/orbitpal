@@ -280,12 +280,24 @@ fn sqlite_counter_boundary_refuses_negative_oversized_and_exhausted_values() {
     let actors = ["nova".into(), blue];
     s.social_ready().unwrap();
     for value in [-1_i64, i64::MAX] {
-        s.db.lock().unwrap().execute("UPDATE social_meta SET sequence=?1,epoch=?1 WHERE id=1", [value]).unwrap();
+        s.db.lock()
+            .unwrap()
+            .execute(
+                "UPDATE social_meta SET sequence=?1,epoch=?1 WHERE id=1",
+                [value],
+            )
+            .unwrap();
         assert!(s.social_next_scene_sequence(&actors).is_err());
         assert!(s.social_epoch().is_err());
     }
-    s.db.lock().unwrap().execute("UPDATE social_meta SET sequence=?1,epoch=?1 WHERE id=1", [sql_counter(MAX_COUNTER).unwrap()]).unwrap();
+    s.db.lock()
+        .unwrap()
+        .execute(
+            "UPDATE social_meta SET sequence=?1,epoch=?1 WHERE id=1",
+            [sql_counter(MAX_COUNTER).unwrap()],
+        )
+        .unwrap();
     assert_eq!(s.social_epoch().unwrap(), MAX_COUNTER);
     assert!(s.social_next_scene_sequence(&actors).is_err());
-    assert!(sql_counter(MAX_COUNTER+1).is_err());
+    assert!(sql_counter(MAX_COUNTER + 1).is_err());
 }

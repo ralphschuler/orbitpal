@@ -64,11 +64,15 @@ fn err(_: impl std::fmt::Debug) -> String {
 }
 fn read_counter(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
     let value: i64 = row.get(index)?;
-    u64::try_from(value).ok().filter(|value| *value <= MAX_COUNTER)
+    u64::try_from(value)
+        .ok()
+        .filter(|value| *value <= MAX_COUNTER)
         .ok_or(rusqlite::Error::IntegralValueOutOfRange(index, value))
 }
 fn sql_counter(value: u64) -> Result<i64, String> {
-    if value > MAX_COUNTER { return Err(FAIL.into()); }
+    if value > MAX_COUNTER {
+        return Err(FAIL.into());
+    }
     i64::try_from(value).map_err(err)
 }
 pub(crate) fn initialize(db: &mut Connection) -> Result<(), String> {
@@ -342,11 +346,11 @@ fn memories(db: &Connection, id: &str, shared: bool) -> Result<Vec<Memory>, Stri
         .query_map([id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                read_counter(r,1)?,
+                read_counter(r, 1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
-                read_counter(r,5)?,
+                read_counter(r, 5)?,
                 r.get::<_, i64>(6)?,
                 r.get::<_, String>(7)?,
             ))
@@ -409,8 +413,11 @@ impl Store {
             .checked_add(1)
             .filter(|v| *v <= MAX_COUNTER)
             .ok_or("social sequence exhausted")?;
-        tx.execute("UPDATE social_meta SET sequence=?1 WHERE id=1", [sql_counter(next)?])
-            .map_err(err)?;
+        tx.execute(
+            "UPDATE social_meta SET sequence=?1 WHERE id=1",
+            [sql_counter(next)?],
+        )
+        .map_err(err)?;
         tx.commit().map_err(err)?;
         Ok(next)
     }
@@ -669,7 +676,9 @@ impl Store {
         self.db
             .lock()
             .map_err(err)?
-            .query_row("SELECT epoch FROM social_meta WHERE id=1", [], |r| read_counter(r, 0))
+            .query_row("SELECT epoch FROM social_meta WHERE id=1", [], |r| {
+                read_counter(r, 0)
+            })
             .map_err(err)
     }
     /// One-use event retrieval claim, not a provider admission or permission.
@@ -692,7 +701,9 @@ impl Store {
                     || m.sequence == b.context_sequence && b.context_mask & bit(m.outcome) == 0)
         });
         let epoch = tx
-            .query_row("SELECT epoch FROM social_meta WHERE id=1", [], |r| read_counter(r, 0))
+            .query_row("SELECT epoch FROM social_meta WHERE id=1", [], |r| {
+                read_counter(r, 0)
+            })
             .map_err(err)?;
         let context = if let Some(memory) = found {
             if memory.sequence > b.context_sequence {
