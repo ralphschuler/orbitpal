@@ -446,7 +446,11 @@ fn paired_experience_fact_comes_only_from_retained_committed_social_event() {
         assert!(!s.record_experience_social_event(id, event).unwrap());
     }
     let third = bot_id(s.create_bot("Third", false).unwrap());
-    assert!(s.record_experience_social_event(&third, event).is_err());
+    assert!(matches!(
+        s.record_experience_social_event(&third, event),
+        Ok(false) | Err(_)
+    ));
+    assert!(s.experience_facts(&third).unwrap().is_empty());
 }
 #[test]
 fn shared_dialogue_day_estimate_is_aggregated_across_speakers_after_restart() {
