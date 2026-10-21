@@ -588,6 +588,7 @@ fn open_window(app:&tauri::AppHandle,bot_id:&str,profile:Value,session:Option<&c
             tauri::WindowEvent::Destroyed=>Some(NativeWindowChange::Destroyed),
             _=>None,
         };
+        if matches!(event,tauri::WindowEvent::Focused(false)|tauri::WindowEvent::CloseRequested{..}|tauri::WindowEvent::Destroyed){crate::native_interaction::cancel_window(&handle,&bot_id,&signals);}
         let state=handle.state::<crate::AppState>();
         let geometry=if matches!(event,tauri::WindowEvent::Moved(_)|tauri::WindowEvent::Resized(_)){state.life_runtime.native_geometry_begin(&bot_id,&signals)}else{if let Some(change)=route_change{state.life_runtime.native_output_window_changed(&bot_id,&signals,change);}None};
         let accepted=match event {

@@ -40,9 +40,48 @@ fn write<T: serde::Serialize>(db: &Connection, key: &str, value: &T) -> Result<(
     db.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,json]).map_err(storage)?;
     Ok(())
 }
+fn append_fact(db: &Connection, bot: &str, fact: ActivityFact) -> Result<bool, String> {
+    fact.validate()?;
+    if !fact.actor_ids.iter().any(|id| id == bot) {
+        return Err("experience_invalid_fact".into());
+    }
+    let key = format!("experience-facts-v1:{bot}");
+    let mut facts = read::<Vec<ActivityFact>>(db, &key)?.unwrap_or_default();
+    if facts.len() > MAX_FACTS {
+        return Err("experience_corrupt".into());
+    }
+    for old in &facts {
+        old.validate()?;
+        if !old.actor_ids.iter().any(|id| id == bot) {
+            return Err("experience_corrupt".into());
+        }
+    }
+    if facts.iter().any(|old| old.id == fact.id) {
+        return Ok(false);
+    }
+    let oldest = fact.at_ms.saturating_sub(30 * 24 * 60 * 60 * 1000);
+    facts.retain(|old| old.at_ms >= oldest);
+    facts.push(fact);
+    facts.sort_by(|a, b| b.at_ms.cmp(&a.at_ms).then_with(|| a.id.cmp(&b.id)));
+    facts.truncate(MAX_FACTS);
+    write(db, &key, &facts)?;
+    Ok(true)
+}
+fn source_id(id: &crate::life_domain::EventId) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(serde_json::to_vec(id).map_err(storage)?);
+    Ok(format!("life_{digest:x}"))
+}
 impl Store {
+    fn experience_owner(&self, bot: &str) -> Result<serde_json::Value, String> {
+        if self.fixed_profile.as_deref().is_some_and(|id| id != bot) {
+            return Err("experience_wrong_bot".into());
+        }
+        self.bot_profile(bot)
+    }
+
     pub fn experience_settings(&self, bot: &str) -> Result<Settings, String> {
-        let profile = self.bot_profile(bot)?;
+        let profile = self.experience_owner(bot)?;
         let db = self.db.lock().map_err(storage)?;
         let settings = read::<Settings>(&db, &key(bot)?)?.unwrap_or_else(|| inherited(&profile));
         if settings.version != 1 || settings.revision > MAX_TIME {
@@ -58,7 +97,7 @@ impl Store {
         preferences: Preferences,
     ) -> Result<Settings, String> {
         preferences.validate()?;
-        let profile = self.bot_profile(bot)?;
+        let profile = self.experience_owner(bot)?;
         let mut db = self.db.lock().map_err(storage)?;
         let tx = db.transaction().map_err(storage)?;
         let k = key(bot)?;
@@ -81,7 +120,7 @@ impl Store {
         Ok(next)
     }
     pub fn experience_facts(&self, bot: &str) -> Result<Vec<ActivityFact>, String> {
-        self.bot_profile(bot)?;
+        self.experience_owner(bot)?;
         let db = self.db.lock().map_err(storage)?;
         let facts = read::<Vec<ActivityFact>>(&db, &format!("experience-facts-v1:{bot}"))?
             .unwrap_or_default();
@@ -96,41 +135,163 @@ impl Store {
         }
         Ok(facts)
     }
-    /// Native confirmed-outcome hook only. No renderer/import/IPC may supply facts.
-    pub(crate) fn record_experience_fact(
+    /// A real native observer calls after its actual transition/poll. No caller supplies a fact.
+    pub(crate) fn record_experience_life_fact(
         &self,
         bot: &str,
-        mut fact: ActivityFact,
-    ) -> Result<(), String> {
-        fact.validate()?;
-        self.bot_profile(bot)?;
-        if !fact.actor_ids.iter().any(|a| a == bot) {
-            return Err("experience_invalid_fact".into());
+        expected_revision: u64,
+        event_sequence: u64,
+    ) -> Result<bool, String> {
+        use super::life_store::EventOrigin;
+        use crate::experience::{FactKind, FactPhase};
+        use crate::life_domain::{ActionPhase, CancelReason, CommittedEvent};
+        self.experience_owner(bot)?;
+        if expected_revision == 0
+            || expected_revision > MAX_TIME
+            || event_sequence != expected_revision
+        {
+            return Err("experience_stale_source".into());
         }
-        fact.shared = false;
         let mut db = self.db.lock().map_err(storage)?;
-        let tx = db.transaction().map_err(storage)?;
-        let k = format!("experience-facts-v1:{bot}");
-        let mut facts = read::<Vec<ActivityFact>>(&tx, &k)?.unwrap_or_default();
-        if facts.len() > MAX_FACTS {
-            return Err("experience_corrupt".into());
+        let tx = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let actual = super::life_store::read(&tx, bot)
+            .map_err(storage)?
+            .ok_or("experience_missing_source")?;
+        let state = actual.state();
+        if state.revision() != expected_revision
+            || state.actor_id().as_str() != bot
+            || actual.saved_at_ms() > MAX_TIME
+        {
+            return Err("experience_stale_source".into());
         }
-        for f in &facts {
-            f.validate()?;
-            if !f.actor_ids.iter().any(|id| id == bot) {
-                return Err("experience_corrupt".into());
+        let stored = actual
+            .events()
+            .iter()
+            .find(|event| event.record().id().sequence() == event_sequence)
+            .ok_or("experience_missing_source")?;
+        let record = stored.record();
+        if stored.origin() != EventOrigin::Live
+            || record.id().actor_id().as_str() != bot
+            || record.at() != state.simulation_time()
+            || !state.recent_events().any(|r| r == record)
+        {
+            return Err("experience_not_live".into());
+        }
+        let Some(action) = state.current_action() else {
+            return Ok(false);
+        };
+        let phase = match record.event() {
+            CommittedEvent::Planned { intent }
+                if intent == action.intent() && action.phase() == ActionPhase::Planned =>
+            {
+                FactPhase::Planned
             }
+            CommittedEvent::Started { action_id }
+                if action_id == action.intent().id() && action.phase() == ActionPhase::Started =>
+            {
+                FactPhase::Started
+            }
+            CommittedEvent::Completed { action_id }
+                if action_id == action.intent().id()
+                    && action.phase() == ActionPhase::Completed =>
+            {
+                FactPhase::Completed
+            }
+            CommittedEvent::Cancelled { action_id, reason }
+                if action_id == action.intent().id()
+                    && *reason != CancelReason::Restart
+                    && action.phase() == ActionPhase::Cancelled =>
+            {
+                FactPhase::Cancelled
+            }
+            _ => return Ok(false),
+        };
+        let activity = serde_json::to_value(action.intent().activity()).map_err(storage)?;
+        let kind = match activity.as_str() {
+            Some("move_to") => FactKind::Move,
+            Some("look_at") => FactKind::Look,
+            Some("rest" | "recharge") => FactKind::Rest,
+            Some("snack") => FactKind::Snack,
+            Some("play") => FactKind::Play,
+            Some("wave" | "socialize") => FactKind::Greeting,
+            _ => return Ok(false),
+        };
+        let event_id = source_id(record.id())?;
+        let fact = ActivityFact {
+            id: event_id.clone(),
+            actor_ids: vec![bot.into()],
+            kind,
+            phase,
+            at_ms: actual.saved_at_ms(),
+            source_event_ids: vec![event_id],
+            shared: false,
+        };
+        let inserted = append_fact(&tx, bot, fact)?;
+        tx.commit().map_err(storage)?;
+        Ok(inserted)
+    }
+    /// Revalidate the actual paired memory and both LIVE completed source events in one TX.
+    pub(crate) fn record_experience_social_event(
+        &self,
+        bot: &str,
+        event: &crate::social::SocialEvent,
+    ) -> Result<bool, String> {
+        use super::life_store::EventOrigin;
+        use crate::{
+            experience::{FactKind, FactPhase},
+            life_domain::{ActionPhase, CommittedEvent},
+            social::{Outcome, SceneKind},
+        };
+        self.experience_owner(bot)?;
+        if event.outcome() != Outcome::Completed || !event.participants().iter().any(|id| id == bot)
+        {
+            return Ok(false);
         }
-        if facts.iter().any(|f| f.id == fact.id) {
-            return Ok(());
+        let actions = event.actions().ok_or("experience_stale_source")?;
+        let sources = event.source_events().ok_or("experience_stale_source")?;
+        let mut db = self.db.lock().map_err(storage)?;
+        let tx = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let (sequence,kind,outcome,participants,at):(u64,String,String,String,u64)=tx.query_row("SELECT sequence,CASE WHEN length(CAST(kind AS BLOB))<=16 THEN kind END,CASE WHEN length(CAST(outcome AS BLOB))<=16 THEN outcome END,CASE WHEN length(CAST(participants AS BLOB))<=512 THEN participants END,at_ms FROM social_memories WHERE owner=?1 AND event_id=?2",params![bot,event.id()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(storage)?;
+        let members: Vec<String> =
+            serde_json::from_str(&participants).map_err(|_| "experience_corrupt")?;
+        let actual_kind = serde_json::to_value(event.kind()).map_err(storage)?;
+        if sequence != event.sequence()
+            || actual_kind.as_str() != Some(kind.as_str())
+            || outcome != "completed"
+            || members.as_slice() != event.participants()
+            || at != event.at_ms()
+        {
+            return Err("experience_stale_source".into());
         }
-        let oldest = fact.at_ms.saturating_sub(30 * 24 * 60 * 60 * 1000);
-        facts.retain(|f| f.at_ms >= oldest);
-        facts.push(fact);
-        facts.sort_by(|a, b| b.at_ms.cmp(&a.at_ms).then_with(|| a.id.cmp(&b.id)));
-        facts.truncate(MAX_FACTS);
-        write(&tx, &k, &facts)?;
-        tx.commit().map_err(storage)
+        for (index, id) in event.participants().iter().enumerate() {
+            let actual = super::life_store::read(&tx, id)
+                .map_err(storage)?
+                .ok_or("experience_missing_source")?;
+            let state = actual.state();
+            let action = state.current_action().ok_or("experience_stale_source")?;
+            if state.actor_id().as_str()!=id||action.phase()!=ActionPhase::Completed||action.intent().id()!=&actions[index]||sources[index].actor_id().as_str()!=id||!actual.events().iter().any(|stored|stored.origin()==EventOrigin::Live&&stored.record().id()==&sources[index]&&matches!(stored.record().event(),CommittedEvent::Completed{action_id}if action_id==&actions[index])&&state.recent_events().any(|r|r==stored.record())){return Err("experience_stale_source".into())}
+        }
+        let kind = match event.kind() {
+            SceneKind::Greeting => FactKind::Greeting,
+            SceneKind::Play => FactKind::Play,
+            SceneKind::Rest => FactKind::Rest,
+        };
+        let fact = ActivityFact {
+            id: event.id().into(),
+            actor_ids: event.participants().to_vec(),
+            kind,
+            phase: FactPhase::Completed,
+            at_ms: event.at_ms(),
+            source_event_ids: sources.iter().map(source_id).collect::<Result<_, _>>()?,
+            shared: false,
+        };
+        let inserted = append_fact(&tx, bot, fact)?;
+        tx.commit().map_err(storage)?;
+        Ok(inserted)
     }
     pub fn edit_experience_fact(
         &self,
@@ -138,7 +299,7 @@ impl Store {
         id: Option<&str>,
         shared: Option<bool>,
     ) -> Result<Vec<ActivityFact>, String> {
-        self.bot_profile(bot)?;
+        self.experience_owner(bot)?;
         if id.is_some_and(|id| !crate::experience::valid_id(id)) {
             return Err("experience_invalid".into());
         }
@@ -312,32 +473,128 @@ mod tests {
             .paused(&id)
             .unwrap());
     }
+    fn live_complete(store: &Store, id: &str, now: u64) -> u64 {
+        use crate::life_domain::{Activity, LifeEvent, NeedEffect};
+        let old = store.load_life(id).unwrap().unwrap();
+        let planned = store
+            .apply_life_event(
+                id,
+                old.state().revision(),
+                0,
+                LifeEvent::Plan {
+                    activity: Activity::Rest,
+                    completion_effect: NeedEffect::new(0, 0, 0, 0).unwrap(),
+                },
+                now,
+            )
+            .unwrap();
+        let action = planned
+            .snapshot
+            .state()
+            .current_action()
+            .unwrap()
+            .intent()
+            .id()
+            .clone();
+        let started = store
+            .apply_life_event(
+                id,
+                planned.snapshot.state().revision(),
+                0,
+                LifeEvent::Start {
+                    action_id: action.clone(),
+                },
+                now,
+            )
+            .unwrap();
+        store
+            .apply_life_event(
+                id,
+                started.snapshot.state().revision(),
+                0,
+                LifeEvent::Complete { action_id: action },
+                now,
+            )
+            .unwrap()
+            .snapshot
+            .state()
+            .revision()
+    }
+    fn initialize(store: &Store, id: &str) {
+        use crate::life_domain::{Needs, RandomState, WorldId};
+        store
+            .initialize_life(
+                id,
+                WorldId::new("experience_test").unwrap(),
+                Needs::new(5000, 5000, 5000, 5000).unwrap(),
+                RandomState::seeded(7),
+                0,
+            )
+            .unwrap();
+    }
     #[test]
     fn confirmed_facts_are_private_deduped_bounded_and_deletable() {
         let f = Fixture::new();
         let id = f.0.profile().unwrap()["id"].as_str().unwrap().to_owned();
+        initialize(&f.0, &id);
+        let mut revision = 0;
         for n in 0..260 {
-            let fact = ActivityFact {
-                id: format!("event_{n}"),
-                actor_ids: vec![id.clone()],
-                kind: crate::experience::FactKind::Rest,
-                phase: crate::experience::FactPhase::Completed,
-                at_ms: n,
-                source_event_ids: vec![format!("source_{n}")],
-                shared: true,
-            };
-            f.0.record_experience_fact(&id, fact).unwrap();
+            revision = live_complete(&f.0, &id, n);
+            assert!(f
+                .0
+                .record_experience_life_fact(&id, revision, revision)
+                .unwrap());
         }
         let facts = f.0.experience_facts(&id).unwrap();
         assert_eq!(facts.len(), 256);
-        assert!(facts.iter().all(|f| !f.shared));
-        f.0.record_experience_fact(&id, facts[0].clone()).unwrap();
-        assert_eq!(f.0.experience_facts(&id).unwrap().len(), 256);
+        assert!(facts
+            .iter()
+            .all(|f| !f.shared && f.phase == crate::experience::FactPhase::Completed));
+        assert!(!f
+            .0
+            .record_experience_life_fact(&id, revision, revision)
+            .unwrap());
         let shared =
             f.0.edit_experience_fact(&id, Some(&facts[0].id), Some(true))
                 .unwrap();
         assert!(shared[0].shared);
         f.0.edit_experience_fact(&id, None, None).unwrap();
+        assert!(f.0.experience_facts(&id).unwrap().is_empty());
+    }
+    #[test]
+    fn stale_offline_and_wrong_actor_sources_never_create_facts() {
+        let f = Fixture::new();
+        let id = f.0.profile().unwrap()["id"].as_str().unwrap().to_owned();
+        initialize(&f.0, &id);
+        let revision = live_complete(&f.0, &id, 100);
+        assert!(f
+            .0
+            .record_experience_life_fact(&id, revision + 1, revision + 1)
+            .is_err());
+        assert!(f
+            .0
+            .record_experience_life_fact(&id, revision, revision - 1)
+            .is_err());
+        let other = f.0.create_bot("Other", false).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(f
+            .0
+            .record_experience_life_fact(&other, revision, revision)
+            .is_err());
+        {
+            let db = f.0.db.lock().unwrap();
+            db.execute(
+                "UPDATE bot_life_events SET origin='offline' WHERE bot_id=?1 AND revision=?2",
+                params![id, revision],
+            )
+            .unwrap();
+        }
+        assert!(f
+            .0
+            .record_experience_life_fact(&id, revision, revision)
+            .is_err());
         assert!(f.0.experience_facts(&id).unwrap().is_empty());
     }
     #[test]

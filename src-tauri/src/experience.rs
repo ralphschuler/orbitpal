@@ -114,6 +114,8 @@ impl Default for Settings {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FactKind {
+    Move,
+    Look,
     Rest,
     Snack,
     Play,
@@ -213,13 +215,10 @@ pub struct DesktopCapabilities {
 }
 impl Default for DesktopCapabilities {
     fn default() -> Self {
-        Self {
-            external_windows: false,
-            cursor: false,
-            reason: "no_verified_source",
-        }
+        crate::desktop_affordances::capabilities()
     }
 }
+
 #[derive(Default)]
 pub struct ExperienceRuntime {
     paused: Mutex<BTreeSet<String>>,
