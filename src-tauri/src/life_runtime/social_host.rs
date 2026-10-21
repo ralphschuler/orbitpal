@@ -20,6 +20,8 @@ use std::{
 use tauri::{Emitter, Manager};
 const ERROR: &str = "social_native_unavailable";
 const LEASE_MS: u64 = 120_000;
+#[path = "social_initiative.rs"]
+mod initiative;
 #[derive(Clone)]
 struct StreamSource {
     owner: String,
@@ -102,6 +104,8 @@ struct Actor {
     slots: Vec<ActionSlotTarget>,
     groups: Vec<Vec<SlotId>>,
     life: LifeState,
+    station_supported: bool,
+    initiative_cooldown_ms: u64,
 }
 #[derive(Clone)]
 struct Reservation {
@@ -188,6 +192,7 @@ struct Memory {
     conversations: BTreeMap<String, ConversationContext>,
     turns: BTreeMap<String, Turn>,
     next_initiative: u64,
+    initiative: initiative::Memory,
 }
 impl Memory {
     fn take_work(&mut self) -> Vec<Directive> {
@@ -340,7 +345,7 @@ fn actors(app: &tauri::AppHandle) -> Vec<Actor> {
         slots.retain(|slot| {
             u64::from(slot.position.x().abs_diff(source.context.position.x()))
                 + u64::from(slot.position.y().abs_diff(source.context.position.y()))
-                <= radius
+                <= radius && output.binding.safe_centers.contains(crate::world_output::css(slot.position,output.binding.viewport))
         });
         let Ok(snapshot) = state.store.social_snapshot(bot) else {
             continue;
@@ -385,6 +390,8 @@ fn actors(app: &tauri::AppHandle) -> Vec<Actor> {
             slots,
             groups,
             life,
+            station_supported: output.binding.station_supported && settings.preferences.allowed_animations.iter().any(|motion|motion=="idle"),
+            initiative_cooldown_ms: u64::from(settings.preferences.initiative_cooldown_ms),
         });
     }
     result.sort_by(|a, b| {
@@ -865,8 +872,8 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
             }
         }
     }
-    // At most one deterministic invitation attempt per minute, never while an
-    // actor already owns native work. No renderer timer or inactive catch-up.
+    // One bounded proposal batch per minute and at most one admitted scene.
+    // request() rechecks native owners, busy state, slots and the coordinator.
     let initiative = {
         let mut m = runtime.social.memory.lock().map_err(|_| ERROR)?;
         if now >= m.next_initiative {
@@ -877,23 +884,15 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
         }
     };
     if initiative {
-        'pairs: for (i, a) in current.iter().enumerate() {
-            if a.participant.character.traits.initiative < 500
-                || a.participant.needs.social().units() > 6000
-            {
-                continue;
-            }
-            for b in current.iter().skip(i + 1) {
-                if request(
-                    app,
-                    a.participant.actor.as_str(),
-                    b.participant.actor.as_str(),
-                    SceneKind::Greeting,
-                )
-                .is_ok()
-                {
-                    break 'pairs;
-                }
+        if let Some(minute)=initiative::local_minute(now) {
+            let proposals=runtime.social.memory.lock().map_err(|_|ERROR)?.initiative.proposals(&current,minute,now);
+            for proposal in proposals.into_iter().take(initiative::MAX_ATTEMPTS) {
+                let now=runtime.social_now();
+                if !runtime.social.memory.lock().map_err(|_|ERROR)?.initiative.current(&proposal,now) {continue;}
+                // No Social lock crosses native request()/Core/Owned acquisition.
+                let accepted=request(app,&proposal.bot,&proposal.target,proposal.kind).is_ok();
+                runtime.social.memory.lock().map_err(|_|ERROR)?.initiative.record(&proposal,runtime.social_now(),accepted);
+                if accepted {break;}
             }
         }
     }
