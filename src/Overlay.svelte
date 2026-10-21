@@ -1,4 +1,5 @@
 <script lang="ts">
+  import {acceptRenderSettings} from './lib/render-settings';
   import {LifeOutputVersions,type LifeOutput} from './lib/life-output';
   import { t } from './lib/i18n';
   import { onMount, tick } from 'svelte';
@@ -356,6 +357,8 @@
     const targetBot = event.botId || event.profile?.id;
     const globalStop = event.kind === 'stop' && !targetBot;
     if (!globalStop && (!targetBot || (botId && targetBot !== botId))) return;
+    if(event.kind==='render-settings'){try{acceptRenderSettings(event,targetBot);}catch{}return;}
+    if(event.renderSettings){try{acceptRenderSettings(event.renderSettings,targetBot);}catch{}}
     if(event.kind==='life-output'){acceptLifeOutput(event.lifeOutput??event);return;}
     if(event.kind==='world-state'){if(native)acceptNativeWorld(event.world);else acceptSemanticMirror(event);return;}
     if(event.kind==='presentation'){acceptPresentation(event);return;}
@@ -445,6 +448,7 @@
       ready = listeners.then(()=>call('get_app_state', { botId: botId || undefined })).then((state) => {
         if (disposed) return;
         botId ||= state.profile.id;
+        if(state.renderSettings)acceptRenderSettings(state.renderSettings,botId);
         if (profileRevision === initialRevision) profile = state.profile;
         profileLoaded=true;
         // This read began before a native scope was known. Its .world may be an

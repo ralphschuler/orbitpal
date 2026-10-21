@@ -24,8 +24,11 @@ import { WorldAvatarController, placementForwardYaw, type WorldAvatarOptions, ty
 import type { MotionFence, WorldMotionCommand, ReceiveResult } from './world-motion';
 import type { WorldAdapterReason } from './world-output';
 import type { StageDiagnostics, StageObservation } from './stage-diagnostics';
+import { avatarRenderPolicy, avatarSurfaceVisible, type RenderQuality } from './avatar-render-policy';
+import { admittedPetClip, WorldPetPlayer } from './world-pet';
 
 export interface AvatarOptions extends WorldAvatarOptions {
+  renderQuality?: RenderQuality;
   motionSource?: 'fixed'|'ambient'|'world';
   profile: any;
   speaking: boolean;
@@ -105,6 +108,7 @@ export class AvatarStage {
   private world: WorldAvatarController;
   private previousMotionSource = 'fixed';
   private worldRecovery = false;
+  private worldPet?: WorldPetPlayer;
   private get motionSource(){return this.options.motionSource??(this.options.autopilot?.active?'ambient':'fixed');}
   private vrm?: VRM;
   private mixer?: THREE.AnimationMixer;
@@ -167,6 +171,7 @@ export class AvatarStage {
   private request = 0;
   private frame = 0;
   private lastRenderTime = 0;
+  private renderPolicy = avatarRenderPolicy(undefined, 1);
   private disposed = false;
   private diagnosticsFailed = false;
   private diagnosticsDisposed = false;
@@ -189,16 +194,17 @@ export class AvatarStage {
 
   constructor(private host: HTMLElement, options: AvatarOptions, private onEmoteError?: (message: string) => void, initialAssetUrl?: string, private diagnostics?: StageDiagnostics) {
     this.options = options;
+    this.renderPolicy = avatarRenderPolicy(options.profile?.output, window.devicePixelRatio, options.renderQuality);
     this.assetState = initialAssetUrl ? 'loading' : 'ready';
     this.modelAudio = new ModelAudioController(message => this.onEmoteError?.(message), (playing, activity) => this.options.onAudioPlaying?.(playing, activity));
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
     this.assetLoader = createAvatarLoader(this.renderer);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    this.renderer.setPixelRatio(this.renderPolicy.pixelRatio);
     this.renderer.setClearColor(0x000000, 0);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.35;
-    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.enabled = this.renderPolicy.shadows;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.domElement.setAttribute('aria-hidden', 'true');
     this.renderer.domElement.style.cssText = 'display:block;width:100%;height:100%;touch-action:none';
@@ -260,6 +266,23 @@ export class AvatarStage {
     if (this.presentationContext && context !== this.presentationContext) {this.presentation?.invalidate();if(this.motionSource==='world')this.cancelWorld('stale_binding');}
     this.presentationContext = context;
     this.options = options;
+    if (this.renderer) {
+      const next = avatarRenderPolicy(options.profile?.output, window.devicePixelRatio, options.renderQuality);
+      if (next.pixelRatio !== this.renderPolicy.pixelRatio) this.renderer.setPixelRatio(next.pixelRatio);
+      if (next.shadows !== this.renderPolicy.shadows) {
+        this.renderer.shadowMap.enabled = next.shadows;
+        this.renderer.shadowMap.needsUpdate = true;
+        // Shadow support is a shader compile parameter. Updating the renderer
+        // flag alone leaves already compiled materials on their old program.
+        const materials = new Set<THREE.Material>();
+        this.scene.traverse(object => {
+          const material = (object as THREE.Mesh).material;
+          if (material) for (const item of Array.isArray(material) ? material : [material]) materials.add(item);
+        });
+        materials.forEach(material => { material.needsUpdate = true; });
+      }
+      this.renderPolicy = next;
+    }
     const source=this.motionSource;
     if(source!==this.previousMotionSource){
       this.world?.cancel('cancelled');this.desktopMotion.reset();this.setWalking(false,true);this.walkClock.reset();this.walkStrength=0;
@@ -269,6 +292,7 @@ export class AvatarStage {
       this.previousMotionSource=source;
     }
     this.world?.update(options,performance.now());
+    if(this.worldPet&&!this.world.petPlayback)this.stopWorldPet();
     this.modelAudio?.setEnabled(options.audioEnabled === true);
     if ((options.audioStop ?? 0) !== this.modelAudioStop) { this.modelAudioStop = options.audioStop ?? 0; this.modelAudio?.stop(); }
     const avatar = options.profile?.avatar ?? {};
@@ -582,7 +606,7 @@ export class AvatarStage {
     this.emoteNonce=nonce;return true;
   }
 
-  private get activeAnimationActions(): (THREE.AnimationAction | undefined)[] { return [this.idleAction, this.walkingAction, this.emote?.clip]; }
+  private get activeAnimationActions(): (THREE.AnimationAction | undefined)[] { return [this.idleAction, this.walkingAction, this.emote?.clip, this.worldPet?.action]; }
 
   private resumeIdleAnimation(fadeSeconds = 0) {
     const idle = this.idleAction;
@@ -1103,7 +1127,7 @@ export class AvatarStage {
     const height = Math.max(this.host.clientHeight, 1);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
+    this.renderer.setPixelRatio(avatarRenderPolicy(this.options.profile?.output, window.devicePixelRatio, this.options.renderQuality).pixelRatio);
     this.renderer.setSize(width, height, false);
     this.update(this.options);
   }
@@ -1134,10 +1158,33 @@ export class AvatarStage {
 
   private worldContextLost = (event:Event) => {if(this.diagnostics)this.observeDiagnostic({kind:'context_lost'});event.preventDefault();this.cancelWorld('context_lost');if(this.motionSource==='world')this.recoverWorldPose();};
   private worldContextRestored = () => {this.cancelWorld('context_lost');};
-  acceptWorldCommand(command:WorldMotionCommand):ReceiveResult {return this.motionSource==='world'?this.world.command(command,performance.now()):'stale';}
+  acceptWorldCommand(command:WorldMotionCommand):ReceiveResult {
+    if(this.motionSource!=='world')return 'stale';
+    const result=this.world.command(command,performance.now());
+    if(result!=='accepted')return result;
+    let clip:THREE.AnimationClip|null=null;
+    if(command.type==='offer'&&command.activity==='pet'){
+      const root=this.mixer?.getRoot();
+      clip=root instanceof THREE.Object3D&&command.petClip&&this.emoteReady&&this.assetState==='ready'
+        &&JSON.stringify(avatarBinding(this.options.profile))===this.loadedEmoteBinding
+        ?admittedPetClip(root,this.clips,command.petClip):null;
+      if(!clip){this.cancelWorld('unsupported_capability');return 'rejected';}
+    }
+    if(result==='accepted'&&command.type==='offer'){
+      this.stopWorldPet();
+      if(clip&&command.petClip&&this.mixer){
+        this.worldPet=new WorldPetPlayer(this.mixer,clip,command.petClip);
+        this.idleAction?.stopFading().setEffectiveWeight(0);
+        this.walkingAction?.stop();this.modelAudio.stop();
+      }
+    }
+    if(result==='accepted'&&command.type==='terminal'&&!this.world.petPlayback)this.stopWorldPet();
+    return result;
+  }
   beginWorldAfterDelivered(fence:MotionFence,offerSequence:number):boolean {return this.motionSource==='world'&&this.world.begin(fence,offerSequence,performance.now());}
   confirmWorldStarted(fence:MotionFence,firstBehaviorFrameSequence:number):boolean {return this.motionSource==='world'&&this.world.confirmStarted(fence,firstBehaviorFrameSequence);}
-  cancelWorld(reason:WorldAdapterReason='cancelled'):void {this.world?.cancel(reason);this.modelAudio?.stop();this.setWalking(false,true);this.walkStrength=0;}
+  cancelWorld(reason:WorldAdapterReason='cancelled'):void {this.world?.cancel(reason);this.stopWorldPet();this.modelAudio?.stop();this.setWalking(false,true);this.walkStrength=0;}
+  private stopWorldPet():void {if(!this.worldPet)return;this.worldPet.stop();this.worldPet=undefined;this.resumeIdleAnimation();}
   private worldSurface(){
     const width=this.host.clientWidth,height=this.host.clientHeight;
     let connected=this.host.isConnected,visible=connected&&document.visibilityState!=='hidden';
@@ -1166,10 +1213,11 @@ export class AvatarStage {
   }
   private applyWorldTrial(trial:WorldTrial){
     this.setWalking(trial.walking,!trial.walking);this.walkStrength=trial.walking?1:0;this.walkingPhase=trial.cycles/.65;this.walkingAudioRate=0;
-    if(this.idleAction){this.idleAction.stopFading();this.idleAction.setEffectiveWeight(trial.walking?0:1);}
+    if(this.idleAction){this.idleAction.stopFading();this.idleAction.setEffectiveWeight(trial.walking||this.worldPet?0:1);}
     if(this.walkingAction&&this.walkingClip&&trial.walking){this.walkingAction.stopFading();this.walkingAction.setEffectiveWeight(1).setEffectiveTimeScale(0);this.walkingAction.time=(trial.cycles%1)*this.walkingClip.duration;}
   }
   private recoverWorldPose(){
+    this.stopWorldPet();
     this.modelAudio.stop();this.walking=false;this.walkStrength=0;this.walkingPhase=0;
     const mixer=this.mixer,root=mixer?.getRoot(),idleClip=this.idleAction?.getClip();
     if(mixer&&root instanceof THREE.Object3D){mixer.stopAllAction();mixer.uncacheRoot(root);this.mixer=new THREE.AnimationMixer(root);this.authoredProperties=new AuthoredAnimationProperties(root);
@@ -1181,8 +1229,10 @@ export class AvatarStage {
   private renderOutput(worldTrial:WorldTrial|null):boolean {
     if(worldTrial){
       const result=this.world.render(worldTrial,this.scene,this.renderer,()=>this.worldSurface(),performance.now(),()=>performance.now());
-      if(result!=='committed'){if(result==='failed')this.recoverWorldPose();return false;}
+      if(result!=='committed'){this.worldPet?.rollback();if(result==='failed')this.recoverWorldPose();return false;}
+      if(worldTrial.pet&&!this.worldPet?.commit(worldTrial.pet)){this.cancelWorld('render_failed');this.recoverWorldPose();return false;}
     }else{
+      if (!avatarSurfaceVisible(this.host, this.renderer.domElement, this.worldRecovery && this.motionSource !== 'world')) { this.modelAudio.stop(); return false; }
       this.renderer.render(this.scene,this.activeCamera);
       if(this.worldRecovery&&this.motionSource!=='world'&&!this.renderer.getContext().isContextLost()&&this.assetState==='ready'){
         this.renderer.domElement.style.visibility='';this.worldRecovery=false;
@@ -1197,8 +1247,7 @@ export class AvatarStage {
     if (this.diagnostics && rafNow !== undefined) this.observeDiagnostic({ kind: 'raf', at: now });
     if (this.disposed) return;
     this.frame = requestAnimationFrame(this.animate);
-    const fps = Number(this.options.profile?.output?.fps);
-    const interval = 1000 / (fps === 20 ? 20 : fps === 30 ? 30 : 60);
+    const interval = 1000 / this.renderPolicy.fps;
     const sinceRender = now - this.lastRenderTime;
     if (sinceRender < interval - 0.5) return;
     // Advance whole due ticks with the same tolerance as the render gate.
@@ -1214,10 +1263,18 @@ export class AvatarStage {
     const idle = !reduced && profile?.avatar?.idle !== false;
     const worldActive=this.motionSource==='world';
     if(worldActive&&(speaking||this.emoteSource==='manual'||this.presentation.requested))this.cancelWorld('cancelled');
-    const worldTrial=worldActive?this.world.prepare(now,this.host.clientWidth,this.host.clientHeight,
+    let worldTrial=worldActive?this.world.prepare(now,this.host.clientWidth,this.host.clientHeight,
       this.assetState==='ready'&&this.emoteReady&&JSON.stringify(avatarBinding(profile))===this.loadedEmoteBinding
         &&(!this.world.identity||this.world.identity.actorId===profile?.id),this.walkingCycleDistance,this.worldForwardKnown&&this.canWalk()&&(!this.walkingClip||this.walkingCalibration.source!=='height-fallback'),
       this.modelForwardYaw,reduced):null;
+    const petPlayback=worldActive?this.world.petPlayback:null;
+    if(this.worldPet&&!petPlayback)this.stopWorldPet();
+    if(worldTrial&&petPlayback){
+      try{
+        if(!this.worldPet)throw new Error('Pet clip unavailable');
+        worldTrial={...worldTrial,pet:this.worldPet.prepare(now,petPlayback.running)};
+      }catch{this.cancelWorld('unsupported_capability');worldTrial=null;}
+    }
     if(worldActive){if(worldTrial)this.applyWorldTrial(worldTrial);else{this.setWalking(false,true);this.walkStrength=0;}}else this.updateAutopilot(dt, reduced);
     const blinkEnabled = profile?.avatar?.autoBlink !== false;
     this.updateSpeech(dt, speaking, level);
@@ -1332,6 +1389,7 @@ export class AvatarStage {
   };
 
   private clearImported() {
+    this.stopWorldPet();
     this.desktopMotion.reset();
     this.emoteReady = false;
     this.loadedEmoteBinding = '';

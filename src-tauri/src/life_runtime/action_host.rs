@@ -118,6 +118,7 @@ fn admit_rest_bound(
         let actor = ActorId::new(bot).map_err(invalid)?;
         actions.forget(bot);
         if actions.actor_busy(bot)
+            || !actions.has_admission_capacity()
             || !actions.executor.can_admit(&actor)
             || !core.local_admission_current(bot, &fence, now())
             || cancel.load(Ordering::SeqCst)
@@ -276,16 +277,53 @@ fn admit_rest_bound(
         Ok(())
     })
 }
+/// A completed real native Slot job can expose only its stable object reference.
+/// This is never deserialized from IPC or constructed by a planner/model.
+#[derive(Clone)]
+pub(crate) struct ObjectUseWitness {
+    action: crate::life_domain::ActionId,
+    object: crate::storage::object_preferences::ObjectReference,
+    fence: Option<LocalFence>,
+}
+impl ObjectUseWitness {
+    pub(crate) fn action(&self)->&crate::life_domain::ActionId {&self.action}
+    pub(crate) fn object(&self)->&crate::storage::object_preferences::ObjectReference {&self.object}
+    pub(crate) fn fence(&self)->Option<&LocalFence>{self.fence.as_ref()}
+    fn from_native_job(job:&NativeJob,snapshot:&LifeSnapshot)->Option<Self>{
+        if job.native_permit.is_none() || job.visual.is_none() {return None;}
+        let completed=snapshot.state().current_action().filter(|action|action.phase()==crate::life_domain::ActionPhase::Completed
+            && action.intent().id()==job.key.action_id()
+            && matches!(action.intent().activity(),Activity::Rest|Activity::Recharge|Activity::Snack|Activity::Play|Activity::Socialize))?;
+        let slot=job.slot.as_ref()?;
+        Some(Self{action:completed.intent().id().clone(),object:crate::storage::object_preferences::ObjectReference::from_slot(job.world.stage.as_str(),slot.target()),fence:Some(job.fence.clone())})
+    }
+    /// Controlled Store source fixture only. This supplies no native permit,
+    /// renderer receipt, reservation or actual platform qualification.
+    #[cfg(test)]
+    pub(crate) fn fixture(action:crate::life_domain::ActionId,object:crate::storage::object_preferences::ObjectReference)->Self {Self{action,object,fence:None}}
+}
+
 /// The token authorizes only the exact actual database snapshot/event. No await
 /// occurs from authorization through SQLite commit and confirmed installation.
 fn record_native_fact(actions: &mut NativeActions, store: &Store, job: &NativeJob, snapshot: &LifeSnapshot) -> Result<(), Failure> {
-    if job.native_permit.is_none() || job.visual.is_none() || job.grouped { return Ok(()); }
+    if job.native_permit.is_none() || job.visual.is_none() { return Ok(()); }
+    if let Some(witness)=ObjectUseWitness::from_native_job(job,snapshot) {
+        if job.grouped {
+            // Optional preference storage cannot change a paired action's
+            // acknowledgement. The committed scene's bounded fact retry owns
+            // this immutable source after its actual terminal cleanup.
+            actions.group_object_uses.entry(job.key.actor().as_str().into()).or_insert((snapshot.clone(),witness));
+            return Ok(());
+        }
+        store.social_credit_object_use(job.key.actor().as_str(),snapshot,&witness).map_err(|_|Failure::Storage)?;
+    }
+    if job.grouped {return Ok(());}
     let state = snapshot.state();
+    if state.current_action().is_some_and(|action| action.phase()==crate::life_domain::ActionPhase::Completed) {
+        store.social_credit_activity(job.key.actor().as_str(), snapshot).map_err(|_|Failure::Storage)?;
+    }
     let changed = store.record_experience_native_snapshot(job.key.actor().as_str(), snapshot).map_err(|_|Failure::Storage)?;
     if changed { actions.fact_notifications.insert(job.key.actor().as_str().into()); }
-    if state.current_action().is_some_and(|action| action.phase()==crate::life_domain::ActionPhase::Completed) {
-        store.social_credit_activity(job.key.actor().as_str(), state).map_err(|_|Failure::Storage)?;
-    }
     Ok(())
 }
 
@@ -398,7 +436,11 @@ pub(crate) fn poll(
         for (bot,(snapshot,attempts)) in pending {
             let Some(job)=actions.jobs.get(&bot).cloned() else {continue;};
             if record_native_fact(actions,store,&job,&snapshot).is_err() {
-                core.mark_storage_failure(&bot,now());
+                // The immutable fact may settle after Stop or replacement;
+                // optional failure cannot pause that successor's session.
+                if core.local_current(&bot,&job.fence,now()) {
+                    core.mark_storage_failure(&bot,now());
+                }
                 if attempts<2 {actions.fact_pending.insert(bot,(snapshot,attempts+1));}
             }
         }
@@ -745,6 +787,17 @@ pub(crate) fn admit_native_care(
     };
     admit_visual_activity(core, store, world, bot, profile, fence, context, output, goal, Some(permit), target, cancel, now, wall, activity)
 }
+/// Operator-only Pet action: exact authored clip resolved before Plan; no slot,
+/// care reward, platform impulse or alternate movement destination is accepted.
+pub(crate) fn admit_native_pet(
+    core:&mut Core,store:&Store,world:&WorldHub,bot:&str,profile:&Value,
+    fence:LocalFence,context:ActionContext,output:crate::world_output::OutputProof,
+    permit:super::native_scene::NativeActionPermit,clip:crate::world_output::PetClip,cancel:Arc<AtomicBool>,
+    now:impl Fn()->u64,wall:impl Fn()->u64,
+)->Result<(),String>{
+    let goal=Goal::Here(context.position);
+    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,Some(permit),None,cancel,now,wall,Activity::Pet,None,None,Some(clip))
+}
 /// The same real native Rest/Here action, with an additional retained numeric
 /// window geometry fence. It never claims a sit/jump clip or a reserved object.
 pub(crate) fn admit_native_window_rest(
@@ -756,7 +809,7 @@ pub(crate) fn admit_native_window_rest(
     if !guard.current(bot,&output,now()){return Err(UNAVAILABLE.into());}
     guard.bind(&cancel)?;
     let goal=Goal::Here(context.position);
-    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,Some(permit),None,cancel,now,wall,Activity::Rest,Some(guard),None)
+    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,Some(permit),None,cancel,now,wall,Activity::Rest,Some(guard),None,None)
 }
 /// Sealed chat provenance is an additional constraint, never a replacement
 /// for the actual native owner, World slot or renderer/executor acknowledgements.
@@ -770,7 +823,7 @@ pub(crate) fn admit_native_stream_activity(
     source.bind_cancel(&cancel)?;
     let target=slot.as_ref().map(|slot|world.slot_target(store,&context,slot)).transpose()?;
     let goal=match &target {Some(target)=>Goal::Slot{id:target.id.clone(),kind:target.kind,position:target.position},None=>Goal::Here(context.position)};
-    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,Some(permit),target,cancel,now,wall,activity,None,Some(source))
+    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,Some(permit),target,cancel,now,wall,activity,None,Some(source),None)
 }
 /// Exercises the shared slot transaction using an actual selected-Studio
 /// registration. This exposes no product Slot route or native surface grant.
@@ -801,7 +854,7 @@ fn admit_visual_activity(
     slot_target: Option<crate::world_hub::ActionSlotTarget>, cancel: Arc<AtomicBool>,
     now: impl Fn() -> u64, wall: impl Fn() -> u64, activity: Activity,
 ) -> Result<(), String> {
-    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,native_permit,slot_target,cancel,now,wall,activity,None,None)
+    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,native_permit,slot_target,cancel,now,wall,activity,None,None,None)
 }
 fn admit_visual_activity_guarded(
     core: &mut Core, store: &Store, world: &WorldHub, bot: &str, profile: &Value,
@@ -811,12 +864,14 @@ fn admit_visual_activity_guarded(
     now: impl Fn() -> u64, wall: impl Fn() -> u64, activity: Activity,
     window_rest: Option<super::desktop_places::WindowRestGuard>,
     stream_source: Option<crate::platform_impulses::StreamActionFence>,
+    pet_clip: Option<crate::world_output::PetClip>,
 ) -> Result<(), String> {
     let target = match &goal { Goal::Point(point) | Goal::Here(point) | Goal::Slot { position: point, .. } => *point, _ => return Err(UNAVAILABLE.into()) };
     with_actions(core, |actions, core| {
         let actor = ActorId::new(bot).map_err(invalid)?;
         actions.forget(bot);
         if actions.actor_busy(bot)
+            || !actions.has_admission_capacity()
             || !actions.executor.can_admit(&actor)
             || !core.local_admission_current(bot, &fence, now())
             || cancel.load(Ordering::SeqCst)
@@ -830,7 +885,14 @@ fn admit_visual_activity_guarded(
         {
             return Err(UNAVAILABLE.into());
         }
-        let care_config = if activity == Activity::MoveTo { None } else { Some(store.life_care_preferences(bot)?) };
+        if activity == Activity::Pet {
+            if pet_clip.as_ref().is_none_or(|clip|!clip.valid()) || native_permit.is_none() || slot_target.is_some() || !matches!(goal,Goal::Here(_))
+                || window_rest.is_some() || stream_source.is_some() || output.binding.reduced_motion
+                || !store.experience_settings(bot)?.preferences.allowed_animations.iter().any(|animation|animation=="pet") {
+                return Err(UNAVAILABLE.into());
+            }
+        } else if pet_clip.is_some() { return Err(UNAVAILABLE.into()); }
+        let care_config = if matches!(activity,Activity::MoveTo|Activity::Pet) { None } else { Some(store.life_care_preferences(bot)?) };
         let content=slot_target.as_ref().and_then(|slot|slot.content_ref.as_ref().map(|reference|(slot.kind,reference)))
             .map(|(kind,reference)| {
                 let packs=store.content_packs()?;
@@ -843,7 +905,10 @@ fn admit_visual_activity_guarded(
             Some(config)=>PreparedPlan::care_visual_minimum(activity,&goal,&config.config),
             None=>PreparedPlan::visual_minimum(activity,&goal),
         }.map_err(invalid)?.max(content.as_ref().and_then(|usage|usage.behavior.as_ref()).map_or(0,|behavior|behavior.duration_ms));
-        let visual = crate::world_output::VisualExecution::for_activity(output,target,activity,minimum,now()).map_err(invalid)?;
+        let visual = if let Some(clip)=pet_clip {
+            crate::world_output::VisualExecution::for_pet(output,target,clip,now())
+        } else {crate::world_output::VisualExecution::for_activity(output,target,activity,minimum,now())}.map_err(invalid)?;
+        let minimum = visual.minimum_active_ms;
         let authority = NativeAuthority::new(
             context.session.clone(),
             context.source_world.clone(),
@@ -880,7 +945,7 @@ fn admit_visual_activity_guarded(
                     {
                         return Err(LifeStoreError::InvalidInput);
                     }
-                    let plan = if activity == Activity::MoveTo {
+                    let plan = if matches!(activity,Activity::MoveTo|Activity::Pet) {
                         PreparedPlan::new(authority.clone(), actual.state(), actual.random(), activity, goal.clone(), Presentation::Visual, &caps)
                     } else {
                         let config = care_config.as_ref().ok_or(LifeStoreError::InvalidInput)?;
@@ -1032,6 +1097,7 @@ fn flush_visual_dispatch(actions: &mut NativeActions, core: &mut Core, now: u64)
                 fence,
                 activity: activity.as_str(),
                 minimum_active_ms: visual.minimum_active_ms,
+                pet_clip: visual.pet_clip.clone(),
                 from: visual.from,
                 target: visual.destination,
                 maximum_speed: visual.maximum_speed,

@@ -25,7 +25,10 @@ def environment(root, account, domain, mode, host_net):
               "ORBITPAL_NATIVE_RENDER_BENCH": "disposable-linux-only", "ORBITPAL_BENCH_ROOT": str(root),
               "ORBITPAL_BENCH_HOST_NETNS": host_net, "ORBITPAL_BENCH_DOMAIN": domain,
               "ORBITPAL_BENCH_MODE": mode, "XDG_SESSION_TYPE": "wayland",
-              "DBUS_SYSTEM_BUS_ADDRESS": "unix:path=" + str(home / "runtime/nonexistent-system-bus"),
+              # GNOME 50 constructs system-bus proxies during startup. Give only
+              # the compositor an empty private bus, never the host system bus.
+              "DBUS_SYSTEM_BUS_ADDRESS": "unix:path=" + str(home / (
+                  "runtime/nonexistent-system-bus" if app else "runtime/system-bus")),
               "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(home / "runtime/session-bus"),
               "LIBGL_ALWAYS_SOFTWARE": "1", "GALLIUM_DRIVER": "llvmpipe"}
     for key, suffix in (("XDG_DATA_HOME", "data"), ("XDG_CONFIG_HOME", "config"),

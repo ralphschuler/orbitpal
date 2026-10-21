@@ -1,5 +1,17 @@
 # Opt-in actual Studio/application subset
 
+The fresh v0.13.0 baseline was tested again in
+[run 39656529988](https://github.com/ralphschuler/orbitpal/actions/runs/39656529988)
+at `cbc72d42fd310bf8882e5d8d6e84dbc8900f7136` on 2026-10-21. Both actual
+application subsets failed, with expected owned-child TERM cleanup and no
+successful capture/provider receipt. GNOME reached the real Compatible-model
+endpoint field but refused `app_window_not_active` before its first write
+(`writeAttempts:0`). KDE reached actual Studio cold start, then raised a
+`PermissionError` in the private input helper. These controller results do not
+prove a failed screen capture backend or an app acceptance success. Issue #26
+remains open; the native input/focus capability must be qualified before the
+rest of this matrix can be exercised.
+
 The actual-app subset **has not passed**. In [run 39583461054](https://github.com/ralphschuler/orbitpal/actions/runs/39583461054),
 head `46cea4417c8b47a8ed3f599d530a09be99004141`, both separate portal
 baselines passed. The GNOME actual-app job refused PAM capability code 4 before

@@ -305,10 +305,11 @@ pub enum Activity {
     Socialize,
     LookAt,
     Wave,
+    Pet,
 }
 impl Activity {
     pub(crate) fn as_str(self) -> &'static str {
-        match self { Self::MoveTo => "move_to", Self::Rest => "rest", Self::Recharge => "recharge", Self::Snack => "snack", Self::Play => "play", Self::Socialize => "socialize", Self::LookAt => "look_at", Self::Wave => "wave" }
+        match self { Self::MoveTo => "move_to", Self::Rest => "rest", Self::Recharge => "recharge", Self::Snack => "snack", Self::Play => "play", Self::Socialize => "socialize", Self::LookAt => "look_at", Self::Wave => "wave", Self::Pet => "pet" }
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

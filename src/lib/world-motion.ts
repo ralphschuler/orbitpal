@@ -4,7 +4,7 @@
  * goals. A mathematical target is never a successful-render/arrival receipt. */
 import type { CssPoint as WirePoint, CssSize as WireSize, CssRect as WireRect,
   ActionId as WireActionId, GroundBasis as WireBasis, MotionBinding as WireBinding,
-  MotionFence as WireFence, EnvelopeExtents, LocalReference } from './world-output';
+  MotionFence as WireFence, EnvelopeExtents, LocalReference, PetClip } from './world-output';
 export type CssPoint = Readonly<WirePoint>;
 export type CssSize = Readonly<WireSize>;
 export type CssRect = Readonly<WireRect>;
@@ -17,9 +17,10 @@ export const STATION_ACTIVITIES = ['rest', 'recharge', 'snack', 'play', 'sociali
 export type StationActivity = typeof STATION_ACTIVITIES[number];
 type Header = Readonly<{ version: 1; sequence: number; fence: MotionFence }>;
 export type MotionOffer = Header & Readonly<{
-  type: 'offer'; activity: 'move_to' | StationActivity; from: CssPoint; target: CssPoint;
+  type: 'offer'; activity: 'move_to' | StationActivity | 'pet'; from: CssPoint; target: CssPoint;
   maximumSpeed: number; acceleration: number; validForMs: number;
   minimumActiveMs: number;
+  petClip?: PetClip;
 }>;
 export type WorldMotionCommand = MotionOffer
   | (Header & Readonly<{ type: 'pause' | 'resume' }>)
@@ -157,7 +158,8 @@ export function parseWorldMotionCommand(value: unknown): WorldMotionCommand | nu
   const typeDescriptor = Object.getOwnPropertyDescriptor(value, 'type');
   const type = typeDescriptor && Object.hasOwn(typeDescriptor, 'value') ? typeDescriptor.value : undefined;
   const common = ['version', 'sequence', 'fence', 'type'];
-  const keys = type === 'offer' ? [...common, 'activity', 'from', 'target', 'maximumSpeed', 'acceleration', 'validForMs', 'minimumActiveMs']
+  const hasPet = Object.hasOwn(value, 'petClip');
+  const keys = type === 'offer' ? [...common, 'activity', 'from', 'target', 'maximumSpeed', 'acceleration', 'validForMs', 'minimumActiveMs', ...(hasPet ? ['petClip'] : [])]
     : type === 'terminal' ? [...common, 'status'] : type === 'pause' || type === 'resume' ? common : null;
   const data = keys && fields(value, keys);
   if (!data || data.version !== 1 || !counter(data.sequence)) return null;
@@ -165,7 +167,13 @@ export function parseWorldMotionCommand(value: unknown): WorldMotionCommand | nu
   if (!identity) return null;
   if (type === 'offer') {
     const from = point(data.from), target = point(data.target);
-    const activity = data.activity === 'move_to' || STATION_ACTIVITIES.includes(data.activity as StationActivity);
+    const activity = data.activity === 'move_to' || data.activity === 'pet' || STATION_ACTIVITIES.includes(data.activity as StationActivity);
+    const rawPet = hasPet ? fields(data.petClip, ['action', 'durationMs']) : null;
+    const petClip = rawPet && typeof rawPet.action === 'string' && /^pet$/i.test(rawPet.action)
+      && Number.isSafeInteger(rawPet.durationMs) && finite(rawPet.durationMs, 1, 15000)
+      ? Object.freeze({ action: rawPet.action, durationMs: rawPet.durationMs }) as PetClip : null;
+    if (data.activity === 'pet' ? !petClip || !from || !target || !samePoint(from, target)
+      || Number(data.minimumActiveMs) !== Math.max(200, petClip.durationMs) : hasPet) return null;
     const minimum = Number.isSafeInteger(data.minimumActiveMs) && finite(data.minimumActiveMs, 0, 600_000)
       && (data.activity === 'move_to' ? data.minimumActiveMs === 0 : data.minimumActiveMs > 0)
       && Number(data.minimumActiveMs) < Number(data.validForMs);
@@ -173,7 +181,7 @@ export function parseWorldMotionCommand(value: unknown): WorldMotionCommand | nu
       && finite(data.acceleration, 0.01, 5000) && counter(data.validForMs)
       && data.validForMs <= (data.activity === 'move_to' ? 75_000
         : Math.max(data.activity === 'recharge' ? 40_000 : 30_000, Number(data.minimumActiveMs) + 15_000))
-      ? Object.freeze({ ...data, from, target, fence: identity }) as MotionOffer : null;
+      ? Object.freeze({ ...data, ...(petClip ? {petClip} : {}), from, target, fence: identity }) as MotionOffer : null;
   }
   if (type === 'terminal' && (typeof data.status !== 'string' || !['completed', 'cancelled', 'failed'].includes(data.status))) return null;
   return Object.freeze({ ...data, fence: identity }) as WorldMotionCommand;
@@ -275,6 +283,7 @@ export class WorldMotionFollower {
         const current = this.work.offer;
         if (!samePoint(current.from, command.from) || !samePoint(current.target, command.target)
           || current.activity !== command.activity || current.minimumActiveMs !== command.minimumActiveMs
+          || JSON.stringify(current.petClip) !== JSON.stringify(command.petClip)
           || current.maximumSpeed !== command.maximumSpeed || current.acceleration !== command.acceleration || current.validForMs !== command.validForMs) {
           this.lastSequence = command.sequence; this.stopWork('conflicting_offer'); return 'rejected';
         }

@@ -385,7 +385,7 @@ mod mac {
         Ok([first_id, second_id])
     }
     fn allowed(command: &str) -> bool {
-        matches!(command, "get_app_state" | "list_bots" | "select_bot" | "get_emote_capabilities" | "get_avatar_info" | "get_extension_library" | "get_api_connections" | "get_api_binding" | "get_credential_session" | "get_usage_budget" | "get_ui_locale" | "set_ui_locale" | "get_update_settings" | "list_output_displays" | "get_world_settings" | "get_world_state" | "get_world_semantic_mirrors" | "prepare_native_life_action" | "save_world_config" | "place_world_actor" | "connect_life_ui" | "disconnect_life_ui" | "report_life_ui" | "get_life_runtime" | "get_life_bot" | "set_life_mode" | "start_life_scene" | "stop_life_session_exact" | "stop_generation" | "get_life_actions" | "start_life_rest" | "start_life_move" | "get_world_output_status" | "register_world_output" | "report_world_measurement" | "report_world_action" | "unregister_world_output" | "report_native_world_asset" | "register_native_world_output" | "report_native_world_measurement" | "report_native_world_action" | "unregister_native_world_output" | "report_playback" | "cancel_speech_job" | "report_emote_playback")
+        matches!(command, "get_render_settings" | "get_app_state" | "list_bots" | "select_bot" | "get_emote_capabilities" | "get_avatar_info" | "get_extension_library" | "get_api_connections" | "get_api_binding" | "get_credential_session" | "get_usage_budget" | "get_ui_locale" | "set_ui_locale" | "get_update_settings" | "list_output_displays" | "get_world_settings" | "get_world_state" | "get_world_semantic_mirrors" | "prepare_native_life_action" | "save_world_config" | "place_world_actor" | "connect_life_ui" | "disconnect_life_ui" | "report_life_ui" | "get_life_runtime" | "get_life_bot" | "set_life_mode" | "start_life_scene" | "stop_life_session_exact" | "stop_generation" | "get_life_actions" | "start_life_rest" | "start_life_move" | "get_world_output_status" | "register_world_output" | "report_world_measurement" | "report_world_action" | "unregister_world_output" | "report_native_world_asset" | "register_native_world_output" | "report_native_world_measurement" | "report_native_world_action" | "unregister_native_world_output" | "report_playback" | "cancel_speech_job" | "report_emote_playback")
     }
     fn invoke(invoke: tauri::ipc::Invoke) -> bool {
         let command = invoke.message.command();
@@ -456,6 +456,8 @@ mod mac {
         use super::*;
         #[test]
         fn actual_native_mirror_and_action_preparation_use_production_handlers_without_io_commands() {
+            assert!(allowed("get_render_settings"));
+            assert!(!allowed("set_render_quality"));
             assert!(allowed("get_world_semantic_mirrors"));
             assert!(allowed("prepare_native_life_action"));
             // Profile saves retain their separate sealed main-window guard;

@@ -180,6 +180,22 @@ def install_bus(root, directory, address, uid):
             '<allow receive_sender="*"/></policy></busconfig>\n')
 
 
+def compositor_system_bus(address):
+    """A real private transport with no host services or service activation.
+
+    GNOME may construct a logind proxy here, but its absent service stays absent;
+    this bus cannot fabricate a login/session result. The fresh UID's protected
+    runtime directory and the compositor cgroup own the daemon and its socket.
+    """
+    if re.fullmatch(r"/tmp/orbitpal-render-[0-9a-f]{16}/compositor/runtime/system-bus", str(address)) is None:
+        refuse("invalid_compositor_bus_address")
+    return ('<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" '
+            '"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">\n'
+            '<busconfig><type>system</type><listen>unix:path=' + str(address) + '</listen>'
+            '<auth>EXTERNAL</auth><policy context="default"><allow own="*"/>'
+            '<allow send_destination="*"/><allow receive_sender="*"/></policy></busconfig>\n')
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -474,6 +490,9 @@ def execute(mode, binary, output):
             config = root / (domain + "-bus.conf")
             config.write_text(configuration, encoding="ascii")
             config.chmod(0o444)
+        config = root / "compositor-system-bus.conf"
+        config.write_text(compositor_system_bus(root / "compositor/runtime/system-bus"), encoding="ascii")
+        config.chmod(0o444)
         # No enabling/moving host controllers. Unsupported dedicated accounting
         # is a qualification failure, not a root-process-only fallback.
         enabled = set(bounded(CGROUP / "cgroup.subtree_control", 4096).split())

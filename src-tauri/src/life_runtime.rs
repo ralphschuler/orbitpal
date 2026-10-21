@@ -16,6 +16,7 @@ mod desktop_places;
 pub(crate) use experience_host::{experience_allows_output, experience_preferences_changed, experience_pause_changed, set_content_pack_active_native, request_character_interaction, start_slot_activity, cancel_actor_action, cancel_actor_action_exact, native_interaction_owner, start_point_activity, start_window_rest_activity, consume_platform_impulse};
 #[path = "life_runtime/action_host.rs"]
 mod action_host;
+pub(crate) use action_host::ObjectUseWitness;
 #[path = "life_runtime/action_output.rs"]
 mod action_output;
 #[path = "life_runtime/native_output_route.rs"]
@@ -132,7 +133,9 @@ fn main_only(label: &str) -> Result<(), String> {
 pub fn operator_command(command: &str) -> bool {
     !matches!(
         command,
-        "get_life_care_preferences"
+        "get_render_settings"
+            | "set_render_quality"
+            | "get_life_care_preferences"
             | "get_experience_snapshot"
             | "open_native_character_menu"
             | "close_native_character_menu"
@@ -145,6 +148,7 @@ pub fn operator_command(command: &str) -> bool {
             | "set_social_memory_shared"
             | "set_social_development"
             | "reset_social_development"
+            | "reset_social_object_preferences"
             | "set_social_dialogue_policy"
 
             | "set_experience_preferences"
@@ -1458,6 +1462,7 @@ mod host_tests {
     #[test]
     fn operator_commands_block_dialogs_but_never_their_own_playback_or_status() {
         for command in [
+            "get_render_settings", "set_render_quality",
             "get_speech_audio",
             "report_playback",
             "cancel_speech_job",

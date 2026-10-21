@@ -44,6 +44,18 @@ function commit(follower: WorldMotionFollower, value: MotionBinding, now: number
 }
 
 describe('strict local motion protocol', () => {
+  it('requires the exact bounded Pet clip and Here target and rejects descriptor substitution on duplicate offers', () => {
+    const value=binding({stationSupported:true}), command:MotionOffer={...offer(value,value.position),activity:'pet',minimumActiveMs:200,petClip:{action:'Pet',durationMs:200}};
+    expect(parseWorldMotionCommand(command)).not.toBeNull();
+    for(const changed of [{...command,petClip:undefined},{...command,petClip:{action:'wave',durationMs:200}},
+      {...command,petClip:{action:'Pet',durationMs:0}},{...command,petClip:{action:'Pet',durationMs:15001}},
+      {...command,minimumActiveMs:199},{...command,minimumActiveMs:201},{...command,target:{x:value.position.x+1,y:value.position.y}},
+      {...command,activity:'play'},{...command,petClip:{...command.petClip,permission:true}}])expect(parseWorldMotionCommand(changed)).toBeNull();
+    const follower=new WorldMotionFollower();expect(follower.bind(value,0)).toBe(true);
+    expect(follower.receive(command,0)).toBe('accepted');
+    expect(follower.receive({...command,sequence:2},1)).toBe('duplicate');
+    expect(follower.receive({...command,sequence:3,petClip:{action:'pet',durationMs:200}},2)).toBe('rejected');
+  });
   it('retains the full saved care duration only for bounded stationary offers', () => {
     const value=binding({stationSupported:true});
     const command={...offer(value),activity:'play',minimumActiveMs:600_000,validForMs:615_000};

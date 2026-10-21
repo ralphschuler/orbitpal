@@ -2,13 +2,11 @@
 //! reserve a slot, mint a permit or replace selection-time action admission.
 use crate::{
     experience::{ExperienceRuntime, Preferences},
-    life_domain::Activity,
     world_hub::ActionSlotTarget,
     world_output::{CssPoint, CssRect, CssSize},
     world_state::{coordinates::Point, AnchorKind},
     AppState,
 };
-use serde_json::Value;
 use tauri::Manager;
 
 const ERROR: &str = "interaction_unavailable";
@@ -40,15 +38,10 @@ fn allowed(preferences: &Preferences, animation: &str) -> bool {
         .any(|item| item == animation)
 }
 
-/// Input emotes have already passed the real asset catalogue/configuration
-/// validation outside Owned/Core, including ambiguity and sound checks.
-fn pet_available(preferences: &Preferences, checked_emotes: &[Value]) -> bool {
-    allowed(preferences, "pet")
-        && checked_emotes.iter().any(|emote| {
-            emote["action"]
-                .as_str()
-                .is_some_and(|action| action.eq_ignore_ascii_case("pet"))
-        })
+/// The exact authored Pet clip and its duration have already passed the
+/// native asset/configuration catalogue. Selection still performs admission.
+fn pet_available(preferences: &Preferences, clip: Option<&crate::world_output::PetClip>) -> bool {
+    allowed(preferences, "pet") && clip.is_some_and(|clip|clip.valid())
 }
 
 /// Match the executor wrapper's actual nearest-slot choice. Do not advertise a
@@ -92,23 +85,9 @@ impl Movement {
     }
 }
 
-fn action_choices(
-    preferences: &Preferences,
-    movement: &Movement,
-    slots: &[ActionSlotTarget],
-    station_supported: bool,
-    content_available: bool,
-) -> [bool; 2] {
-    let play_target = selected_slot(slots, AnchorKind::Play, movement.position)
-        .map_or(movement.position, |slot| slot.position);
-    [
-        station_supported
-            && allowed(preferences, "play")
-            && movement.allows(preferences, play_target)
-            && content_available,
-        selected_slot(slots, AnchorKind::Rest, movement.position)
-            .is_some_and(|slot| movement.allows(preferences, slot.position)),
-    ]
+fn home_available(preferences: &Preferences, movement: &Movement, slots: &[ActionSlotTarget]) -> bool {
+    selected_slot(slots, AnchorKind::Rest, movement.position)
+        .is_some_and(|slot| movement.allows(preferences, slot.position))
 }
 
 /// Pet/Play/Home/Pause in native menu order. Failure supplies no optimistic
@@ -128,8 +107,7 @@ fn choices(app: &tauri::AppHandle, bot: &str) -> Result<Choices, String> {
     // stays outside these locks; imported model/motion files may require I/O.
     let origin = runtime.care.origin(bot);
     let profile = state.store.bot_profile(bot)?;
-    let checked_emotes =
-        crate::emote_capabilities::available_emotes(&state.store.root, &profile, false);
+    let pet_clip = crate::emote_capabilities::pet_clip(&state.store.root,&profile).ok();
     let external_busy = runtime.social.busy(bot)
         || runtime.desktop.busy(bot)
         || state.overlay.has_any_pending_speech()
@@ -176,7 +154,8 @@ fn choices(app: &tauri::AppHandle, bot: &str) -> Result<Choices, String> {
                     .is_none_or(|life| !actions.executor.can_admit(life.actor_id()))
             }),
         output_allowed: runtime.outputs.ticket().is_some(),
-        pet: pet_available(&preferences, &checked_emotes),
+        pet: pet_available(&preferences, pet_clip.as_ref())
+            && output.binding.station_supported && !output.binding.reduced_motion,
         ..Default::default()
     };
     if !result.active_owner || result.paused || result.busy || !result.output_allowed {
@@ -212,35 +191,9 @@ fn choices(app: &tauri::AppHandle, bot: &str) -> Result<Choices, String> {
     // action_slots returns only free current slots and rejects inactive/missing
     // exact content references. No observation reserves them for this menu.
     let slots = state.world.action_slots(&state.store, &source.context)?;
-    let play = selected_slot(&slots, AnchorKind::Play, source.context.position);
-    let content_available = play
-        .and_then(|slot| slot.content_ref.as_ref().map(|reference| (slot, reference)))
-        .is_none_or(|(slot, reference)| {
-            state
-                .store
-                .content_packs()
-                .ok()
-                .zip(state.store.load_life(bot).ok().flatten())
-                .zip(state.store.life_care_preferences(bot).ok())
-                .is_some_and(|((packs, actual), care)| {
-                    super::content_host::resolve_for_state(
-                        &packs,
-                        reference,
-                        slot.kind,
-                        Activity::Play,
-                        actual.state(),
-                        &care.config,
-                    )
-                    .is_some()
-                })
-        });
-    [result.play, result.home] = action_choices(
-        &preferences,
-        &movement,
-        &slots,
-        output.binding.station_supported,
-        content_available,
-    );
+    result.play = allowed(&preferences, "play") && allowed(&preferences, "idle")
+        && output.binding.station_supported;
+    result.home = home_available(&preferences, &movement, &slots);
     Ok(result)
 }
 
@@ -248,7 +201,6 @@ fn choices(app: &tauri::AppHandle, bot: &str) -> Result<Choices, String> {
 mod tests {
     use super::*;
     use crate::world_state::SlotId;
-    use serde_json::json;
 
     fn point(x: u32, y: u32) -> Point {
         Point::new(x, y).unwrap()
@@ -296,21 +248,20 @@ mod tests {
         assert_eq!(choices.enabled(), [false; 4]);
     }
     #[test]
-    fn pet_needs_both_explicit_preference_and_an_actually_checked_pet_emote() {
-        let mut prefs = Preferences::default();
-        let checked = vec![json!({"id":"pat","action":"Pet"})];
-        assert!(!pet_available(&prefs, &checked));
+    fn pet_needs_explicit_preference_and_exact_bounded_authored_clip() {
+        let mut prefs=Preferences::default();
+        let clip=crate::world_output::PetClip{action:"Pet".into(),duration_ms:1200};
+        assert!(!pet_available(&prefs,Some(&clip)));
         prefs.allowed_animations.push("pet".into());
-        assert!(pet_available(&prefs, &checked));
-        assert!(!pet_available(&prefs, &[]));
-        assert!(!pet_available(
-            &prefs,
-            &[json!({"id":"pet","action":"wave"})]
-        ));
+        assert!(pet_available(&prefs,Some(&clip)));
+        assert!(!pet_available(&prefs,None));
+        assert!(!pet_available(&prefs,Some(&crate::world_output::PetClip{action:"Wave".into(),duration_ms:1200})));
+        assert!(!pet_available(&prefs,Some(&crate::world_output::PetClip{action:"Pet".into(),duration_ms:15_001})));
     }
     #[test]
     fn real_slot_selection_is_kind_filtered_nearest_and_stable_on_ties() {
         let slot = |id, kind, x| ActionSlotTarget {
+            anchor_id: crate::world_state::AnchorId::new("fixture-object").unwrap(),
             id: SlotId::new(id).unwrap(),
             kind,
             position: point(x, 500_000),
@@ -335,6 +286,7 @@ mod tests {
     #[test]
     fn home_requires_a_free_rest_slot_not_a_play_slot_or_here_fallback() {
         let slots = vec![ActionSlotTarget {
+            anchor_id: crate::world_state::AnchorId::new("fixture-object").unwrap(),
             id: SlotId::new("play-seat").unwrap(),
             kind: AnchorKind::Play,
             position: point(500_000, 500_000),
@@ -342,44 +294,21 @@ mod tests {
         }];
         let prefs = Preferences::default();
         let geometry = movement();
-        assert_eq!(
-            action_choices(&prefs, &geometry, &slots, true, true),
-            [true, false]
-        );
-        assert_eq!(
-            action_choices(&prefs, &geometry, &[], true, true),
-            [true, false]
-        );
+        assert!(!home_available(&prefs, &geometry, &slots));
+        assert!(!home_available(&prefs, &geometry, &[]));
     }
     #[test]
-    fn play_needs_idle_station_support_permission_and_current_content_offer() {
+    fn home_needs_idle_permission_but_not_station_completion_support() {
         let geometry = movement();
         let mut prefs = Preferences::default();
         let slots = vec![ActionSlotTarget {
-            id: SlotId::new("rest-seat").unwrap(),
-            kind: AnchorKind::Rest,
-            position: geometry.position,
-            content_ref: None,
+            anchor_id: crate::world_state::AnchorId::new("fixture-object").unwrap(),
+            id: SlotId::new("rest-seat").unwrap(), kind: AnchorKind::Rest,
+            position: geometry.position, content_ref: None,
         }];
-        assert_eq!(
-            action_choices(&prefs, &geometry, &slots, false, true),
-            [false, true]
-        );
-        assert_eq!(
-            action_choices(&prefs, &geometry, &slots, true, false),
-            [false, true]
-        );
-        prefs.allowed_animations.retain(|name| name != "play");
-        assert_eq!(
-            action_choices(&prefs, &geometry, &slots, true, true),
-            [false, true]
-        );
-        prefs.allowed_animations.push("play".into());
+        assert!(home_available(&prefs, &geometry, &slots));
         prefs.allowed_animations.retain(|name| name != "idle");
-        assert_eq!(
-            action_choices(&prefs, &geometry, &slots, true, true),
-            [false, false]
-        );
+        assert!(!home_available(&prefs, &geometry, &slots));
     }
     #[test]
     fn an_invalid_actual_nearest_target_is_not_replaced_by_a_different_menu_target() {
@@ -391,12 +320,14 @@ mod tests {
         };
         let slots = vec![
             ActionSlotTarget {
+            anchor_id: crate::world_state::AnchorId::new("fixture-object").unwrap(),
                 id: SlotId::new("nearest-rest").unwrap(),
                 kind: AnchorKind::Rest,
                 position: point(450_000, 500_000),
                 content_ref: None,
             },
             ActionSlotTarget {
+            anchor_id: crate::world_state::AnchorId::new("fixture-object").unwrap(),
                 id: SlotId::new("fitting-rest").unwrap(),
                 kind: AnchorKind::Rest,
                 position: point(250_000, 500_000),
@@ -404,7 +335,7 @@ mod tests {
             },
         ];
         assert!(geometry.allows(&prefs, slots[1].position));
-        assert!(!action_choices(&prefs, &geometry, &slots, true, true)[1]);
+        assert!(!home_available(&prefs, &geometry, &slots));
     }
     #[test]
     fn safe_centers_use_actual_viewport_coordinates_and_current_origin() {

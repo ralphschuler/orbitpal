@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as THREE from 'three';
 import { AvatarStage } from './avatar';
 import { captureWorldPose, configureWorldCamera, placeWorldReference, placementForwardYaw, WorldAvatarController,
-  type WorldAvatarOptions } from './world-avatar';
+  type WorldAvatarOptions, type WorldTrial } from './world-avatar';
+import { WorldPetPlayer } from './world-pet';
 import { WorldRenderGeometry, type RenderPort, type SurfaceObservation } from './world-render-geometry';
 import type { LocalWorldFrame, MeasurementChallenge, NativeMotionBinding as MotionBinding, MotionFence, RenderMeasurement,
   NativePhysicalPolicy, WorldAdapterReason } from './world-output';
 import type { MotionOffer } from './world-motion';
+afterEach(()=>vi.unstubAllGlobals());
 
 // Actual Three geometry/camera/transforms with SYNTHETIC submitted-draw port.
 // No WebGL, native delivery, Store completion, pixel/OS visibility or providers.
@@ -36,9 +38,10 @@ function fixture(geometry:THREE.BufferGeometry=new THREE.BoxGeometry(.6,1,.4)){
       }});state.afterDraw();if(state.throwAfter)throw new Error('synthetic render failed');
     }};
   const update=(patch:Partial<WorldAvatarOptions>)=>{options={...options,...patch};controller.update(options,now);};
-  const render=(step=17)=>{
+  const render=(step=17,pose?:(trial:WorldTrial,now:number)=>WorldTrial)=>{
     now+=step;const trial=controller.prepare(now,400,400,true,.5,true,0,false);
-    expect(trial).not.toBeNull();return {trial:trial!,result:controller.render(trial!,scene,port,()=>surface,now,()=>0)};
+    expect(trial).not.toBeNull();const posed=pose?pose(trial!,now):trial!;
+    return {trial:posed,result:controller.render(posed,scene,port,()=>surface,now,()=>0)};
   };
   const ready=()=>{
     for(let i=0;i<33;i++)expect(render().result).toBe('committed');
@@ -185,21 +188,23 @@ describe('actual-camera placement, synthetic submitted frames',()=>{
     expect(f.controller.render(trial,f.scene,f.port,()=>surface,17,()=>0)).toBe('stale');
     expect(f.root.position.x).toBe(3);expect(f.reasons).toHaveLength(reasons);expect(f.state.renders).toBe(0);
   });
-  it('keeps a failed World mount suppressed despite successful fallback draws, until explicit reconnect',()=>{
+  it('keeps a failed hidden World mount suppressed without fallback draws until explicit reconnect',()=>{
     const f=fixture(),domElement={style:{visibility:''}},stage=Object.create(AvatarStage.prototype) as any;
     Object.assign(stage,{options:{motionSource:'world'},world:f.controller,scene:f.scene,
-      camera:new THREE.PerspectiveCamera(),renderer:{...f.port,domElement},assetState:'ready',modelAudio:{stop(){}}});
+      host:{isConnected:false},camera:new THREE.PerspectiveCamera(),renderer:{...f.port,domElement},assetState:'ready',modelAudio:{stop(){}}});
     stage.recoverWorldPose();expect(domElement.style.visibility).toBe('hidden');
     for(let i=0;i<3;i++)expect(stage.renderOutput(null)).toBe(false);
-    expect(f.state.renders).toBe(3);expect(domElement.style.visibility).toBe('hidden');expect(stage.worldRecovery).toBe(true);
+    expect(f.state.renders).toBe(0);expect(domElement.style.visibility).toBe('hidden');expect(stage.worldRecovery).toBe(true);
     // An explicit reconnect creates a new Stage/controller; the failed instance
     // never infers a safe visible pose or output grant from its fallback render.
     expect(f.frames).toHaveLength(0);expect(f.measurements).toHaveLength(0);
   });
   it.each(['fixed','ambient'])('preserves ordinary %s recovery only after a successful live-context draw',motionSource=>{
-    const f=fixture(),domElement={style:{visibility:''}},stage=Object.create(AvatarStage.prototype) as any;
+    const f=fixture(),domElement={style:{visibility:''},parentElement:null,getBoundingClientRect:()=>({left:0,top:0,right:400,bottom:400})},stage=Object.create(AvatarStage.prototype) as any;
+    vi.stubGlobal('document',{visibilityState:'visible'});vi.stubGlobal('window',{innerWidth:1000,innerHeight:800});
+    vi.stubGlobal('getComputedStyle',()=>({display:'block',visibility:domElement.style.visibility||'visible',opacity:'1'}));
     Object.assign(stage,{options:{motionSource},world:f.controller,scene:f.scene,
-      camera:new THREE.PerspectiveCamera(),renderer:{...f.port,domElement},assetState:'ready',modelAudio:{stop(){}}});
+      host:{isConnected:true,clientWidth:400,clientHeight:400},camera:new THREE.PerspectiveCamera(),renderer:{...f.port,domElement},assetState:'ready',modelAudio:{stop(){}}});
     stage.recoverWorldPose();f.state.lost=true;
     expect(stage.renderOutput(null)).toBe(false);expect(domElement.style.visibility).toBe('hidden');
     f.state.lost=false;expect(stage.renderOutput(null)).toBe(true);expect(domElement.style.visibility).toBe('');
@@ -261,4 +266,30 @@ it('station progress follows only committed target frames after Start and clears
   f.render();expect(f.activities.at(-1)?.activeMs).toBe(0);
   f.update({worldExposed:false});expect(f.activities.at(-1)).toBeUndefined();
   f.controller.dispose();expect(f.activities.at(-1)).toBeUndefined();
+});
+
+it('composes a real authored Pet clip with successful geometry frames and both native ACK barriers',()=>{
+  const f=fixture(),binding=f.ready();f.mesh.name='pet-target';
+  const clip=new THREE.AnimationClip('Pet',.2,[new THREE.VectorKeyframeTrack('pet-target.scale',[0,.2],[1,1,1,.99,1,1])]);
+  const mixer=new THREE.AnimationMixer(f.root),spec={action:'Pet',durationMs:200},player=new WorldPetPlayer(mixer,clip,spec);
+  const offer:MotionOffer={...move(binding),activity:'pet',minimumActiveMs:200,target:binding.position,petClip:spec};
+  expect(f.controller.command(offer,f.now())).toBe('accepted');
+  const render=()=>{const result=f.render(50,(trial,now)=>{const pet=player.prepare(now,f.controller.petPlayback!.running);mixer.update(0);return{...trial,pet};});
+    if(result.result==='committed')expect(player.commit(result.trial.pet!)).toBe(true);else player.rollback();return result;};
+  expect(render().result).toBe('committed');expect(f.frames.at(-1)?.pet?.elapsedMs).toBe(0);
+  expect(f.controller.begin(offer.fence,offer.sequence,f.now())).toBe(true);
+  expect(render().result).toBe('committed');const first=f.frames.at(-1)!;
+  expect(first.purpose).toBe('first_behavior');expect(first.pet?.elapsedMs).toBe(0);expect(f.mesh.scale.x).toBe(1);
+  expect(f.controller.confirmStarted(offer.fence,first.frameSequence)).toBe(true);
+  for(let index=0;index<4;index++)expect(render().result).toBe('committed');
+  expect(f.frames.at(-1)?.pet).toEqual({action:'Pet',elapsedMs:200,finished:true});expect(f.mesh.scale.x).toBeCloseTo(.99);
+  const count=f.frames.length;f.state.throwAfter=true;expect(render().result).toBe('failed');
+  expect(f.frames).toHaveLength(count);expect(f.controller.petPlayback).toBeNull();player.stop();
+});
+
+it('never substitutes stationary idle frames when an admitted Pet clip observation is absent',()=>{
+  const f=fixture(),binding=f.ready();
+  const offer:MotionOffer={...move(binding),activity:'pet',minimumActiveMs:200,target:binding.position,petClip:{action:'Pet',durationMs:200}};
+  expect(f.controller.command(offer,f.now())).toBe('accepted');
+  expect(f.render().result).toBe('failed');expect(f.frames).toEqual([]);expect(f.reasons).toContain('unsupported_capability');
 });

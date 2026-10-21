@@ -92,7 +92,7 @@ mod tests {
     use super::*;
     use crate::{character_development::Goal,world_state::AnchorKind};
     fn point(x:u32)->Point {Point::new(x,500_000).unwrap()}
-    fn slot(id:&str,x:u32)->ActionSlotTarget {ActionSlotTarget{id:SlotId::new(id).unwrap(),kind:AnchorKind::Play,position:point(x),content_ref:None}}
+    fn slot(id:&str,x:u32)->ActionSlotTarget {ActionSlotTarget{anchor_id:crate::world_state::AnchorId::new("fixture-object").unwrap(),id:SlotId::new(id).unwrap(),kind:AnchorKind::Play,position:point(x),content_ref:None}}
     fn observation()->WalkObservation {WalkObservation{viewport:CssSize{width:1000.,height:1000.},safe:CssRect{left:100.,top:100.,right:900.,bottom:900.},supported:true}}
     fn preferences()->Preferences {Preferences{movement_radius:400,..Preferences::default()}}
     fn character()->Character {let mut value=Character::default();value.goal=Some(Goal{id:"explore".into(),kind:HobbyKind::Explore,target:5,progress:0,status:GoalStatus::Active});value}

@@ -33,7 +33,7 @@ fn authority(id: &str) -> NativeAuthority {
 fn goal(kind: Activity) -> Goal {
     match kind {
         Activity::MoveTo | Activity::LookAt => Goal::Point(point()),
-        Activity::Wave => Goal::Here(point()),
+        Activity::Wave | Activity::Pet => Goal::Here(point()),
         Activity::Rest | Activity::Recharge => Goal::Slot {
             id: SlotId::new("rest-1").unwrap(),
             kind: AnchorKind::Rest,
@@ -236,6 +236,32 @@ fn native_dwell_completes_without_dialog_voice_visual_receipt_or_extra_reward() 
         .outbox
         .iter()
         .all(|event| !matches!(event.message, Message::Offer { .. })));
+}
+#[test]
+fn pet_is_here_only_zero_effect_and_requires_actual_visual_completion() {
+    let owner=authority("nova");
+    let before=initial("nova");
+    let caps=Capabilities::new(owner.clone(),vec![(Activity::Pet,1500)],false).unwrap();
+    for invalid in [Goal::Point(point()),Goal::Slot{id:SlotId::new("pet-seat").unwrap(),kind:AnchorKind::Play,position:point()}] {
+        assert!(PreparedPlan::new(owner.clone(),&before,RandomState::seeded(1),Activity::Pet,invalid,Presentation::Visual,&caps).is_err());
+    }
+    assert!(PreparedPlan::new(owner.clone(),&before,RandomState::seeded(1),Activity::Pet,Goal::Here(point()),Presentation::NativeRestDwell,&caps).is_err());
+    let prepared=PreparedPlan::new(owner,&before,RandomState::seeded(1),Activity::Pet,Goal::Here(point()),Presentation::Visual,&caps).unwrap();
+    assert_eq!(prepared.policy.minimum_active_ms,1500);
+    assert_eq!(prepared.policy.effect.event_value(),NeedEffect::default());
+    let mut rig=Rig::new(Activity::Pet,Presentation::Visual);
+    let needs=rig.state.needs();
+    rig.start();
+    assert!(rig.receipt(Receipt::Completed(Evidence::VisualFinished),201).is_err());
+    let Decision::Commit(request)=rig.receipt(Receipt::Completed(Evidence::VisualFinished),202).unwrap() else {panic!("completion proposal");};
+    rig.commit(request,202);
+    assert_eq!(rig.state.needs(),needs);
+    assert_eq!(rig.state.current_action().unwrap().phase(),ActionPhase::Completed);
+    let mut cancelled=Rig::new(Activity::Pet,Presentation::Visual);cancelled.start();
+    cancelled.executor.cancel(&cancelled.authority,&cancelled.key,CancelReason::Operator,100).unwrap();
+    assert_eq!(cancelled.receipt(Receipt::Completed(Evidence::VisualFinished),1002).unwrap(),Decision::Duplicate);
+    assert_eq!(cancelled.state.needs(),needs);
+    assert_eq!(cancelled.executor.status(&cancelled.key),Some(Status::Cancelled));
 }
 #[test]
 fn fixed_native_plan_rejects_changed_effect_and_unconfirmed_state() {

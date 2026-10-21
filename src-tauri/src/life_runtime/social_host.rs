@@ -352,7 +352,7 @@ fn actors(app: &tauri::AppHandle) -> Vec<Actor> {
                 + u64::from(slot.position.y().abs_diff(source.context.position.y()))
                 <= radius && output.binding.safe_centers.contains(crate::world_output::css(slot.position,output.binding.viewport))
         });
-        let Ok(snapshot) = state.store.social_snapshot(bot) else {
+        let Ok(snapshot) = state.store.social_native_snapshot(bot) else {
             continue;
         };
         let Ok(Some(record)) = state.store.load_world_config() else {
@@ -468,13 +468,69 @@ pub(crate) fn snapshot(
     snapshot.scenes.truncate(32);
     Ok(snapshot)
 }
+/// Opaque retained menu selection. Neither IDs nor a new session with those IDs
+/// can replace the exact participants or native outputs observed at menu open.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SelectedParticipant {
+    bot: String,
+    session: String,
+    revision: u64,
+    scope: Scope,
+}
+impl SelectedParticipant {
+    fn from_actor(actor: &Actor) -> Self {
+        Self { bot: actor.participant.actor.as_str().into(), session: actor.participant.session.clone(),
+            revision: actor.participant.generation, scope: actor.scope.clone() }
+    }
+    fn current(&self, core: &super::core::Core) -> bool {
+        core.sessions.get(&self.bot).is_some_and(|session|
+            session.mode == super::core::Mode::Life && session.session_id == self.session
+                && session.revision == self.revision && !session.storage_failed && session.output)
+    }
+}
+#[derive(Clone)]
+pub(crate) struct PlayRequestScope {
+    participants: [SelectedParticipant; 2],
+    outputs: [crate::world_output::OutputProof; 2],
+}
+impl PlayRequestScope {
+    fn matches(&self, actors: [&Actor; 2], core: &super::core::Core, now: u64) -> bool {
+        self.participants == actors.map(SelectedParticipant::from_actor)
+            && self.participants.iter().all(|actor| actor.current(core))
+            && self.outputs.iter().all(|proof| core.world_outputs.check_proof(proof, now))
+    }
+}
+/// Read-only native menu offer; selection still runs the complete coordinator,
+/// reservation and per-phase native checks with this exact retained scope.
+pub(crate) fn prepare_play(app: &tauri::AppHandle, bot: &str, target: Option<&str>) -> Option<PlayRequestScope> {
+    let target = target.filter(|target| *target != bot && crate::experience::valid_id(target))?;
+    let state = app.state::<AppState>();
+    if state.life_runtime.social.busy(bot) || state.life_runtime.social.busy(target)
+        || state.overlay.has_any_pending_speech() { return None; }
+    let current = actors(app);
+    let a = current.iter().find(|actor| actor.participant.actor.as_str() == bot)?;
+    let b = current.iter().find(|actor| actor.participant.actor.as_str() == target)?;
+    if !a.station_supported || !b.station_supported || choose_slots(a, b, SceneKind::Play).is_none()
+        || [bot,target].iter().any(|id| state.store.experience_settings(id).ok().is_none_or(|settings|
+            !settings.preferences.allowed_animations.iter().any(|motion|motion=="play"))) { return None; }
+    let core = state.life_runtime.core.lock().ok()?;
+    let now = state.life_runtime.now();
+    if [bot, target].iter().any(|id| core.actions.as_ref().is_none_or(|actions| actions.actor_busy(id))) { return None; }
+    let selection = PlayRequestScope { participants: [a,b].map(SelectedParticipant::from_actor),
+        outputs: [core.world_outputs.ready(bot,now).ok()?, core.world_outputs.ready(target,now).ok()?] };
+    selection.matches([a,b], &core, now).then_some(selection)
+}
+pub(crate) fn request_selected_play(app: &tauri::AppHandle, bot: &str, target: &str, selection: &PlayRequestScope) -> Result<String,String> {
+    request_inner(app,bot,target,SceneKind::Play,None,Some(selection))
+}
+
 pub(crate) fn request(
     app: &tauri::AppHandle,
     bot: &str,
     target: &str,
     kind: SceneKind,
 ) -> Result<String, String> {
-    request_inner(app, bot, target, kind, None)
+    request_inner(app, bot, target, kind, None, None)
 }
 pub(crate) fn request_from_stream(
     app: &tauri::AppHandle,
@@ -495,6 +551,7 @@ pub(crate) fn request_from_stream(
             owner: owner.into(),
             authority,
         }),
+        None,
     )
 }
 fn request_inner(
@@ -503,6 +560,7 @@ fn request_inner(
     target: &str,
     kind: SceneKind,
     source: Option<StreamSource>,
+    selection: Option<&PlayRequestScope>,
 ) -> Result<String, String> {
     initialize(app)?;
     if bot == target {
@@ -557,6 +615,8 @@ fn request_inner(
     // Serialize final invitation publication with Stop/replacement. Root uses
     // Core -> Social -> Store, so an admitted group cannot miss synchronous Stop.
     let core = state.life_runtime.core.lock().map_err(|_| ERROR)?;
+    if selection.is_some_and(|selection| !selection.matches([&a,&b], &core, state.life_runtime.now()))
+        || selection.is_some() && state.overlay.has_any_pending_speech() { return Err(ERROR.into()); }
     for actor in [&a, &b] {
         let id = actor.participant.actor.as_str();
         if core.local_fence(id, state.life_runtime.now()).is_none()
@@ -689,8 +749,8 @@ fn publish(app: &tauri::AppHandle, pair: &[String; 2]) {
     let state = app.state::<AppState>();
     for bot in pair {
         if let Ok(snapshot) = state.store.social_snapshot(bot) {
-            state.overlay.publish(
-                app,
+            let _ = app.emit_to(
+                "main", "social-state",
                 serde_json::json!({"kind":"social-state","botId":bot,"snapshot":snapshot}),
             );
         }
@@ -770,6 +830,51 @@ fn release(app: &tauri::AppHandle, reservations: &[Reservation]) -> Result<(), S
     }
     Ok(())
 }
+/// Optional facts retain only immutable source evidence after actual cleanup.
+fn append_social_fact(app: &tauri::AppHandle, bot: &str, event: &crate::social::SocialEvent) -> Result<bool, String> {
+    let state = app.state::<AppState>();
+    let album_result = state.store.record_experience_social_event(bot, event);
+    let pending = {
+        let core = state.life_runtime.core.lock().map_err(|_| ERROR)?;
+        core.actions.as_ref().and_then(|actions| actions.group_object_uses.get(bot))
+            .filter(|(_, witness)| event.actions().is_some_and(|actions| actions.contains(witness.action())))
+            .cloned()
+    };
+    let Some((snapshot, witness)) = pending else { return album_result; };
+    // Each optional Store validates its own immutable LIVE provenance. A
+    // corrupt album must not suppress a healthy preference credit (and vice
+    // versa); the failed projection still uses the bounded retry budget.
+    let object_changed = state.store.social_credit_object_use(bot, &snapshot, &witness)?;
+    let mut core = state.life_runtime.core.lock().map_err(|_| ERROR)?;
+    if let Some(actions) = core.actions.as_mut() {
+        if actions.group_object_uses.get(bot).is_some_and(|(_, current)| current.action() == witness.action()) {
+            actions.group_object_uses.remove(bot);
+        }
+    }
+    album_result.map(|album_changed| album_changed || object_changed)
+}
+fn social_fact_fences(app: &tauri::AppHandle, event: &crate::social::SocialEvent) -> Result<[Option<super::action_state::LocalFence>; 2], String> {
+    let state = app.state::<AppState>();
+    let core = state.life_runtime.core.lock().map_err(|_| ERROR)?;
+    Ok(std::array::from_fn(|index| {
+        let bot = &event.participants()[index];
+        let action = event.actions()?.get(index)?;
+        let actions = core.actions.as_ref()?;
+        actions.group_object_uses.get(bot)
+            .filter(|(_, witness)| witness.action() == action)
+            .and_then(|(_, witness)| witness.fence().cloned())
+            .or_else(|| actions.jobs.get(bot).filter(|job| job.key.action_id() == action).map(|job| job.fence.clone()))
+    }))
+}
+fn discard_group_object_uses(core: &mut super::core::Core, participants: &[String], scene_actions: &[ActionId]) {
+    if let Some(actions) = core.actions.as_mut() {
+        for bot in participants {
+            if actions.group_object_uses.get(bot).is_some_and(|(_, witness)| scene_actions.contains(witness.action())) {
+                actions.group_object_uses.remove(bot);
+            }
+        }
+    }
+}
 /// Album retries never retain a scene, action, reservation or dialogue grant.
 /// Permanent optional-storage failure pauses only the affected owners; the
 /// successfully committed shared memory/Completed scene remains truthful.
@@ -780,13 +885,17 @@ fn project_fact_report(app: &tauri::AppHandle, report: social_fact_retry::Report
     if !report.failed.is_empty() {
         {
             let mut core = runtime.core.lock().map_err(|_| ERROR)?;
-            for bot in &report.failed { core.mark_storage_failure(bot, runtime.now()); }
-        }
-        // Do not let one optional projection/cancellation error prevent the
-        // other owner's actual storage pause or its visible status readback.
-        for bot in &report.failed {
-            projection_failed |= app.state::<ExperienceRuntime>().set_paused(bot, true).is_err();
-            projection_failed |= runtime.social.cancel_actor(bot, runtime.social_now()).is_err();
+            for (bot, (action, fence)) in &report.failed_sources {
+                discard_group_object_uses(&mut core, std::slice::from_ref(bot), std::slice::from_ref(action));
+                if fence.as_ref().is_some_and(|fence| core.local_current(bot, fence, runtime.now())) {
+                    // Keep the original-fence check and all status changes in
+                    // one Core critical section. Stop/restart cannot inherit
+                    // an earlier scene's optional storage failure.
+                    core.mark_storage_failure(bot, runtime.now());
+                    projection_failed |= app.state::<ExperienceRuntime>().set_paused(bot, true).is_err();
+                    projection_failed |= runtime.social.cancel_actor(bot, runtime.social_now()).is_err();
+                }
+            }
         }
         // Existing localized storage_unavailable projection explains the pause.
         super::publish(app);
@@ -801,7 +910,7 @@ fn project_fact_report(app: &tauri::AppHandle, report: social_fact_retry::Report
 fn retry_facts(app: &tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let report = state.life_runtime.social.facts.lock().map_err(|_| ERROR)?
-        .retry(|bot, event| state.store.record_experience_social_event(bot, event));
+        .retry(|bot, event| append_social_fact(app, bot, event));
     project_fact_report(app, report)
 }
 /// Copy only the actual installed job's immutable time bound, before taking
@@ -1100,6 +1209,8 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                     }
                 }
                 Directive::Terminal { scene, event, .. } => {
+                    let scene_actions = runtime.social.memory.lock().map_err(|_| ERROR)?
+                        .actions.get(&scene.id).cloned().unwrap_or_default();
                     let leases = runtime
                         .social
                         .memory
@@ -1109,22 +1220,17 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                         .get(&scene.id)
                         .cloned()
                         .unwrap_or_default();
+                    if event.outcome() != Outcome::Completed {
+                        let mut core = runtime.core.lock().map_err(|_| ERROR)?;
+                        discard_group_object_uses(&mut core, &scene.participants, &scene_actions);
+                    }
                     let cleanup = (|| {
                         if event.outcome() != Outcome::Completed {
-                            let actions = runtime
-                                .social
-                                .memory
-                                .lock()
-                                .map_err(|_| ERROR)?
-                                .actions
-                                .get(&scene.id)
-                                .cloned()
-                                .unwrap_or_default();
-                            for action in actions {
+                            for action in &scene_actions {
                                 super::cancel_actor_action_exact(
                                     app,
                                     action.actor_id().as_str(),
-                                    &action,
+                                    action,
                                 )?;
                             }
                         }
@@ -1164,12 +1270,13 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                         drop(m);
                         {
                             let mut core = runtime.core.lock().map_err(|_| ERROR)?;
+                            discard_group_object_uses(&mut core, &scene.participants, &scene_actions);
                             for bot in &scene.participants {
                                 core.mark_storage_failure(bot, runtime.now());
                             }
                         }
                         for bot in &scene.participants {
-                            state.overlay.publish(app,serde_json::json!({"kind":"social-error","botId":bot,"sceneId":scene.id,"reason":"persistence_unavailable"}));
+                            let _ = app.emit_to("main", "social-error", serde_json::json!({"kind":"social-error","botId":bot,"sceneId":scene.id,"reason":"persistence_unavailable"}));
                         }
                         continue;
                     }
@@ -1184,10 +1291,11 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                     drop(m);
                     if event.outcome() == Outcome::Completed {
                         // Only this successfully committed immutable native
-                        // event enters the optional album queue. Cleanup and
+                        // event enters the optional fact queue. Cleanup and
                         // coordinator release above never await its retries.
+                        let fences = social_fact_fences(app, event)?;
                         let report = runtime.social.facts.lock().map_err(|_| ERROR)?
-                            .submit(event, |bot, event| state.store.record_experience_social_event(bot, event));
+                            .submit_scoped(event, fences, |bot, event| append_social_fact(app, bot, event));
                         project_fact_report(app, report)?;
                         let _ = start_conversation(app, event);
                     }
@@ -1691,6 +1799,87 @@ async fn send_dialogue_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn grouped_optional_source_cleanup_releases_only_the_exact_completed_action() {
+        use crate::life_domain::{LifeEvent, NeedEffect, Needs, RandomState, WorldId};
+        use crate::world_state::{AnchorId, SlotId};
+        let dir = std::env::temp_dir().join(format!("orbitpal-group-facts-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let store = crate::storage::Store::new(dir.clone()).unwrap();
+        let initial = store.initialize_life("nova", WorldId::new("group-world").unwrap(),
+            Needs::new(5000,5000,5000,5000).unwrap(), RandomState::seeded(1), 1000).unwrap();
+        let complete = |old: crate::storage::life_store::LifeSnapshot| {
+            let at = old.saved_at_ms()+10;
+            let planned = store.apply_life_event("nova", old.state().revision(), 0,
+                LifeEvent::Plan {activity:Activity::Play, completion_effect:NeedEffect::default()}, at).unwrap().snapshot;
+            let action = planned.state().current_action().unwrap().intent().id().clone();
+            let started = store.apply_life_event("nova", planned.state().revision(), 0,
+                LifeEvent::Start {action_id:action.clone()}, at).unwrap().snapshot;
+            store.apply_life_event("nova", started.state().revision(), 100,
+                LifeEvent::Complete {action_id:action}, at+100).unwrap().snapshot
+        };
+        let first = complete(initial);
+        let second = complete(first.clone());
+        let first_action = first.state().current_action().unwrap().intent().id().clone();
+        let second_action = second.state().current_action().unwrap().intent().id().clone();
+        let slot = ActionSlotTarget {id:SlotId::new("play-seat").unwrap(), anchor_id:AnchorId::new("toy").unwrap(),
+            kind:AnchorKind::Play, position:crate::world_state::coordinates::Point::new(100,100).unwrap(),content_ref:None};
+        let reference = crate::storage::object_preferences::ObjectReference::from_slot("stage", &slot);
+        let mut core = super::super::core::Core::new(crate::life_availability::Snapshot {
+            state:crate::life_availability::Availability::AwakeUnlocked, reason:crate::life_availability::Reason::Ready,
+            generation:1, source:crate::life_availability::Source::MacosCgSessionCompatibility });
+        let mut actions = super::super::action_state::NativeActions::new();
+        actions.group_object_uses.insert("nova".into(), (first, super::super::action_host::ObjectUseWitness::fixture(first_action.clone(), reference.clone())));
+        core.actions = Some(actions);
+        assert!(core.actions.as_ref().unwrap().actor_busy("nova"));
+        discard_group_object_uses(&mut core, &["nova".into()], std::slice::from_ref(&second_action));
+        assert!(core.actions.as_ref().unwrap().actor_busy("nova"));
+        discard_group_object_uses(&mut core, &["nova".into()], std::slice::from_ref(&first_action));
+        assert!(!core.actions.as_ref().unwrap().actor_busy("nova"));
+        core.actions.as_mut().unwrap().group_object_uses.insert("nova".into(), (second,
+            super::super::action_host::ObjectUseWitness::fixture(second_action.clone(), reference)));
+        // A delayed failure/cancellation from the old scene cannot discard a
+        // successor's immutable source or keep the old job alive.
+        discard_group_object_uses(&mut core, &["nova".into()], &[first_action]);
+        assert_eq!(core.actions.as_ref().unwrap().group_object_uses["nova"].1.action(), &second_action);
+        assert!(core.actions.as_ref().unwrap().jobs.is_empty());
+        drop(store); std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn retained_menu_peer_is_invalid_after_stop_restart_or_revision_change() {
+        use super::super::core::{Core, Mode, SpeechConfig};
+        use crate::{life_availability::{Availability, Reason, Snapshot, Source},
+            life_domain::{ActorId, LifeState, Needs, WorldId}};
+        let mut core=Core::new(Snapshot {state:Availability::AwakeUnlocked,reason:Reason::Ready,
+            generation:1,source:Source::MacosCgSessionCompatibility});
+        let life=LifeState::new(ActorId::new("friend").unwrap(),WorldId::new("world").unwrap(),
+            Needs::new(5000,5000,5000,5000).unwrap());
+        let config=SpeechConfig {speak:false,min_ms:15_000,max_ms:15_000};
+        let first="11111111-1111-4111-8111-111111111111";
+        core.start("friend",Mode::Life,first.into(),config.clone(),Some(life.clone()),7,false,true,0).unwrap();
+        let selected=SelectedParticipant {bot:"friend".into(),session:first.into(),revision:core.sessions["friend"].revision,
+            scope:Scope {instance:"world-instance".into(),revision:1,topology:1}};
+        assert!(selected.current(&core));
+        core.stop("friend",1); assert!(!selected.current(&core));
+        core.start("friend",Mode::Life,"22222222-2222-4222-8222-222222222222".into(),
+            config,Some(life),7,false,true,2).unwrap();
+        assert!(!selected.current(&core));
+        let mut successor=selected.clone(); successor.session=core.sessions["friend"].session_id.clone();
+        assert!(successor.current(&core));
+        successor.revision+=1; assert!(!successor.current(&core));
+    }
+    #[test]
+    fn retained_menu_world_scope_distinguishes_configuration_and_topology_replacements() {
+        let selected=SelectedParticipant {bot:"friend".into(),session:"session_friend".into(),revision:1,
+            scope:Scope {instance:"world-instance".into(),revision:1,topology:1}};
+        for field in 0..3 {
+            let mut replacement=selected.clone();
+            match field {0=>replacement.scope.instance="new-world".into(),
+                1=>replacement.scope.revision+=1,_=>replacement.scope.topology+=1}
+            assert_ne!(selected,replacement);
+        }
+    }
+
     #[test]
     fn ancestor_cancels_both_jobs_and_late_bind_without_sharing_normal_completion() {
         let group = Arc::new(SceneCancellation::default());

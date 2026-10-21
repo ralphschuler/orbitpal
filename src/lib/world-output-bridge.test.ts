@@ -341,6 +341,36 @@ describe('registration lifecycle epochs, Stop and renewal', () => {
 
 
 describe('station duration uses accepted target frames, never a completion timer', () => {
+  async function petStarted(h:ReturnType<typeof harness>) {
+    h.value.stationSupported=true;await h.bridge.refresh();
+    const command:MotionOffer={...offer(h.value),activity:'pet',minimumActiveMs:200,target:h.value.position,petClip:{action:'Pet',durationMs:200}};
+    const petFrame=(sequence:number,purpose:LocalWorldFrame['purpose'],elapsedMs=0)=>({...frame(command,sequence,purpose,true),pet:{action:'Pet',elapsedMs,finished:elapsedMs===200}});
+    expect(h.bridge.receive(command)).toBe('accepted');
+    h.bridge.frame(petFrame(1,'delivery'));await drain();
+    h.clock.now=16;h.bridge.frame(petFrame(2,'first_behavior'));await drain();
+    return {command,petFrame};
+  }
+  it('requires an actual finished authored Pet frame in addition to sustained native target observations',async()=>{
+    const h=harness(),{petFrame}=await petStarted(h);let sequence=2;
+    for(const [now,elapsed] of [[100,50],[150,100],[200,150],[250,199],[300,199]]){
+      h.clock.now=now;h.bridge.frame(petFrame(++sequence,'progress',elapsed));await drain();
+    }
+    expect(h.reports().some(report=>report.kind==='completed')).toBe(false);
+    h.clock.now=350;h.bridge.frame(petFrame(++sequence,'progress',200));await drain();
+    expect(h.reports().at(-1)?.kind).toBe('completed');
+    expect(h.reports().at(-1)?.frame.pet).toEqual({action:'Pet',elapsedMs:200,finished:true});h.bridge.dispose();
+  });
+  it('rejects substituted, regressing or absent Pet evidence and never releases native Start',async()=>{
+    for(const variant of ['missing','action','early','regression']){
+      const h=harness(),{command,petFrame}=await petStarted(h);
+      h.clock.now=100;h.bridge.frame(petFrame(3,'progress',100));await drain();
+      const current=petFrame(4,'progress',150);
+      const invalid=variant==='missing'?frame(command,4,'progress',true)
+        :{...current,pet:variant==='action'?{...current.pet,action:'Wave'}:variant==='early'?{...current.pet,finished:true}:{...current.pet,elapsedMs:50}};
+      h.clock.now=150;h.bridge.frame(invalid);await drain();
+      expect(h.failed).toEqual(['protocol_error']);expect(h.reports().some(report=>report.kind==='completed')).toBe(false);h.bridge.dispose();
+    }
+  });
   async function stationStarted(h:ReturnType<typeof harness>) {
     h.value.stationSupported=true; await h.bridge.refresh();
     const command:MotionOffer={...offer(h.value),activity:'play',minimumActiveMs:1000,target:h.value.position};

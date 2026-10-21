@@ -11,6 +11,7 @@ import { CONSERVATIVE_ENCLOSURE_KIND, WorldRenderGeometry, type GeometryBinding,
 import { parseMeasurementChallenge, parseWorldMotionBinding } from './world-output';
 import type { NativeMotionBinding, CanonicalPoint, EnvelopeExtents, LocalReference, MeasurementChallenge,
   NativePhysicalPolicy, RenderMeasurement, WorldAdapterIdentity, WorldAdapterReason, LocalWorldFrame } from './world-output';
+import type { PetClip, PetFrame } from './world-output';
 
 export interface WorldAvatarOptions {
   worldOwner?: boolean; worldChallenge?: MeasurementChallenge; worldBinding?: NativeMotionBinding;
@@ -22,11 +23,11 @@ export interface WorldAvatarOptions {
   onWorldActivity?: (activity: WorldStationFrame | undefined) => void;
 }
 /** Display-only successful-frame observation; never an action receipt. */
-export type WorldStationFrame = Readonly<{ activity: StationActivity; activeMs: number;
+export type WorldStationFrame = Readonly<{ activity: StationActivity | 'pet'; activeMs: number;
   minimumActiveMs: number; position: Readonly<{ x: number; y: number }> }>;
 export type WorldPoseSnapshot = { restore(): void };
 export type WorldTrial = Readonly<{ frame: GeometryFrame; proposal: MotionProposal | null;
-  walking: boolean; cycles: number; calibration: boolean; generation: number; snapshot: WorldPoseSnapshot }>;
+  walking: boolean; cycles: number; calibration: boolean; generation: number; snapshot: WorldPoseSnapshot; pet?: PetFrame }>;
 export type WorldRenderResult = 'committed'|'preparing'|'failed'|'stale';
 const CALIBRATION_FRAMES = 32;
 const NUMERICAL_GUARD = .5;
@@ -156,6 +157,10 @@ export class WorldAvatarController {
   private clearStation():void{
     this.stationSince=undefined;this.stationLast=undefined;this.options.onWorldActivity?.(undefined);
   }
+  get petPlayback(): Readonly<{ clip: PetClip; running: boolean }> | null {
+    return !this.blocked && this.offer?.activity === 'pet' && this.offer.petClip
+      ? { clip: this.offer.petClip, running: this.started && this.follower.snapshot().phase !== 'paused' } : null;
+  }
   command(command:WorldMotionCommand,now:number):ReceiveResult{
     if(!this.options.worldOwner||this.blocked||!this.accepted)return 'stale';
     const result=this.follower.receive(command,now);
@@ -221,6 +226,9 @@ export class WorldAvatarController {
     placeWorldReference(this.root,this.camera,r,this.mirrorAnchor(),this.viewport);}
   render(trial:WorldTrial,scene:THREE.Scene,renderer:RenderPort,observe:()=>SurfaceObservation,now:number,clock:()=>number):WorldRenderResult{
     if(trial.generation!==this.generation)return 'stale';
+    if(this.offer?.activity==='pet' && (!trial.pet || trial.pet.action!==this.offer.petClip?.action)) {
+      trial.snapshot.restore(); this.cancel('unsupported_capability'); return 'failed';
+    }
     this.root.updateWorldMatrix(true,true);
     // The frozen orthographic ground basis is independent of both heading and
     // translation. Its scale/camera/layout cannot change under this binding.
@@ -257,14 +265,15 @@ export class WorldAvatarController {
       if(this.stationLast===undefined||now<this.stationLast||now-this.stationLast>250)this.stationSince=now;
       this.stationLast=now;
       this.options.onWorldActivity?.({activity:this.offer.activity,minimumActiveMs:this.offer.minimumActiveMs,
-        activeMs:Math.min(this.offer.minimumActiveMs,Math.max(0,now-this.stationSince!)),position:{...m.position}});
+        activeMs:this.offer.activity==='pet' ? trial.pet!.elapsedMs : Math.min(this.offer.minimumActiveMs,Math.max(0,now-this.stationSince!)),position:{...m.position}});
     }else this.clearStation();
     if(trial.proposal){
       if(!this.firstFrame){this.firstFrame=m.frame.frameSequence;this.firstFrameAt=now;purpose='first_behavior';}
       else purpose=this.started?'progress':'start_hold';
     }
     this.options.onWorldFrame?.({enclosureKind:CONSERVATIVE_ENCLOSURE_KIND,fence:this.offer.fence,frameSequence:m.frame.frameSequence,viewport:m.viewport,clip:m.clip,
-      anchor:m.position,posedBounds:m.posedBounds,walking,targetIdleFrames:idleFrames,purpose});
+      anchor:m.position,posedBounds:m.posedBounds,walking,targetIdleFrames:idleFrames,purpose,
+      ...(this.offer.activity==='pet'&&trial.pet?{pet:trial.pet}:{})});
     return 'committed';
   }
   private publishMeasurement(challenge:MeasurementChallenge,m:GeometryMeasurement):void{

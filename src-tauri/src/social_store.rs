@@ -45,6 +45,7 @@ pub(crate) struct SocialSnapshot {
     pub memories: Vec<Memory>,
     pub summary: Summary,
     pub development: Character,
+    pub object_preferences: Vec<super::object_preferences::ObjectAffinity>,
     pub scenes: Vec<SceneView>,
     pub trace: Vec<SceneView>,
     pub dialogue: DialogueSettings,
@@ -123,7 +124,7 @@ pub(crate) fn initialize(db: &mut Connection) -> Result<(), String> {
     }
     tx.commit().map_err(err)
 }
-fn owner(db: &Connection, fixed: Option<&str>, id: &str) -> Result<(), String> {
+pub(super) fn owner(db: &Connection, fixed: Option<&str>, id: &str) -> Result<(), String> {
     if !valid_id(id)
         || fixed.is_some_and(|scope| scope != id)
         || !db
@@ -233,7 +234,7 @@ pub(super) fn seed_template_character(
     state.character.validate()?;
     save_bot(tx, id, &state)
 }
-fn bump(tx: &Transaction) -> Result<(), String> {
+pub(super) fn bump(tx: &Transaction) -> Result<(), String> {
     if tx
         .execute(
             "UPDATE social_meta SET epoch=epoch+1 WHERE id=1 AND epoch<?1",
@@ -363,6 +364,7 @@ fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
                 if b.action_world != action.world_id().as_str()
                     || action.ordinal() > b.action_ordinal
                 {
+                    let before = b.character.clone();
                     b.action_world = action.world_id().as_str().into();
                     b.action_ordinal = action.ordinal();
                     b.character.credit(if event.kind() == SceneKind::Play {
@@ -370,6 +372,10 @@ fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
                     } else {
                         HobbyKind::Company
                     });
+                    let source = &event.source_events().ok_or("missing completed scene sources")?[i];
+                    super::experience_store::append_development_milestones(
+                        tx, id, &before, &b.character, source, event.at_ms(),
+                    )?;
                 }
             }
             Outcome::Cancelled => {
@@ -496,7 +502,7 @@ fn memories(db: &Connection, id: &str, shared: bool) -> Result<Vec<Memory>, Stri
     Ok(result)
 }
 impl Store {
-    fn social_ready(&self) -> Result<(), String> {
+    pub(super) fn social_ready(&self) -> Result<(), String> {
         let mut db = self.db.lock().map_err(err)?;
         initialize(&mut db)
     }
@@ -660,6 +666,14 @@ impl Store {
         tx.commit().map_err(err)
     }
     pub(crate) fn social_snapshot(&self, id: &str) -> Result<SocialSnapshot, String> {
+        self.social_snapshot_with_objects(id,true)
+    }
+    /// Runtime participant observations never depend on optional
+    /// per-object preference storage or project those private preferences.
+    pub(crate) fn social_native_snapshot(&self,id:&str)->Result<SocialSnapshot,String>{
+        self.social_snapshot_with_objects(id,false)
+    }
+    fn social_snapshot_with_objects(&self,id:&str,include_objects:bool)->Result<SocialSnapshot,String>{
         self.social_ready()?;
         let db = self.db.lock().map_err(err)?;
         owner(&db, self.fixed_profile.as_deref(), id)?;
@@ -700,6 +714,7 @@ impl Store {
             memories: memories(&db, id, false)?,
             summary: b.summary,
             development: b.character,
+            object_preferences: if include_objects {super::object_preferences::entries(&db,id)?} else {vec![]},
             scenes,
             trace: scene_trace(&db, id)?,
             dialogue: dialogue_settings(&db, id)?,
@@ -1013,9 +1028,10 @@ impl Store {
     pub(crate) fn social_credit_activity(
         &self,
         id: &str,
-        confirmed: &crate::life_domain::LifeState,
+        snapshot: &super::life_store::LifeSnapshot,
     ) -> Result<bool, String> {
         self.social_ready()?;
+        let confirmed = snapshot.state();
         let action = confirmed
             .current_action()
             .filter(|a| a.phase() == crate::life_domain::ActionPhase::Completed)
@@ -1050,6 +1066,20 @@ impl Store {
         {
             return Err("development activity not confirmed in Store".into());
         }
+        if snapshot.saved_at_ms() > actual.saved_at_ms()
+            || confirmed.revision() > actual.state().revision()
+            || confirmed.world_id() != actual.state().world_id() {
+            return Err("development activity snapshot changed".into());
+        }
+        let source = snapshot.events().iter().find(|event| {
+            event.origin() == super::life_store::EventOrigin::Live
+                && confirmed.recent_events().any(|record| record == event.record())
+                && actual.events().iter().any(|stored| stored.origin() == super::life_store::EventOrigin::Live
+                    && stored.record() == event.record())
+                && actual.state().recent_events().any(|record| record == event.record())
+                && matches!(event.record().event(), crate::life_domain::CommittedEvent::Completed { action_id }
+                    if action_id == current.intent().id())
+        }).ok_or("development activity has no live completion")?;
         let mut b = bot(&tx, id)?;
         let world = confirmed.world_id().as_str();
         if b.action_world == world && action.intent().id().ordinal() <= b.action_ordinal {
@@ -1057,7 +1087,11 @@ impl Store {
         }
         b.action_world = world.into();
         b.action_ordinal = action.intent().id().ordinal();
+        let before = b.character.clone();
         b.character.credit(hobby);
+        super::experience_store::append_development_milestones(
+            &tx, id, &before, &b.character, source.record().id(), snapshot.saved_at_ms(),
+        )?;
         b.revision = b
             .revision
             .checked_add(1)

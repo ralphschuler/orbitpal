@@ -1,7 +1,7 @@
 /** Read-only Studio projection. None of these fields is an action/owner capability. */
 export const intentActivityLabels = {
   move_to: 'Unterwegs', rest: 'Ruhen', recharge: 'Energie sammeln', snack: 'Snackpause',
-  play: 'Spielen', socialize: 'Gesellig sein', look_at: 'Umschauen', wave: 'Winken', greeting: 'Gemeinsame Begrüßung',
+  play: 'Spielen', socialize: 'Gesellig sein', look_at: 'Umschauen', wave: 'Winken', pet: 'Streicheln', greeting: 'Gemeinsame Begrüßung',
 } as const;
 export const intentPhaseLabels = {
   preparing: 'Ausgabe wird vorbereitet', delivered: 'An Ausgabe übergeben', invitation: 'Wartet auf eine Einladungsantwort',

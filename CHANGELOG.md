@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.14.0 — 2026-10-21
+
+- Add a saved energy render profile with a 20 FPS cap, pixel ratio 1 and no dynamic shadows. Skip GPU submissions for hidden views while keeping native Life, cancellation and animation timing independent. Keep the measured World preparation and presentation gates.
+- Require an explicitly selected second character for a play invitation in Studio and the native menu. Recheck both participants and retained sessions through the social coordinator; a missing, stale or self selection cannot become a solo rewarded action.
+- Route Pet through the typed native ActionExecutor with an exact authored clip, actual-frame progress, native start/completion acknowledgement and cancellation. Missing, ambiguous or unsupported clips stay unavailable; Pet grants no need or development reward.
+- Learn bounded per-character preferences from confirmed uses of individual World objects. Preserve need priority, validate immutable completion sources, keep resets replay-safe, and expose private inspection/reset in Studio. Private social snapshots and storage errors now stay in Main notifications.
+- Group factual recaps by the operator's local calendar, including timezone changes and daylight-saving boundaries. Record only confirmed hobby and goal milestones, with private bounded source references. Make every retained album fact and social memory reachable through bounded pagination.
+- Give the isolated GNOME renderer harness its own empty system-bus transport. No host bus, logind service, permission or successful benchmark result is substituted.
+- Reconcile all 18 open issues against the actual v0.13.0 source and document their dependency order and remaining native acceptance in [the backlog review](docs/BACKLOG-2026-10-21.md). No pull requests were open at the start of this work.
+
+Desktop Life remains experimental. Native multi-character/OBS movement, paired scenes, hidden operation, sleep/reconnect, physical monitor/DPI and hardware performance acceptance are incomplete. Wayland application acceptance and five upstream transitive maintenance families remain open. macOS keeps the pinned persistent self-signed identity without Apple notarization; Windows packages have no Authenticode signature. This release makes no new installed-update/privacy-retention or native-platform guarantee.
+
 ## Unreleased
 
 ## 0.13.0 — 2026-10-21

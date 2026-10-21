@@ -9,6 +9,17 @@ explicitly disposable GitHub-hosted Linux VM. A successful smoke would
 qualify this fixture's lifecycle and numeric scope, not hardware performance,
 the full application or the broader benchmark matrix.
 
+The failed run's retained GNOME 50 diagnostic identified a startup exception
+while constructing a system-bus proxy. The compositor now receives a separate
+real empty D-Bus transport on its own protected runtime socket, with no service
+directories, activation helper, included host configuration or logind service.
+Its daemon runs under the existing disposable UID/compositor cgroup and cleanup.
+The app still cannot connect to a system bus. This supplies transport only:
+missing services remain missing, and no login/permission observation is invented.
+Controlled config/environment tests run everywhere; a small Linux-only real
+D-Bus fixture checks that external services cannot be activated. A new genuine
+GNOME smoke remains necessary before claiming renderer qualification.
+
 Build the separate benchmark frontend and feature-gated Cargo example using
 their reviewed isolated configuration before entering the timed fixture. It
 embeds the actual AvatarStage; it does not initialize the production App,

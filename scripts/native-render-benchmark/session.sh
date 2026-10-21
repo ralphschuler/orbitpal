@@ -21,12 +21,13 @@ root="$ORBITPAL_BENCH_ROOT"
 [[ "$ORBITPAL_BENCH_MODE" == smoke || "$ORBITPAL_BENCH_MODE" == pilot || "$ORBITPAL_BENCH_MODE" == pilot3 || "$ORBITPAL_BENCH_MODE" == pilot5 ]]
 [[ -z "${DISPLAY+x}" && -z "${TAURI_CONFIG+x}" ]]
 umask 077
-bus_pid= workload_pid=
+bus_pid= system_bus_pid= workload_pid=
 cleanup() {
   result=$?
   trap - EXIT
   [[ -z "$workload_pid" ]] || kill -TERM "$workload_pid" 2>/dev/null || true
   [[ -z "$bus_pid" ]] || kill -TERM "$bus_pid" 2>/dev/null || true
+  [[ -z "$system_bus_pid" ]] || kill -TERM "$system_bus_pid" 2>/dev/null || true
   # Root runner owns the absolute watchdog and bounded cgroup cleanup even if
   # a helper cannot complete this ordinary unprivileged wait.
   wait || true
@@ -50,6 +51,21 @@ if [[ "$ORBITPAL_BENCH_DOMAIN" == compositor ]]; then
     if [[ -n "$diagnostic_fd" ]]; then sleep .1 {diagnostic_fd}>&-; else sleep .1; fi
   done
   [[ -S "$home/runtime/session-bus" ]]
+  [[ "$DBUS_SYSTEM_BUS_ADDRESS" == "unix:path=$home/runtime/system-bus" ]]
+  # A real empty private bus satisfies proxy transport construction only. No
+  # logind/session service is mocked, activated or reached on the host.
+  if [[ -n "$diagnostic_fd" ]]; then
+    dbus-daemon --nofork --config-file="$root/compositor-system-bus.conf" >/dev/null 2>&1 {diagnostic_fd}>&- &
+  else
+    dbus-daemon --nofork --config-file="$root/compositor-system-bus.conf" >/dev/null 2>&1 &
+  fi
+  system_bus_pid=$!
+  for ((attempt=0; attempt<150; attempt++)); do
+    [[ -S "$home/runtime/system-bus" ]] && break
+    kill -0 "$system_bus_pid" 2>/dev/null || exit 1
+    if [[ -n "$diagnostic_fd" ]]; then sleep .1 {diagnostic_fd}>&-; else sleep .1; fi
+  done
+  [[ -S "$home/runtime/system-bus" ]]
   # Same real headless GNOME path as the separate Wayland acceptance baseline.
   # No host display/DRM permission, portal, capture or test grant is used.
   if [[ -n "$diagnostic_fd" ]]; then

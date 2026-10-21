@@ -278,6 +278,7 @@ fn make_report(
         },
         walking,
         target_idle_frames: u16::MAX,
+        pet: None,
     };
     match kind {
         ReportKind::Delivered => ActionReport::Delivered {

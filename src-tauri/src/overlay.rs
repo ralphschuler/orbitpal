@@ -99,7 +99,7 @@ impl OverlayHub {
                 if let Ok(profile)=app.state::<crate::AppState>().store.profile(){event["botId"]=profile["id"].clone();}
             }
         }
-        if event["kind"]=="profile"{if let Some(profile)=event.get("profile"){event["presentation"]=app.state::<crate::AppState>().presentation.snapshot(profile);}if let Some(bot_id)=event["botId"].as_str(){let state=app.state::<crate::AppState>();let config=state.store.bot_profile(bot_id).ok().and_then(|profile|crate::autopilot::config(&profile).ok()).unwrap_or_default();let output=state.life_runtime.session_output(bot_id).ok();event["autopilotRuntime"]=json!(state.life_runtime.present(state.autopilot.runtime(bot_id,&config)));event["lifeOutput"]=json!(output);}}
+        if event["kind"]=="profile"{if let Some(profile)=event.get("profile"){let presentation=app.state::<crate::AppState>().presentation.snapshot(profile);let render_settings=profile["id"].as_str().and_then(|bot|app.state::<crate::AppState>().store.render_settings(bot).ok()).and_then(|value|serde_json::to_value(value).ok()).unwrap_or(Value::Null);event["presentation"]=presentation;event["renderSettings"]=render_settings;}if let Some(bot_id)=event["botId"].as_str(){let state=app.state::<crate::AppState>();let config=state.store.bot_profile(bot_id).ok().and_then(|profile|crate::autopilot::config(&profile).ok()).unwrap_or_default();let output=state.life_runtime.session_output(bot_id).ok();event["autopilotRuntime"]=json!(state.life_runtime.present(state.autopilot.runtime(bot_id,&config)));event["lifeOutput"]=json!(output);}}
         if event["kind"]=="stop" {
             // Tray, Studio, Control-MCP and the global overlay stop all reach
             // this boundary. No background session survives an emergency stop.
@@ -363,7 +363,7 @@ async fn events(State(app):State<tauri::AppHandle>,Query(q):Query<Access>)->Resp
     let Ok(bot_id)=requested_bot(&app,&q)else{return StatusCode::NOT_FOUND.into_response();};
     let state=app.state::<crate::AppState>();let receiver=state.overlay.sender.subscribe();
     let initial=match state.store.scoped(&bot_id).and_then(|store|store.profile()){
-        Ok(profile)=>json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile),"presentation":state.presentation.snapshot(&profile),"autopilotRuntime":state.life_runtime.present(state.autopilot.runtime(&bot_id,&crate::autopilot::config(&profile).unwrap_or_default())),"lifeOutput":state.life_runtime.session_output(&bot_id).ok()}),
+        Ok(profile)=>json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile),"presentation":state.presentation.snapshot(&profile),"renderSettings":state.store.render_settings(&bot_id).ok(),"autopilotRuntime":state.life_runtime.present(state.autopilot.runtime(&bot_id,&crate::autopilot::config(&profile).unwrap_or_default())),"lifeOutput":state.life_runtime.session_output(&bot_id).ok()}),
         Err(_)=>return StatusCode::NOT_FOUND.into_response(),
     };
     let mut world=state.store.bot_profile(&bot_id).ok().and_then(|profile|state.world.output_event(&bot_id,&profile)).unwrap_or_else(||json!({"kind":"world-state","botId":bot_id,"world":null,"arena":null}));

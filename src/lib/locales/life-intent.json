@@ -35,7 +35,8 @@
     "Ziel: Spielplatz": "Target: play place",
     "Ziel: Treffpunkt": "Target: meeting place",
     "Freier Zielpunkt": "Free destination",
-    "Andere Figur als Ziel": "Another character as target"
+    "Andere Figur als Ziel": "Another character as target",
+    "Streicheln": "Pet"
   },
   "fr": {
     "Energie sammeln": "Reprendre de l’énergie",
@@ -73,7 +74,8 @@
     "Ziel: Spielplatz": "Destination : lieu de jeu",
     "Ziel: Treffpunkt": "Destination : point de rencontre",
     "Freier Zielpunkt": "Destination libre",
-    "Andere Figur als Ziel": "Un autre personnage comme destination"
+    "Andere Figur als Ziel": "Un autre personnage comme destination",
+    "Streicheln": "Caresser"
   },
   "es": {
     "Energie sammeln": "Recuperar energía",
@@ -111,6 +113,7 @@
     "Ziel: Spielplatz": "Destino: lugar de juego",
     "Ziel: Treffpunkt": "Destino: punto de encuentro",
     "Freier Zielpunkt": "Destino libre",
-    "Andere Figur als Ziel": "Otro personaje como destino"
+    "Andere Figur als Ziel": "Otro personaje como destino",
+    "Streicheln": "Acariciar"
   }
 }

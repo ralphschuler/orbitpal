@@ -41,6 +41,9 @@ fn write<T: serde::Serialize>(db: &Connection, key: &str, value: &T) -> Result<(
     Ok(())
 }
 fn append_fact(db: &Connection, bot: &str, fact: ActivityFact) -> Result<bool, String> {
+    if let Some(error) = read::<String>(db, &format!("experience-development-error-v1:{bot}"))? {
+        return Err(error);
+    }
     fact.validate()?;
     if !fact.actor_ids.iter().any(|id| id == bot) {
         return Err("experience_invalid_fact".into());
@@ -71,6 +74,107 @@ fn source_id(id: &crate::life_domain::EventId) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(serde_json::to_vec(id).map_err(storage)?);
     Ok(format!("life_{digest:x}"))
+}
+fn pending_development(db: &Connection, bot: &str) -> Result<Vec<ActivityFact>, String> {
+    let pending = read::<Vec<ActivityFact>>(db, &format!("experience-development-v1:{bot}"))?.unwrap_or_default();
+    if pending.len() > MAX_FACTS { return Err("experience_capacity".into()); }
+    let mut ids = std::collections::BTreeSet::new();
+    for fact in &pending {
+        fact.validate()?;
+        if fact.actor_ids != [bot] || fact.development.is_none() || !ids.insert(&fact.id) {
+            return Err("experience_corrupt".into());
+        }
+    }
+    Ok(pending)
+}
+/// Album failures leave the exact already-confirmed milestone in a bounded
+/// durable outbox. A savepoint never rolls back its owning development commit.
+fn flush_development(db: &Connection, bot: &str) -> Result<(), String> {
+    let pending = pending_development(db, bot)?;
+    if pending.is_empty() { return Ok(()); }
+    db.execute_batch("SAVEPOINT orbitpal_development_album").map_err(storage)?;
+    let result = (|| {
+        for fact in pending { append_fact(db, bot, fact)?; }
+        db.execute("DELETE FROM settings WHERE key=?1", [format!("experience-development-v1:{bot}")]).map_err(storage)?;
+        Ok(())
+    })();
+    if result.is_err() { db.execute_batch("ROLLBACK TO orbitpal_development_album").map_err(storage)?; }
+    db.execute_batch("RELEASE orbitpal_development_album").map_err(storage)?;
+    result
+}
+/// Called only inside the transaction that verifies a LIVE completion and credits
+/// development. A threshold is recorded with its source, never reconstructed
+/// from a later snapshot or a user-edited preference.
+pub(super) fn append_development_milestones(
+    db: &Connection,
+    bot: &str,
+    before: &crate::character_development::Character,
+    after: &crate::character_development::Character,
+    source: &crate::life_domain::EventId,
+    at_ms: u64,
+) -> Result<(), String> {
+    use crate::{character_development::{GoalStatus, HobbyKind},
+        experience::{DevelopmentHobby, DevelopmentMilestone, FactKind, FactPhase}};
+    if source.actor_id().as_str() != bot {
+        return Err("experience_stale_source".into());
+    }
+    before.validate()?;
+    after.validate()?;
+    let source_id = source_id(source)?;
+    let hobby_kind = |kind| match kind {
+        HobbyKind::Play => DevelopmentHobby::Play,
+        HobbyKind::Explore => DevelopmentHobby::Explore,
+        HobbyKind::Company => DevelopmentHobby::Company,
+    };
+    let mut captured = Vec::new();
+    let mut append = |kind, suffix: &str, development| {
+        captured.push(ActivityFact {
+            id: format!("{source_id}_{suffix}"),
+            actor_ids: vec![bot.into()], kind, phase: FactPhase::Completed,
+            at_ms, source_event_ids: vec![source_id.clone()], shared: false,
+            development: Some(development),
+        });
+    };
+    for next in &after.hobbies {
+        if before.hobbies.iter().any(|old| old.kind == next.kind
+            && old.variation < next.variation && old.experience < next.experience) {
+            append(FactKind::HobbyMilestone, "hobby", DevelopmentMilestone {
+                hobby: hobby_kind(next.kind), variation: next.variation, goal_id: None,
+            });
+        }
+    }
+    if let Some(goal) = after.goal.as_ref().filter(|goal| goal.status == GoalStatus::Achieved) {
+        if before.goal.as_ref().is_some_and(|old| old.id == goal.id && old.kind == goal.kind
+            && old.status == GoalStatus::Active && old.progress < goal.progress) {
+            let variation = after.hobbies.iter().find(|h| h.kind == goal.kind).map_or(0, |h| h.variation);
+            append(FactKind::GoalAchieved, "goal", DevelopmentMilestone {
+                hobby: hobby_kind(goal.kind), variation, goal_id: Some(goal.id.clone()),
+            });
+        }
+    }
+    if captured.is_empty() { return Ok(()); }
+    db.execute_batch("SAVEPOINT orbitpal_development_queue").map_err(storage)?;
+    let queued = (|| {
+        let mut pending = pending_development(db, bot)?;
+        for fact in captured {
+            fact.validate()?;
+            if pending.iter().any(|old| old.id == fact.id) { continue; }
+            if pending.len() == MAX_FACTS { return Err("experience_capacity".into()); }
+            pending.push(fact);
+        }
+        write(db, &format!("experience-development-v1:{bot}"), &pending)
+    })();
+    if queued.is_err() { db.execute_batch("ROLLBACK TO orbitpal_development_queue").map_err(storage)?; }
+    db.execute_batch("RELEASE orbitpal_development_queue").map_err(storage)?;
+    if let Err(error) = queued {
+        // Preserve existing queued data. The existing optional fact observer
+        // sees this error and pauses future work through its storage status.
+        write(db, &format!("experience-development-error-v1:{bot}"), &error)?;
+    } else {
+        // The outbox is durable even when an old optional album is corrupt.
+        let _ = flush_development(db, bot);
+    }
+    Ok(())
 }
 fn pack_character<'a>(
     packs: &'a [Installed],
@@ -162,8 +266,13 @@ impl Store {
     }
     pub fn experience_facts(&self, bot: &str) -> Result<Vec<ActivityFact>, String> {
         self.experience_owner(bot)?;
-        let db = self.db.lock().map_err(storage)?;
-        let facts = read::<Vec<ActivityFact>>(&db, &format!("experience-facts-v1:{bot}"))?
+        let mut db = self.db.lock().map_err(storage)?;
+        let tx = db.transaction().map_err(storage)?;
+        if let Some(error) = read::<String>(&tx, &format!("experience-development-error-v1:{bot}"))? {
+            return Err(error);
+        }
+        flush_development(&tx, bot)?;
+        let facts = read::<Vec<ActivityFact>>(&tx, &format!("experience-facts-v1:{bot}"))?
             .unwrap_or_default();
         if facts.len() > MAX_FACTS {
             return Err("experience_corrupt".into());
@@ -174,6 +283,7 @@ impl Store {
                 return Err("experience_corrupt".into());
             }
         }
+        tx.commit().map_err(storage)?;
         Ok(facts)
     }
     /// A real native observer calls after its actual transition/poll. No caller supplies a fact.
@@ -271,6 +381,7 @@ impl Store {
             Some("snack") => FactKind::Snack,
             Some("play") => FactKind::Play,
             Some("wave" | "socialize") => FactKind::Greeting,
+            Some("pet") => FactKind::Pet,
             _ => return Ok(false),
         };
         let event_id = source_id(record.id())?;
@@ -282,6 +393,7 @@ impl Store {
             at_ms: source.saved_at_ms(),
             source_event_ids: vec![event_id],
             shared: false,
+            development: None,
         };
         let inserted = append_fact(&tx, bot, fact)?;
         tx.commit().map_err(storage)?;
@@ -351,6 +463,7 @@ impl Store {
             at_ms: event.at_ms(),
             source_event_ids: sources.iter().map(source_id).collect::<Result<_, _>>()?,
             shared: false,
+            development: None,
         };
         let inserted = append_fact(&tx, bot, fact)?;
         tx.commit().map_err(storage)?;
@@ -369,6 +482,14 @@ impl Store {
         let mut db = self.db.lock().map_err(storage)?;
         let tx = db.transaction().map_err(storage)?;
         let k = format!("experience-facts-v1:{bot}");
+        if id.is_none() && shared.is_none() {
+            for key in [&k, &format!("experience-development-v1:{bot}"), &format!("experience-development-error-v1:{bot}")] {
+                tx.execute("DELETE FROM settings WHERE key=?1", [key]).map_err(storage)?;
+            }
+            tx.commit().map_err(storage)?;
+            return Ok(Vec::new());
+        }
+        flush_development(&tx, bot)?;
         let mut facts = read::<Vec<ActivityFact>>(&tx, &k)?.unwrap_or_default();
         if facts.len() > MAX_FACTS {
             return Err("experience_corrupt".into());

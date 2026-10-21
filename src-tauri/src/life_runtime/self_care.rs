@@ -280,6 +280,7 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
         let explore_targets=explore::candidates(&slots,entry.home,source.context.position,&preferences,
             explore::WalkObservation::from_binding(&output.binding));
         let walk_target = !explore_targets.is_empty();
+        let object_preferences=state.store.social_object_preferences(bot).unwrap_or_default();
         let mut offers = Vec::new();
         for wanted in [
             Need::Energy,
@@ -311,7 +312,8 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
                 }
             } else {
                 for (cost, slot,weight) in candidates.into_iter().take(8) {
-                    if let Ok(offer) = Offer::new(wanted, Target::Slot(slot.id.clone()), cost).and_then(|offer|offer.weighted(weight)) {offers.push(offer);}
+                    if let Ok(offer) = Offer::new(wanted, Target::Slot(slot.id.clone()), cost).and_then(|offer|offer.weighted(weight))
+                        .and_then(|offer|offer.learned_affinity(crate::storage::object_preferences::affinity(&object_preferences,source.context.stage.as_str(),slot))) {offers.push(offer);}
 
                 }
             }

@@ -7,6 +7,8 @@ pub(crate) struct VisualExecution {
     pub output: OutputProof,
     pub activity: crate::life_domain::Activity,
     pub minimum_active_ms: u64,
+    pub pet_clip: Option<PetClip>,
+    pet_elapsed_ms: u32,
     pub target: Point,
     pub from: CssPoint,
     pub destination: CssPoint,
@@ -34,9 +36,19 @@ impl VisualExecution {
         minimum_active_ms: u64,
         now: u64,
     ) -> Result<Self, RenderReason> {
+        if activity == crate::life_domain::Activity::Pet { return Err(RenderReason::UnsupportedCapability); }
+        Self::configured(output, target, activity, minimum_active_ms, None, now)
+    }
+    pub(crate) fn for_pet(output: OutputProof, target: Point, clip: PetClip, now: u64) -> Result<Self, RenderReason> {
+        if !clip.valid() { return Err(RenderReason::UnsupportedCapability); }
+        let minimum = u64::from(clip.duration_ms).max(200);
+        Self::configured(output, target, crate::life_domain::Activity::Pet, minimum, Some(clip), now)
+    }
+    fn configured(output: OutputProof, target: Point, activity: crate::life_domain::Activity,
+        minimum_active_ms: u64, pet_clip: Option<PetClip>, now: u64) -> Result<Self, RenderReason> {
         use crate::life_domain::Activity;
         let station = matches!(activity, Activity::Rest | Activity::Recharge | Activity::Snack
-            | Activity::Play | Activity::Socialize);
+            | Activity::Play | Activity::Socialize | Activity::Pet);
         if minimum_active_ms > crate::life_self_care::MAX_CARE_DURATION_MS
             || activity == Activity::MoveTo && minimum_active_ms != 0
             || station && (!output.binding.station_supported || minimum_active_ms == 0)
@@ -48,6 +60,7 @@ impl VisualExecution {
         let destination = css(target, output.binding.viewport);
         if !output.binding.safe_centers.contains(from)
             || !output.binding.safe_centers.contains(destination)
+            || activity == Activity::Pet && destination.distance(from) > 0.25
         {
             return Err(RenderReason::TargetDoesNotFit);
         }
@@ -55,6 +68,8 @@ impl VisualExecution {
             output,
             activity,
             minimum_active_ms,
+            pet_clip,
+            pet_elapsed_ms: 0,
             target,
             from,
             destination,
@@ -114,6 +129,22 @@ impl VisualExecution {
             || frame.frame_sequence <= self.last_frame
         {
             return Err(RenderReason::Expired);
+        }
+        match (&self.pet_clip, &frame.pet) {
+            (None, None) => (),
+            (Some(clip), Some(pet)) => {
+                if pet.action != clip.action || pet.elapsed_ms > clip.duration_ms
+                    || pet.elapsed_ms < self.pet_elapsed_ms || frame.walking
+                    || pet.finished != (pet.elapsed_ms == clip.duration_ms)
+                    || matches!(kind, ReportKind::Delivered | ReportKind::Started)
+                        && (pet.elapsed_ms != 0 || pet.finished)
+                    || matches!(kind, ReportKind::Progress | ReportKind::Completed)
+                        && self.started_at.is_none_or(|started| u64::from(pet.elapsed_ms) > received.saturating_sub(started).saturating_add(50))
+                    || kind == ReportKind::Completed && (!pet.finished || pet.elapsed_ms != clip.duration_ms) {
+                    return Err(RenderReason::ProtocolError);
+                }
+            }
+            _ => return Err(RenderReason::ProtocolError),
         }
         if matches!(kind, ReportKind::Delivered | ReportKind::Started)
             && frame.anchor.distance(self.from) > 0.25
@@ -178,6 +209,7 @@ impl VisualExecution {
         } else {
             self.stable.clear();
         }
+        if let Some(pet) = &frame.pet { self.pet_elapsed_ms = pet.elapsed_ms; }
         self.highest_progress = self.highest_progress.max(longitudinal);
         self.last_frame = frame.frame_sequence;
         self.last_observed = received;

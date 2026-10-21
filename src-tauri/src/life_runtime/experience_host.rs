@@ -277,6 +277,13 @@ async fn start_activity_guarded(
     if app.state::<ExperienceRuntime>().paused(bot)? || state.overlay.has_any_pending_speech() {
         return Err(ERROR.into());
     }
+    // File/asset parsing stays outside Owned/Core. Managed asset IDs are
+    // immutable; the exact profile is retained and rechecked before Plan.
+    let pet = if activity==Activity::Pet {
+        let profile=state.store.bot_profile(bot)?;
+        let clip=crate::emote_capabilities::pet_clip(&state.store.root,&profile)?;
+        Some((profile,clip))
+    } else {None};
     let runtime = &state.life_runtime;
     // Copy advisory origin before Owned/Core: Care's chooser lock precedes
     // these locks, so admission must never acquire it in the inverse order.
@@ -310,6 +317,7 @@ async fn start_activity_guarded(
         runtime.now(),
     )?;
     if !member.current()
+        || pet.as_ref().is_some_and(|(profile,_)| profile!=&owned.context.profile)
         || !runtime
             .session_outputs
             .constructor_current(&member.constructor)
@@ -339,11 +347,15 @@ async fn start_activity_guarded(
         && context == &(source.context.instance_id.clone(), source.context.config_revision, source.context.topology_revision))
         .map(|(_, _, point)| point).unwrap_or(source.context.position);
     let moving = target != source.context.position;
-    if !preferences.allowed_animations.iter().any(|animation| animation == "idle")
-        || (moving && !preferences.allowed_animations.iter().any(|animation| animation == "walk"))
-        || !super::self_care::within_radius(home, target, preferences.movement_radius) {
-        return Err(ERROR.into());
-    }
+    let animation_denied = if activity==Activity::Pet {
+        slot.is_some() || point.is_some() || grouped || guard.is_some() || window_rest.is_some() || platform.is_some()
+            || !preferences.allowed_animations.iter().any(|animation|animation=="pet")
+    } else {
+        !preferences.allowed_animations.iter().any(|animation| animation == "idle")
+            || (moving && !preferences.allowed_animations.iter().any(|animation| animation == "walk"))
+            || !super::self_care::within_radius(home, target, preferences.movement_radius)
+    };
+    if animation_denied { return Err(ERROR.into()); }
     let output = core
         .world_outputs
         .ready(bot, runtime.now())
@@ -406,6 +418,9 @@ async fn start_activity_guarded(
             || runtime.now(),
             super::wall_ms,
         )?; }
+    } else if activity == Activity::Pet {
+        action_host::admit_native_pet(&mut core,&state.store,&state.world,bot,&owned.context.profile,
+            fence,source.context,output,permit,pet.ok_or(ERROR)?.1,cancel,||runtime.now(),super::wall_ms)?;
     } else {
         action_host::admit_native_care(
             &mut core,
@@ -435,12 +450,27 @@ fn result(bot: &str, kind: InteractionKind, status: &str, reason: Option<&str>) 
     json!({"version":1,"botId":bot,"kind":kind,"status":status,"reason":reason})
 }
 
+/// Play is always a peer invitation. A missing/stale selection must never turn
+/// the operator's invitation into a solo rewarded activity.
+fn interaction_target<'a>(bot: &str, request: &'a InteractionRequest) -> Result<Option<&'a str>, ()> {
+    match (request.kind, request.target_actor_id.as_deref()) {
+        (InteractionKind::Play, Some(target))
+            if bot != target && crate::experience::valid_id(target) => Ok(Some(target)),
+        (InteractionKind::Play, _) | (_, Some(_)) => Err(()),
+        (_, None) => Ok(None),
+    }
+}
+
 pub(crate) async fn request_character_interaction(
     app: &tauri::AppHandle,
     bot: &str,
     request: &InteractionRequest,
 ) -> Result<Value, String> {
     request.validate()?;
+    let target = match interaction_target(bot, request) {
+        Ok(target) => target,
+        Err(()) => return Ok(result(bot, request.kind, "declined", Some("unavailable"))),
+    };
     let state = app.state::<AppState>();
     let runtime = &state.life_runtime;
     if request.kind == InteractionKind::Pause {
@@ -461,46 +491,20 @@ pub(crate) async fn request_character_interaction(
     if busy || runtime.social.busy(bot) || state.overlay.has_any_pending_speech() {
         return Ok(result(bot, request.kind, "declined", Some("busy")));
     }
-    if let Some(target) = &request.target_actor_id {
-        if request.kind != InteractionKind::Play { return Ok(result(bot, request.kind, "declined", Some("unavailable"))); }
+    if let Some(target) = target {
         return Ok(match super::social_host::request(app, bot, target, crate::social::SceneKind::Play) {
             Ok(_) => result(bot, request.kind, "waiting", None),
             Err(_) => result(bot, request.kind, "declined", Some("unavailable")),
         });
     }
     if request.kind == InteractionKind::Pet {
-        let preferences=state.store.experience_settings(bot)?.preferences;
-        if !preferences.allowed_animations.iter().any(|animation|animation=="pet") {
-            return Ok(result(bot,request.kind,"declined",Some("unavailable")));
-        }
-        let owner=native_interaction_owner(app,bot)?;
-        let profile = state.store.bot_profile(bot)?;
-        let caps = crate::emote_capabilities::inspect(&state.store.root, &profile)?;
-        let emote = profile["emotes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|emote| {
-                emote["action"].as_str().is_some_and(|action| {
-                    action.eq_ignore_ascii_case("pet")
-                        && crate::emote_capabilities::resolve(&caps, action).is_ok()
-                })
-            })
-            .and_then(|emote| emote["id"].as_str());
-        let Some(id) = emote else {
-            return Ok(result(bot, request.kind, "declined", Some("unavailable")));
-        };
-        if !owner.is_current() || state.store.bot_profile(bot)?!=profile || runtime.social.busy(bot) {
-            return Ok(result(bot,request.kind,"declined",Some("unavailable")));
-        }
-        crate::overlay::trigger_emote_profile(app, &profile, id, false)?;
-        return Ok(result(bot, request.kind, "accepted", None));
+        return Ok(match start_activity(app,bot,Activity::Pet,None,None,None,None,None,None).await {
+            Ok(_) => result(bot,request.kind,"accepted",None),
+            Err(_) => result(bot,request.kind,"declined",Some("unavailable")),
+        });
     }
-    let wanted = if request.kind == InteractionKind::Home {
-        AnchorKind::Rest
-    } else {
-        AnchorKind::Play
-    };
+    // All other kinds returned above. Home means the real reserved rest place.
+    let wanted = AnchorKind::Rest;
     // Select through the current native source, not from a renderer ID.
     let selected = {
         let members = runtime.native_scenes.members(Some(bot));
@@ -526,16 +530,37 @@ pub(crate) async fn request_character_interaction(
         });
         slots.first().map(|slot| slot.id.clone())
     };
-    if request.kind == InteractionKind::Home && selected.is_none() {
+    if selected.is_none() {
         return Ok(result(bot, request.kind, "declined", Some("unavailable")));
     }
-    let activity = if request.kind == InteractionKind::Home {
-        Activity::MoveTo
-    } else {
-        Activity::Play
-    };
-    match start_activity(app, bot, activity, selected, None, None, None, None, None).await {
+    match start_activity(app, bot, Activity::MoveTo, selected, None, None, None, None, None).await {
         Ok(_) => Ok(result(bot, request.kind, "accepted", None)),
         Err(_) => Ok(result(bot, request.kind, "declined", Some("unavailable"))),
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+
+    #[test]
+    fn play_requires_an_explicit_distinct_peer_without_a_solo_fallback() {
+        let request = |target: Option<&str>| InteractionRequest {
+            kind: InteractionKind::Play, target_actor_id: target.map(str::to_owned),
+        };
+        for target in [None, Some("nova"), Some(""), Some("../peer")] {
+            assert!(interaction_target("nova", &request(target)).is_err());
+        }
+        assert_eq!(interaction_target("nova", &request(Some("friend"))).unwrap(), Some("friend"));
+    }
+
+    #[test]
+    fn peer_ids_cannot_change_a_pet_home_or_pause_into_a_social_request() {
+        for kind in [InteractionKind::Pet, InteractionKind::Home, InteractionKind::Pause] {
+            let mut request = InteractionRequest { kind, target_actor_id: None };
+            assert_eq!(interaction_target("nova", &request).unwrap(), None);
+            request.target_actor_id = Some("friend".into());
+            assert!(interaction_target("nova", &request).is_err());
+        }
     }
 }

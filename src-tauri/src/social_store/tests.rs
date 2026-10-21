@@ -170,6 +170,141 @@ fn actual_pair_transaction_is_once_only_directed_and_bot_isolated() {
     );
 }
 #[test]
+fn confirmed_development_milestones_persist_once_without_recreating_deleted_facts() {
+    use crate::experience::{DevelopmentHobby, FactKind, FactPhase};
+    let f = Fixture::new();
+    let store = f.store();
+    let blue = bot_id(store.create_bot("Blue", false).unwrap());
+    let ids = ["nova", blue.as_str()];
+    store.social_reconcile_goal("nova", &[HobbyKind::Play]).unwrap();
+    let mut last = None;
+    for index in 1..=10 {
+        let sequence = store.social_next_scene_sequence(&ids.map(str::to_owned)).unwrap();
+        let (_, _, events) = completed_live(&store, sequence, ids);
+        // Exercise the ordinary native activity credit path as well as paired
+        // social credit. Both must share the exact same progress deduplication.
+        if index == 10 {
+            let completed = store.load_life("nova").unwrap().unwrap();
+            assert!(store.social_credit_activity("nova", &completed).unwrap());
+            assert!(!store.social_credit_activity("nova", &completed).unwrap());
+        }
+        for event in &events {
+            store.social_apply_event(event).unwrap();
+            assert!(!store.social_apply_event(event).unwrap());
+        }
+        last = events.last().cloned();
+    }
+    let facts = store.experience_facts("nova").unwrap();
+    assert_eq!(facts.len(), 2);
+    assert!(facts.iter().all(|fact| fact.phase == FactPhase::Completed
+        && !fact.shared && fact.actor_ids == ["nova"]
+        && fact.source_event_ids.len() == 1));
+    let goal = facts.iter().find(|fact| fact.kind == FactKind::GoalAchieved).unwrap();
+    assert_eq!(goal.development.as_ref().unwrap().hobby, DevelopmentHobby::Play);
+    assert!(goal.development.as_ref().unwrap().goal_id.is_some());
+    let hobby = facts.iter().find(|fact| fact.kind == FactKind::HobbyMilestone).unwrap();
+    assert_eq!(hobby.development.as_ref().unwrap().variation, 1);
+    assert!(hobby.development.as_ref().unwrap().goal_id.is_none());
+    let removed = hobby.id.clone();
+    store.edit_experience_fact("nova", Some(&removed), None).unwrap();
+    assert!(!store.social_apply_event(last.as_ref().unwrap()).unwrap());
+    let completed = store.load_life("nova").unwrap().unwrap();
+    assert!(!store.social_credit_activity("nova", &completed).unwrap());
+    drop(store);
+    let store = f.store();
+    let facts = store.experience_facts("nova").unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].kind, FactKind::GoalAchieved);
+    assert_eq!(store.social_snapshot("nova").unwrap().development.hobbies[0].experience, 250);
+}
+#[test]
+fn corrupt_optional_album_preserves_confirmed_credit_and_durable_original_milestone_time() {
+    let f = Fixture::new();
+    let store = f.store();
+    let blue = bot_id(store.create_bot("Blue", false).unwrap());
+    let ids = ["nova", blue.as_str()];
+    store.social_reconcile_goal("nova", &[HobbyKind::Play]).unwrap();
+    let mut completion_time = 0;
+    for index in 1..=5 {
+        let sequence = store.social_next_scene_sequence(&ids.map(str::to_owned)).unwrap();
+        let (_, _, events) = completed_live(&store, sequence, ids);
+        if index == 5 {
+            store.db.lock().unwrap().execute(
+                "INSERT INTO settings(key,value) VALUES('experience-facts-v1:nova','invalid JSON')", [],
+            ).unwrap();
+            let completion = store.load_life("nova").unwrap().unwrap();
+            completion_time = completion.saved_at_ms();
+            // A delayed retry retains its original wall timestamp even after a
+            // genuine later simulation checkpoint on the next calendar day.
+            store.apply_life_event("nova", completion.state().revision(), 30_000,
+                crate::life_domain::LifeEvent::Tick {}, completion_time + 86_400_000).unwrap();
+            assert!(store.social_credit_activity("nova", &completion).unwrap());
+        }
+        for event in &events { store.social_apply_event(event).unwrap(); }
+    }
+    let native = store.social_snapshot("nova").unwrap();
+    assert_eq!(native.summary.completed, 5);
+    assert_eq!(native.development.hobbies[0].experience, 125);
+    assert_eq!(native.development.goal.unwrap().status, crate::character_development::GoalStatus::Achieved);
+    assert!(store.experience_facts("nova").is_err());
+    drop(store);
+    let store = f.store();
+    // Repair only the controlled corrupt fixture, keeping the durable queue.
+    store.db.lock().unwrap().execute(
+        "UPDATE settings SET value='[]' WHERE key='experience-facts-v1:nova'", [],
+    ).unwrap();
+    let facts = store.experience_facts("nova").unwrap();
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].at_ms, completion_time);
+    assert_eq!(facts[0].kind, crate::experience::FactKind::GoalAchieved);
+    assert_eq!(store.experience_facts("nova").unwrap().len(), 1);
+}
+#[test]
+fn corrupt_or_full_milestone_queue_preserves_native_success_and_exposes_recoverable_failure() {
+    use crate::experience::{ActivityFact, DevelopmentHobby, DevelopmentMilestone, FactKind, FactPhase, MAX_FACTS};
+    for corrupt in [false, true] {
+        let f = Fixture::new();
+        let store = f.store();
+        let blue = bot_id(store.create_bot("Blue", false).unwrap());
+        let ids = ["nova", blue.as_str()];
+        store.social_reconcile_goal("nova", &[HobbyKind::Play]).unwrap();
+        let raw = if corrupt { "invalid JSON".into() } else {
+            serde_json::to_string(&(0..MAX_FACTS).map(|index| ActivityFact {
+                id: format!("retained_{index}"), actor_ids: vec!["nova".into()],
+                kind: FactKind::HobbyMilestone, phase: FactPhase::Completed,
+                at_ms: 1, source_event_ids: vec!["native_source".into()], shared: false,
+                development: Some(DevelopmentMilestone { hobby: DevelopmentHobby::Play, variation: 1, goal_id: None }),
+            }).collect::<Vec<_>>()).unwrap()
+        };
+        let mut completed = None;
+        for index in 1..=5 {
+            let sequence = store.social_next_scene_sequence(&ids.map(str::to_owned)).unwrap();
+            let (_, _, events) = completed_live(&store, sequence, ids);
+            if index == 5 {
+                store.db.lock().unwrap().execute(
+                    "INSERT INTO settings(key,value) VALUES('experience-development-v1:nova',?1)", [&raw],
+                ).unwrap();
+            }
+            for event in &events { store.social_apply_event(event).unwrap(); }
+            completed = events.last().cloned();
+        }
+        assert_eq!(store.social_snapshot("nova").unwrap().summary.completed, 5);
+        assert_eq!(store.social_snapshot("nova").unwrap().development.hobbies[0].experience, 125);
+        let retained: String = store.db.lock().unwrap().query_row(
+            "SELECT value FROM settings WHERE key='experience-development-v1:nova'", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(retained, raw);
+        assert!(store.experience_facts("nova").is_err());
+        // The existing optional observer sees the durable error and can pause
+        // future admission without changing this actual completed scene.
+        assert!(store.record_experience_social_event("nova", completed.as_ref().unwrap()).is_err());
+        assert!(store.edit_experience_fact("nova", None, None).unwrap().is_empty());
+        assert!(store.experience_facts("nova").unwrap().is_empty());
+        assert!(!store.social_apply_event(completed.as_ref().unwrap()).unwrap());
+        assert!(store.experience_facts("nova").unwrap().is_empty());
+    }
+}
+#[test]
 fn shared_facts_are_explicit_and_deletion_invalidates_inflight_context() {
     let f = Fixture::new();
     let s = f.store();
