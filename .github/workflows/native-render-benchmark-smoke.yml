@@ -24,7 +24,6 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_BUILD_JOBS: 2
-      CARGO_TARGET_DIR: ${{ runner.temp }}/native-render-benchmark-build
       REVIEWED_SHA: ${{ inputs.reviewed_sha }}
       DISPATCH_SHA: ${{ github.sha }}
     steps:
@@ -37,6 +36,8 @@ jobs:
           [[ "$GITHUB_REPOSITORY" == ralphschuler/orbitpal ]]
           [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/test/native-render-benchmark-smoke ]]
           [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ && "$REVIEWED_SHA" == "$DISPATCH_SHA" ]]
+          [[ "$RUNNER_TEMP" == /* && -d "$RUNNER_TEMP" && ! -L "$RUNNER_TEMP" ]]
+          printf 'CARGO_TARGET_DIR=%s/native-render-benchmark-build\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}

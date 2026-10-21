@@ -35,7 +35,6 @@ jobs:
     timeout-minutes: 100
     env:
       CARGO_BUILD_JOBS: 2
-      CARGO_TARGET_DIR: ${{ runner.temp }}/native-render-benchmark-build
       REVIEWED_SHA: ${{ inputs.reviewed_sha }}
       DISPATCH_SHA: ${{ github.sha }}
       SMOKE_RUN_ID: ${{ inputs.qualifying_smoke_run }}
@@ -52,6 +51,8 @@ jobs:
           [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ && "$REVIEWED_SHA" == "$DISPATCH_SHA" ]]
           [[ "$SMOKE_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
           [[ "$PILOT_MODE" == pilot || "$PILOT_MODE" == pilot3 || "$PILOT_MODE" == pilot5 ]]
+          [[ "$RUNNER_TEMP" == /* && -d "$RUNNER_TEMP" && ! -L "$RUNNER_TEMP" ]]
+          printf 'CARGO_TARGET_DIR=%s/native-render-benchmark-build\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
