@@ -3,6 +3,7 @@
   import { Map, Play, RefreshCw, Save, Square, Users } from '@lucide/svelte';
   import { call, native, onEvent, prettyError } from '../lib/api';
   import { t, locale, formatNumber } from '../lib/i18n';
+  import {lifeSceneParticipants,LIFE_SCENE_OVER_LIMIT} from '../lib/life-scene-participants';
   import { draftWorld, invalidWorld, newWorldDraft, parseWorldSettings, parseWorldState, placeWorld, saveWorld, worldDraft, worldDraftChanged, worldReasons, type WorldDraft, type WorldRecord, type WorldSettings, type WorldState } from '../lib/world-state';
   import { containsEditorPoint, writeEditorPoint, type ActorPositions } from '../lib/world-editor';
   import type { OutputDisplay } from '../lib/output-presentation';
@@ -34,6 +35,7 @@
   let form = $state<HTMLFormElement>();
   let previewOpen=$state(false);
   let alive = false, operation = 0, startGeneration = 0;
+  const participants = $derived(lifeSceneParticipants(draft?.members??[]));
   const configDirty = $derived(!!draft && worldDraftChanged(draft, baseline));
   const dirty = $derived(configDirty || Object.keys(positions).length > 0 || gestureActive);
   const snapshot = $derived(confirmedState?.snapshot ?? undefined);
@@ -127,6 +129,7 @@
     const ticket = ++operation, startTicket = start ? ++startGeneration : startGeneration;
     pending = true; writing = true; localStarting = start; error = ''; message = '';
     try {
+      if(start&&participants.overLimit)throw new Error($t(LIFE_SCENE_OVER_LIMIT,{count:participants.count,limit:participants.limit}));
       await persistAll(ticket);
       if (start) {
         if (startTicket !== startGeneration) return;
@@ -181,8 +184,9 @@
         <div class="editor-context"><p>{$t('Deine Anordnung gilt beim nächsten Start. Speichern allein startet Life nicht.')}</p><label for={`${uid}-monitor`}>{$t('Zielmonitor')}<select id={`${uid}-monitor`} bind:value={draft.monitorId} onchange={() => message = ''}><option value="">{$t('Sicherer Ersatzmonitor · automatisch geprüft')}</option>{#if draft.monitorId && !displays.some(display => display.id === draft?.monitorId)}<option value={draft.monitorId}>{$t('Gespeicherter Monitor · derzeit nicht verfügbar')}</option>{/if}{#each displays as display (display.id)}<option value={display.id}>{display.name}</option>{/each}</select></label></div>
         <WorldSceneEditor {draft} {positions} {snapshot} {bots} active={visible} disabled={pending || disabled} onChange={edit} onGestureChange={value => gestureActive = value}/>
       </fieldset>
+      {#if participants.overLimit}<p id={`${uid}-participant-limit`} class="world-warning" role="status">{$t(LIFE_SCENE_OVER_LIMIT,{count:participants.count,limit:participants.limit})}</p>{/if}
       <div class="world-actions">
-        <div class="save-actions"><button class="button secondary" type="submit" disabled={!dirty || !parsedDraft || pending || disabled || gestureActive}><Save size={15}/>{$t('Anordnung speichern')}</button>{#if onStart}<button class="button primary" type="button" onclick={start} disabled={!parsedDraft || !draft.members.length || pending || disabled || starting || stopPending || gestureActive}><Play size={15}/>{$t(localStarting || starting ? 'Life wird gestartet …' : 'Speichern und Life starten')}</button>{/if}</div>
+        <div class="save-actions"><button class="button secondary" type="submit" disabled={!dirty || !parsedDraft || pending || disabled || gestureActive}><Save size={15}/>{$t('Anordnung speichern')}</button>{#if onStart}<button class="button primary" type="button" onclick={start} aria-describedby={participants.overLimit?`${uid}-participant-limit`:undefined} disabled={!parsedDraft || !participants.canStart || pending || disabled || starting || stopPending || gestureActive}><Play size={15}/>{$t(localStarting || starting ? 'Life wird gestartet …' : 'Speichern und Life starten')}</button>{/if}</div>
         <button class="text-link" type="button" onclick={discard} disabled={!dirty || pending || gestureActive}>{$t('Bühnenentwurf verwerfen')}</button>
         <span class="save-status" role="status">{dirty ? $t('Nicht gespeicherter Bühnenentwurf') : $t('Anordnung gespeichert.')}</span>
       </div>

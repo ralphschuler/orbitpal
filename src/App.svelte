@@ -22,6 +22,7 @@
   import { LifeUI } from './lib/life-ui';
   import { actionChanged, requestQuietRest, requestLifeMove } from './lib/life-actions';
   import {lifeStartContext} from './lib/life-start-context';
+  import {lifeSceneParticipants,LIFE_SCENE_OVER_LIMIT} from './lib/life-scene-participants';
   import {parseWorldSettings} from './lib/world-state';
   import type { CanonicalPoint, RegisterWorldActor } from './lib/world-output';
   import { LifeTurnAdmissions, LifeSnapshots, parseLifeBot, parseLifeTurn, parseLifeSnapshot, nativeSchedule, currentLifeTurn, sameLifeTurn, type LifeSnapshot, type LifeMode, type LifeBot, type LifeTurn } from './lib/life-runtime';
@@ -223,6 +224,8 @@
       if(!current())throw actionChanged();
       const record=settings.record;
       if(settings.availability!=='ready'||!record?.config.members.length)throw new Error(translate('Wähle zuerst mindestens eine Figur für deinen Desktop aus.'));
+      const participants=lifeSceneParticipants(record.config.members);
+      if(participants.overLimit)throw new Error(translate(LIFE_SCENE_OVER_LIMIT,{count:participants.count,limit:participants.limit}));
       await ensureOperatorBarrier();
       const configs=record.config.members.map(id=>id===target?profileSnapshot():$state.snapshot(bots.find(bot=>bot.id===id)?.profile)).filter(value=>value?.autopilot?.speak);
       if(!await ensureScreenFor(configs,true,current)||!current())throw actionChanged();
