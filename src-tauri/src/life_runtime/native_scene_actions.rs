@@ -41,11 +41,12 @@ pub(crate) fn prepare_native_life_action(window:tauri::WebviewWindow,app:tauri::
     // provider remains responsible for observing its real cancellation atom.
     if let Ok(cancel)=state.cancel.lock(){if let Some(cancel)=cancel.as_ref(){cancel.store(true,Ordering::SeqCst);}}
     state.overlay.invalidate_speech(None);
-    let _generation=state.generation.try_lock().map_err(|_|ERROR)?;
+    if state.generation.try_lock().is_err(){return Err(ERROR.into());}
     // Existing measurement/delivery lock order: Owned -> Core -> World -> Store.
     let owned_guard=member.owned.lock().map_err(|_|ERROR)?;
     let owned=owned_guard.as_ref().ok_or(ERROR)?;
     let mut core=state.life_runtime.core.lock().map_err(|_|ERROR)?;
+    if state.generation.try_lock().is_err(){return Err(ERROR.into());}
     let now=state.life_runtime.now();
     if !member.current()||!owned.context.current(&core,&state,now){return Err(ERROR.into());}
     let permit=owned.action_permit(now).ok_or(ERROR)?;
@@ -61,7 +62,7 @@ pub(crate) fn prepare_native_life_action(window:tauri::WebviewWindow,app:tauri::
         NativeIntent{id:uuid::Uuid::new_v4().to_string(),member:member.clone(),permit,fence},generation,state.life_runtime.now()).ok_or(ERROR)?;
     let native=intent.native.as_ref().ok_or(ERROR)?;
     let result=PreparedNativeAction{version:1,intent_id:native.id.clone(),expires_in_ms:INTENT_MS};
-    drop(core);drop(owned_guard);drop(_generation);
+    drop(core);drop(owned_guard);
     super::world_output::publish(&app);super::actions::publish(&app);
     // Core's monotonic clock expires this exact one-use map entry. There is
     // no detached timer per click; repeated preparations retain bounded state.
@@ -82,7 +83,7 @@ async fn start(app:tauri::AppHandle,bot:String,id:String,goal:Option<NativeMoveG
     let topology=state.world.sample_topology(&app).await;
     state.updater.ensure_idle()?;
     if state.overlay.has_any_pending_speech(){return Err(ERROR.into());}
-    let _generation=state.generation.try_lock().map_err(|_|ERROR)?;
+    if state.generation.try_lock().is_err(){return Err(ERROR.into());}
     let cancel=Arc::new(AtomicBool::new(false));
     if !state.life_runtime.outputs.watch_delivery(intent.output_generation,&bot,native.member.constructor.window().label(),&cancel)
         || monitor.gate.watch(&cancel).is_none(){return Err(ERROR.into());}
@@ -90,6 +91,7 @@ async fn start(app:tauri::AppHandle,bot:String,id:String,goal:Option<NativeMoveG
     let owned_guard=native.member.owned.lock().map_err(|_|ERROR)?;
     let owned=owned_guard.as_ref().ok_or(ERROR)?;
     let mut core=state.life_runtime.core.lock().map_err(|_|ERROR)?;
+    if state.generation.try_lock().is_err(){return Err(ERROR.into());}
     core.observe_system(system,state.life_runtime.now());
     state.world.synchronize(&state.store,&crate::world_hub::current_actors(&core),Some(topology),state.life_runtime.now())?;
     if !native.member.current()||!owned.context.current(&core,&state,state.life_runtime.now())
@@ -107,7 +109,7 @@ async fn start(app:tauri::AppHandle,bot:String,id:String,goal:Option<NativeMoveG
     };
     let _=action_host::poll(&mut core,&state.store,&state.world,||state.life_runtime.now(),super::wall_ms);
     let status=action_host::status(&core,&state.store,&state.world,&bot,state.life_runtime.now());
-    drop(core);drop(owned_guard);drop(_generation);
+    drop(core);drop(owned_guard);
     super::world_output::publish(&app);super::actions::publish(&app);crate::world_hub::publish(&app);
     result?;status
 }

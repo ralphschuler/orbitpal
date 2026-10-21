@@ -36,7 +36,7 @@ fn snapshot(
 }
 pub(crate) fn native_snapshot(app: &tauri::AppHandle, bot: &str) -> Result<Snapshot,String> {
     use tauri::Manager;
-    snapshot(&app.state::<AppState>(),&app.state::<ExperienceRuntime>(),bot)
+    snapshot(&app.state::<AppState>(),&app.state::<ExperienceRuntime>(),bot,app)
 }
 #[tauri::command]
 pub fn get_experience_snapshot(

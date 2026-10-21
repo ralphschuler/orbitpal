@@ -215,27 +215,24 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
         ] {
             let mut candidates = slots
                 .iter()
-                .filter(|slot| {
-                    need(slot.kind) == wanted
-                        && slot.content_ref.as_ref().is_none_or(|reference|super::content_host::resolve(&packs,reference,slot.kind,activity(wanted)).is_some_and(|usage|super::content_host::condition(&usage,&confirmed,&settings.config)))
-                        && preferences.allowed_animations.iter().any(|a| a == "walk")
-                        && within_radius(entry.home, slot.position, preferences.movement_radius)
-                })
-                .map(|slot| {
-                    let cost = (slot.position.x().abs_diff(source.context.position.x()) as u64
-                        + slot.position.y().abs_diff(source.context.position.y()) as u64)
-                        / 2000;
-                    (cost.min(1000) as u16, slot)
+                .filter_map(|slot| {
+                    if need(slot.kind)!=wanted || !preferences.allowed_animations.iter().any(|a|a=="walk")
+                        || !within_radius(entry.home,slot.position,preferences.movement_radius) {return None;}
+                    let weight=if let Some(reference)=&slot.content_ref {
+                        super::content_host::resolve_for_state(&packs,reference,slot.kind,activity(wanted),&confirmed,&settings.config)?.behavior.map_or(100,|behavior|behavior.weight)
+                    } else {100};
+                    let cost=(slot.position.x().abs_diff(source.context.position.x())as u64
+                        +slot.position.y().abs_diff(source.context.position.y())as u64)/2000;
+                    Some((cost.min(1000)as u16,slot,weight))
                 })
                 .collect::<Vec<_>>();
-            candidates.sort_by(|(cost_a, a), (cost_b, b)| cost_a.cmp(cost_b).then(a.id.cmp(&b.id)));
+            candidates.sort_by(|(cost_a,a,_),(cost_b,b,_)|cost_a.cmp(cost_b).then(a.id.cmp(&b.id)));
             if candidates.is_empty() {
                 if let Ok(offer) = Offer::new(wanted, Target::Here, 1000) {
                     offers.push(offer);
                 }
             } else {
-                for (cost, slot) in candidates.into_iter().take(8) {
-                    let weight=slot.content_ref.as_ref().and_then(|reference|super::content_host::resolve(&packs,reference,slot.kind,activity(wanted))).and_then(|usage|usage.behavior).map_or(100,|behavior|behavior.weight);
+                for (cost, slot,weight) in candidates.into_iter().take(8) {
                     if let Ok(offer) = Offer::new(wanted, Target::Slot(slot.id.clone()), cost).and_then(|offer|offer.weighted(weight)) {offers.push(offer);}
 
                 }

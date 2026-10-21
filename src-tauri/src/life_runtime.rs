@@ -8,7 +8,7 @@ pub(crate) mod social_host;
 #[path = "life_runtime/desktop_places.rs"]
 mod desktop_places;
 #[path="life_runtime/content_host.rs"] pub(crate) mod content_host;
-pub(crate) use experience_host::{experience_allows_output, experience_preferences_changed, experience_pause_changed, set_content_pack_active_native, request_character_interaction, start_slot_activity, cancel_actor_action, cancel_actor_action_exact, native_interaction_owner, start_point_activity, start_here_activity, consume_platform_impulse};
+pub(crate) use experience_host::{experience_allows_output, experience_preferences_changed, experience_pause_changed, set_content_pack_active_native, request_character_interaction, start_slot_activity, cancel_actor_action, cancel_actor_action_exact, native_interaction_owner, start_point_activity, start_window_rest_activity, consume_platform_impulse};
 #[path = "life_runtime/action_host.rs"]
 mod action_host;
 #[path = "life_runtime/action_output.rs"]

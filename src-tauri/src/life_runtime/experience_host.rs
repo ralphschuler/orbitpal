@@ -222,10 +222,6 @@ pub(crate) async fn start_slot_activity(
 pub(crate) async fn start_point_activity(app:&tauri::AppHandle, bot:&str, target:crate::world_state::coordinates::Point, expected:crate::world_output::OutputProof)->Result<LifeState,String> {
     start_activity(app,bot,Activity::MoveTo,None,None,None,Some(target),Some(expected),None).await
 }
-pub(crate) async fn start_here_activity(app:&tauri::AppHandle, bot:&str, activity:Activity, expected:crate::world_output::OutputProof)->Result<LifeState,String> {
-    if !matches!(activity,Activity::Rest|Activity::Play) {return Err(ERROR.into());}
-    start_activity(app,bot,activity,None,None,None,None,Some(expected),None).await
-}
 
 async fn start_activity(
     app: &tauri::AppHandle,
@@ -238,8 +234,32 @@ async fn start_activity(
     expected: Option<crate::world_output::OutputProof>,
     platform: Option<(&str,&crate::platform_impulses::DispatchLease)>,
 ) -> Result<LifeState, String> {
+    start_activity_guarded(app,bot,activity,slot,reserved,guard,point,expected,platform,None).await
+}
+
+pub(crate) async fn start_window_rest_activity(app:&tauri::AppHandle,bot:&str,expected:crate::world_output::OutputProof,guard:super::desktop_places::WindowRestGuard)->Result<LifeState,String> {
+    start_activity_guarded(app,bot,Activity::Rest,None,None,None,None,Some(expected),None,Some(guard)).await
+}
+
+async fn start_activity_guarded(
+    app: &tauri::AppHandle,
+    bot: &str,
+    activity: Activity,
+    slot: Option<SlotId>,
+    reserved: Option<SlotLease>,
+    guard: Option<super::social_host::SceneActionGuard>,
+    point: Option<crate::world_state::coordinates::Point>,
+    expected: Option<crate::world_output::OutputProof>,
+    platform: Option<(&str,&crate::platform_impulses::DispatchLease)>,
+    window_rest: Option<super::desktop_places::WindowRestGuard>,
+) -> Result<LifeState, String> {
     let state = app.state::<AppState>();
     let cancel = Arc::new(AtomicBool::new(false));
+    if let Some(guard)=&window_rest {
+        if activity!=Activity::Rest || slot.is_some() || reserved.is_some() || point.is_some()
+            || expected.as_ref().is_none_or(|output|!guard.current(bot,output,state.life_runtime.now())) {return Err(ERROR.into());}
+        guard.bind(&cancel)?;
+    }
     if let Some((_,lease))=platform {
         if lease.owner()!=bot || !lease.current(&state.store) {return Err(ERROR.into());}
         lease.bind_cancel(&cancel)?;
@@ -356,7 +376,10 @@ async fn start_activity(
             return Err(ERROR.into());
         }
     }
-    if activity == Activity::MoveTo {
+    if let Some(guard)=window_rest {
+        action_host::admit_native_window_rest(&mut core,&state.store,&state.world,bot,&owned.context.profile,
+            fence,source.context,output,permit,guard,cancel,||runtime.now(),super::wall_ms)?;
+    } else if activity == Activity::MoveTo {
         if let Some(target)=point {
             action_host::admit_native_move(&mut core,&state.store,&state.world,bot,&owned.context.profile,
                 fence,source.context,output,permit,target,cancel,||runtime.now(),super::wall_ms)?;

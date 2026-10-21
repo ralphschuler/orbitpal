@@ -836,7 +836,7 @@ mod tests {
             let db = f.0.db.lock().unwrap();
             db.execute(
                 "UPDATE bot_life_events SET origin='offline' WHERE bot_id=?1 AND revision=?2",
-                params![id, revision],
+                params![id, i64::try_from(revision).unwrap()],
             )
             .unwrap();
         }
@@ -851,13 +851,14 @@ mod tests {
         let f=Fixture::new();let id=f.0.profile().unwrap()["id"].as_str().unwrap().to_owned();
         initialize(&f.0,&id);let revision=live_complete(&f.0,&id,100);
         let expected=f.0.load_life(&id).unwrap().unwrap();
-        f.0.apply_life_event(&id,revision,1000,crate::life_domain::LifeEvent::Tick{},200).unwrap();
+        let checkpoint=f.0.apply_life_event(&id,revision,30_000,crate::life_domain::LifeEvent::Tick{},30_100).unwrap();
+        assert_eq!(checkpoint.outcome,super::super::life_store::WriteOutcome::Applied);
         assert!(f.0.record_experience_life_fact(&id,revision,revision).is_err());
         assert!(f.0.record_experience_native_snapshot(&id,&expected).unwrap());
         let facts=f.0.experience_facts(&id).unwrap();assert_eq!(facts.len(),1);assert_eq!(facts[0].at_ms,100);
         assert!(!f.0.record_experience_native_snapshot(&id,&expected).unwrap());
         f.0.edit_experience_fact(&id,None,None).unwrap();
-        {let db=f.0.db.lock().unwrap();db.execute("UPDATE bot_life_events SET origin='offline' WHERE bot_id=?1 AND revision=?2",params![id,revision]).unwrap();}
+        {let db=f.0.db.lock().unwrap();db.execute("UPDATE bot_life_events SET origin='offline' WHERE bot_id=?1 AND revision=?2",params![id,i64::try_from(revision).unwrap()]).unwrap();}
         assert!(f.0.record_experience_native_snapshot(&id,&expected).is_err());assert!(f.0.experience_facts(&id).unwrap().is_empty());
     }
     #[test]

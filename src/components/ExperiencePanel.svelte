@@ -3,6 +3,7 @@
   import NativeInteractionControl from './NativeInteractionControl.svelte';
   import {t,locale,formatDate,formatNumber} from '../lib/i18n';
   import {call,native,onEvent} from '../lib/api';
+  import {refreshSnapshotDraft} from '../lib/snapshot-draft';
   import {parseExperience,parsePreferences,parseInteraction,factualRecap,presetLabels,factLabels,phaseLabels,experienceError,type ExperienceSnapshot,type ExperiencePreferences,type InteractionKind} from '../lib/experience';
   interface Props {botId:string;bots:{id:string;name:string}[];active:boolean;disabled?:boolean;onDirtyChange?:(dirty:boolean)=>void;onBusyChange?:(busy:boolean)=>void}
   let {botId,bots,active,disabled=false,onDirtyChange,onBusyChange}:Props=$props();
@@ -12,22 +13,22 @@
   const dirty=$derived(!!draft&&!!snapshot&&JSON.stringify(draft)!==JSON.stringify(snapshot.settings.preferences));
   $effect(()=>{onDirtyChange?.(dirty);});$effect(()=>{onBusyChange?.(preferenceWrite);});
   export async function saveDraft(){await save();}
-  export function discardDraft(){if(snapshot)draft=structuredClone(snapshot.settings.preferences);}
+  export function discardDraft(){if(snapshot)draft=structuredClone($state.snapshot(snapshot.settings.preferences));}
   const recap=$derived(factualRecap(snapshot?.facts??[],publicOnly));
   const facts=$derived((snapshot?.facts??[]).filter(f=>!publicOnly||f.shared));
   const latest=$derived(facts[0]);
-  function accept(value:unknown,id:string){const next=parseExperience(value,id);snapshot=next;draft=structuredClone(next.settings.preferences);}
-  async function refresh(){const id=botId,token=++epoch;try{const value=await call('get_experience_snapshot',{botId:id});if(alive&&token===epoch&&id===botId){accept(value,id);error='';}}catch(e){if(alive&&token===epoch){snapshot=undefined;draft=undefined;error=experienceError(e);}}}
+  function accept(value:unknown,id:string,resetDraft=false){const next=parseExperience(value,id);draft=refreshSnapshotDraft(draft,snapshot?.settings.preferences,next.settings.preferences,resetDraft);snapshot=next;}
+  async function refresh(){const id=botId,token=++epoch;try{const value=await call('get_experience_snapshot',{botId:id});if(alive&&token===epoch&&id===botId){accept(value,id);error='';}}catch(e){if(alive&&token===epoch&&id===botId)error=experienceError(e);}}
   $effect(()=>{botId;if(alive){snapshot=undefined;draft=undefined;feedback='';confirmDelete=false;void refresh();}});
-  async function mutate(command:string,args:Record<string,unknown>){if(pending||disabled)return;const id=botId,token=++epoch;pending=true;preferenceWrite=true;error='';try{const result=await call(command,{botId:id,...args});if(alive&&id===botId&&token===epoch)accept(result,id);}catch(e){if(alive&&id===botId)error=experienceError(e);}finally{if(alive){pending=false;preferenceWrite=false;}}}
-  async function save(){if(!snapshot||!draft)return;try{const preferences=parsePreferences(draft);await mutate('set_experience_preferences',{expectedRevision:snapshot.settings.revision,preferences});}catch(e){error=experienceError(e);}}
+  async function mutate(command:string,args:Record<string,unknown>,resetDraft=false){if(pending||disabled)return;const id=botId,token=++epoch;pending=true;preferenceWrite=true;error='';try{const result=await call(command,{botId:id,...args});if(alive&&id===botId&&token===epoch)accept(result,id,resetDraft);}catch(e){if(alive&&id===botId)error=experienceError(e);}finally{if(alive){pending=false;preferenceWrite=false;}}}
+  async function save(){if(!snapshot||!draft)return;try{const preferences=parsePreferences(draft);await mutate('set_experience_preferences',{expectedRevision:snapshot.settings.revision,preferences},true);}catch(e){error=experienceError(e);}}
   async function interact(kind:InteractionKind){if(pending||disabled||!active)return;const id=botId,token=++epoch;pending=true;feedback='';error='';try{const result=parseInteraction(await call('request_character_interaction',{botId:id,request:{kind,targetActorId:null}}),id,kind);if(alive&&id===botId&&token===epoch){feedback=result.status==='accepted'?'Aktion angenommen. Die Ausführung wird separat bestätigt.':result.status==='waiting'?'Die Figur wartet.':result.status==='declined'?'Die Figur hat die Anfrage abgelehnt.':'Die Aktion wurde abgebrochen.';}}catch(e){if(alive&&id===botId)error=experienceError(e);}finally{if(alive)pending=false;}if(alive&&id===botId)void refresh();}
   async function editFact(eventId:string|null,shared?:boolean){if(pending||disabled)return;const id=botId;pending=true;try{await call(shared===undefined?'delete_experience_fact':'set_experience_fact_shared',{botId:id,eventId, ...(shared===undefined?{}:{shared})});if(alive&&id===botId){confirmDelete=false;await refresh();}}catch(e){if(alive&&id===botId)error=experienceError(e);}finally{if(alive)pending=false;}}
   function participant(id:string,checked:boolean){if(!draft)return;draft={...draft,impulseParticipants:checked?[...draft.impulseParticipants,id]:draft.impulseParticipants.filter(v=>v!==id)};}
-  onMount(()=>{alive=true;void refresh();const poll=setInterval(()=>{if(document.visibilityState==='visible'&&!dirty&&!pending)void refresh();},5000);let stop=()=>{};void onEvent('experience-state',value=>{if(value?.botId===botId&&!dirty&&!pending){try{accept(value,botId);}catch{error='Die Aktivitätsdaten sind ungültig.';}}}).then(fn=>{if(alive)stop=fn;else fn();});return()=>{clearInterval(poll);alive=false;++epoch;onDirtyChange?.(false);onBusyChange?.(false);stop();};});
+  onMount(()=>{alive=true;void refresh();const poll=setInterval(()=>{if(document.visibilityState==='visible'&&!pending)void refresh();},5000);let stop=()=>{};void onEvent('experience-state',value=>{if(value?.botId===botId&&!pending){try{accept(value,botId);}catch{error='Die Aktivitätsdaten sind ungültig.';}}}).then(fn=>{if(alive)stop=fn;else fn();});return()=>{clearInterval(poll);alive=false;++epoch;onDirtyChange?.(false);onBusyChange?.(false);stop();};});
 </script>
 <section class="experience settings-panel" aria-labelledby={`${uid}-heading`}>
-  <header><div><p class="eyebrow">{$t('Alltag deiner Figuren')}</p><h2 id={`${uid}-heading`}>{$t('Absicht & Aktivität')}</h2></div><button class="text-link" disabled={pending||dirty||disabled} onclick={refresh}>{$t('Neu laden')}</button></header>
+  <header><div><p class="eyebrow">{$t('Alltag deiner Figuren')}</p><h2 id={`${uid}-heading`}>{$t('Absicht & Aktivität')}</h2></div><button class="text-link" disabled={pending||disabled} onclick={refresh}>{$t('Neu laden')}</button></header>
   {#if error}<p class="error" role="alert">{$t(error)}</p>{/if}
   {#if snapshot&&draft}
     <div class="intent" aria-live="polite"><span class:live={active&&!snapshot.paused} class="signal"></span><div><strong>{snapshot.paused?$t('Zentral pausiert'):active?$t('Life läuft'):$t('Life ist gestoppt')}</strong>{#if draft.intentVisible&&latest}<p>{$t(factLabels[latest.kind])} · {$t(phaseLabels[latest.phase])} · {latest.actorIds.map(id=>bots.find(b=>b.id===id)?.name??$t('Entfernte Figur')).join(', ')}</p>{:else}<p>{$t('Bestätigte Aktivitäten erscheinen hier. Leere Zeit wird nicht als Erlebnis erfunden.')}</p>{/if}</div><button class="button secondary" disabled={!active||pending||disabled} onclick={()=>mutate('set_experience_pause',{paused:!snapshot!.paused})}>{$t(snapshot.paused?'Aktivitäten fortsetzen':'Zentral pausieren')}</button></div>

@@ -38,6 +38,7 @@ fn with_actions<T>(
 }
 fn current(core: &Core, job: &NativeJob, now: u64) -> bool {
     !job.cancel.load(Ordering::SeqCst)
+        && job.window_rest.as_ref().is_none_or(|guard|job.visual.as_ref().is_some_and(|visual|guard.current(job.key.actor().as_str(),&visual.output,now)))
         && core.local_current(job.key.actor().as_str(), &job.fence, now)
         && job.slot.as_ref().is_none_or(|slot| slot.fresh(now))
         && job.native_permit.as_ref().is_none_or(|permit|
@@ -231,6 +232,7 @@ fn admit_rest_bound(
         let job = NativeJob {
             grouped: false,
             content: None,
+            window_rest: None,
             visual: None,
             native_rest_output: native.as_ref().map(|(output,_)|output.clone()),
             native_permit: native.map(|(_,permit)|permit),
@@ -736,6 +738,19 @@ pub(crate) fn admit_native_care(
     };
     admit_visual_activity(core, store, world, bot, profile, fence, context, output, goal, Some(permit), target, cancel, now, wall, activity)
 }
+/// The same real native Rest/Here action, with an additional retained numeric
+/// window geometry fence. It never claims a sit/jump clip or a reserved object.
+pub(crate) fn admit_native_window_rest(
+    core:&mut Core,store:&Store,world:&WorldHub,bot:&str,profile:&Value,
+    fence:LocalFence,context:ActionContext,output:crate::world_output::OutputProof,
+    permit:super::native_scene::NativeActionPermit,guard:super::desktop_places::WindowRestGuard,
+    cancel:Arc<AtomicBool>,now:impl Fn()->u64,wall:impl Fn()->u64,
+)->Result<(),String>{
+    if !guard.current(bot,&output,now()){return Err(UNAVAILABLE.into());}
+    guard.bind(&cancel)?;
+    let goal=Goal::Here(context.position);
+    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,Some(permit),None,cancel,now,wall,Activity::Rest,Some(guard))
+}
 /// Exercises the shared slot transaction using an actual selected-Studio
 /// registration. This exposes no product Slot route or native surface grant.
 #[cfg(test)]
@@ -765,6 +780,16 @@ fn admit_visual_activity(
     slot_target: Option<crate::world_hub::ActionSlotTarget>, cancel: Arc<AtomicBool>,
     now: impl Fn() -> u64, wall: impl Fn() -> u64, activity: Activity,
 ) -> Result<(), String> {
+    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,native_permit,slot_target,cancel,now,wall,activity,None)
+}
+fn admit_visual_activity_guarded(
+    core: &mut Core, store: &Store, world: &WorldHub, bot: &str, profile: &Value,
+    fence: LocalFence, context: ActionContext, output: crate::world_output::OutputProof,
+    goal: Goal, native_permit: Option<super::native_scene::NativeActionPermit>,
+    slot_target: Option<crate::world_hub::ActionSlotTarget>, cancel: Arc<AtomicBool>,
+    now: impl Fn() -> u64, wall: impl Fn() -> u64, activity: Activity,
+    window_rest: Option<super::desktop_places::WindowRestGuard>,
+) -> Result<(), String> {
     let target = match &goal { Goal::Point(point) | Goal::Here(point) | Goal::Slot { position: point, .. } => *point, _ => return Err(UNAVAILABLE.into()) };
     with_actions(core, |actions, core| {
         let actor = ActorId::new(bot).map_err(invalid)?;
@@ -778,11 +803,19 @@ fn admit_visual_activity(
                 None => !core.world_output_current(bot, now()),
             }
             || !core.world_outputs.check_proof(&output, now())
+            || window_rest.as_ref().is_some_and(|guard|!guard.current(bot,&output,now()))
         {
             return Err(UNAVAILABLE.into());
         }
+        let care_config = if activity == Activity::MoveTo { None } else { Some(store.life_care_preferences(bot)?) };
         let content=slot_target.as_ref().and_then(|slot|slot.content_ref.as_ref().map(|reference|(slot.kind,reference)))
-            .map(|(kind,reference)|super::content_host::resolve(&store.content_packs()?,reference,kind,activity).ok_or_else(||UNAVAILABLE.to_owned())).transpose()?;
+            .map(|(kind,reference)| {
+                let packs=store.content_packs()?;
+                if activity==Activity::MoveTo {return super::content_host::resolve(&packs,reference,kind,activity).ok_or_else(||UNAVAILABLE.to_owned());}
+                let actual=store.load_life(bot).map_err(invalid)?.ok_or_else(||UNAVAILABLE.to_owned())?;
+                let config=care_config.as_ref().ok_or_else(||UNAVAILABLE.to_owned())?;
+                super::content_host::resolve_for_state(&packs,reference,kind,activity,actual.state(),&config.config).ok_or_else(||UNAVAILABLE.to_owned())
+            }).transpose()?;
         let minimum=PreparedPlan::visual_minimum(activity,&goal).map_err(invalid)?.max(content.as_ref().and_then(|usage|usage.behavior.as_ref()).map_or(0,|behavior|behavior.duration_ms));
         let visual = crate::world_output::VisualExecution::for_activity(output,target,activity,minimum,now()).map_err(invalid)?;
         let authority = NativeAuthority::new(
@@ -801,13 +834,13 @@ fn admit_visual_activity(
         if persisted_profile != visual.output.profile_token {
             return Err(UNAVAILABLE.into());
         }
-        let care_config = if activity == Activity::MoveTo { None } else { Some(store.life_care_preferences(bot)?) };
         let (commit, prepared) = world.with_action_context(store, &context, || {
             store
                 .apply_life_action_checked(bot, wall(), |actual, tx| {
                     if cancel.load(Ordering::SeqCst)
                         || !core.local_admission_current(bot, &fence, now())
                         || !core.world_outputs.check_proof(&visual.output, now())
+                        || window_rest.as_ref().is_some_and(|guard|!guard.current(bot,&visual.output,now()))
                         || native_permit.as_ref().is_some_and(|permit| !permit.current(core, now()) || !permit.matches_output(&visual.output))
                         || content.as_ref().is_some_and(|usage| !crate::storage::content_pack_store::current(tx,usage,slot_target.as_ref().map(|s|s.kind),activity))
                         || !crate::storage::action_store::matches(
@@ -852,6 +885,7 @@ fn admit_visual_activity(
             }
         } else { None };
         if slot.as_ref().is_some_and(|slot| !slot.fresh(now()) || world.validate_action_slot_current(core, store, &context, slot, &now).is_err())
+            || window_rest.as_ref().is_some_and(|guard|!guard.current(bot,&visual.output,now()))
             || native_permit.as_ref().is_some_and(|permit| !permit.current(core, now()) || !permit.matches_output(&visual.output))
             || cancel.load(Ordering::SeqCst)
             || !core.local_admission_current(bot, &fence, now())
@@ -877,6 +911,7 @@ fn admit_visual_activity(
             NativeJob {
                 grouped: false,
                 content,
+                window_rest,
                 visual: Some(visual),
                 native_rest_output: None,
                 native_permit,
