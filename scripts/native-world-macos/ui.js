@@ -2,9 +2,14 @@
 // All output is closed numeric metadata; native exceptions/UI text are withheld.
 const APP_ID = 'studio.orbitpal.native-world-fixture';
 const TITLE = 'OrbitPal Native World Fixture';
+const SYSTEM_EVENTS_PATH = '/System/Library/CoreServices/System Events.app';
 const OPERATIONS = ['probe', 'inspect', 'autopilot', 'setup', 'nova', 'blue', 'start', 'hide', 'show', 'stop', 'quit'];
 function closed(code, extra) {
-  return Object.assign({version: 1, code, ax: 0, appleEvents: 0, gui: 0, probePhase: 0, aeFunction: 0, matched: 0, acted: 0, mainVisible: 0, windows: 0}, extra || {});
+  return Object.assign({version: 1, code, ax: 0, appleEvents: 0, gui: 0, probePhase: 0, aeFunction: 0, aeStatusKind: 4, targetRunning: 0, matched: 0, acted: 0, mainVisible: 0, windows: 0}, extra || {});
+}
+function aeStatusKind(status) {
+  // Public AppleEvents.h / MacErrors.h constants; never export a raw OSStatus.
+  return status === 0 ? 0 : status === -1744 ? 1 : status === -1743 ? 2 : status === -600 ? 3 : 4;
 }
 function one(values) { if (!values.length) throw 9; if (values.length !== 1) throw 5; return values[0]; }
 function inside(child, parent) {
@@ -29,6 +34,27 @@ function run(argv) {
     ObjC.import('AppKit'); ObjC.import('ApplicationServices'); ObjC.import('CoreServices');
     out.ax = $.AXIsProcessTrusted() ? 1 : 0;
     if (!out.ax) throw 2; // No prompt option, TCC write or permission request.
+    function systemEventsProcess() {
+      const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier('com.apple.systemevents');
+      const count = Number(apps.count);
+      if (count === 0) return null;
+      if (count !== 1) throw 5;
+      const app = apps.objectAtIndex(0), pid = Number(app.processIdentifier);
+      if (!app || app.isTerminated || !Number.isSafeInteger(pid) || pid < 1 || pid > 2147483647
+        || ObjC.unwrap(app.bundleIdentifier) !== 'com.apple.systemevents'
+        || ObjC.unwrap(app.bundleURL.path) !== SYSTEM_EVENTS_PATH
+        || ObjC.unwrap(app.executableURL.path) !== SYSTEM_EVENTS_PATH + '/Contents/MacOS/System Events') throw 5;
+      return {app, pid};
+    }
+    out.probePhase = 7; // Fixed Apple target identity, before any permission query.
+    let systemEvents = null;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      systemEvents = systemEventsProcess();
+      if (systemEvents) break;
+      if (attempt < 19) $.NSThread.sleepForTimeInterval(0.05);
+    }
+    if (!systemEvents) throw 5;
+    out.targetRunning = 1;
     out.probePhase = 1; // Explicit C binding; umbrella metadata may omit AE.
     // OSStatus / const AEAddressDesc* / AEEventClass / AEEventID / Boolean.
     // The real descriptor owns its pointer throughout this synchronous call.
@@ -40,10 +66,16 @@ function run(argv) {
     out.probePhase = 3; // Native retained descriptor's pointer getter.
     const address = target.aeDesc;
     if (!address) throw 8;
+    out.probePhase = 7;
+    out.targetRunning = 0;
+    const currentSystemEvents = systemEventsProcess();
+    if (!currentSystemEvents || currentSystemEvents.pid !== systemEvents.pid || systemEvents.app.isTerminated) throw 5;
+    out.targetRunning = 1;
     out.probePhase = 4; // Actual permission query, never ask for consent.
     // Public nonprompting permission API, evaluated by the actual osascript client.
     const permission = $.AEDeterminePermissionToAutomateTarget(address, 0x2a2a2a2a, 0x2a2a2a2a, false);
     if (!Number.isInteger(permission)) throw 8;
+    out.aeStatusKind = aeStatusKind(permission);
     out.appleEvents = permission === 0 ? 1 : 0;
     if (!out.appleEvents) throw 3;
     out.probePhase = 5; // Actual same-UID, console, login and display checks.
