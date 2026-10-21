@@ -266,10 +266,11 @@ impl Store {
             .ok_or("experience_corrupt")?;
         let members: Vec<String> =
             serde_json::from_str(&participants).map_err(|_| "experience_corrupt")?;
-        let actual_kind = serde_json::to_value(event.kind()).map_err(storage)?;
+        let kind: SceneKind = serde_json::from_str(&kind).map_err(|_| "experience_corrupt")?;
+        let outcome: Outcome = serde_json::from_str(&outcome).map_err(|_| "experience_corrupt")?;
         if sequence != event.sequence()
-            || actual_kind.as_str() != Some(kind.as_str())
-            || outcome != "completed"
+            || kind != event.kind()
+            || outcome != Outcome::Completed
             || members.as_slice() != event.participants()
             || at != event.at_ms()
         {
