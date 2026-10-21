@@ -1,0 +1,178 @@
+name: Native renderer pilot (nonshipping)
+
+# Manual long measurements only after a successful exact-source smoke; no issue #66 closure.
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_sha:
+        description: Exact 40-character commit reviewed for this privileged disposable-VM pilot
+        required: true
+        type: string
+      qualifying_smoke_run:
+        description: Successful exact-source manual smoke run ID
+        required: true
+        type: string
+      pilot_mode:
+        description: Fixed actor count and frame-rate plan (one run, no automatic matrix)
+        required: true
+        type: choice
+        default: pilot
+        options: [pilot, pilot3, pilot5]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: native-render-benchmark-pilot
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'ralphschuler/orbitpal'
+    runs-on: ubuntu-26.04
+    # Cold build plus one bounded55-minute native measurement lane.
+    timeout-minutes: 100
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_TARGET_DIR: ${{ runner.temp }}/native-render-benchmark-build
+      REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+      DISPATCH_SHA: ${{ github.sha }}
+      SMOKE_RUN_ID: ${{ inputs.qualifying_smoke_run }}
+      PILOT_MODE: ${{ inputs.pilot_mode }}
+    steps:
+      - name: Refuse unreviewed refs and non-hosted environments before privileged setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == Linux ]]
+          [[ "$(uname -s)" == Linux && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$GITHUB_REPOSITORY" == ralphschuler/orbitpal ]]
+          [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/test/native-render-benchmark-smoke ]]
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ && "$REVIEWED_SHA" == "$DISPATCH_SHA" ]]
+          [[ "$SMOKE_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+          [[ "$PILOT_MODE" == pilot || "$PILOT_MODE" == pilot3 || "$PILOT_MODE" == pilot5 ]]
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bind the checkout to the reviewed immutable commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$REVIEWED_SHA" ]]
+          git diff --exit-code
+      - name: Require a successful manual smoke for this exact source before privileged setup
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --hostname github.com --method GET "repos/ralphschuler/orbitpal/actions/runs/$SMOKE_RUN_ID" \
+            | python3 scripts/native-render-benchmark/qualification.py "$REVIEWED_SHA" "$SMOKE_RUN_ID"
+          python3 -B scripts/native-render-benchmark/test-collector.py
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.25.0
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+      - name: Install packaged build and private software-compositor prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == Linux ]]
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl file libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev libpipewire-0.3-dev \
+            libclang-dev patchelf gnome-shell dbus at-spi2-core dconf-service \
+            libgl1-mesa-dri libegl1 libgles2 gsettings-desktop-schemas iproute2 procps passwd
+      - name: Build only standalone benchmark assets and the opt-in example (do not launch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset TAURI_CONFIG DISPLAY
+          pnpm install --frozen-lockfile
+          node scripts/native-render-benchmark/build.mjs
+          # Own generate_context!(benchmark/tauri.conf.json), distinct identifier,
+          # no normal App/bootstrap/plugin IPC; devUrl=null embeds dist-benchmark.
+          cargo build --manifest-path src-tauri/Cargo.toml --locked \
+            --example native_render_bench --features native-render-benchmark
+          [[ -x "$CARGO_TARGET_DIR/debug/examples/native_render_bench" ]]
+          [[ "$(git rev-parse HEAD)" == "$REVIEWED_SHA" ]]
+          git diff --exit-code
+      - name: Exercise exactly one closed pilot through the guarded disposable-UID harness
+        timeout-minutes: 59
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == Linux ]]
+          [[ "$GITHUB_REPOSITORY" == ralphschuler/orbitpal && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/test/native-render-benchmark-smoke ]]
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ && "$REVIEWED_SHA" == "$DISPATCH_SHA" ]]
+          [[ "$SMOKE_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+          [[ "$PILOT_MODE" == pilot || "$PILOT_MODE" == pilot3 || "$PILOT_MODE" == pilot5 ]]
+          [[ "$(git rev-parse HEAD)" == "$REVIEWED_SHA" ]]
+          git diff --exit-code
+          gh api --hostname github.com --method GET "repos/ralphschuler/orbitpal/actions/runs/$SMOKE_RUN_ID" \
+            | python3 scripts/native-render-benchmark/qualification.py "$REVIEWED_SHA" "$SMOKE_RUN_ID"
+          # Root-owned timeout can signal the root runner, unlike an unprivileged
+          # timeout parent. TERM runs its existing cleanup; KILL after 120s is a
+          # failed/unconfirmed teardown, never a successful pilot. The native driver
+          # retains its55-minute bound from before provisioning.
+          # run.sh and runner.py still execute their own hosted/identity guards.
+          sudo /usr/bin/timeout --signal=TERM --kill-after=120s 56m \
+            /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted RUNNER_OS=Linux \
+            RUNNER_TEMP="$RUNNER_TEMP" /bin/bash \
+            "$GITHUB_WORKSPACE/scripts/native-render-benchmark/run.sh" "$PILOT_MODE" \
+            "$CARGO_TARGET_DIR/debug/examples/native_render_bench"
+      - name: Require the actual pilot scope and confirmed cleanup, without printing raw metadata
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP']) / ('native-render-benchmark-' + os.environ['PILOT_MODE'])
+          result = json.loads((root / 'fixture-result.json').read_text())
+          manifest = json.loads((root / 'fixture-manifest.json').read_text())
+          assert result['passed'] is True and result['cleanupConfirmed'] is True
+          assert result['fullIssue66Acceptance'] is False and result['hardwarePerformanceBaseline'] is False
+          mode = os.environ['PILOT_MODE']
+          actors, fps = {'pilot': (1, 30), 'pilot3': (3, 30), 'pilot5': (5, 20)}[mode]
+          assert manifest['mode'] == mode and manifest['backendRequested'] == 'llvmpipe'
+          assert manifest['physicalGpuPermissionsChanged'] is False and manifest['nativeLaneOnly'] is True
+          rows = [json.loads(line)['event'] for line in (root / 'native.ndjson').read_text().splitlines()]
+          scope = [event for event in rows if event.get('kind') == 'scope']
+          done = [event for event in rows if event.get('kind') == 'completed']
+          assert len(scope) == 1 and len(done) == 1
+          assert scope[0]['actors'] == actors and scope[0]['simultaneousStages'] == actors and scope[0]['nativeWebviews'] == actors + 1
+          assert scope[0]['framesPerSecond'] == fps
+          assert scope[0]['mode'] == mode and scope[0]['normalAppBootstrap'] is False
+          assert scope[0]['softwareGpuQualificationOnly'] is True and scope[0]['fullIssue66Acceptance'] is False
+          assert done[0]['additionalOrderlyCycles'] == 20
+          assert done[0]['activeFixtureStages'] == 0 and done[0]['activeFigureWindows'] == 0
+          assert (root / 'process.ndjson').is_file() and (root / 'collector-summary.json').is_file()
+          print('Native software-GPU pilot scope and cleanup passed; no hardware or issue #66 acceptance.')
+          PY
+      - name: Upload only the six fixed validated metadata files, including available failure evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-render-${{ inputs.pilot_mode }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/native-render-benchmark-${{ inputs.pilot_mode }}/native.ndjson
+            ${{ runner.temp }}/native-render-benchmark-${{ inputs.pilot_mode }}/process.ndjson
+            ${{ runner.temp }}/native-render-benchmark-${{ inputs.pilot_mode }}/collector-summary.json
+            ${{ runner.temp }}/native-render-benchmark-${{ inputs.pilot_mode }}/collector-failure.json
+            ${{ runner.temp }}/native-render-benchmark-${{ inputs.pilot_mode }}/fixture-manifest.json
+            ${{ runner.temp }}/native-render-benchmark-${{ inputs.pilot_mode }}/fixture-result.json
+          if-no-files-found: warn
+          retention-days: 7

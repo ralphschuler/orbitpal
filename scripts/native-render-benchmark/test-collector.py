@@ -14,6 +14,7 @@ from unittest.mock import patch
 import collect
 import launch
 import runner
+import qualification
 
 
 NAME = "orbitpal-render-0123456789abcdef"
@@ -239,6 +240,23 @@ class HarnessSafetyTests(unittest.TestCase):
                 nonce.assert_not_called()
                 with self.assertRaisesRegex(collect.Refusal, "^invalid_benchmark_mode$"):
                     launch.environment(root, "opr0123456789abcdef", "app", mode, NET)
+
+    def test_pilot_requires_successful_manual_smoke_for_same_exact_source_and_repository(self):
+        sha, run_id = "a" * 40, "123456789"
+        run = {"id": int(run_id), "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
+               "head_sha": sha, "path": qualification.SMOKE_PATH,
+               "repository": {"full_name": qualification.REPOSITORY}, "head_repository": {"full_name": qualification.REPOSITORY}}
+        self.assertTrue(qualification.qualified_smoke(run, sha, run_id))
+        for key, value in (("id", True), ("id", run_id), ("id", 123456788), ("event", "push"),
+                           ("status", "in_progress"), ("conclusion", "failure"), ("head_sha", "b" * 40),
+                           ("path", ".github/workflows/ci.yml"), ("repository", {"full_name": "other/orbitpal"}),
+                           ("head_repository", {"full_name": "other/orbitpal"})):
+            with self.subTest(field=key):
+                self.assertFalse(qualification.qualified_smoke({**run, key: value}, sha, run_id))
+        for wrong in (None, [], True, "PRIVATE"):
+            self.assertFalse(qualification.qualified_smoke(wrong, sha, run_id))
+        for wrong_sha, wrong_id in (("A" * 40, run_id), (sha, "01"), (sha, "123/../../other")):
+            self.assertFalse(qualification.qualified_smoke(run, wrong_sha, wrong_id))
 
     def test_bus_entry_is_only_exact_packaged_a11y_or_dconf_without_delegation(self):
         raw = b"[D-BUS Service]\nName=org.a11y.Bus\nExec=/usr/libexec/at-spi-bus-launcher\nSystemdService=PRIVATE.service\nUser=root\n"
