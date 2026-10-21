@@ -1177,5 +1177,289 @@ class ActionCapabilityDiagnosticTests(unittest.TestCase):
         interface.doAction.assert_not_called()
 
 
+
+class StudioFocusTests(unittest.TestCase):
+    """Controlled AT-SPI focus attempts; no native app, desktop or focus is used."""
+    Node = SwitchRevealTests.Node
+    fixture = SwitchRevealTests.fixture
+    parents = SwitchRevealTests.parents
+
+    def control(self):
+        return self.Node("Enable speech output", 3,
+                         ("visible", "showing", "checked", "enabled", "sensitive"), pid=42)
+
+    def focus(self, frame, effect=None):
+        request = Mock(return_value=True, side_effect=effect)
+        frame.queryComponent = Mock(return_value=SimpleNamespace(grabFocus=request))
+        return request
+
+    def test_one_native_request_requires_fresh_active_readback_before_real_switch_action(self):
+        old, fresh = self.control(), self.control()
+        studio, frame, _ = self.fixture([old])
+        frame.states.discard("active")
+        def activate():
+            old.press.assert_not_called()
+            fresh.press.assert_not_called()
+            frame.states.add("active")
+            frame.children = [fresh]
+            return True
+        request = self.focus(frame, activate)
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app") as executable, patch.object(app, "phase"):
+            studio.switch(old.name, False, focus=True)
+        request.assert_called_once_with()
+        self.assertGreaterEqual(executable.call_count, 3)
+        old.press.assert_not_called()
+        fresh.press.assert_called_once_with(0)
+        old.scroll.assert_not_called()
+        fresh.scroll.assert_not_called()
+
+    def test_true_native_return_without_active_readback_never_authorizes_input_or_retries_focus(self):
+        node = self.control()
+        studio, frame, _ = self.fixture([node])
+        frame.states.discard("active")
+        request = self.focus(frame)
+        clock = [0.0]
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)), self.assertRaisesRegex(provider.Refusal, "^app_window_not_active$"):
+            locate = studio.switch_control(node.name, {3, 4})
+            studio.wait(studio.focus_once(locate, seconds=0.25), "app_control_missing", seconds=0.25, retry_inactive=True)
+        request.assert_called_once_with()
+        self.assertGreaterEqual(clock[0], 0.25)
+        self.assertLess(clock[0], 0.4)
+        node.scroll.assert_not_called()
+        node.press.assert_not_called()
+
+    def test_refused_or_unsupported_native_focus_is_terminal_without_input(self):
+        for response, expected in ((False, "app_action_refused"), (RuntimeError("private"), "app_action_unavailable"), (AttributeError("private"), "app_action_unavailable"), (NotImplementedError("private"), "app_action_unavailable")):
+            node = self.control()
+            studio, frame, _ = self.fixture([node])
+            request = self.focus(frame)
+            if isinstance(response, BaseException):
+                request.side_effect = response
+            else:
+                request.return_value = response
+            with self.subTest(response=type(response).__name__), patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.time, "sleep") as sleep, self.assertRaisesRegex(provider.Refusal, "^" + expected + "$"):
+                studio.switch(node.name, False, focus=True)
+            request.assert_called_once_with()
+            sleep.assert_not_called()
+            node.press.assert_not_called()
+            node.scroll.assert_not_called()
+
+    def test_focus_target_must_be_the_unique_owned_visible_showing_fixed_studio_frame(self):
+        for change in ("hidden", "offscreen", "foreign", "wrong_name", "wrong_role", "duplicate"):
+            node = self.control()
+            studio, frame, desktop = self.fixture([node])
+            request = self.focus(frame)
+            if change == "hidden": frame.states.discard("visible")
+            elif change == "offscreen": frame.states.discard("showing")
+            elif change == "foreign": frame.pid = 99
+            elif change == "wrong_name": frame.name = "other"
+            elif change == "wrong_role": frame.role = 5
+            else: desktop.children.append(self.Node("OrbitPal", 10, ("visible", "showing", "active")))
+            with self.subTest(change=change), patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), self.assertRaisesRegex(provider.Refusal, "^ambiguous_app_window$"):
+                studio.switch(node.name, False, focus=True)
+            request.assert_not_called()
+            node.press.assert_not_called()
+
+    def test_process_and_executable_guards_precede_the_focus_request(self):
+        for change in ("process", "executable"):
+            node = self.control()
+            studio, frame, _ = self.fixture([node])
+            request = self.focus(frame)
+            expected = "app_process_exited" if change == "process" else "unexpected_app_executable"
+            parent = Mock(side_effect=provider.Refusal(expected)) if change == "process" else self.parents
+            executable = Path("/disposable/foreign-app") if change == "executable" else studio.root / "acceptance-app"
+            with self.subTest(change=change), patch.object(app, "process_parent", side_effect=parent), patch.object(app.Path, "resolve", return_value=executable), patch.object(app, "phase"), self.assertRaisesRegex(provider.Refusal, "^" + expected + "$"):
+                studio.switch(node.name, False, focus=True)
+            request.assert_not_called()
+            node.press.assert_not_called()
+
+    def test_replacement_or_ambiguity_after_native_request_is_not_focus_success(self):
+        for change, expected in (("process", "app_process_exited"), ("executable", "unexpected_app_executable"), ("duplicate", "ambiguous_app_window")):
+            node = self.control()
+            studio, frame, desktop = self.fixture([node])
+            requested = [False]
+            def activate():
+                requested[0] = True
+                frame.states.add("active")
+                if change == "duplicate": desktop.children.append(self.Node("OrbitPal", 10, ("visible", "showing", "active")))
+                return True
+            def parent(pid):
+                if requested[0] and change == "process": raise provider.Refusal("app_process_exited")
+                return self.parents(pid)
+            def executable(**_):
+                return Path("/disposable/foreign-app") if requested[0] and change == "executable" else studio.root / "acceptance-app"
+            request = self.focus(frame, activate)
+            with self.subTest(change=change), patch.object(app, "process_parent", side_effect=parent), patch.object(app.Path, "resolve", side_effect=executable), patch.object(app, "phase"), self.assertRaisesRegex(provider.Refusal, "^" + expected + "$"):
+                studio.switch(node.name, False, focus=True)
+            request.assert_called_once_with()
+            node.press.assert_not_called()
+            node.scroll.assert_not_called()
+
+    def test_late_native_return_cannot_extend_original_wait_or_authorize_input(self):
+        node = self.control()
+        studio, frame, _ = self.fixture([node])
+        clock = [0.0]
+        def late_activate():
+            clock[0] = 12.1
+            frame.states.add("active")
+            return True
+        request = self.focus(frame, late_activate)
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep") as sleep, self.assertRaisesRegex(provider.Refusal, "^app_focus_not_confirmed$"):
+            studio.switch(node.name, False, focus=True)
+        request.assert_called_once_with()
+        sleep.assert_not_called()
+        node.press.assert_not_called()
+        node.scroll.assert_not_called()
+
+    def test_late_frame_guard_cannot_issue_a_focus_request_after_deadline(self):
+        node = self.control()
+        studio, frame, _ = self.fixture([node])
+        clock = [0.0]
+        original = studio.studio_frame
+        def late_guard(**kwargs):
+            result = original(**kwargs)
+            clock[0] = 12.1
+            return result
+        request = self.focus(frame)
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(studio, "studio_frame", side_effect=late_guard), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep") as sleep, self.assertRaisesRegex(provider.Refusal, "^app_focus_not_confirmed$"):
+            studio.switch(node.name, False, focus=True)
+        request.assert_not_called()
+        sleep.assert_not_called()
+        node.press.assert_not_called()
+        node.scroll.assert_not_called()
+
+    def test_default_switch_does_not_request_focus(self):
+        node = self.control()
+        studio, frame, _ = self.fixture([node])
+        request = self.focus(frame)
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"):
+            studio.switch(node.name, False)
+        request.assert_not_called()
+        node.press.assert_called_once_with(0)
+
+    def test_only_first_voice_configuration_explicitly_opts_into_focus(self):
+        tree = ast.parse((DIRECTORY / "app.py").read_text())
+        run = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run")
+        requests = [node for node in ast.walk(run) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "switch" and any(keyword.arg == "focus" for keyword in node.keywords)]
+        self.assertEqual(len(requests), 1)
+        self.assertEqual([ast.literal_eval(value) for value in requests[0].args], ["Enable speech output", False])
+        self.assertEqual([(value.arg, ast.literal_eval(value.value)) for value in requests[0].keywords], [("focus", True)])
+
+class ObservedSwitchActionTests(unittest.TestCase):
+    """Real switch/action paths with authored AX data; no desktop/input runs."""
+    def fixture(self, checked=True, names=("uncheck",), changes=True):
+        source = SwitchRevealTests()
+        states = ["visible", "showing", "enabled", "sensitive"] + (["checked"] if checked else [])
+        node = source.Node("Enable speech output", 3, states, pid=42)
+        studio, frame, desktop = source.fixture([node])
+        interface = SimpleNamespace(nActions=len(names), getName=Mock(side_effect=lambda index: names[index]),
+                                    doAction=Mock(side_effect=node.toggle if changes else lambda _: True))
+        node.queryAction = Mock(return_value=interface)
+        return source, studio, node, frame, desktop, interface
+
+    def test_observed_uncheck_runs_only_for_an_explicit_off_switch_and_has_readback(self):
+        source, studio, node, _, _, interface = self.fixture()
+        errors = io.StringIO()
+        with patch.object(app, "process_parent", side_effect=source.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app") as executable, patch.object(app, "phase"), patch.object(app.sys, "stderr", errors):
+            studio.switch(node.name, False)
+        interface.doAction.assert_called_once_with(0)
+        self.assertNotIn("checked", node.states)
+        self.assertGreaterEqual(executable.call_count, 3)  # Acquire, refresh, readback.
+        self.assertEqual(errors.getvalue(), "")
+
+    def test_default_and_on_requests_do_not_accept_uncheck_or_other_diagnostic_aliases(self):
+        for names in (("uncheck",), ("check",), ("activate",)):
+            for target in (None, True):
+                source, studio, node, _, _, interface = self.fixture(names=names)
+                errors = io.StringIO()
+                with self.subTest(names=names, target=target), patch.object(app.sys, "stderr", errors), self.assertRaisesRegex(provider.Refusal, "^app_action_unavailable$"):
+                    studio.action(node, scroll=False, switch_target=target)
+                interface.doAction.assert_not_called()
+        source, studio, node, _, _, interface = self.fixture(checked=False)
+        errors = io.StringIO()
+        with patch.object(app, "process_parent", side_effect=source.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.sys, "stderr", errors), self.assertRaisesRegex(provider.Refusal, "^app_action_unavailable$"):
+            studio.switch(node.name, True)
+        interface.doAction.assert_not_called()
+
+    def test_fresh_already_off_node_requires_no_action_or_new_input(self):
+        source, studio, old, frame, _, interface = self.fixture()
+        fresh = source.Node(old.name, 3, ("visible", "showing", "enabled", "sensitive"), pid=42)
+        fresh.queryAction = Mock(return_value=interface)
+        with patch.object(app, "process_parent", side_effect=source.parents):
+            studio.action(old, scroll=False, switch_target=False, switch_current=Mock(return_value=fresh))
+        fresh.queryAction.assert_not_called()
+        interface.doAction.assert_not_called()
+        old.scroll.assert_not_called()
+
+    def test_wrong_name_role_state_or_foreign_node_never_receives_directional_input(self):
+        for kind in ("name", "role", "hidden", "not_showing", "disabled", "foreign"):
+            source, studio, old, _, _, interface = self.fixture()
+            states = {"visible", "showing", "enabled", "sensitive", "checked"}
+            if kind == "hidden": states.remove("visible")
+            if kind == "not_showing": states.remove("showing")
+            if kind == "disabled": states.remove("enabled")
+            fresh = source.Node("PRIVATE_WRONG_NAME" if kind == "name" else old.name, 5 if kind == "role" else 3, states, pid=99 if kind == "foreign" else 42)
+            fresh.queryAction = Mock(return_value=interface)
+            with self.subTest(kind=kind), patch.object(app, "process_parent", side_effect=source.parents), self.assertRaises(provider.Refusal):
+                studio.action(old, scroll=False, switch_target=False, switch_current=Mock(return_value=fresh))
+            fresh.queryAction.assert_not_called()
+            interface.doAction.assert_not_called()
+
+    def test_stale_process_executable_or_inactive_frame_is_rejected_on_refresh(self):
+        for kind, code in (("process", "app_process_exited"), ("executable", "unexpected_app_executable"), ("inactive", "app_window_not_active"), ("duplicate", "ambiguous_app_window")):
+            source, studio, node, frame, desktop, interface = self.fixture()
+            retired = [False]
+            original = studio.action
+            def retire(*args, **kwargs):
+                retired[0] = True
+                if kind == "inactive": frame.states.discard("active")
+                if kind == "duplicate": desktop.children.append(source.Node("OrbitPal", 10, ("visible", "showing", "active")))
+                return original(*args, **kwargs)
+            def parent(pid):
+                if retired[0] and kind == "process": raise provider.Refusal("app_process_exited")
+                return source.parents(pid)
+            def executable(**_):
+                return Path("/disposable/foreign-app") if retired[0] and kind == "executable" else studio.root / "acceptance-app"
+            with self.subTest(kind=kind), patch.object(studio, "action", side_effect=retire), patch.object(app, "process_parent", side_effect=parent), patch.object(app.Path, "resolve", side_effect=executable), patch.object(app, "phase"), self.assertRaisesRegex(provider.Refusal, "^" + code + "$"):
+                studio.switch(node.name, False)
+            interface.doAction.assert_not_called()
+
+    def test_directional_action_refusal_or_missing_readback_cannot_count_as_success(self):
+        source, studio, node, _, _, interface = self.fixture()
+        interface.doAction.side_effect = None
+        interface.doAction.return_value = False
+        with patch.object(app, "process_parent", side_effect=source.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), self.assertRaisesRegex(provider.Refusal, "^app_action_refused$"):
+            studio.switch(node.name, False)
+        interface.doAction.assert_called_once_with(0)
+        source, studio, node, _, _, interface = self.fixture(changes=False)
+        clock = [0.0]
+        with patch.object(app, "process_parent", side_effect=source.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)), self.assertRaisesRegex(provider.Refusal, "^app_switch_not_changed$"):
+            studio.switch(node.name, False)
+        interface.doAction.assert_called_once_with(0)
+        self.assertIn("checked", node.states)
+
+    def test_explicit_off_path_requires_its_fresh_locator_and_never_adds_scroll_or_ninth_action(self):
+        source, studio, node, _, _, interface = self.fixture(names=("private",) * 8 + ("uncheck",))
+        for kwargs in ({"switch_target": False}, {"switch_target": False, "switch_current": 1}, {"switch_target": False, "switch_current": lambda: node, "scroll": True}):
+            with self.subTest(kwargs=tuple(kwargs)), self.assertRaisesRegex(provider.Refusal, "^app_action_unavailable$"):
+                studio.action(node, **({"scroll": False} | kwargs))
+        interface.getName.assert_not_called()
+        errors = io.StringIO()
+        with patch.object(app, "process_parent", side_effect=source.parents), patch.object(app.sys, "stderr", errors), self.assertRaisesRegex(provider.Refusal, "^app_action_unavailable$"):
+            studio.action(node, scroll=False, switch_target=False, switch_current=lambda: node)
+        self.assertEqual(interface.getName.call_count, 8)
+        interface.doAction.assert_not_called()
+        node.scroll.assert_not_called()
+
+    def test_off_path_does_not_accept_unobserved_check_or_activate_actions(self):
+        for name in ("check", "activate"):
+            source, studio, node, _, _, interface = self.fixture(names=(name,))
+            errors = io.StringIO()
+            with self.subTest(name=name), patch.object(app, "process_parent", side_effect=source.parents), patch.object(app.sys, "stderr", errors), self.assertRaisesRegex(provider.Refusal, "^app_action_unavailable$"):
+                studio.action(node, scroll=False, switch_target=False, switch_current=lambda: node)
+            interface.doAction.assert_not_called()
+
+
+
 if __name__ == "__main__":
     unittest.main()

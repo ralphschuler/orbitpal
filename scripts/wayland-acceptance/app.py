@@ -52,7 +52,7 @@ REFUSAL_CODES = frozenset((
     'ambiguous_app_window', 'app_accessibility_unavailable', 'app_action_refused',
     'app_action_unavailable', 'app_control_disabled', 'app_control_missing',
     'app_data_unavailable', 'app_entry_not_editable', 'app_entry_write_failed',
-    'app_executable_not_ready', 'app_pid_not_ready', 'app_process_exited',
+    'app_executable_not_ready', 'app_focus_not_confirmed', 'app_pid_not_ready', 'app_process_exited',
     'app_profile_unavailable', 'app_save_not_committed', 'app_switch_not_changed',
     'app_window_not_active', 'app_window_outside_private_monitor', 'body_limit',
     'cancelled_response_presented', 'disable_not_observed', 'disabled_response_presented',
@@ -281,9 +281,35 @@ class Studio:
         state = node.getState()
         return state.contains(self.a.STATE_SENSITIVE) and state.contains(self.a.STATE_ENABLED)
 
-    def action(self, node, scroll=True):
+    def action(self, node, scroll=True, switch_target=None, switch_current=None):
+        target_state = None
+        if switch_target is not None:
+            # Only an explicit off request may use the actually observed
+            # directional action. The caller supplies its SAME strict locator,
+            # retaining active/PID/executable/unique-frame and scroll-budget gates.
+            if switch_target is not False or scroll or not callable(switch_current):
+                raise Refusal("app_action_unavailable")
+            source_name = node.name
+            roles = {self.a.ROLE_CHECK_BOX, self.a.ROLE_TOGGLE_BUTTON, getattr(self.a, "ROLE_SWITCH", -1)}
+            roles.discard(-1)
+            if source_name not in SWITCH_CONTROLS:
+                raise Refusal("app_action_unavailable")
+            node = switch_current()
+            if node is None:
+                raise Refusal("app_control_missing")
+            if node.name != source_name or node.getRole() not in roles:
+                raise Refusal("app_action_unavailable")
+            if not owned_process(node.get_process_id(), self.pid):
+                raise Refusal("foreign_process")
+            target_state = node.getState()
+            if not (target_state.contains(self.a.STATE_VISIBLE) and target_state.contains(self.a.STATE_SHOWING)):
+                raise Refusal("app_control_missing")
         if not self.enabled(node):
             raise Refusal("app_control_disabled")
+        # A fresh already-off switch needs no input. switch() still performs
+        # its mandatory strict checked-state readback after this return.
+        if target_state is not None and not target_state.contains(self.a.STATE_CHECKED):
+            return
         if scroll:
             try:
                 node.queryComponent().scrollTo(self.a.SCROLL_ANYWHERE)
@@ -295,7 +321,7 @@ class Studio:
         for index in range(min(offered, 8)):
             name = interface.getName(index).lower()
             examined += 1
-            if name in ("click", "press", "toggle", "select"):
+            if name in ("click", "press", "toggle", "select") or (name == "uncheck" and switch_target is False):
                 if not interface.doAction(index):
                     raise Refusal("app_action_refused")
                 return
@@ -332,13 +358,64 @@ class Studio:
         if not node.queryEditableText().setTextContents(value):
             raise Refusal("app_entry_write_failed")
 
-    def switch(self, name, enabled):
+    def studio_frame(self, active=True):
+        """Fresh owned/executable/unique showing Studio; only focus may omit ACTIVE."""
+        process_parent(self.pid)
+        try:
+            executable = (Path("/proc") / str(self.pid) / "exe").resolve(strict=True)
+        except (FileNotFoundError, ProcessLookupError):
+            raise Refusal("app_process_exited") from None
+        if executable != self.root / "acceptance-app":
+            raise Refusal("unexpected_app_executable")
+        frames = [node for node in self.nodes()
+                  if node.getRole() in (self.a.ROLE_FRAME, self.a.ROLE_WINDOW) and node.name == "OrbitPal"]
+        if len(frames) != 1:
+            raise Refusal("ambiguous_app_window")
+        if active and not frames[0].getState().contains(self.a.STATE_ACTIVE):
+            raise Refusal("app_window_not_active")
+        return frames[0]
+
+    def focus_once(self, predicate, seconds=12):
+        """One real native request inside, never in addition to, the acquisition wait."""
+        deadline = time.monotonic() + seconds
+        attempted = False
+
+        def focused():
+            nonlocal attempted
+            if time.monotonic() >= deadline:
+                raise Refusal("app_focus_not_confirmed")
+            if not attempted:
+                current = self.studio_frame(active=False)
+                if time.monotonic() >= deadline:
+                    raise Refusal("app_focus_not_confirmed")
+                attempted = True
+                try:
+                    if current.queryComponent().grabFocus() is not True:
+                        raise Refusal("app_action_refused")
+                except (RuntimeError, AttributeError, NotImplementedError):
+                    raise Refusal("app_action_unavailable") from None
+            if time.monotonic() >= deadline:
+                raise Refusal("app_focus_not_confirmed")
+            # The native return is not authorization: reacquire via the original
+            # active-frame locator, then refuse a result arriving after deadline.
+            result = predicate()
+            if time.monotonic() >= deadline:
+                raise Refusal("app_focus_not_confirmed")
+            return result
+
+        return focused
+
+    def switch(self, name, enabled, focus=False):
         roles = {self.a.ROLE_CHECK_BOX, self.a.ROLE_TOGGLE_BUTTON, getattr(self.a, "ROLE_SWITCH", -1)}
         roles.discard(-1)
         locate = self.switch_control(name, roles)
-        node = self.wait(locate, "app_control_missing", retry_inactive=True)
+        acquisition = self.focus_once(locate) if focus else locate
+        node = self.wait(acquisition, "app_control_missing", retry_inactive=True)
         if node.getState().contains(self.a.STATE_CHECKED) != enabled:
-            self.action(node, scroll=False)  # Already reacquired after scrolling.
+            if enabled is False:
+                self.action(node, scroll=False, switch_target=False, switch_current=locate)
+            else:
+                self.action(node, scroll=False)  # On requests keep the original four actions.
         self.wait(lambda: (node := locate()) is not None and node.getState().contains(self.a.STATE_CHECKED) == enabled, "app_switch_not_changed", retry_inactive=True)
 
     def switch_control(self, name, roles):
@@ -347,25 +424,9 @@ class Studio:
             raise Refusal("app_control_missing")
         attempts = 0
 
-        def frame():
-            process_parent(self.pid)
-            try:
-                executable = (Path("/proc") / str(self.pid) / "exe").resolve(strict=True)
-            except (FileNotFoundError, ProcessLookupError):
-                raise Refusal("app_process_exited") from None
-            if executable != self.root / "acceptance-app":
-                raise Refusal("unexpected_app_executable")
-            frames = [node for node in self.nodes()
-                      if node.getRole() in (self.a.ROLE_FRAME, self.a.ROLE_WINDOW) and node.name == "OrbitPal"]
-            if len(frames) != 1:
-                raise Refusal("ambiguous_app_window")
-            if not frames[0].getState().contains(self.a.STATE_ACTIVE):
-                raise Refusal("app_window_not_active")
-            return frames[0]
-
         def locate():
             nonlocal attempts
-            current = frame()
+            current = self.studio_frame()
             candidate = self.find(name, roles, include_offscreen=True, frame=current)
             if candidate is None:
                 return None
@@ -381,7 +442,7 @@ class Studio:
                 raise Refusal("app_action_unavailable") from None
             # Recheck process/executable/frame and query a fresh SHOWING node;
             # the old offscreen accessible is never used for an action/state.
-            node = self.find(name, roles, include_offscreen=True, frame=frame())
+            node = self.find(name, roles, include_offscreen=True, frame=self.studio_frame())
             return node if node is not None and node.getState().contains(self.a.STATE_SHOWING) else None
 
         return locate
@@ -536,7 +597,7 @@ def run(root):
         studio.button("Character & voice")
         phase("configure_voice_navigation_done")
         phase("configure_voice_switch")
-        studio.switch("Enable speech output", False)
+        studio.switch("Enable speech output", False, focus=True)
         studio.save(lambda value: value["voice"]["enabled"] is False)
         studio.button("Models")
         phase("configure_real_model_and_grants")
