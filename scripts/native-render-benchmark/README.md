@@ -37,6 +37,20 @@ merge gets a new commit SHA; the reviewed source/tree and final input must be
 reconciled explicitly. Do not reuse another workflow's name or add push triggers
 to bypass registration. See GitHub's [manual workflow requirements](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow?tool=cli).
 
+The ordinary three-OS CI builds the standalone assets after dependency
+installation and explicitly runs the feature-gated example's non-GUI tests:
+
+```sh
+node scripts/native-render-benchmark/build.mjs
+cargo test --manifest-path src-tauri/Cargo.toml --example native_render_bench \
+  --features native-render-benchmark --locked
+```
+
+The example's tests cover only numeric protocol, navigation and fixed mode/epoch
+logic; its `main` is never called. The default Cargo test command skips this
+required-feature example, so the separate CI step is necessary. The synthetic
+collector and offline analysis fixtures also run in the ordinary Linux CI job.
+
 The maintainer must review the exact source before dispatch. Merge/registration,
 non-GUI tests and adding this workflow do not establish that the private Linux
 runtime works; the first actual smoke remains a distinct qualification.

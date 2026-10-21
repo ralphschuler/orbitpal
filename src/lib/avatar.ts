@@ -1170,7 +1170,8 @@ export class AvatarStage {
     if (this.diagnostics && rafNow !== undefined) this.observeDiagnostic({ kind: 'raf', at: now });
     if (this.disposed) return;
     this.frame = requestAnimationFrame(this.animate);
-    const interval = 1000 / (Number(this.options.profile?.output?.fps) === 30 ? 30 : 60);
+    const fps = Number(this.options.profile?.output?.fps);
+    const interval = 1000 / (fps === 20 ? 20 : fps === 30 ? 30 : 60);
     const sinceRender = now - this.lastRenderTime;
     if (sinceRender < interval - 0.5) return;
     this.lastRenderTime = now - (sinceRender % interval);
