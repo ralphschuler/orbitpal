@@ -210,6 +210,87 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(collect.failure_summary(collect.Refusal("process_scope_changed"))["reason"], "process_scope_changed")
 
 
+class CgroupCpuSchemaTests(unittest.TestCase):
+    BASE = b"usage_usec 123\nuser_usec 80\nsystem_usec 43\n"
+    FULL = (BASE + b"nice_usec 17\ncore_sched.force_idle_usec 29\nnr_periods 31\n"
+            b"nr_throttled 7\nthrottled_usec 41\nnr_bursts 2\nburst_usec 53\n")
+
+    def numbers(self, cpu, memory=b"456\n"):
+        def value(path, _limit):
+            return cpu if path.name == "cpu.stat" else memory
+        with patch.object(collect, "bounded", side_effect=value) as read:
+            result = collect.group_numbers(Path("/synthetic"))
+            self.assertEqual([call.args for call in read.call_args_list],
+                             [(Path("/synthetic/cpu.stat"), 8192), (Path("/synthetic/memory.current"), 64)])
+        return result
+
+    def cpu_refusal(self, cpu, reason):
+        with patch.object(collect, "bounded", return_value=cpu) as read:
+            with self.assertRaisesRegex(collect.Refusal, "^" + reason + "$"):
+                collect.group_numbers(Path("/synthetic"))
+            self.assertEqual([call.args for call in read.call_args_list], [(Path("/synthetic/cpu.stat"), 8192)])
+
+    def test_base_full_kernel_forms_and_reordered_fields_keep_usage_separate(self):
+        reordered = b"\n".join(reversed(self.FULL.splitlines())) + b"\n"
+        for cpu in (self.BASE, self.FULL, reordered):
+            self.assertEqual(self.numbers(cpu), (123, 456))
+        # Neither core-forced-idle/nice time nor CFS counters are added to usage.
+        self.assertEqual(self.numbers(self.FULL.replace(b"usage_usec 123", b"usage_usec 0")), (0, 456))
+
+    def test_every_known_value_is_u64_bounded_and_usage_retains_its_signed_limit(self):
+        for field in collect.CPU_STAT_FIELDS:
+            prefix = b"usage_usec 123\n" if field != b"usage_usec" else b""
+            valid = prefix + field + b" " + str(2**64 - 1).encode("ascii") + b"\n"
+            if field == b"usage_usec":
+                with self.assertRaisesRegex(collect.Refusal, "^group_metadata_limit$"):
+                    self.numbers(valid)
+            else:
+                self.assertEqual(self.numbers(valid), (123, 456))
+            for too_large in (str(2**64).encode("ascii"), b"0" * 21):
+                self.cpu_refusal(prefix + field + b" " + too_large + b"\n", "group_metadata_limit")
+
+    def test_each_duplicate_key_including_core_is_rejected_before_memory_read(self):
+        for field in collect.CPU_STAT_FIELDS:
+            prefix = b"usage_usec 123\n" if field != b"usage_usec" else b""
+            self.cpu_refusal(prefix + field + b" 1\n" + field + b" 2\n", "invalid_group_cpu")
+
+    def test_unknown_names_and_dotted_spoofs_remain_closed_refusals(self):
+        for field in (b"unknown_field", b"PRIVATE_PATH", b"core_sched.force_idle_usecs",
+                      b"core_sched.force_idle_usec.extra", b"core-sched.force_idle_usec", b"/private/field"):
+            self.cpu_refusal(self.BASE + field + b" 5\n", "invalid_group_cpu")
+
+    def test_missing_usage_never_becomes_an_invented_zero(self):
+        for cpu in (b"", b"user_usec 80\nsystem_usec 43\n", self.FULL.split(b"\n", 1)[1]):
+            self.cpu_refusal(cpu, "group_cpu_unavailable")
+
+    def test_cpu_rows_require_exact_unsigned_decimal_pairs(self):
+        for row in (b"core_sched.force_idle_usec", b"core_sched.force_idle_usec 1 extra",
+                    b"core_sched.force_idle_usec -1", b"core_sched.force_idle_usec +1",
+                    b"core_sched.force_idle_usec nan", b"core_sched.force_idle_usec inf",
+                    b"core_sched.force_idle_usec 1.5", b"core_sched.force_idle_usec 1e2",
+                    b"core_sched.force_idle_usec \xff", b""):
+            self.cpu_refusal(self.BASE + row + b"\n", "invalid_group_cpu")
+
+    def test_existing_signed_usage_memory_limits_and_read_scope_remain(self):
+        largest = str(2**63 - 1).encode("ascii")
+        self.assertEqual(self.numbers(b"usage_usec " + largest + b"\n", largest + b"\n"), (2**63 - 1, 2**63 - 1))
+        with self.assertRaisesRegex(collect.Refusal, "^group_metadata_limit$"):
+            self.numbers(b"usage_usec " + str(2**63).encode("ascii") + b"\n")
+        with self.assertRaisesRegex(collect.Refusal, "^group_metadata_limit$"):
+            self.numbers(self.BASE, str(2**63).encode("ascii") + b"\n")
+        with self.assertRaisesRegex(collect.Refusal, "^group_memory_unavailable$"):
+            self.numbers(self.BASE, b"max\n")
+
+    def test_real_cpu_stat_read_keeps_the_existing_8192_byte_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "cpu.stat").write_bytes(self.BASE + b" " * 8192)
+            with patch.object(collect, "bounded", wraps=collect.bounded) as read:
+                with self.assertRaisesRegex(collect.Refusal, "^metadata_limit$"):
+                    collect.group_numbers(root)
+                self.assertEqual([call.args for call in read.call_args_list], [(root / "cpu.stat", 8192)])
+
+
 class CollectorExitDiagnosticsTests(unittest.TestCase):
     def test_exit_manifest_is_literal_unique_nonzero_and_only_authored_refusals(self):
         source = ast.parse(Path(collect.__file__).read_text(encoding="utf-8"))

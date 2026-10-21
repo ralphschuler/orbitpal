@@ -17,6 +17,12 @@ MAX_LOG = 32 * 1024 * 1024
 MAX_PIDS = 256
 MAX_GROUPS = 16
 MEASUREMENT_MODES = {"smoke": (1, 30), "pilot": (1, 30), "pilot3": (3, 30), "pilot5": (5, 20)}
+# Supported cgroup-v2 cpu.stat keys, including CONFIG_SCHED_CORE's dotted key.
+# Optional accounting/bandwidth fields never substitute for or add to usage_usec.
+CPU_STAT_FIELDS = frozenset((
+    b"usage_usec", b"user_usec", b"system_usec", b"nice_usec", b"core_sched.force_idle_usec",
+    b"nr_periods", b"nr_throttled", b"throttled_usec", b"nr_bursts", b"burst_usec",
+))
 # Stable diagnostic-only manifest for the existing closed failure classification.
 # Never renumber existing entries or derive a status from arbitrary error data.
 # All are nonzero and below shell signal statuses; unclassified errors remain 1.
@@ -356,11 +362,16 @@ def group_numbers(group):
     fields = {}
     for line in bounded(group / "cpu.stat", 8192).splitlines():
         pair = line.split()
-        if len(pair) != 2 or re.fullmatch(rb"[a-z_]+", pair[0]) is None or not pair[1].isdigit():
+        if len(pair) != 2 or pair[0] not in CPU_STAT_FIELDS or not pair[1].isdigit():
             refuse("invalid_group_cpu")
         if pair[0] in fields:
             refuse("invalid_group_cpu")
-        fields[pair[0]] = int(pair[1])
+        if len(pair[1]) > 20:
+            refuse("group_metadata_limit")
+        value = int(pair[1])
+        if value > 2**64 - 1:
+            refuse("group_metadata_limit")
+        fields[pair[0]] = value
     if b"usage_usec" not in fields:
         refuse("group_cpu_unavailable")
     memory = bounded(group / "memory.current", 64).strip()

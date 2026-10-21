@@ -494,3 +494,53 @@ collector refusal, not necessarily the first cause of a wider startup failure.
 All nonzero statuses still fail. Controlled tests bind the documented table to
 the source literals, exercise the real `__main__` boundary and deliver actual
 SIGINT/SIGTERM only to an owned synthetic Python child; no app is launched.
+
+## Fifth actual smoke and supported CPU-stat schema
+
+Run `39596889579`, exact source `4993ed35c27770545ea613ae2e6fdb4f0d97bb43`,
+passed the activator preflight and standalone build, then failed at phase 5 with
+`collectorExit:78` (`invalid_group_cpu`). Its digest-verified one-file artifact
+also records no observed app/compositor exit, rejected artifact export and
+confirmed cleanup. This proves the collector's closed classification. The
+rejected line, runner kernel configuration and whether another startup error
+preceded the collector refusal remain unobserved; no CPU or renderer measurement
+is qualified.
+
+The former `[a-z_]+` field-name check rejects the upstream
+`core_sched.force_idle_usec` key. Linux's
+[v6.17 accounting writer](https://github.com/torvalds/linux/blob/v6.17/kernel/cgroup/rstat.c#L652-L690)
+emits that field when core scheduling is compiled in, alongside its base usage,
+user, system and nice accounting. The
+[cgroup-v2 CPU interface](https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu-interface-files)
+also defines the five controller-dependent CFS bandwidth fields below. This
+establishes a source compatibility defect; it does not establish which actual
+line Smoke5 rejected.
+
+The collector accepts exactly these ten known keys in any order, with no
+duplicate and no unknown key:
+
+| Key | Meaning and use in this collector |
+| --- | --- |
+| `usage_usec` | Required cumulative CPU execution time; the sole input to CPU deltas |
+| `user_usec` | User CPU time; validated, unused |
+| `system_usec` | System CPU time; validated, unused |
+| `nice_usec` | Nice CPU accounting; validated, unused |
+| `core_sched.force_idle_usec` | Conditional core-scheduling forced-idle accounting; validated, unused |
+| `nr_periods` | CFS bandwidth period count; validated, unused |
+| `nr_throttled` | CFS throttled-period count; validated, unused |
+| `throttled_usec` | CFS throttled duration; validated, unused |
+| `nr_bursts` | CFS bandwidth burst count; validated, unused |
+| `burst_usec` | CFS burst duration; validated, unused |
+
+Time fields use microseconds; the three `nr_` fields are counts. The CFS fields
+describe fair-class bandwidth accounting and are not added to execution time.
+The other nine fields are optional to this parser; absence of `usage_usec`
+always refuses instead of inventing zero. Each present row must contain exactly
+one known key and one unsigned ASCII-decimal value of at most 20 digits, bounded
+by `u64::MAX`. The existing 8192-byte CPU-stat read, 64-byte memory read and signed
+63-bit limits on the used CPU/memory values remain. Unknown keys, duplicates,
+malformed numbers and overflow remain failures. No cgroup/UID/namespace guard,
+read path, zero-baseline rule, artifact validation or qualification requirement
+changes. Controlled fixtures cover the real base-three/full-ten/reordered forms,
+nonzero optional values, all per-field numeric boundaries and refusals; no live
+host cgroup is read by those tests.
