@@ -1,0 +1,114 @@
+name: Native World macOS acceptance (nonshipping)
+
+# Register on default branch after review. Only manual reviewed-SHA runs;
+# no alternate PR/push/reusable trigger and no production signing environment.
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_sha:
+        description: Exact40-character reviewed source commit, equal to the dispatch ref
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-world-macos-acceptance
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'ralphschuler/orbitpal'
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 1
+      REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+      DISPATCH_SHA: ${{ github.sha }}
+    steps:
+      - name: Require the reviewed hosted-Mac source before setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTIONS" == true && "$RUNNER_ENVIRONMENT" == github-hosted && "$RUNNER_OS" == macOS ]]
+          [[ "$(uname -s)" == Darwin && "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$GITHUB_REPOSITORY" == ralphschuler/orbitpal ]]
+          [[ "$GITHUB_REF" == refs/heads/main || "$GITHUB_REF" == refs/heads/feat/parallel-backlog || "$GITHUB_REF" == refs/heads/test/native-world-macos-acceptance ]]
+          [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ && "$REVIEWED_SHA" == "$DISPATCH_SHA" ]]
+          [[ "$RUNNER_TEMP" == /* && -d "$RUNNER_TEMP" && ! -L "$RUNNER_TEMP" ]]
+          evidence=$(mktemp -d "$RUNNER_TEMP/native-world-macos.XXXXXXXX")
+          chmod 0700 "$evidence"
+          printf 'NATIVE_WORLD_EVIDENCE=%s\n' "$evidence" >> "$GITHUB_ENV"
+          printf 'CARGO_TARGET_DIR=%s/native-world-macos-build\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify source and existing nonprompting GUI permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$REVIEWED_SHA" ]]
+          git diff --exit-code
+          python3 -B scripts/native-world-macos/test-runner.py
+          node --check scripts/native-world-macos/ui.js
+          python3 -B scripts/native-world-macos/runner.py --evidence "$NATIVE_WORLD_EVIDENCE"
+      - name: Require the actual nonshipping fixture source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, sys, tomllib
+          root = pathlib.Path('.')
+          files = ('src-tauri/examples/native_world_fixture.rs', 'src-tauri/src/native_world_fixture.rs',
+                   'src-tauri/tauri.native-world-fixture.conf.json', 'scripts/native-world-fixture/build.py',
+                   'scripts/native-world-fixture/validate.py')
+          config = tomllib.loads((root / 'src-tauri/Cargo.toml').read_text())
+          present = all((root / name).is_file() for name in files) and 'native-world-fixture' in config.get('features', {})
+          with (pathlib.Path(os.environ['NATIVE_WORLD_EVIDENCE']) / 'source-capability.json').open('x') as output:
+              json.dump({'version': 1, 'sourcePresent': int(present)}, output)
+          if not present:
+              print('native_world_fixture_source_missing')
+              sys.exit(1)
+          PY
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.25.0
+          run_install: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: stable
+      - name: Build production frontend and isolated actual Wry example (no launch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm build
+          python3 -B scripts/native-world-fixture/build.py --evidence-dir "$NATIVE_WORLD_EVIDENCE"
+          [[ "$(git rev-parse HEAD)" == "$REVIEWED_SHA" ]]
+          git diff --exit-code
+      - name: Actual Main UI, two actors, hidden/live spans, Stop and normal Quit
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/native-world-macos/runner.py --evidence "$NATIVE_WORLD_EVIDENCE" \
+            --binary "$CARGO_TARGET_DIR/debug/examples/native_world_fixture"
+      - name: Retain only bounded numeric evidence and public source fingerprints
+        if: always() && env.NATIVE_WORLD_EVIDENCE != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-world-macos-acceptance
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            ${{ env.NATIVE_WORLD_EVIDENCE }}/capability.json
+            ${{ env.NATIVE_WORLD_EVIDENCE }}/run-capability.json
+            ${{ env.NATIVE_WORLD_EVIDENCE }}/source-capability.json
+            ${{ env.NATIVE_WORLD_EVIDENCE }}/source.json
+            ${{ env.NATIVE_WORLD_EVIDENCE }}/controller.json
+            ${{ env.NATIVE_WORLD_EVIDENCE }}/fixture-result.json
