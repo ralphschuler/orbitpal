@@ -589,7 +589,7 @@ fn pair(ids: &[String; 2]) -> (String, String) {
 fn duration(kind: SceneKind) -> u64 {
     match kind {
         SceneKind::Greeting => 1000,
-        SceneKind::Play => 3000,
+        SceneKind::Play => 1000,
         SceneKind::Rest => 10000,
     }
 }
