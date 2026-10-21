@@ -37,6 +37,10 @@ console.log('native_world_macos_ui_predicate_passed');
 
 function probe(options = {}) {
   const calls = [], bindings = [], pointer = {}, target = {};
+  const dictionaryClass = {}, sessionDictionary = {
+    isNil: () => options.nilSession === true,
+    isKindOfClass(value) { assert.equal(value, dictionaryClass); fail('class'); return options.foreignSession !== true; },
+  };
   let applicationCalls = 0, targetReads = 0, sleeps = 0;
   const fail = stage => { if (options.throwAt === stage) throw new Error('PRIVATE_NATIVE_ERROR'); };
   Object.defineProperty(target, 'aeDesc', {get() {
@@ -59,8 +63,13 @@ function probe(options = {}) {
     NSAppleEventDescriptor: {descriptorWithBundleIdentifier(id) {
       calls.push('factory'); assert.equal(id, 'com.apple.systemevents'); fail('factory'); return target;
     }},
+    NSDictionary: dictionaryClass,
     CGSessionCopyCurrentDictionary() {
       calls.push('session'); fail('session');
+      return options.nullSession ? null : sessionDictionary;
+    },
+    CFRelease(value) { assert.equal(value, sessionDictionary); calls.push('release'); fail('release'); },
+    sessionValues() {
       if (Object.hasOwn(options, 'session')) return options.session;
       const session = {kCGSSessionUserIDKey: 41, kCGSSessionOnConsoleKey: true,
         kCGSessionLoginDoneKey: true, CGSSessionScreenIsLocked: options.locked === true};
@@ -69,7 +78,9 @@ function probe(options = {}) {
     NSScreen: {screens: {get count() { calls.push('screens'); return options.screens ?? 1; }}},
   };
   const ObjC = {
-    import() {}, deepUnwrap: value => value, unwrap: value => value,
+    import() {}, deepUnwrap(value) {
+      assert.equal(value, sessionDictionary); calls.push('unwrap'); fail('unwrap'); return $.sessionValues();
+    }, unwrap: value => value,
     bindFunction(name, signature) {
       bindings.push([name, JSON.parse(JSON.stringify(signature))]);
       if (name === 'AEDeterminePermissionToAutomateTarget') {
@@ -82,6 +93,8 @@ function probe(options = {}) {
           assert.equal(askUserIfNeeded, false);
           return options.status ?? 0;
         };
+      } else if (name === 'CGSessionCopyCurrentDictionary') {
+        calls.push('sessionBind'); fail('sessionBind');
       } else {
         assert.equal(name, 'getuid'); $[name] = () => { calls.push('uid'); return 41; };
       }
@@ -98,8 +111,9 @@ const success = probe();
 assert.deepEqual(success.bindings, [
   ['AEDeterminePermissionToAutomateTarget', ['int', ['void *', 'unsigned int', 'unsigned int', 'bool']]],
   ['getuid', ['unsigned int', []]],
+  ['CGSessionCopyCurrentDictionary', ['id', []]],
 ]);
-assert.deepEqual(success.calls, ['target', 'bind', 'factory', 'descriptor', 'target', 'permission', 'session', 'screens', 'uid']);
+assert.deepEqual(success.calls, ['target', 'bind', 'factory', 'descriptor', 'target', 'permission', 'sessionBind', 'session', 'unwrap', 'release', 'screens', 'uid']);
 assert.deepEqual(success.record, {version: 1, code: 0, ax: 1, appleEvents: 1, gui: 1,
   probePhase: 6, aeFunction: 1, aeStatusKind: 0, targetRunning: 1, screenPresent: 2, sessionPresent: 2,
   uidMatch: 2, onConsole: 2, loginDone: 2, lockKnown: 2, lockState: 1, matched: 0, acted: 0, mainVisible: 0, windows: 0});
@@ -167,6 +181,8 @@ for (const [options, fields] of sessionCases) {
   assert.equal(record.acted, 0); assert.equal(record.appleEvents, 1);
   for (const [key, expected] of Object.entries(fields)) assert.equal(record[key], expected, key);
   assert.equal(calls.filter(value => value === 'session').length, 1);
+  assert.equal(calls.filter(value => value === 'release').length, 1);
+  assert.equal(calls.filter(value => value === 'unwrap').length, 1);
   assert.equal(calls.filter(value => value === 'screens').length, 1);
   assert.equal(calls.filter(value => value === 'uid').length, options.session === null || options.screens === 0 ? 0 : 1);
 }
@@ -190,5 +206,24 @@ for (const onConsole of [true, false, undefined, 1]) {
       assert.equal(record.code, expected ? 0 : 4);
     }
   }
+}
+// The actual one-sample production binding owns its Copy result. Every non-nil
+// path releases once, including unknown class, conversion and gate failures.
+for (const option of ['nullSession', 'nilSession', 'foreignSession']) {
+  const {record, calls} = probe({[option]: true});
+  assert.equal(record.code, 4); assert.equal(record.probePhase, 5);
+  assert.equal(record.gui, 0); assert.equal(record.acted, 0);
+  assert.equal(record.sessionPresent, option === 'foreignSession' ? 0 : 1);
+  assert.equal(calls.filter(value => value === 'session').length, 1);
+  assert.equal(calls.filter(value => value === 'release').length, option === 'foreignSession' ? 1 : 0);
+  assert.equal(calls.includes('unwrap'), false); assert.equal(calls.includes('screens'), false);
+}
+for (const stage of ['sessionBind', 'session', 'class', 'unwrap', 'release']) {
+  const {record, calls} = probe({throwAt: stage});
+  assert.equal(record.code, 8); assert.equal(record.probePhase, 5);
+  assert.equal(record.gui, 0); assert.equal(record.acted, 0);
+  assert.equal(calls.filter(value => value === 'session').length, stage === 'sessionBind' ? 0 : 1);
+  assert.equal(calls.filter(value => value === 'release').length, ['class', 'unwrap', 'release'].includes(stage) ? 1 : 0);
+  assert.equal(calls.includes('screens'), false);
 }
 console.log('native_world_macos_probe_stub_passed');
