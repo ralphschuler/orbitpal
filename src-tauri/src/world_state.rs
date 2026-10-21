@@ -175,8 +175,12 @@ pub struct Anchor {
     position: Point,
     #[serde(deserialize_with = "bounded::<_, _, MAX_SLOTS>")]
     slots: Vec<Slot>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    content_ref: Option<crate::content_packs::ContentRef>,
 }
 impl Anchor {
+    pub fn id(&self)->&AnchorId { &self.id }
+    pub fn content_ref(&self)->Option<&crate::content_packs::ContentRef> {self.content_ref.as_ref()}
     pub fn kind(&self) -> AnchorKind { self.kind }
     pub fn slots(&self) -> &[Slot] { &self.slots }
     pub fn new(
@@ -193,6 +197,7 @@ impl Anchor {
             kind,
             position,
             slots,
+            content_ref: None,
         })
     }
 }
@@ -306,6 +311,7 @@ impl WorldConfig {
             }
         }
         for anchor in &wire.anchors {
+            if anchor.content_ref.as_ref().is_some_and(|reference|reference.validate().is_err()) {return Err(WorldError::InvalidConfig);}
             if !valid_id(anchor.id.as_str())
                 || !anchors.insert(&anchor.id)
                 || !wire.safe_region.contains(anchor.position)

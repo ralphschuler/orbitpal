@@ -189,7 +189,6 @@ impl SceneHost {
                 .life_runtime
                 .session_outputs
                 .constructor_current(&self.expected.constructor)
-            || state.overlay.has_any_pending_speech()
             || state.generation.try_lock().is_err()
         {
             return Err(LayoutError::Stale);
@@ -199,6 +198,9 @@ impl SceneHost {
             .core
             .lock()
             .map_err(|_| LayoutError::Unavailable)?;
+        let local=(!preparing).then(||core.pending().map(|(claim,_)|claim)).flatten()
+            .filter(|claim|claim.local_text_only() && core.current(claim,self.now()));
+        if state.overlay.has_blocking_native_speech(local.as_ref()) {return Err(LayoutError::Stale);}
         if !self.expected.current(&core, &state, self.now())
             || cancel.load(Ordering::SeqCst)
             || preparing

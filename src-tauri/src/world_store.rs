@@ -137,6 +137,23 @@ fn members_exist(db: &Connection, config: &WorldConfig) -> Result<()> {
     }
     Ok(())
 }
+/// Preserve existing optional provenance as visible fallback data. A new or
+/// replaced reference (including a changed anchor kind/identity) needs the
+/// active exact template under this same World save transaction.
+fn content_refs_current(db: &Connection, before: Option<&WorldConfig>, draft: &WorldConfig) -> Result<()> {
+    let changed = draft.anchors().iter().filter(|anchor|anchor.content_ref().is_some()
+        && !before.is_some_and(|before|before.anchors().iter().any(|old|
+            old.id()==anchor.id() && old.kind()==anchor.kind() && old.content_ref()==anchor.content_ref()))).collect::<Vec<_>>();
+    if changed.is_empty() { return Ok(()); }
+    let packs = super::experience_store::read_content_catalog(db).map_err(|_|WorldStoreError::CorruptConfig)?;
+    for anchor in changed {
+        let reference = anchor.content_ref().ok_or(WorldStoreError::CorruptConfig)?;
+        if crate::content_packs::resolve_object(&packs, reference, anchor.kind()).is_none() {
+            return Err(WorldStoreError::CorruptConfig);
+        }
+    }
+    Ok(())
+}
 pub(super) fn load(db: &Connection, check_members: bool) -> Result<Option<WorldRecord>> {
     schema(db)?;
     let count = db
@@ -258,6 +275,7 @@ impl Store {
             _ => return Err(WorldStoreError::StaleRevision),
         }
         members_exist(&tx, draft)?;
+        content_refs_current(&tx, current.as_ref().map(|record|&record.config), draft)?;
         let config = draft
             .with_revision(
                 expected
@@ -289,3 +307,62 @@ impl Store {
 #[cfg(test)]
 #[path = "world_store/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod content_reference_tests {
+    use super::*;
+    use crate::{content_packs::{ContentRef,Manifest},life_domain::ActorId,
+        world_state::{coordinates::{Point,Rect},Anchor,AnchorId,AnchorKind,Slot,SlotId,StageId}};
+    struct Fixture(std::path::PathBuf);
+    impl Fixture {
+        fn new()->Self { let path=std::env::temp_dir().join(format!("orbitpal-world-content-{}",uuid::Uuid::new_v4()));std::fs::create_dir(&path).unwrap();Self(path) }
+    }
+    impl Drop for Fixture { fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);} }
+    fn draft(reference:&ContentRef)->WorldConfig {
+        let config=WorldConfig::new(StageId::new("content-stage").unwrap(),Rect::full(),vec![ActorId::new("nova").unwrap()],
+            vec![Anchor::new(AnchorId::new("seed").unwrap(),AnchorKind::Play,Point::new(200000,500000).unwrap(),
+                vec![Slot::new(SlotId::new("seed-slot").unwrap(),Point::new(200000,500000).unwrap())]).unwrap()]).unwrap();
+        let mut value=serde_json::to_value(config).unwrap();value["anchors"][0]["contentRef"]=serde_json::to_value(reference).unwrap();
+        serde_json::from_value(value).unwrap()
+    }
+    fn installed(store:&Store)->ContentRef {
+        let manifest=Manifest::parse(include_str!("../../public/content-packs/desk-garden.json")).unwrap();
+        let reference=ContentRef{package_id:manifest.id.clone(),package_version:manifest.version,template_id:manifest.objects[0].id.clone()};
+        store.install_content_pack(manifest).unwrap();reference
+    }
+    #[test]
+    fn new_world_references_are_validated_against_active_exact_catalog_in_save_transaction() {
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();let reference=installed(&store);
+        assert!(store.save_world_config(None,&draft(&reference),&OutputBinding::default()).is_err());
+        assert!(store.world_settings_record().unwrap().is_none());
+        store.set_content_pack_active(&reference.package_id,1,true).unwrap();
+        for changed in ["version","template","kind"] {
+            let mut value=serde_json::to_value(draft(&reference)).unwrap();
+            match changed {
+                "version"=>value["anchors"][0]["contentRef"]["packageVersion"]=serde_json::json!(2),
+                "template"=>value["anchors"][0]["contentRef"]["templateId"]=serde_json::json!("desk-garden:missing"),
+                _=>value["anchors"][0]["kind"]=serde_json::json!("rest"),
+            }
+            let bad:WorldConfig=serde_json::from_value(value).unwrap();
+            assert!(store.save_world_config(None,&bad,&OutputBinding::default()).is_err(),"{changed}");
+            assert!(store.world_settings_record().unwrap().is_none());
+        }
+        let saved=store.save_world_config(None,&draft(&reference),&OutputBinding::default()).unwrap();
+        assert_eq!(saved.config.anchors()[0].content_ref(),Some(&reference));
+    }
+    #[test]
+    fn unchanged_inactive_or_missing_provenance_remains_visible_but_cannot_be_rebound() {
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();let reference=installed(&store);
+        store.set_content_pack_active(&reference.package_id,1,true).unwrap();
+        let first=store.save_world_config(None,&draft(&reference),&OutputBinding::default()).unwrap();
+        store.set_content_pack_active(&reference.package_id,2,false).unwrap();
+        let second=store.save_world_config(Some(1),&first.config,&OutputBinding::default()).unwrap();
+        assert_eq!(second.config.anchors()[0].content_ref(),Some(&reference));
+        let mut rebound=serde_json::to_value(&second.config).unwrap();rebound["anchors"][0]["id"]=serde_json::json!("new-seed");
+        assert!(store.save_world_config(Some(2),&serde_json::from_value(rebound).unwrap(),&OutputBinding::default()).is_err());
+        store.delete_content_pack(&reference.package_id).unwrap();
+        let third=store.save_world_config(Some(2),&second.config,&OutputBinding::default()).unwrap();
+        assert_eq!(third.config.anchors()[0].content_ref(),Some(&reference));
+        assert_eq!(store.load_world_config().unwrap().unwrap().config,third.config);
+    }
+}

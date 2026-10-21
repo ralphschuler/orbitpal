@@ -26,6 +26,10 @@ fn snapshot(
         impulses: runtime.impulse_status(bot_id)?,
     })
 }
+pub(crate) fn native_snapshot(app: &tauri::AppHandle, bot: &str) -> Result<Snapshot,String> {
+    use tauri::Manager;
+    snapshot(&app.state::<AppState>(),&app.state::<ExperienceRuntime>(),bot)
+}
 #[tauri::command]
 pub fn get_experience_snapshot(
     window: tauri::WebviewWindow,
@@ -176,19 +180,7 @@ pub async fn set_content_pack_active(
     if !experience::valid_id(&package_id) {
         return Err("pack_invalid_id".into());
     }
-    let current = state.store.content_packs()?;
-    if !current
-        .iter()
-        .any(|p| p.manifest.id == package_id && p.revision == expected_revision)
-    {
-        return Err("experience_stale_revision".into());
-    }
-    if !active {
-        crate::life_runtime::content_pack_deactivating(&app, &package_id).await?;
-    }
-    let packs = state
-        .store
-        .set_content_pack_active(&package_id, expected_revision, active)?;
+    let packs=crate::life_runtime::set_content_pack_active_native(&app,&package_id,expected_revision,active)?;
     let _ = app.emit_to("main", "content-packs-changed", &packs);
     Ok(packs)
 }

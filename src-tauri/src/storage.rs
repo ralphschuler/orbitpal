@@ -19,6 +19,7 @@ pub(crate) mod life_care_store;
 pub(crate) mod social_store;
 #[path="experience_store.rs"]
 mod experience_store;
+#[path="content_pack_store.rs"] pub(crate) mod content_pack_store;
 #[path="world_store.rs"]
 pub(crate) mod world_store;
 #[path="action_store.rs"]
@@ -242,6 +243,7 @@ impl Store {
         let previous=self.profile()?;
         let mut profile=if copy_current{export_sanitize(sanitize(previous.clone()))}else{serde_json::from_str(DEFAULT_PROFILE).map_err(error)?};
         life_store::strip_profile_payload(&mut profile);
+        if let Some(object)=profile.as_object_mut(){object.remove("contentRef");}
         let id=new_bot_id(name);
         profile["id"]=json!(id);profile["name"]=json!(name);
         profile["screenContext"]=json!(crate::screen_context::Config::default());
@@ -328,6 +330,7 @@ impl Store {
     // Caller must hold EXTENSION_MUTATIONS; never acquire it again here.
     fn save_profile_locked(&self,mut profile:Value)->Result<Value,String>{
         life_store::strip_profile_payload(&mut profile);
+        if let Some(object)=profile.as_object_mut(){object.remove("contentRef");}
         crate::screen_context::migrate(&mut profile);
         validate_profile(&profile)?;
         if self.fixed_profile.as_ref().map(|id|profile["id"].as_str()!=Some(id.as_str())).unwrap_or(false){return Err("Ein Bot-Kontext darf kein anderes Profil überschreiben".into());}
@@ -493,6 +496,7 @@ impl Store {
         let mut profile=export_sanitize(sanitize(self.profile()?));
         api_connection_store::strip_exported_api_refs(&mut profile);
         life_store::strip_profile_payload(&mut profile);
+        if let Some(object)=profile.as_object_mut(){object.remove("contentRef");}
         let motion_directory=self.profile_dir(&profile)?;crate::motions::refresh(&mut profile,&motion_directory)?;
         let mut avatar:Option<Value>=None;
         if let Some(name)=profile["avatar"]["assetPath"].as_str() {
@@ -545,6 +549,7 @@ impl Store {
         let bundle:Value=serde_json::from_slice(&bytes).map_err(error)?;
         let mut profile=if bundle.get("profile").is_some(){bundle["profile"].clone()}else{bundle.clone()};
         life_store::strip_profile_payload(&mut profile);
+        if let Some(object)=profile.as_object_mut(){object.remove("contentRef");}
         validate_profile(&profile)?;
         let id=profile["id"].as_str().ok_or("Profil-ID fehlt")?.to_owned();
         let exists=self.db.lock().map_err(error)?.query_row("SELECT EXISTS(SELECT 1 FROM bot_profiles WHERE id=?1)",[&id],|r|r.get::<_,bool>(0)).map_err(error)?;

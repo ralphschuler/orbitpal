@@ -5,7 +5,10 @@ mod self_care;
 mod experience_host;
 #[path = "life_runtime/social_host.rs"]
 pub(crate) mod social_host;
-pub(crate) use experience_host::{experience_allows_output, experience_preferences_changed, experience_pause_changed, content_pack_deactivating, request_character_interaction, start_slot_activity, cancel_actor_action, cancel_actor_action_exact};
+#[path = "life_runtime/desktop_places.rs"]
+mod desktop_places;
+#[path="life_runtime/content_host.rs"] pub(crate) mod content_host;
+pub(crate) use experience_host::{experience_allows_output, experience_preferences_changed, experience_pause_changed, set_content_pack_active_native, request_character_interaction, start_slot_activity, cancel_actor_action, cancel_actor_action_exact, native_interaction_owner, start_point_activity, start_here_activity, consume_platform_impulse};
 #[path = "life_runtime/action_host.rs"]
 mod action_host;
 #[path = "life_runtime/action_output.rs"]
@@ -126,6 +129,8 @@ pub fn operator_command(command: &str) -> bool {
         command,
         "get_life_care_preferences"
             | "get_experience_snapshot"
+            | "open_native_character_menu"
+            | "close_native_character_menu"
             | "get_social_snapshot"
             | "invite_social_scene"
             | "respond_social_invitation"
@@ -220,6 +225,7 @@ pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
 pub struct LifeRuntime {
     care: self_care::CareMemory,
     social: social_host::SocialRuntime,
+    desktop: desktop_places::DesktopPlaces,
     outputs: action_output::OutputGate,
     native_routes: native_output_route::NativeOutputRoutes,
     pub(crate) session_outputs: session_output::SessionOutputs,
@@ -238,6 +244,7 @@ impl Default for LifeRuntime {
         Self {
             care: self_care::CareMemory::default(),
             social: social_host::SocialRuntime::default(),
+            desktop: desktop_places::DesktopPlaces::default(),
             outputs: action_output::OutputGate::default(),
             native_routes: native_output_route::NativeOutputRoutes::default(),
             session_outputs: session_output::SessionOutputs::default(),
@@ -451,7 +458,7 @@ impl LifeRuntime {
         let now = self.now();
         core.observe_system(system, now);
         core.reconcile_visibility(is_visible, now);
-        if !core.current(claim, now) {
+        if !claim.cloud_allowed() || !core.current(claim, now) {
             return Err(UNAVAILABLE.into());
         }
         app.state::<crate::AppState>().updater.ensure_idle()?;
@@ -487,6 +494,7 @@ impl LifeRuntime {
     // coordinator methods here are pure cancellation and cannot enter Core.
     fn cancel_social(&self, core:&Core, bot:Option<&str>) {
         for id in core.sessions.keys().filter(|id|bot.is_none_or(|bot|id.as_str()==bot)) {
+            self.desktop.cancel_actor(id);
             let _=self.social.cancel_actor(id,self.social_now());
         }
     }
@@ -523,6 +531,7 @@ impl LifeRuntime {
         result
     }
     pub fn stop(&self, app: &tauri::AppHandle, bot: Option<&str>) {
+        crate::native_interaction::cancel(app,bot);
         self.session_outputs.cancel(app, bot);
         self.native_routes.revoke(bot);
         self.outputs.semantic_geometry(bot);
@@ -598,6 +607,7 @@ impl LifeRuntime {
         let state = app.state::<crate::AppState>();
         let Ok(mut core) = self.core.lock() else { return false; };
         let Some(removed) = core.stop_exact(bot, session, Some(revision), self.now()) else { return false; };
+        self.desktop.cancel_actor(bot);
         let _ = self.social.cancel_actor(bot,self.social_now());
         let lease = self.session_outputs.lease_for_stop(bot);
         if let Some(lease) = &lease { lease.revoke(); }
@@ -827,8 +837,11 @@ impl LifeRuntime {
         });
         self.native_lifecycle.pulse(app);
         self.poll_actions(app);
+        experience_host::observe_facts(self,app);
         social_host::pulse(self, app);
+        desktop_places::pulse(self,app);
         self_care::pulse(self, app);
+        crate::platform_impulses::pulse(app);
         let pending = self.core.lock().ok().and_then(|core| core.pending());
         if let Some((claim, generating)) = pending {
             if !self.current(&claim) {
@@ -865,10 +878,15 @@ impl LifeRuntime {
                 || native_scene::blocks_dialog_scheduling(app)
                 || state.generation.try_lock().is_err();
             let claim = self.core.lock().ok().and_then(|mut core| {
+                let local = core.sessions.keys().filter(|bot|experience_allows_output(app,bot)
+                    && social_host::prefers_local_opportunity(app,bot)).cloned().collect::<Vec<_>>();
+                for bot in local {
+                    if let Some(claim)=core.claim_local_text(&bot,self.now(),blocked,uuid::Uuid::new_v4().to_string()) {return Some(claim);}
+                }
                 core.claim_where(self.now(), blocked, uuid::Uuid::new_v4().to_string(), |bot| experience_allows_output(app, bot))
             });
             if let Some(claim) = claim {
-                self.native_lifecycle.claim_started();
+                if !claim.local_text_only() {self.native_lifecycle.claim_started();}
                 if monitor.gate.watch(&claim.cancel).is_none() {
                     if let Ok(mut core) = self.core.lock() {
                         core.finish(&claim, self.now());
@@ -878,8 +896,9 @@ impl LifeRuntime {
                     turn_event(app, "started", &claim, None);
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        let result =
-                            crate::agent::send_runtime_autopilot(app.clone(), claim.clone()).await;
+                        let result = if claim.local_text_only() {
+                            social_host::send_dialogue_local(&app,&claim).await.map(|reply|reply.unwrap_or_else(||json!({"skipped":true,"reason":"social_dialogue_ended"})))
+                        } else {crate::agent::send_runtime_autopilot(app.clone(), claim.clone()).await};
                         let state = app.state::<crate::AppState>();
                         if state.life_runtime.current(&claim) {
                             if let Ok(reply) = result {

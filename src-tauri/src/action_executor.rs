@@ -240,6 +240,7 @@ impl PreparedPlan {
                     .map(|(_, minimum)| *minimum)
                     .ok_or(ActionError::UnsupportedCapability)?;
                 policy.minimum_active_ms = policy.minimum_active_ms.max(minimum);
+                if care.is_some() { policy.maximum_run_ms=policy.maximum_run_ms.max(policy.minimum_active_ms.saturating_add(15_000)); }
                 if policy.minimum_active_ms >= policy.maximum_run_ms {
                     return Err(ActionError::UnsupportedCapability);
                 }

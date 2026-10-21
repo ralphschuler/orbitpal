@@ -79,8 +79,13 @@ pub struct RuntimeSnapshot {
     pub system: SystemSnapshot,
     pub sessions: Vec<SessionSnapshot>,
 }
+/// Native-only classification. It never deserializes from a UI, provider or
+/// persisted profile, and a local-text claim cannot be promoted to cloud work.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ClaimKind { Model, LocalText }
 #[derive(Clone)]
 pub struct Claim {
+    kind: ClaimKind,
     pub bot_id: String,
     pub session_id: String,
     pub revision: u64,
@@ -88,6 +93,10 @@ pub struct Claim {
     pub cancel: Arc<AtomicBool>,
     pub system_generation: u64,
     pub ui_generation: u64,
+}
+impl Claim {
+    pub(crate) fn cloud_allowed(&self) -> bool { self.kind == ClaimKind::Model }
+    pub(crate) fn local_text_only(&self) -> bool { self.kind == ClaimKind::LocalText }
 }
 pub struct Session {
     pub mode: Mode,
@@ -331,11 +340,20 @@ impl Core {
         bot: &str,
         raw: u64,
     ) -> Option<super::action_state::LocalFence> {
+        if self.pending.is_some() { return None; }
+        self.observed_local_fence(bot, raw)
+    }
+    /// Observation of an existing owner is separate from minting a new action
+    /// fence. Local social text may retain idle figures, never admit new work.
+    fn observed_local_fence(
+        &self,
+        bot: &str,
+        raw: u64,
+    ) -> Option<super::action_state::LocalFence> {
         let now = raw.max(self.last_time);
         if self.shutdown
             || self.system.state != Availability::AwakeUnlocked
             || !self.ui_clear(now)
-            || self.pending.is_some()
         {
             return None;
         }
@@ -360,6 +378,13 @@ impl Core {
         fence: &super::action_state::LocalFence,
         raw: u64,
     ) -> bool {
+        let observation_allowed = self.pending.as_ref().is_none_or(|pending|
+            pending.claim.local_text_only() && self.current(&pending.claim, raw) && !self.local_actions_busy());
+        observation_allowed && self.observed_local_fence(bot, raw).as_ref() == Some(fence)
+    }
+    /// Initial action admission must use the strict fence even though existing
+    /// native geometry may remain observable during a local-text presentation.
+    pub(crate) fn local_admission_current(&self, bot: &str, fence: &super::action_state::LocalFence, raw: u64) -> bool {
         self.local_fence(bot, raw).as_ref() == Some(fence)
     }
     /// Captures an exact truthful UI proof BEFORE this command's ordinary
@@ -570,7 +595,8 @@ impl Core {
             })
     }
     pub fn session_cloud_current(&self, claim: &Claim, now: u64) -> bool {
-        self.session_current(claim)
+        claim.cloud_allowed()
+            && self.session_current(claim)
             && !claim.cancel.load(Ordering::SeqCst)
             && self.system.generation == claim.system_generation
             && self.ui.generation == claim.ui_generation
@@ -1015,6 +1041,17 @@ impl Core {
         self.claim_where(raw, blocked, turn_id, |_| true)
     }
     pub(crate) fn claim_where(&mut self, raw: u64, blocked: bool, turn_id: String, allowed: impl Fn(&str)->bool) -> Option<Claim> {
+        self.claim_matching(raw, blocked, turn_id, ClaimKind::Model, |bot, _| allowed(bot))
+    }
+    /// Only an existing, explicitly started Life participant may receive this
+    /// bounded local-text opportunity. Model readiness is the sole bypass;
+    /// caller still supplies the current social/preset policy decision.
+    pub(crate) fn claim_local_text(&mut self, bot: &str, raw: u64, blocked: bool, turn_id: String) -> Option<Claim> {
+        self.claim_matching(raw, blocked, turn_id, ClaimKind::LocalText, |id, session|
+            id == bot && session.mode == Mode::Life && session.state.is_some())
+    }
+    fn claim_matching(&mut self, raw: u64, blocked: bool, turn_id: String, kind: ClaimKind,
+        allowed: impl Fn(&str, &Session)->bool) -> Option<Claim> {
         let now = self.clock(raw);
         if self.shutdown
             || blocked
@@ -1034,7 +1071,10 @@ impl Core {
         let bot = self
             .sessions
             .iter()
-            .filter(|(bot, session)| allowed(bot) && session.due <= now && self.reason(session, now) == Reason::Ready)
+            .filter(|(bot, session)| allowed(bot, session) && session.due <= now && match kind {
+                ClaimKind::Model => self.reason(session, now) == Reason::Ready,
+                ClaimKind::LocalText => !session.storage_failed && session.output && session.config.speak,
+            })
             .min_by_key(|(bot, session)| (session.last_served, session.due, *bot))
             .map(|(bot, _)| bot.clone())?;
         if self.claim_order == MAX_COUNTER {
@@ -1044,6 +1084,7 @@ impl Core {
         let session = self.sessions.get_mut(&bot)?;
         session.last_served = self.claim_order;
         let claim = Claim {
+            kind,
             bot_id: bot,
             session_id: session.session_id.clone(),
             revision: session.revision,
@@ -1073,11 +1114,12 @@ impl Core {
                 session.session_id == claim.session_id
                     && session.revision == claim.revision
                     && !session.storage_failed
+                    && (!claim.local_text_only() || session.mode == Mode::Life && session.config.speak && session.output)
             })
             && self
                 .pending
                 .as_ref()
-                .is_some_and(|pending| Arc::ptr_eq(&pending.claim.cancel, &claim.cancel))
+                .is_some_and(|pending| pending.claim.kind == claim.kind && Arc::ptr_eq(&pending.claim.cancel, &claim.cancel))
     }
     pub fn bind(&mut self, claim: &Claim, cancel: Arc<AtomicBool>, raw: u64) -> bool {
         if !self.current(claim, raw) {
@@ -1285,6 +1327,116 @@ mod tests {
         start(&mut core, "nova", Mode::Ambient, true);
         assert_eq!(core.sessions.len(), 1);
         assert_eq!(core.sessions["nova"].mode, Mode::Ambient);
+    }
+    #[test]
+    fn local_social_text_without_model_is_due_bounded_and_never_cloud_authority() {
+        let mut core = runtime();
+        start(&mut core, "nova", Mode::Life, false);
+        hidden_clear(&mut core);
+        assert!(core.claim_local_text("nova", 14_999, false, "early".into()).is_none());
+        assert!(core.claim(15_000, false, "model_unavailable".into()).is_none());
+        let local = core.claim_local_text("nova", 15_000, false, "local".into()).unwrap();
+        assert!(local.local_text_only());
+        assert!(!local.cloud_allowed());
+        assert!(core.current(&local, 15_000));
+        assert!(!core.session_cloud_current(&local, 15_000));
+        assert!(core.claim_local_text("nova", 15_000, false, "overlap".into()).is_none());
+        assert!(core.claim(15_000, false, "generic_overlap".into()).is_none());
+        core.generated(&local, 15_001);
+        assert!(!core.session_cloud_current(&local, 15_001));
+        core.finish(&local, 15_002);
+        // Even a caller retaining/resetting the public cancellation atom cannot
+        // promote this immutable native classification after pending is gone.
+        local.cancel.store(false, Ordering::SeqCst);
+        assert!(!core.session_cloud_current(&local, 15_002));
+        assert!(!core.current(&local, 15_002));
+        assert!(core.claim_local_text("nova", 15_003, false, "before_quiet".into()).is_none());
+    }
+    #[test]
+    fn local_social_text_requires_explicit_life_speech_and_all_existing_runtime_gates() {
+        for boundary in ["absent", "ambient", "speech_off", "storage", "output", "ui", "system", "blocked", "pending_start_only"] {
+            let mut core = runtime();
+            if boundary == "pending_start_only" {
+                core.begin_start("nova", "intent".into()).unwrap();
+            } else if boundary != "absent" {
+                start(&mut core, "nova", if boundary == "ambient" { Mode::Ambient } else { Mode::Life }, false);
+            }
+            if boundary != "ui" { hidden_clear(&mut core); }
+            match boundary {
+                "speech_off" => core.sessions.get_mut("nova").unwrap().config.speak = false,
+                "storage" => core.sessions.get_mut("nova").unwrap().storage_failed = true,
+                "output" => core.sessions.get_mut("nova").unwrap().output = false,
+                "system" => core.observe_system(system(Availability::SuspendedLocked, 2), 1),
+                _ => (),
+            }
+            assert!(core.claim_local_text("nova", 15_000, boundary == "blocked", "local".into()).is_none(), "{boundary}");
+            assert!(core.pending().is_none(), "{boundary}");
+        }
+    }
+    #[test]
+    fn local_text_preserves_only_existing_idle_observation_and_never_new_action_fence() {
+        let mut core = runtime();
+        start(&mut core, "nova", Mode::Life, false);
+        start(&mut core, "other", Mode::Life, true);
+        hidden_clear(&mut core);
+        let nova = core.local_fence("nova", 15_000).unwrap();
+        let other = core.local_fence("other", 15_000).unwrap();
+        let local = core.claim_local_text("nova", 15_000, false, "local".into()).unwrap();
+        assert!(core.local_current("nova", &nova, 15_000));
+        assert!(core.local_current("other", &other, 15_000));
+        assert!(core.local_fence("nova", 15_000).is_none());
+        assert!(core.local_fence("other", 15_000).is_none());
+        assert!(!core.local_admission_current("nova", &nova, 15_000));
+        assert_eq!(core.local_action_reason("nova", 15_000), Some("busy"));
+        core.operator_activity(15_001);
+        assert!(local.cancel.load(Ordering::SeqCst));
+        assert!(!core.current(&local, 15_001));
+        assert!(!core.local_current("nova", &nova, 15_001));
+    }
+    #[test]
+    fn local_text_stop_profile_and_bound_callbacks_cannot_revive_a_replacement() {
+        for change in ["stop", "profile", "system"] {
+            let mut core = runtime();
+            start(&mut core, "nova", Mode::Life, false);
+            hidden_clear(&mut core);
+            let old = core.claim_local_text("nova", 15_000, false, "old".into()).unwrap();
+            let callback = Arc::new(AtomicBool::new(false));
+            assert!(core.bind(&old, callback.clone(), 15_000));
+            match change {
+                "stop" => { core.stop("nova", 15_001); },
+                "profile" => { core.reconfigure("nova", config(), false, true, 15_001).unwrap(); },
+                _ => core.observe_system(system(Availability::SuspendedLocked, 2), 15_001),
+            }
+            assert!(old.cancel.load(Ordering::SeqCst), "{change}");
+            assert!(callback.load(Ordering::SeqCst), "{change}");
+            assert!(!core.current(&old, 15_001));
+            assert!(!core.session_cloud_current(&old, 15_001));
+            if change != "system" {
+                start(&mut core, "nova", Mode::Life, true);
+                let replacement = claim(&mut core, 30_001);
+                assert!(replacement.cloud_allowed());
+                assert!(!replacement.local_text_only());
+                core.finish(&old, 30_001);
+                assert!(core.current(&replacement, 30_001));
+            }
+        }
+    }
+    #[test]
+    fn ordinary_claim_and_callback_policy_remain_model_gated_and_filterable() {
+        let mut core = runtime();
+        start(&mut core, "without_model", Mode::Life, false);
+        start(&mut core, "model", Mode::Life, true);
+        hidden_clear(&mut core);
+        assert!(core.claim_where(15_000, false, "preset_suppressed".into(), |_| false).is_none());
+        let model = core.claim_where(15_000, false, "model".into(), |bot| bot == "model").unwrap();
+        assert!(model.cloud_allowed());
+        assert!(!model.local_text_only());
+        assert!(core.session_cloud_current(&model, 15_000));
+        let observed = super::super::action_state::LocalFence { session: model.session_id.clone(), revision: model.revision,
+            system_generation: model.system_generation, ui_generation: model.ui_generation };
+        assert!(!core.local_current("model", &observed, 15_000));
+        core.finish(&model, 15_001);
+        assert!(core.claim_where(30_001, false, "only_missing".into(), |bot| bot == "without_model").is_none());
     }
     #[test]
     fn stop_revokes_pending_starts_and_late_same_bot_callbacks() {

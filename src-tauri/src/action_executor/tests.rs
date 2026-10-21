@@ -1001,3 +1001,12 @@ fn native_stop_cancellation_reconciles_without_fabricating_completion_or_reactiv
         ActionPhase::Cancelled
     );
 }
+
+#[test]
+fn declared_long_station_duration_is_bounded_and_never_a_completion_receipt() {
+    let before=initial("nova");let authority=authority("nova");
+    let caps=Capabilities::new(authority.clone(),vec![(Activity::Rest,60_000)],false).unwrap();
+    let prepared=PreparedPlan::care(authority,&before,RandomState::seeded(7),Activity::Rest,goal(Activity::Rest),Presentation::Visual,&caps,&Default::default()).unwrap();
+    assert_eq!(prepared.policy.minimum_active_ms,60_000);assert_eq!(prepared.policy.maximum_run_ms,75_000);
+    assert!(matches!(prepared.event(),LifeEvent::Plan{..}));assert!(before.current_action().is_none());
+}

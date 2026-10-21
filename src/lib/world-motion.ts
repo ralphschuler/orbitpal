@@ -170,7 +170,7 @@ export function parseWorldMotionCommand(value: unknown): WorldMotionCommand | nu
       && (data.activity === 'move_to' ? data.minimumActiveMs === 0 : data.minimumActiveMs > 0)
       && Number(data.minimumActiveMs) < Number(data.validForMs);
     return activity && minimum && from && target && finite(data.maximumSpeed, 0.01, WORLD_MAX_SPEED)
-      && finite(data.acceleration, 0.01, 5000) && counter(data.validForMs) && data.validForMs <= 60_000
+      && finite(data.acceleration, 0.01, 5000) && counter(data.validForMs) && data.validForMs <= 75_000
       ? Object.freeze({ ...data, from, target, fence: identity }) as MotionOffer : null;
   }
   if (type === 'terminal' && (typeof data.status !== 'string' || !['completed', 'cancelled', 'failed'].includes(data.status))) return null;

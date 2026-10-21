@@ -563,3 +563,25 @@ fn seeded_actual_domain_snapshot_trace_is_reproducible_and_order_independent() {
     assert!(first.iter().any(Option::is_none));
     assert!(first.iter().any(Option::is_some));
 }
+
+#[test]
+fn learned_preferences_preserve_cooldown_backoff_clock_and_current_choice() {
+    let snapshot=state([0;4]); let offers=all_offers(); let mut memory=chooser(&snapshot);
+    let key=offers[0].key().clone();
+    memory.record_end(100,&key,End::Unavailable).unwrap();
+    let before=memory.clone(); memory.update_preferences(Preferences::new([900,2,3,4],10).unwrap());
+    assert_eq!(memory.last_ms,before.last_ms); assert_eq!(memory.blocked,before.blocked);
+    assert_eq!(memory.cooldown_until,before.cooldown_until); assert_eq!(memory.current,before.current);
+    assert!(memory.choose(99,&snapshot,&offers,None).is_err());
+    assert!(memory.choose(101,&snapshot,&[offers[0].clone()],None).unwrap().is_none());
+    assert!(memory.choose(5100,&snapshot,&[offers[0].clone()],None).unwrap().is_some());
+}
+#[test]
+fn explicit_content_weights_rank_only_supplied_actions_without_granting_completion() {
+    let snapshot=state([0,9000,9000,9000]);
+    let ordinary=offer(Need::Energy,"a",0);
+    let preferred=offer(Need::Energy,"z",0).weighted(200).unwrap();
+    assert_eq!(chooser(&snapshot).choose(0,&snapshot,&[ordinary,preferred.clone()],None).unwrap().unwrap().offer(),&preferred);
+    assert!(preferred.clone().weighted(0).is_err());assert!(preferred.weighted(1001).is_err());
+    assert!(snapshot.current_action().is_none());
+}

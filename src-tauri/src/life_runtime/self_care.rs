@@ -20,7 +20,6 @@ struct Entry {
     home: crate::world_state::coordinates::Point,
     chooser: Chooser,
     pending: Option<(ActionId, OfferKey)>,
-    package: Option<String>,
     retry_after: u64,
 }
 #[derive(Default)]
@@ -33,18 +32,7 @@ impl CareMemory {
         let entry = entries.get(bot)?;
         Some((entry.session.clone(), entry.world_context.clone(), entry.home))
     }
-    pub(super) fn package_actors(&self, package: &str) -> Result<Vec<String>, String> {
-        Ok(self
-            .entries
-            .lock()
-            .map_err(|_| "experience_native_unavailable")?
-            .iter()
-            .filter(|(_, entry)| {
-                entry.pending.is_some() && entry.package.as_deref() == Some(package)
-            })
-            .map(|(bot, _)| bot.clone())
-            .collect())
-    }
+
 }
 
 fn need(kind: AnchorKind) -> Need {
@@ -73,9 +61,6 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
     {
         return;
     }
-    let Ok(_generation) = state.generation.try_lock() else {
-        return;
-    };
     let members = runtime.native_scenes.members(None);
     let Ok(mut memories) = runtime.care.entries.lock() else {
         return;
@@ -88,7 +73,7 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
     for member in members {
         let bot = member.constructor.bot();
         let now = runtime.now();
-        if experience.paused(bot).unwrap_or(true) || runtime.social.busy(bot) {
+        if experience.paused(bot).unwrap_or(true) || runtime.social.busy(bot) || runtime.desktop.busy(bot) {
             continue;
         }
         let Ok(preferences) = state
@@ -114,9 +99,17 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
         let Some(owned) = owned_guard.as_ref() else {
             continue;
         };
+        // Native admission owns Core, not the dialog generation turn. Keeping
+        // that lock would make Live-owner cleanup cancel this same surface.
+        if state.generation.try_lock().is_err() {
+            continue;
+        }
         let Ok(mut core) = runtime.core.lock() else {
             continue;
         };
+        if state.generation.try_lock().is_err() {
+            continue;
+        }
         if !owned.context.current(&core, &state, now) {
             continue;
         }
@@ -173,7 +166,6 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
                     home: source.context.position,
                     chooser,
                     pending: None,
-                    package: None,
                     retry_after: 0,
                 },
             );
@@ -213,6 +205,7 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
         let Ok(slots) = state.world.action_slots(&state.store, &source.context) else {
             continue;
         };
+        let Ok(packs)=state.store.content_packs() else {continue;};
         let mut offers = Vec::new();
         for wanted in [
             Need::Energy,
@@ -224,6 +217,7 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
                 .iter()
                 .filter(|slot| {
                     need(slot.kind) == wanted
+                        && slot.content_ref.as_ref().is_none_or(|reference|super::content_host::resolve(&packs,reference,slot.kind,activity(wanted)).is_some_and(|usage|super::content_host::condition(&usage,&confirmed,&settings.config)))
                         && preferences.allowed_animations.iter().any(|a| a == "walk")
                         && within_radius(entry.home, slot.position, preferences.movement_radius)
                 })
@@ -241,12 +235,16 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
                 }
             } else {
                 for (cost, slot) in candidates.into_iter().take(8) {
-                    if let Ok(offer) = Offer::new(wanted, Target::Slot(slot.id.clone()), cost) {
-                        offers.push(offer);
-                    }
+                    let weight=slot.content_ref.as_ref().and_then(|reference|super::content_host::resolve(&packs,reference,slot.kind,activity(wanted))).and_then(|usage|usage.behavior).map_or(100,|behavior|behavior.weight);
+                    if let Ok(offer) = Offer::new(wanted, Target::Slot(slot.id.clone()), cost).and_then(|offer|offer.weighted(weight)) {offers.push(offer);}
+
                 }
             }
         }
+        let preferences = state.store.social_snapshot(bot).map(|snapshot|
+            character_preferences(&settings.config, &snapshot.development, ((runtime.social_now()/60_000)%1440) as u16))
+            .unwrap_or_else(|_| settings.config.preferences());
+        if let Ok(preferences) = preferences { entry.chooser.update_preferences(preferences); }
         let Ok(Some(proposal)) = entry.chooser.choose(policy_now, &confirmed, &offers, None) else {
             continue;
         };
@@ -307,6 +305,21 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
             entry.retry_after = now.saturating_add(2000);
         }
     }
+}
+
+fn character_preferences(config: &CareConfig, character: &crate::character_development::Character, minute: u16) -> Result<crate::life_self_care::Preferences, crate::life_self_care::Error> {
+    use crate::character_development::{HobbyKind,GoalStatus};
+    let mut data = config.clone();
+    let factor = |value:u16, preference:u16| ((u32::from(value)*(500+u32::from(preference)))/1000).clamp(1,1000) as u16;
+    data.priorities[0]=factor(data.priorities[0], character.traits.rest_preference);
+    data.priorities[2]=factor(data.priorities[2], character.preference(HobbyKind::Play,minute));
+    let company=((u32::from(character.traits.sociability)+u32::from(character.preference(HobbyKind::Company,minute)))/2) as u16;
+    data.priorities[3]=factor(data.priorities[3],company);
+    if let Some(goal)=character.goal.as_ref().filter(|goal|goal.status==GoalStatus::Active) {
+        let index=match goal.kind {HobbyKind::Play=>Some(2),HobbyKind::Company=>Some(3),HobbyKind::Explore=>None};
+        if let Some(index)=index {data.priorities[index]=((u32::from(data.priorities[index])*5)/4).min(1000) as u16;}
+    }
+    data.preferences()
 }
 
 pub(super) fn within_radius(

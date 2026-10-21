@@ -4,6 +4,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 pub const MAX_MANIFEST_BYTES: usize = 128 * 1024;
 pub const MAX_PACKS: usize = 16;
+/// Stable template provenance. Presence is data, never package activation.
+#[derive(Clone,Debug,Eq,PartialEq,Serialize,Deserialize)]
+#[serde(rename_all="camelCase",deny_unknown_fields)]
+pub struct ContentRef {
+    pub package_id: String,
+    pub package_version: u32,
+    pub template_id: String,
+}
+impl ContentRef {
+    pub fn validate(&self)->Result<(),String> {
+        if !valid_id(&self.package_id) || self.package_version==0 || !namespaced(&self.template_id,&self.package_id) {
+            return Err("pack_invalid_reference".into());
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Manifest {
@@ -115,6 +131,21 @@ fn namespaced(id: &str, package: &str) -> bool {
     id.strip_prefix(package)
         .and_then(|s| s.strip_prefix(':'))
         .is_some_and(valid_id)
+}
+/// Resolve declarative provenance only. A saved reference never activates a
+/// package or supplies native ownership, a lease, animation or action proof.
+pub fn resolve_object<'a>(packs: &'a [Installed], reference: &ContentRef, kind: crate::world_state::AnchorKind) -> Option<&'a Object> {
+    reference.validate().ok()?;
+    validate_catalog(packs).ok()?;
+    let package = packs.iter().find(|package| package.active
+        && package.manifest.id == reference.package_id
+        && package.manifest.version == reference.package_version)?;
+    package.manifest.objects.iter().find(|object| object.id == reference.template_id
+        && matches!((object.kind, kind),
+            (ObjectKind::Rest, crate::world_state::AnchorKind::Rest)
+            | (ObjectKind::Snack, crate::world_state::AnchorKind::Snack)
+            | (ObjectKind::Meeting, crate::world_state::AnchorKind::Meeting)
+            | (ObjectKind::Play, crate::world_state::AnchorKind::Play)))
 }
 impl Manifest {
     pub fn parse(json: &str) -> Result<Self, String> {
@@ -326,5 +357,37 @@ mod tests {
             validate_catalog(&[base, other]).unwrap_err(),
             "pack_missing_dependency"
         );
+    }
+    #[test]
+    fn object_resolution_requires_active_exact_version_namespace_and_anchor_kind() {
+        let manifest=Manifest::parse(&example()).unwrap();
+        let reference=ContentRef { package_id:manifest.id.clone(),package_version:manifest.version,
+            template_id:manifest.objects[0].id.clone() };
+        let mut packs=vec![Installed { manifest,revision:1,active:true }];
+        assert!(resolve_object(&packs,&reference,crate::world_state::AnchorKind::Play).is_some());
+        for kind in [crate::world_state::AnchorKind::Rest,crate::world_state::AnchorKind::Snack,crate::world_state::AnchorKind::Meeting] {
+            assert!(resolve_object(&packs,&reference,kind).is_none());
+        }
+        let mut changed=reference.clone();changed.package_version+=1;
+        assert!(resolve_object(&packs,&changed,crate::world_state::AnchorKind::Play).is_none());
+        changed=reference.clone();changed.template_id="desk-garden:missing".into();
+        assert!(resolve_object(&packs,&changed,crate::world_state::AnchorKind::Play).is_none());
+        changed=reference.clone();changed.template_id="other:seed".into();
+        assert!(resolve_object(&packs,&changed,crate::world_state::AnchorKind::Play).is_none());
+        packs[0].active=false;
+        assert!(resolve_object(&packs,&reference,crate::world_state::AnchorKind::Play).is_none());
+        packs[0].active=true;packs[0].manifest.version+=1;
+        assert!(resolve_object(&packs,&reference,crate::world_state::AnchorKind::Play).is_none());
+        assert!(resolve_object(&[],&reference,crate::world_state::AnchorKind::Play).is_none());
+    }
+    #[test]
+    fn unresolved_dependencies_and_ambiguous_catalogues_never_supply_object_offers() {
+        let manifest=Manifest::parse(&example()).unwrap();
+        let reference=ContentRef { package_id:manifest.id.clone(),package_version:1,template_id:manifest.objects[0].id.clone() };
+        let package=Installed { manifest,revision:1,active:true };
+        assert!(resolve_object(&[package.clone(),package.clone()],&reference,crate::world_state::AnchorKind::Play).is_none());
+        let mut dependent=package;
+        dependent.manifest.dependencies.push(Dependency{id:"missing".into(),minimum_version:1});
+        assert!(resolve_object(&[dependent],&reference,crate::world_state::AnchorKind::Play).is_none());
     }
 }

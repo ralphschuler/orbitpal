@@ -30,6 +30,8 @@ describe('trusted station offer contract', () => {
       expect(parseWorldMotionCommand({...station(),activity})).toBeNull();
     for (const minimumActiveMs of [0,-1,.5,5000,60001,NaN,Infinity])
       expect(parseWorldMotionCommand({...station(),minimumActiveMs})).toBeNull();
+    expect(parseWorldMotionCommand({...station(),minimumActiveMs:60_000,validForMs:75_000})).not.toBeNull();
+    expect(parseWorldMotionCommand({...station(),minimumActiveMs:60_000,validForMs:75_001})).toBeNull();
     expect(parseWorldMotionCommand({...station(),activity:'move_to',minimumActiveMs:0})).not.toBeNull();
     expect(parseWorldMotionCommand({...station(),activity:'move_to'})).toBeNull();
   });

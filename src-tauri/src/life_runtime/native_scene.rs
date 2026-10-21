@@ -108,6 +108,11 @@ pub(super) struct OwnedSurface {
     observed_ready: bool,
 }
 impl OwnedSurface {
+    /// Actual retained Live geometry; preparing/unmeasured owners supply none.
+    pub(super) fn live_bounds(&self, now:u64)->Option<crate::overlay_presentation::Bounds> {
+        let live=self.live.as_ref()?;
+        (self.observed_ready && live.current(now)).then_some(live.bounds)
+    }
     /// Registry accepted a genuinely newer frame immediately before this call.
     /// The first calibration promotes; only a later idle renewal may admit an
     /// initial action, after the renderer has received its Ready binding.

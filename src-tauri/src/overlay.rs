@@ -138,6 +138,12 @@ impl OverlayHub {
     pub fn has_any_pending_speech(&self)->bool{
         self.speech.lock().map(|entries|entries.iter().any(|entry|!entry.finished&&!entry.cancel.load(Ordering::Relaxed))).unwrap_or(true)
     }
+    pub(crate) fn has_blocking_native_speech(&self, local: Option<&crate::life_runtime::core::Claim>) -> bool {
+        self.speech.lock().map(|entries|entries.iter().any(|entry| !entry.finished && !entry.cancel.load(Ordering::SeqCst)
+            && !local.is_some_and(|claim|claim.local_text_only() && entry.voice["enabled"]==false
+                && entry.runtime_claim.as_ref().is_some_and(|bound|bound.local_text_only() && Arc::ptr_eq(&claim.cancel,&bound.cancel)))))
+            .unwrap_or(true)
+    }
     pub fn has_autopilot_speech(&self,bot_id:&str)->bool{
         self.speech.lock().map(|entries|entries.iter().any(|entry|entry.bot_id==bot_id&&entry.source=="autopilot"&&!entry.finished)).unwrap_or(true)
     }
@@ -696,6 +702,21 @@ mod tests{
     fn speech(provider:&str)->SpeechEntry{
         SpeechEntry{id:"speech-fixture".into(),bot_id:"nova".into(),text:"Hallo zusammen!".into(),speech_text:"[crying] Hallo [shouts] zusammen!".into(),voice:json!({"provider":provider}),emotion:"neutral".into(),source:"twitch".into(),user:"viewer".into(),emotes:Vec::new(),output:"studio".into(),user_text:"Grüße den Chat".into(),hindsight:json!({"private_config_marker":"not an event field"}),assistant_name:"Nova".into(),chat_route:None,runtime_claim:None,usage_origin:crate::usage_budget::Origin::Manual,session_output:None,started:false,finished:false,cancel:Arc::new(AtomicBool::new(false))}
     }
+    fn native_claim(local:bool,turn_id:String)->(crate::life_runtime::core::Core,crate::life_runtime::core::Claim){
+        use crate::life_availability::{Availability,Reason,Source,Snapshot as SystemSnapshot};
+        use crate::life_domain::{ActorId,LifeState,Needs,WorldId};
+        use crate::life_runtime::core::{Core,Mode,SpeechConfig};
+        let mut core=Core::new(SystemSnapshot{state:Availability::AwakeUnlocked,reason:Reason::Ready,generation:1,source:Source::MacosCgSessionCompatibility});
+        let life=LifeState::new(ActorId::new("nova").unwrap(),WorldId::new("world_nova").unwrap(),Needs::new(5000,5000,5000,5000).unwrap());
+        core.start("nova",Mode::Life,uuid::Uuid::new_v4().to_string(),SpeechConfig{speak:true,min_ms:15_000,max_ms:15_000},Some(life),7,!local,true,0).unwrap();
+        core.connect_ui("connection".into(),0);
+        assert!(core.report_ui("connection",1,false,false,true,0));
+        let barrier=core.prepare_hide(0);assert!(barrier.is_some());core.hidden(barrier,true,0);
+        let claim=if local{core.claim_local_text("nova",15_000,false,turn_id)}else{core.claim(15_000,false,turn_id)}.unwrap();
+        assert!(core.current(&claim,15_000));
+        assert_eq!(claim.local_text_only(),local);assert_eq!(claim.cloud_allowed(),!local);
+        (core,claim)
+    }
     #[test]
     fn session_speech_event_is_route_bound_and_late_system_start_is_rejected() {
         let outputs=crate::life_runtime::session_output::SessionOutputs::default();
@@ -825,7 +846,7 @@ mod tests{
     fn native_studio_no_ack_watchdog_releases_only_the_exact_job(){
         let hub=OverlayHub::default();let mut entry=speech("system");
         assert!(!entry.requires_playback_watchdog(),"manual Studio keeps its existing lifetime");
-        entry.runtime_claim=Some(crate::life_runtime::core::Claim{bot_id:"nova".into(),session_id:"session".into(),revision:1,turn_id:entry.id.clone(),cancel:entry.cancel.clone(),system_generation:1,ui_generation:1});
+        entry.runtime_claim=Some(native_claim(false,entry.id.clone()).1);
         assert!(entry.requires_playback_watchdog());let token=entry.cancel.clone();
         hub.speech.lock().unwrap().push_back(entry);
         hub.audio.lock().unwrap().insert("speech-fixture",cached_audio(16),&HashSet::new(),AUDIO_CACHE_BYTES).unwrap();
@@ -859,21 +880,49 @@ mod tests{
     }
     #[test]
     fn revoked_native_claim_cleanup_cannot_cancel_a_new_claim_with_reused_display_ids(){
-        let mut entry=speech("system");entry.id=uuid::Uuid::new_v4().to_string();let old=crate::life_runtime::core::Claim{bot_id:"nova".into(),session_id:"session".into(),revision:1,turn_id:entry.id.clone(),cancel:Arc::new(AtomicBool::new(false)),system_generation:1,ui_generation:1};entry.runtime_claim=Some(old.clone());
+        let mut entry=speech("system");entry.id=uuid::Uuid::new_v4().to_string();let (_,old)=native_claim(false,entry.id.clone());entry.runtime_claim=Some(old.clone());
         assert!(entry.claim_matches(&old));old.cancel.store(true,Ordering::SeqCst);assert!(entry.claim_matches(&old),"revoked job remains eligible for cleanup");
-        let mut newer=old.clone();newer.cancel=Arc::new(AtomicBool::new(false));entry.runtime_claim=Some(newer.clone());
+        let (_,newer)=native_claim(false,entry.id.clone());entry.runtime_claim=Some(newer.clone());
         assert!(!entry.claim_matches(&old));assert!(entry.claim_matches(&newer));
     }
     #[test]
     fn native_emote_parent_requires_exact_live_host_job_and_native_claim(){
         let mut entry=speech("system");entry.id=uuid::Uuid::new_v4().to_string();entry.output="overlay".into();
-        let claim=crate::life_runtime::core::Claim{bot_id:"nova".into(),session_id:"session".into(),revision:1,turn_id:entry.id.clone(),cancel:entry.cancel.clone(),system_generation:1,ui_generation:1};
+        let (_,claim)=native_claim(false,entry.id.clone());
         assert!(entry.native_parent("nova","overlay",&entry.id).is_none(),"manual speech is not a native-turn exemption");
-        entry.runtime_claim=Some(claim);
+        entry.runtime_claim=Some(claim.clone());
         assert!(entry.native_parent("nova","overlay",&entry.id).is_some());
+        entry.id=uuid::Uuid::new_v4().to_string();
+        assert!(entry.native_parent("nova","overlay",&entry.id).is_none(),"a separate social display ID cannot replace the actual Core turn ID");
+        assert!(!entry.claim_matches(&claim));entry.id=claim.turn_id.clone();
         for (bot,output,parent) in [("other","overlay",entry.id.clone()),("nova","obs",entry.id.clone()),("nova","overlay",uuid::Uuid::new_v4().to_string()),("nova","overlay","not-a-uuid".into())]{assert!(entry.native_parent(bot,output,&parent).is_none());}
         entry.finished=true;assert!(entry.native_parent("nova","overlay",&entry.id).is_none());entry.finished=false;
         entry.cancel.store(true,Ordering::SeqCst);assert!(entry.native_parent("nova","overlay",&entry.id).is_none());
+    }
+    #[test]
+    fn only_the_exact_local_text_claim_with_disabled_voice_keeps_native_observation_unblocked(){
+        let hub=OverlayHub::default();let id=uuid::Uuid::new_v4().to_string();
+        let (core,local)=native_claim(true,id.clone());
+        let (_,model)=native_claim(false,id.clone());let (_,other_local)=native_claim(true,id.clone());
+        let mut entry=speech("system");entry.id=id;entry.voice["enabled"]=json!(false);entry.runtime_claim=Some(local.clone());
+        assert!(!Arc::ptr_eq(&entry.cancel,&local.cancel),"the playback ticket and Core claim have separate cancellation tokens");
+        hub.speech.lock().unwrap().push_back(entry);
+        assert!(core.current(&local,15_000));
+        assert!(hub.has_blocking_native_speech(None));
+        assert!(!hub.has_blocking_native_speech(Some(&local)));
+        assert!(hub.has_blocking_native_speech(Some(&model)),"a model claim cannot use the local exception");
+        assert!(hub.has_blocking_native_speech(Some(&other_local)),"another genuine LocalText ticket cannot use the exception");
+        hub.speech.lock().unwrap()[0].voice["enabled"]=json!(true);
+        assert!(hub.has_blocking_native_speech(Some(&local)));
+        hub.speech.lock().unwrap()[0].voice["enabled"]=Value::Null;
+        assert!(hub.has_blocking_native_speech(Some(&local)),"voice must be explicitly disabled");
+        hub.speech.lock().unwrap()[0].voice["enabled"]=json!(false);
+        let mut model_same_token=model;model_same_token.cancel=local.cancel.clone();
+        hub.speech.lock().unwrap()[0].runtime_claim=Some(model_same_token);
+        assert!(hub.has_blocking_native_speech(Some(&local)));
+        hub.speech.lock().unwrap()[0].runtime_claim=Some(local.clone());
+        hub.speech.lock().unwrap().push_back(speech("system"));
+        assert!(hub.has_blocking_native_speech(Some(&local)),"an unrelated queued job still blocks");
     }
     #[test]
     fn external_emote_playback_rejects_invalid_ids_and_output_modes(){

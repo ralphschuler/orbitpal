@@ -91,6 +91,13 @@ fn pack_character<'a>(
         })
         .ok_or_else(|| "pack_inactive_template".into())
 }
+/// Read through an existing native SQLite transaction. This never acquires
+/// Store again, so World save can bind provenance atomically to its own CAS.
+pub(super) fn read_content_catalog(db: &Connection) -> Result<Vec<Installed>, String> {
+    let packs = read::<Vec<Installed>>(db, "content-packs-v1")?.unwrap_or_default();
+    content_packs::validate_catalog(&packs)?;
+    Ok(packs)
+}
 /// Only a fresh UUID directory created by this call is eligible for rollback.
 struct NewCharacterDirectory {
     path: std::path::PathBuf,
@@ -176,6 +183,15 @@ impl Store {
         expected_revision: u64,
         event_sequence: u64,
     ) -> Result<bool, String> {
+        self.record_life_fact(bot,expected_revision,event_sequence,None)
+    }
+    /// Retry the exact immutable native commit. Actual retained LIVE history is
+    /// checked again in the write transaction; the snapshot supplies no grant.
+    pub(crate) fn record_experience_native_snapshot(&self,bot:&str,expected:&super::life_store::LifeSnapshot)->Result<bool,String> {
+        let sequence=expected.state().recent_events().last().ok_or("experience_missing_source")?.id().sequence();
+        self.record_life_fact(bot,expected.state().revision(),sequence,Some(expected))
+    }
+    fn record_life_fact(&self,bot:&str,expected_revision:u64,event_sequence:u64,expected:Option<&super::life_store::LifeSnapshot>)->Result<bool,String> {
         use super::life_store::EventOrigin;
         use crate::experience::{FactKind, FactPhase};
         use crate::life_domain::{ActionPhase, CancelReason, CommittedEvent};
@@ -193,9 +209,13 @@ impl Store {
         let actual = super::life_store::read(&tx, bot)
             .map_err(storage)?
             .ok_or("experience_missing_source")?;
-        let state = actual.state();
+        let source=expected.unwrap_or(&actual);
+        let state = source.state();
         if state.revision() != expected_revision
+            || actual.state().revision()<expected_revision
+            || actual.state().world_id()!=state.world_id()
             || state.actor_id().as_str() != bot
+            || source.saved_at_ms()>actual.saved_at_ms()
             || actual.saved_at_ms() > MAX_TIME
         {
             return Err("experience_stale_source".into());
@@ -210,6 +230,7 @@ impl Store {
             || record.id().actor_id().as_str() != bot
             || record.at() != state.simulation_time()
             || !state.recent_events().any(|r| r == record)
+            || !actual.state().recent_events().any(|r| r==record)
         {
             return Err("experience_not_live".into());
         }
@@ -258,7 +279,7 @@ impl Store {
             actor_ids: vec![bot.into()],
             kind,
             phase,
-            at_ms: actual.saved_at_ms(),
+            at_ms: source.saved_at_ms(),
             source_event_ids: vec![event_id],
             shared: false,
         };
@@ -824,6 +845,20 @@ mod tests {
             .record_experience_life_fact(&id, revision, revision)
             .is_err());
         assert!(f.0.experience_facts(&id).unwrap().is_empty());
+    }
+    #[test]
+    fn immutable_native_fact_retry_uses_retained_live_history_after_checkpoint() {
+        let f=Fixture::new();let id=f.0.profile().unwrap()["id"].as_str().unwrap().to_owned();
+        initialize(&f.0,&id);let revision=live_complete(&f.0,&id,100);
+        let expected=f.0.load_life(&id).unwrap().unwrap();
+        f.0.apply_life_event(&id,revision,1000,crate::life_domain::LifeEvent::Tick{},200).unwrap();
+        assert!(f.0.record_experience_life_fact(&id,revision,revision).is_err());
+        assert!(f.0.record_experience_native_snapshot(&id,&expected).unwrap());
+        let facts=f.0.experience_facts(&id).unwrap();assert_eq!(facts.len(),1);assert_eq!(facts[0].at_ms,100);
+        assert!(!f.0.record_experience_native_snapshot(&id,&expected).unwrap());
+        f.0.edit_experience_fact(&id,None,None).unwrap();
+        {let db=f.0.db.lock().unwrap();db.execute("UPDATE bot_life_events SET origin='offline' WHERE bot_id=?1 AND revision=?2",params![id,revision]).unwrap();}
+        assert!(f.0.record_experience_native_snapshot(&id,&expected).is_err());assert!(f.0.experience_facts(&id).unwrap().is_empty());
     }
     #[test]
     fn installed_manifest_is_inactive_until_explicit_cas() {

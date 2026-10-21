@@ -100,7 +100,7 @@ describe('strict local motion protocol', () => {
     }
     for (const mutate of [
       (v: any) => v.sequence = 1.1, (v: any) => v.activity = 'shell', (v: any) => v.target.x = NaN,
-      (v: any) => v.validForMs = 60_001, (v: any) => v.maximumSpeed = 501,
+      (v: any) => v.validForMs = 75_001, (v: any) => v.maximumSpeed = 501,
       (v: any) => v.fence.actionId.actorId = 'other', (v: any) => v.extra = true,
     ]) {
       const value = structuredClone(offer(binding())); mutate(value); expect(parseWorldMotionCommand(value)).toBeNull();

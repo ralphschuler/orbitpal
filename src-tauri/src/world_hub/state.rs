@@ -88,6 +88,7 @@ pub(crate) struct ActionSlotTarget {
     pub(crate) id: SlotId,
     pub(crate) kind: AnchorKind,
     pub(crate) position: Point,
+    pub(crate) content_ref: Option<crate::content_packs::ContentRef>,
 }
 /// Constructed only from the actual World reservation for a current Life Plan.
 /// The opaque lease and its target cannot be independently replaced by callers.
@@ -710,8 +711,15 @@ impl WorldHub {
         let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
         Self::refresh_record(&mut hub, store)?;
         if !Self::action_context_matches(&hub, expected) { return Err(UNAVAILABLE.into()); }
-        let (kind, position) = hub.world.as_ref().and_then(|world| world.slot_geometry(slot)).ok_or(UNAVAILABLE)?;
-        Ok(ActionSlotTarget { id: slot.clone(), kind, position })
+        let world = hub.world.as_ref().ok_or(UNAVAILABLE)?;
+        let (kind, position) = world.slot_geometry(slot).ok_or(UNAVAILABLE)?;
+        let anchor = world.config().anchors().iter().find(|anchor|anchor.slots().iter().any(|candidate|candidate.id()==slot)).ok_or(UNAVAILABLE)?;
+        let content_ref = anchor.content_ref().cloned();
+        if let Some(reference) = &content_ref {
+            let packs = store.content_packs().map_err(|_|UNAVAILABLE)?;
+            if crate::content_packs::resolve_object(&packs, reference, kind).is_none() {return Err(UNAVAILABLE.into());}
+        }
+        Ok(ActionSlotTarget { id: slot.clone(), kind, position, content_ref })
     }
     /// Offers are current observations; admission still reserves the exact slot
     /// in the existing World transaction and may lose a race to another actor.
@@ -720,11 +728,17 @@ impl WorldHub {
         Self::refresh_record(&mut hub, store)?;
         if !Self::action_context_matches(&hub, expected) { return Err(UNAVAILABLE.into()); }
         let snapshot = hub.world.as_ref().ok_or(UNAVAILABLE)?.snapshot();
+        // Invalid optional content has no offers. Ordinary configured anchors
+        // remain usable, and saved package anchors stay visible as fallbacks.
+        let packs = snapshot.anchors.iter().any(|anchor|anchor.content_ref().is_some())
+            .then(||store.content_packs().ok()).flatten();
         let mut result = Vec::new();
         for anchor in &snapshot.anchors {
+            if anchor.content_ref().is_some_and(|reference|packs.as_deref()
+                .and_then(|packs|crate::content_packs::resolve_object(packs,reference,anchor.kind())).is_none()) {continue;}
             for slot in anchor.slots() {
                 if snapshot.occupied.iter().any(|occupied| occupied.slot_id == *slot.id()) { continue; }
-                result.push(ActionSlotTarget { id: slot.id().clone(), kind: anchor.kind(), position: slot.position() });
+                result.push(ActionSlotTarget { id: slot.id().clone(), kind: anchor.kind(), position: slot.position(), content_ref:anchor.content_ref().cloned() });
             }
         }
         result.sort_by(|left, right| left.id.cmp(&right.id));
@@ -1034,3 +1048,50 @@ fn select<'a>(topology: &'a TopologySample, preferred: &str) -> Option<&'a Displ
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod content_offer_tests {
+    // Actual SQLite/World offer lookup only. No renderer/native surface grant,
+    // OS input, capture, provider or fabricated completion participates here.
+    use super::*;
+    use crate::{content_packs::{ContentRef,Manifest},life_domain::{Needs,RandomState},
+        world_state::{coordinates::Rect,Anchor,AnchorId,Slot,StageId}};
+    struct Fixture(std::path::PathBuf);
+    impl Fixture {
+        fn new()->Self {let path=std::env::temp_dir().join(format!("orbitpal-world-offers-{}",uuid::Uuid::new_v4()));std::fs::create_dir(&path).unwrap();Self(path)}
+    }
+    impl Drop for Fixture {fn drop(&mut self){let _=std::fs::remove_dir_all(&self.0);}}
+    #[test]
+    fn inactive_and_replaced_packages_keep_visible_anchors_but_have_no_native_targets() {
+        let fixture=Fixture::new();let store=Store::new(fixture.0.clone()).unwrap();
+        let manifest=Manifest::parse(include_str!("../../../public/content-packs/desk-garden.json")).unwrap();
+        let reference=ContentRef{package_id:manifest.id.clone(),package_version:1,template_id:manifest.objects[0].id.clone()};
+        store.install_content_pack(manifest.clone()).unwrap();store.set_content_pack_active(&reference.package_id,1,true).unwrap();
+        let lineage=WorldId::new("content-lineage").unwrap();
+        store.initialize_life("nova",lineage.clone(),Needs::new(5000,5000,5000,5000).unwrap(),RandomState::seeded(7),1000).unwrap();
+        let config=WorldConfig::new(StageId::new("content-stage").unwrap(),Rect::full(),vec![ActorId::new("nova").unwrap()],vec![
+            Anchor::new(AnchorId::new("seed").unwrap(),AnchorKind::Play,Point::new(200000,500000).unwrap(),vec![Slot::new(SlotId::new("seed-slot").unwrap(),Point::new(200000,500000).unwrap())]).unwrap(),
+            Anchor::new(AnchorId::new("rest").unwrap(),AnchorKind::Rest,Point::new(800000,500000).unwrap(),vec![Slot::new(SlotId::new("rest-slot").unwrap(),Point::new(800000,500000).unwrap())]).unwrap(),
+        ]).unwrap();
+        let mut wire=serde_json::to_value(config).unwrap();wire["anchors"][0]["contentRef"]=serde_json::to_value(&reference).unwrap();
+        let config:WorldConfig=serde_json::from_value(wire).unwrap();
+        let actors=vec![NativeActor{stamp:SessionStamp::new(ActorId::new("nova").unwrap(),"content-session",1).unwrap(),lineage:Some(lineage)}];
+        let topology=TopologySample {ticket:1,observed:Instant::now(),displays:vec![DisplaySample{geometry:OutputGeometry::new("fixture-display",0,0,1920,1200,1.0).unwrap()}],fingerprint:vec![("fixture-display".into(),0,0,1920,1200,1.0f64.to_bits())]};
+        let hub=WorldHub::new(&store);
+        hub.save(&store,None,&config,&OutputBinding{monitor_id:Some("fixture-display".into())},&actors,topology,0).unwrap();
+        let context=hub.action_context(&store,&actors,"nova",0).unwrap();
+        let offered=hub.action_slots(&store,&context).unwrap();assert_eq!(offered.len(),2);
+        assert_eq!(hub.slot_target(&store,&context,&SlotId::new("seed-slot").unwrap()).unwrap().content_ref,Some(reference.clone()));
+        assert!(hub.slot_target(&store,&context,&SlotId::new("rest-slot").unwrap()).unwrap().content_ref.is_none());
+        store.set_content_pack_active(&reference.package_id,2,false).unwrap();
+        let offered=hub.action_slots(&store,&context).unwrap();assert_eq!(offered.len(),1);assert_eq!(offered[0].id.as_str(),"rest-slot");
+        assert!(hub.slot_target(&store,&context,&SlotId::new("seed-slot").unwrap()).is_err());
+        let snapshot=hub.snapshot().unwrap().snapshot.unwrap();assert_eq!(snapshot.anchors.len(),2);
+        assert!(snapshot.anchors.iter().any(|anchor|anchor.content_ref()==Some(&reference)));
+        let mut upgraded=manifest;upgraded.version=2;
+        store.install_content_pack(upgraded).unwrap();let revision=store.content_packs().unwrap()[0].revision;
+        store.set_content_pack_active(&reference.package_id,revision,true).unwrap();
+        assert!(hub.slot_target(&store,&context,&SlotId::new("seed-slot").unwrap()).is_err(),"version2 must not relabel the savedversion1 target");
+        assert_eq!(hub.action_slots(&store,&context).unwrap().len(),1);
+    }
+}

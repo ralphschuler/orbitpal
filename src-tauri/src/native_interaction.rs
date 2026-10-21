@@ -25,6 +25,7 @@ pub(crate) struct MenuOwner {
     current: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 impl MenuOwner {
+    pub(crate) fn is_current(&self)->bool { (self.current)() }
     pub(crate) fn new(
         bot: String,
         window: tauri::WebviewWindow,

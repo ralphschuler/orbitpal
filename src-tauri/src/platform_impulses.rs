@@ -31,12 +31,14 @@ struct Owner {
 /// Sealed receive authority. Bind the executor's OWN cancellation token before
 /// its first await; never use connection cancellation as a job completion flag.
 /// The executor rechecks current/profile/session under its native admission lock.
+#[derive(Clone)]
 pub(crate) struct DispatchLease {
     source: ImpulseSource,
     expires_ms: u64,
     session_id: String,
 }
 impl DispatchLease {
+    pub(crate) fn owner(&self)->&str {self.source.owner()}
     pub(crate) fn current(&self, store: &crate::storage::Store) -> bool {
         if !now().is_some_and(|now| now < self.expires_ms) {
             return false;

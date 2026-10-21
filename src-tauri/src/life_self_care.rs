@@ -240,6 +240,7 @@ pub(crate) struct OfferKey {
 pub(crate) struct Offer {
     key: OfferKey,
     travel_cost: u16,
+    weight: u16,
 }
 impl Offer {
     pub(crate) fn new(need: Need, target: Target, travel_cost: u16) -> Result<Self, Error> {
@@ -249,7 +250,12 @@ impl Offer {
         Ok(Self {
             key: OfferKey { need, target },
             travel_cost,
+            weight: 100,
         })
+    }
+    pub(crate) fn weighted(mut self, weight:u16)->Result<Self,Error> {
+        if !(1..=1000).contains(&weight){return Err(Error::Offer);}
+        self.weight=weight; Ok(self)
     }
     pub(crate) fn key(&self) -> &OfferKey {
         &self.key
@@ -322,6 +328,8 @@ pub(crate) struct Chooser {
     current: Option<CurrentChoice>,
 }
 impl Chooser {
+    /// Soft preferences keep all cooldowns, failed-offer backoff and clock state.
+    pub(crate) fn update_preferences(&mut self, preferences: Preferences) { self.preferences = preferences; }
     pub(crate) fn new(confirmed: &LifeState, policy: Policy, preferences: Preferences) -> Self {
         Self {
             actor: confirmed.actor_id().clone(),
@@ -364,7 +372,7 @@ impl Chooser {
         let index = offer.need().index();
         let rule = self.policy.rules[index];
         let pressure = u64::from(rule.satisfied_at.saturating_sub(offer.need().level(needs)));
-        (pressure * u64::from(rule.weight) * u64::from(self.preferences.priorities[index]))
+        (pressure * u64::from(rule.weight) * u64::from(self.preferences.priorities[index]) * u64::from(offer.weight) / 100)
             .saturating_sub(
                 u64::from(offer.travel_cost) * u64::from(self.preferences.travel_cost_weight),
             )
