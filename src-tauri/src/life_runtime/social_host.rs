@@ -3,6 +3,8 @@
 #[path = "social_fact_retry.rs"]
 mod social_fact_retry;
 use super::{cancel_actor_action, start_slot_activity, LifeRuntime};
+#[path = "social_intent.rs"]
+pub(super) mod intent_snapshot;
 use crate::{
     experience::ExperienceRuntime,
     life_domain::{ActionId, Activity, LifeState},

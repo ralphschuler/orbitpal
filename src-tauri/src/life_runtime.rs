@@ -6,6 +6,8 @@ pub(crate) use interaction_availability::native_interaction_choices;
 mod self_care;
 #[path = "life_runtime/experience_host.rs"]
 mod experience_host;
+#[path = "life_runtime/intent_snapshot.rs"]
+pub(crate) mod intent_snapshot;
 #[path = "life_runtime/social_host.rs"]
 pub(crate) mod social_host;
 #[path = "life_runtime/desktop_places.rs"]

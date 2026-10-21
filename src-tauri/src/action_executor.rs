@@ -1481,6 +1481,10 @@ impl Executor {
                 terminal_committed: job.terminal_committed,
             })
     }
+    /// Display-only observation of the exact existing job, never action admission.
+    pub(crate) fn goal(&self, key: &JobKey) -> Option<&Goal> {
+        self.jobs.get(key.actor.as_str()).filter(|job| &job.key == key).map(|job| &job.goal)
+    }
     pub fn take_dispatch(&mut self) -> Option<Dispatch> {
         self.outbox.pop_front()
     }

@@ -1,10 +1,17 @@
 //! Operator UI entry points; none accepts facts, native receipts or platform impulses.
 use crate::{
     content_packs::{ContentRef, Installed, Manifest, Preview},
-    experience::{self, ExperienceRuntime, InteractionRequest, Preferences, Snapshot},
+    experience::{self, ExperienceRuntime, InteractionRequest, Preferences},
     AppState,
 };
 use tauri::{Emitter, Manager, State};
+/// The additional projection is emitted only to Studio, never OBS/overlay state.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Snapshot {
+    #[serde(flatten)]
+    experience: experience::Snapshot,
+    intent: Option<crate::life_runtime::intent_snapshot::RuntimeIntent>,
+}
 fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.label() != "main" {
         return Err("experience_main_only".into());
@@ -24,7 +31,7 @@ fn snapshot(
             .state::<crate::platform_impulses::PlatformImpulses>()
             .vote_status(bot_id, &settings.preferences, &state.store);
     }
-    Ok(Snapshot {
+    let experience = experience::Snapshot {
         version: 1,
         bot_id: bot_id.into(),
         settings,
@@ -32,7 +39,9 @@ fn snapshot(
         facts: state.store.experience_facts(bot_id)?,
         desktop_capabilities: Default::default(),
         impulses,
-    })
+    };
+    let intent = state.life_runtime.experience_intent(bot_id)?;
+    Ok(Snapshot { experience, intent })
 }
 pub(crate) fn native_snapshot(app: &tauri::AppHandle, bot: &str) -> Result<Snapshot,String> {
     use tauri::Manager;

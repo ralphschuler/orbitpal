@@ -245,6 +245,12 @@ impl Coordinator {
             .map(|s| s.view.clone())
             .collect()
     }
+    /// Operator display only. A replaced Life session must not inherit an old intention.
+    pub(crate) fn session_views(&self, bot: &str, session: &str, generation: u64) -> Vec<SceneView> {
+        self.scenes.values().filter(|scene| scene.actors.iter().any(|actor| {
+            actor.actor.as_str() == bot && actor.session == session && actor.generation == generation
+        })).map(|scene| scene.view.clone()).collect()
+    }
     pub(crate) fn drain(&mut self) -> Vec<Directive> {
         self.outbox.drain(..).collect()
     }
