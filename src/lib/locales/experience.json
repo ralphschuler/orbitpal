@@ -188,7 +188,8 @@
     "Annehmen": "Accept",
     "Ablehnen": "Decline",
     "Entfernen": "Remove",
-    "Wartend": "Pending"
+    "Wartend": "Pending",
+    "Angenommen": "Accepted"
   },
   "fr": {
     "Alltag deiner Figuren": "Le quotidien de vos personnages",
@@ -379,7 +380,8 @@
     "Annehmen": "Accepter",
     "Ablehnen": "Refuser",
     "Entfernen": "Retirer",
-    "Wartend": "En attente"
+    "Wartend": "En attente",
+    "Angenommen": "Accepté"
   },
   "es": {
     "Alltag deiner Figuren": "La vida diaria de tus personajes",
@@ -570,6 +572,7 @@
     "Annehmen": "Aceptar",
     "Ablehnen": "Rechazar",
     "Entfernen": "Quitar",
-    "Wartend": "Pendiente"
+    "Wartend": "Pendiente",
+    "Angenommen": "Aceptado"
   }
 }
