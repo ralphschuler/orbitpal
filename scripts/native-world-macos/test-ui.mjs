@@ -61,10 +61,12 @@ function probe(options = {}) {
     }},
     CGSessionCopyCurrentDictionary() {
       calls.push('session'); fail('session');
-      return {kCGSSessionUserIDKey: 41, kCGSSessionOnConsoleKey: true,
+      if (Object.hasOwn(options, 'session')) return options.session;
+      const session = {kCGSSessionUserIDKey: 41, kCGSSessionOnConsoleKey: true,
         kCGSessionLoginDoneKey: true, CGSSessionScreenIsLocked: options.locked === true};
+      return session;
     },
-    NSScreen: {screens: {count: 1}},
+    NSScreen: {screens: {get count() { calls.push('screens'); return options.screens ?? 1; }}},
   };
   const ObjC = {
     import() {}, deepUnwrap: value => value, unwrap: value => value,
@@ -81,7 +83,7 @@ function probe(options = {}) {
           return options.status ?? 0;
         };
       } else {
-        assert.equal(name, 'getuid'); $[name] = () => 41;
+        assert.equal(name, 'getuid'); $[name] = () => { calls.push('uid'); return 41; };
       }
     },
   };
@@ -97,9 +99,10 @@ assert.deepEqual(success.bindings, [
   ['AEDeterminePermissionToAutomateTarget', ['int', ['void *', 'unsigned int', 'unsigned int', 'bool']]],
   ['getuid', ['unsigned int', []]],
 ]);
-assert.deepEqual(success.calls, ['target', 'bind', 'factory', 'descriptor', 'target', 'permission', 'session']);
+assert.deepEqual(success.calls, ['target', 'bind', 'factory', 'descriptor', 'target', 'permission', 'session', 'screens', 'uid']);
 assert.deepEqual(success.record, {version: 1, code: 0, ax: 1, appleEvents: 1, gui: 1,
-  probePhase: 6, aeFunction: 1, aeStatusKind: 0, targetRunning: 1, matched: 0, acted: 0, mainVisible: 0, windows: 0});
+  probePhase: 6, aeFunction: 1, aeStatusKind: 0, targetRunning: 1, screenPresent: 2, sessionPresent: 2,
+  uidMatch: 2, onConsole: 2, loginDone: 2, lockKnown: 2, lockState: 1, matched: 0, acted: 0, mainVisible: 0, windows: 0});
 for (const [status, kind] of [[-1744, 1], [-1743, 2], [-600, 3], [-50, 4], [9001, 4]]) {
   const failure = probe({status});
   assert.equal(failure.record.code, 3); assert.equal(failure.record.probePhase, 4);
@@ -142,4 +145,50 @@ for (const option of ['targetAbsent', 'ambiguousTarget', 'foreignTarget', 'wrong
 const targetError = probe({throwAt: 'target'});
 assert.equal(targetError.record.code, 8); assert.equal(targetError.record.probePhase, 7);
 assert.equal(targetError.record.targetRunning, 0);
+// Each result executes the actual production run(), not a copied parser.
+const validSession = {kCGSSessionUserIDKey: 41, kCGSSessionOnConsoleKey: true,
+  kCGSessionLoginDoneKey: true, CGSSessionScreenIsLocked: false};
+const sessionCases = [
+  [{session: null}, {screenPresent: 2, sessionPresent: 1, uidMatch: 0, onConsole: 0, loginDone: 0, lockKnown: 0, lockState: 0}],
+  [{screens: 0}, {screenPresent: 1, sessionPresent: 2, uidMatch: 0, onConsole: 2, loginDone: 2, lockKnown: 2, lockState: 1}],
+  [{session: {...validSession, kCGSSessionUserIDKey: 42}}, {uidMatch: 1}],
+  [{session: {...validSession, kCGSSessionUserIDKey: 'PRIVATE_UID'}}, {uidMatch: 0}],
+  [{session: {...validSession, kCGSSessionOnConsoleKey: false}}, {onConsole: 1}],
+  [{session: {...validSession, kCGSSessionOnConsoleKey: 1}}, {onConsole: 0}],
+  [{session: {...validSession, kCGSessionLoginDoneKey: false}}, {loginDone: 1}],
+  [{session: {...validSession, kCGSessionLoginDoneKey: 'PRIVATE_LOGIN'}}, {loginDone: 0}],
+  [{session: {...validSession, CGSSessionScreenIsLocked: true}}, {lockKnown: 2, lockState: 2}],
+  [{session: {...validSession, CGSSessionScreenIsLocked: 0}}, {lockKnown: 2, lockState: 0}],
+  [{session: {}}, {sessionPresent: 2, uidMatch: 0, onConsole: 0, loginDone: 0, lockKnown: 1, lockState: 0}],
+];
+for (const [options, fields] of sessionCases) {
+  const {record, calls} = probe(options);
+  assert.equal(record.code, 4); assert.equal(record.probePhase, 5); assert.equal(record.gui, 0);
+  assert.equal(record.acted, 0); assert.equal(record.appleEvents, 1);
+  for (const [key, expected] of Object.entries(fields)) assert.equal(record[key], expected, key);
+  assert.equal(calls.filter(value => value === 'session').length, 1);
+  assert.equal(calls.filter(value => value === 'screens').length, 1);
+  assert.equal(calls.filter(value => value === 'uid').length, options.session === null || options.screens === 0 ? 0 : 1);
+}
+// The optional absent lock flag keeps exactly its previous allowance; truthy
+// bridged numbers/strings above remain refused. No diagnostic grants a permit.
+const absentLock = {...validSession}; delete absentLock.CGSSessionScreenIsLocked;
+const absent = probe({session: absentLock});
+assert.equal(absent.record.code, 0); assert.equal(absent.record.gui, 1);
+assert.equal(absent.record.lockKnown, 1); assert.equal(absent.record.lockState, 0);
+// Exhaust the fixed true/false/missing/wrong-type values against the original
+// strict gate. The only native values in this VM come from controlled doubles.
+for (const onConsole of [true, false, undefined, 1]) {
+  for (const loginDone of [true, false, undefined, 1]) {
+    for (const lock of [true, false, undefined, 0]) {
+      const session = {...validSession, kCGSSessionOnConsoleKey: onConsole, kCGSessionLoginDoneKey: loginDone};
+      if (lock === undefined) delete session.CGSSessionScreenIsLocked;
+      else session.CGSSessionScreenIsLocked = lock;
+      const expected = onConsole === true && loginDone === true && (lock === undefined || lock === false);
+      const {record} = probe({session});
+      assert.equal(record.gui, expected ? 1 : 0);
+      assert.equal(record.code, expected ? 0 : 4);
+    }
+  }
+}
 console.log('native_world_macos_probe_stub_passed');
