@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Pure local fixtures: no compositor, GUI API, VM, sudo or capture is invoked."""
 import ast
+import importlib.util
 import json
 import math
 import os
@@ -162,7 +163,7 @@ class ControllerConsent(unittest.TestCase):
         wanted = {"atomic_json", "children", "sensitive", "chooser_title", "kde6_monitor", "pointer_escape", "select_single_monitor", "translated_pointer", "kwin_geometry", "Desktop"}
         module = ast.Module(body=[item for item in tree.body if isinstance(item, (ast.FunctionDef, ast.ClassDef)) and item.name in wanted], type_ignores=[])
         self.api = SimpleNamespace(STATE_SENSITIVE="sensitive", STATE_ENABLED="enabled", STATE_PRESSED="pressed", STATE_CHECKED="checked", STATE_SELECTED="selected", ROLE_LIST_ITEM="card", ROLE_TOGGLE_BUTTON="toggle", ROLE_PUSH_BUTTON="button")
-        self.namespace = {"CONTROL": self.root, "ROOT": self.root, "DESKTOP": "kde", "KDE6": False, "TITLES": {"gnome": "Share Screen", "kde": "Screen Sharing"}, "json": json,
+        self.namespace = {"CONTROL": self.root, "ROOT": self.root, "DESKTOP": "kde", "KDE6": False, "APP_MODE": False, "TITLES": {"gnome": "Share Screen", "kde": "Screen Sharing"}, "json": json,
                           "time": SimpleNamespace(monotonic=lambda: 0, time=lambda: 10), "pyatspi": self.api, "math": math, "re": re, "stat": stat, "sys": sys,
                           "TRACE": SimpleNamespace(log=lambda *args, **kwargs: None, begin=lambda *args: None, finish=lambda: None),
                           "action": Mock(return_value=True), "pointer_click": Mock(return_value=True),
@@ -486,6 +487,220 @@ class ControllerConsent(unittest.TestCase):
         self.namespace["chooser"].return_value = None
         controller.poll()
         self.assertTrue(json.loads((self.root / "ack.json").read_text())["ok"])
+
+
+class PrivatePamSession(unittest.TestCase):
+    """Only controlled source seams: no real files, processes, bus or PAM."""
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("private_pam_session", DIRECTORY / "pam-session.py")
+        cls.pam = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.pam)
+
+    def stack(self):
+        return {"login": b"auth required pam_nologin.so\n@include common-auth\n@include common-account\n@include common-session\n@include common-password\n",
+                "common-auth": b"auth required pam_unix.so\n",
+                "common-account": b"account required pam_unix.so\n",
+                "common-password": b"password required pam_unix.so yescrypt\n",
+                "common-session": b"session [default=1] pam_permit.so\nsession requisite pam_deny.so\nsession required pam_permit.so\nsession required pam_unix.so\nsession optional pam_systemd.so\n"}
+
+    def test_stock_fixed_login_session_chain_reaches_actual_module(self):
+        files = self.stack()
+        hashes, modules = self.pam.session_stack(files.__getitem__)
+        self.assertEqual(set(hashes), set(self.pam.PAM_FILES))
+        self.assertEqual(modules, {"pam_permit.so", "pam_deny.so", "pam_unix.so", "pam_systemd.so"})
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes.values()))
+
+    def test_unknown_include_cycle_external_or_conditional_session_fails(self):
+        for value in (b"@include foreign-stack\n", b"@include login\n", b"session optional pam_exec.so /host/action\n",
+                      b"session [success=1 default=ignore] pam_systemd.so\n", b"session include common-session\n"):
+            files = self.stack()
+            files["common-session"] = value
+            with self.subTest(value=value[:40]), self.assertRaises(self.pam.Refused):
+                self.pam.session_stack(files.__getitem__)
+
+    def test_no_systemd_duplicate_systemd_and_forced_class_or_hints_refuse(self):
+        for replacement in (b"", b"session optional pam_systemd.so\nsession optional pam_systemd.so\n",
+                            b"session optional pam_systemd.so class=none\n", b"session optional pam_systemd.so class=user\n",
+                            b"session optional pam_systemd.so type=wayland\n"):
+            files = self.stack()
+            files["common-session"] = replacement
+            with self.subTest(replacement=replacement[:40]), self.assertRaises(self.pam.Refused):
+                self.pam.session_stack(files.__getitem__)
+
+    def test_unknown_account_module_does_not_hide_behind_safe_session(self):
+        files = self.stack()
+        files["common-account"] = b"account required pam_exec.so /host/action\n"
+        with self.assertRaises(self.pam.Refused):
+            self.pam.session_stack(files.__getitem__)
+
+    def test_stock_preamble_must_be_exact_not_a_general_jump_language(self):
+        files = self.stack()
+        files["common-session"] = files["common-session"].replace(b"[default=1]", b"[default=2]")
+        with self.assertRaises(self.pam.Refused):
+            self.pam.session_stack(files.__getitem__)
+
+    def test_capability_records_hashes_and_numeric_versions_without_raw_config(self):
+        files = self.stack()
+        value = self.pam.capability(read=files.__getitem__, version=lambda _: b"259.6-2ubuntu1.4", module=lambda _: b"public module")
+        self.assertEqual((value["supported"], value["fileKnownMask"], value["versionKnownMask"]), (1, 31, 15))
+        self.assertEqual(value["packageVersions"], [[259, 6, 0]] * 4)
+        encoded = json.dumps(value)
+        for raw in ("pam_unix", "ubuntu", "/etc", "session optional", "UID", "pid"):
+            self.assertNotIn(raw, encoded)
+        self.assertLess(len(encoded), 8192)
+
+    def test_unsupported_stack_keeps_safe_hash_version_facts_but_never_supports(self):
+        files = self.stack()
+        files["common-session"] = b"session optional pam_systemd.so class=none\n"
+        value = self.pam.capability(read=files.__getitem__, version=lambda _: b"1:4.17.4-2", module=lambda _: b"module")
+        self.assertEqual(value["supported"], 0)
+        self.assertTrue(value["code"] & 4)
+        self.assertEqual(value["fileKnownMask"], 31)
+        self.assertEqual(value["packageVersions"][0], [4, 17, 4])
+
+    def test_missing_module_or_bad_package_version_is_unknown_not_supported(self):
+        files = self.stack()
+        def missing(_):
+            raise FileNotFoundError("raw-sensitive-path")
+        for version, module in ((lambda _: b"secret\ninjected", lambda _: b"module"), (lambda _: b"259.6-1", missing)):
+            value = self.pam.capability(read=files.__getitem__, version=version, module=module)
+            self.assertEqual(value["supported"], 0)
+            self.assertNotIn("raw-sensitive", json.dumps(value))
+            self.assertNotIn("secret", json.dumps(value))
+
+    def bus(self):
+        root = Path("/tmp/orbitpal-wayland.Abc12345")
+        account = "opw12345"
+        unit = "orbitpal-" + root.name + "-" + account + ".service"
+        expected = {"Id": unit, "Transient": True, "Description": "OrbitPal private PAM " + root.name,
+                    "User": account, "PAMName": "login", "Restart": "no", "WorkingDirectory": str(root), "ActiveState": "active"}
+        bus = SimpleNamespace(owner=Mock(return_value=":1.23"),
+            call=Mock(return_value=SimpleNamespace(unpack=lambda: ("/org/freedesktop/systemd1/unit/fixed",))),
+            property=Mock(side_effect=lambda _owner, _path, _interface, name, _signature: expected[name]))
+        return bus, root, account, unit, expected
+
+    def test_unit_stop_authority_requires_all_owned_transient_properties(self):
+        bus, root, account, unit, expected = self.bus()
+        self.assertEqual(self.pam.owned_unit(bus, root, account, unit), "active")
+        for name, changed in (("Id", "foreign.service"), ("Transient", 1), ("Description", "host"),
+                              ("User", "runner"), ("PAMName", "sudo"), ("Restart", "always"), ("WorkingDirectory", "/host")):
+            original = expected[name]
+            expected[name] = changed
+            with self.subTest(name=name), self.assertRaises(self.pam.Refused):
+                self.pam.owned_unit(bus, root, account, unit)
+            expected[name] = original
+
+    def test_numeric_user_is_allowed_only_for_the_same_verified_fresh_uid(self):
+        bus, root, account, unit, expected = self.bus()
+        expected["User"] = "4242"
+        self.assertEqual(self.pam.owned_unit(bus, root, account, unit, 4242), "active")
+        with self.assertRaises(self.pam.Refused):
+            self.pam.owned_unit(bus, root, account, unit, 4243)
+
+    def test_absence_errors_are_method_specific_and_owner_turnover_is_unknown(self):
+        bus, root, account, unit, _ = self.bus()
+        bus.call.side_effect = self.pam.Absent(1)
+        self.assertIs(self.pam.owned_unit(bus, root, account, unit), False)
+        bus.call.side_effect = self.pam.Absent(2)
+        with self.assertRaises(self.pam.Refused):
+            self.pam.owned_unit(bus, root, account, unit)
+        self.assertTrue(self.pam.no_user_scope(bus, 4242))
+        bus.call.side_effect = self.pam.Absent(1)
+        with self.assertRaises(self.pam.Refused):
+            self.pam.no_user_scope(bus, 4242)
+        bus.call.side_effect = self.pam.Absent(2)
+        bus.owner.side_effect = [":1.23", ":1.24"]
+        with self.assertRaises(self.pam.Refused):
+            self.pam.no_user_scope(bus, 4242)
+
+    def test_live_user_object_or_any_process_runtime_or_active_unit_prevents_clean(self):
+        from unittest.mock import patch
+        bus, root, account, unit, _ = self.bus()
+        for state, user_clear, process, runtime in (("inactive", True, False, False),
+                (False, True, False, False), ("failed", True, False, False), ("active", True, False, False), (False, False, False, False),
+                (False, True, True, False), (False, True, False, True)):
+            with patch.object(self.pam, "owned_unit", return_value=state), patch.object(self.pam, "no_user_scope", return_value=user_clear):
+                result = self.pam.residue(bus, root, account, 4242, unit, lambda _: process, lambda _: runtime)
+            self.assertEqual(result["clean"], int((state is False or state in ("inactive", "failed")) and user_clear and not process and not runtime))
+            self.assertTrue(all(type(value) is int for value in result.values()))
+
+    def test_fresh_requires_actual_unit_absence_not_inactive_or_failed(self):
+        from unittest.mock import patch
+        bus, root, account, unit, expected = self.bus()
+        with patch.object(self.pam, "no_user_scope", return_value=True):
+            for state in ("active", "inactive", "failed"):
+                expected["ActiveState"] = state
+                result = self.pam.residue(bus, root, account, 4242, unit,
+                    lambda _: False, lambda _: False, require_unit_absent=True)
+                self.assertEqual((result["unitClear"], result["clean"]), (0, 0))
+            bus.call.side_effect = self.pam.Absent(1)
+            result = self.pam.residue(bus, root, account, 4242, unit,
+                lambda _: False, lambda _: False, require_unit_absent=True)
+            self.assertEqual((result["unitClear"], result["clean"]), (1, 1))
+            bus.call.side_effect = self.pam.Absent(2)
+            with self.assertRaises(self.pam.Refused):
+                self.pam.residue(bus, root, account, 4242, unit,
+                    lambda _: False, lambda _: False, require_unit_absent=True)
+        source = (DIRECTORY / "pam-session.py").read_text()
+        self.assertIn('require_unit_absent=mode == "fresh"', source)
+
+    def test_preflight_guard_rejects_nonprivate_job_before_files_or_bus(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {}, clear=True), self.assertRaises(self.pam.Refused):
+            self.pam.require_job()
+        expected = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Linux", "DBUS_SYSTEM_BUS_ADDRESS": ""}
+        with patch.dict(os.environ, expected, clear=True), self.assertRaises(self.pam.Refused):
+            self.pam.require_job()
+
+    def test_context_refuses_missing_uid_or_runner_uid_before_account_lookup(self):
+        from unittest.mock import patch
+        for raw, account in (("", "opw123"), ("0", "opw123"), ("1002\n", "opw123"), ("-1", "opw123"), ("1002", "runner")):
+            with patch.object(self.pam.os, "geteuid", return_value=0), patch.object(self.pam.pwd, "getpwnam") as lookup, self.assertRaises(self.pam.Refused):
+                self.pam.context("/tmp/orbitpal-wayland.Abc12345", account, raw, "unused")
+            lookup.assert_not_called()
+        with patch.object(self.pam.os, "geteuid", return_value=0), patch.dict(os.environ, {"SUDO_UID": "1002"}), patch.object(self.pam.pwd, "getpwnam") as lookup, self.assertRaises(self.pam.Refused):
+            self.pam.context("/tmp/orbitpal-wayland.Abc12345", "opw123", "1002", "unused")
+        lookup.assert_not_called()
+
+    def test_root_report_uses_retained_directory_and_checks_before_truncating(self):
+        from unittest.mock import patch
+        info = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0, st_nlink=1, st_size=0)
+        with patch.object(self.pam.os, "open", return_value=12) as opened, patch.object(self.pam.os, "fstat", return_value=info), patch.object(self.pam.os, "ftruncate") as truncate, patch.object(self.pam.os, "write", side_effect=lambda _fd, data: len(data)), patch.object(self.pam.os, "close"):
+            self.pam.root_record(99, {"version": 1, "clean": 1})
+            self.assertEqual(opened.call_args.kwargs, {"dir_fd": 99})
+            self.assertEqual(opened.call_args.args[0], "pam-session-cleanup.txt")
+            self.assertTrue(opened.call_args.args[1] & os.O_NOFOLLOW)
+            self.assertFalse(opened.call_args.args[1] & os.O_TRUNC)
+            truncate.assert_called_once_with(12, 0)
+        info.st_uid = 1002
+        with patch.object(self.pam.os, "open", return_value=12), patch.object(self.pam.os, "fstat", return_value=info), patch.object(self.pam.os, "ftruncate") as truncate, patch.object(self.pam.os, "close"), self.assertRaises(self.pam.Refused):
+            self.pam.root_record(99, {"version": 1, "clean": 1})
+        truncate.assert_not_called()
+
+    def test_original_baseline_command_is_retained_and_new_mode_has_no_state_overrides(self):
+        source = (DIRECTORY / "run.sh").read_text()
+        actual = source[source.index('if [[ "$mode" == app ]]; then\n  # A newly allocated'):]
+        self.assertIn('--system --quiet --wait --pipe --collect --no-ask-password --expand-environment=no', actual)
+        self.assertIn('--property=Type=exec --property=PAMName=login', actual)
+        self.assertIn('--property=TimeoutStartSec=15s --property=RuntimeMaxSec=225s', actual)
+        self.assertIn('240s sudo /usr/bin/systemd-run', actual)
+        self.assertIn('pam_read fresh', actual)
+        self.assertNotIn('pam_read residue', actual)
+        self.assertIn('else\nsudo -H -u "$account" env -i', actual)
+        for forbidden in ('XDG_SESSION_CLASS=', 'XDG_SEAT=', 'XDG_VTNR=', 'XDG_SESSION_ID=', '--scope', '--user', 'loginctl', 'set-property', 'enable-linger'):
+            self.assertNotIn(forbidden, actual)
+
+    def test_cleanup_gates_account_root_and_device_deletion_after_residue(self):
+        source = (DIRECTORY / "run.sh").read_text()
+        cleanup = source[source.index('cleanup() {'):source.index('trap cleanup EXIT')]
+        self.assertLess(cleanup.index('pam_read unit'), cleanup.index('systemctl stop'))
+        self.assertLess(cleanup.index('pam_read residue'), cleanup.index('sudo userdel'))
+        self.assertIn('"$safe_to_remove" == yes', cleanup)
+        self.assertIn('preserving isolated resources for VM disposal', cleanup)
+        self.assertNotIn('rm -rf /run/user', cleanup)
+        self.assertNotIn('terminate-user', cleanup)
+
 
 
 if __name__ == "__main__":

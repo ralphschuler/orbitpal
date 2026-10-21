@@ -1,0 +1,121 @@
+# Opt-in actual Studio/application subset
+
+The actual-app subset **has not passed**: both real GNOME/KDE jobs built the
+embedded application and passed the separate baseline, but the verified app
+process exited before an accessible Studio cold start. Its cause is not yet
+established. Issue #26 remains open. The default workflow/run.sh path still runs
+the separate successful `real_portal_prototype` baseline. Neither local harness
+tests nor that baseline establish the application cases below.
+
+The manual workflow input `full_app` defaults to false. When explicitly enabled,
+each existing Ubuntu26.04 GNOME/KDE job first runs its normal baseline, then builds
+the actual embedded Tauri app with `pnpm tauri build --debug --no-bundle` and runs
+a fresh isolated desktop/account using:
+
+```sh
+bash scripts/wayland-acceptance/run.sh gnome /absolute/native-libtest /absolute/orbitpal
+```
+
+This command is restricted to disposable GitHub-hosted Linux jobs. Never spoof
+its environment to run it on a developer machine. It does not use an installed
+app, existing account, existing GPU permissions, credentials or a real monitor.
+The initial packaging gate must prove the debug binary embeds the built frontend
+without a Vite/dev server. Packaging failure is a failure, not a mock-app fallback.
+
+`app-session.sh` uses the existing hardened compositor/session setup, a new
+1920×1200 private monitor, fresh app data and only an updater-off installation
+boolean seeded before startup. All bot/model/voice/capture settings are changed
+through the real PID-owned Studio UI via AT-SPI. A WebKit subprocess is accepted
+only through its checked UID/ancestry, not by matching a window title alone.
+Fresh English UI labels are expected; other UI languages remain outside this
+fixture. Inaccessible/ambiguous fields and an app window covering the marker band
+fail. No JavaScript/invoke injection, direct native grant command, fake portal
+response, fake frame, restore token or production test backdoor is introduced.
+
+The actual compatible provider transport connects only to an unpredictable
+loopback port. Blank/NoKey needs no OS secret lookup. Free-form fixture model,
+tools/MCP/scripts off, images on, voice off and normal Studio output are actual
+configurable app settings. No microphone, cloud API, stream account or external
+Hindsight is used. `provider.py` accepts bounded, exact-path HTTP JSON and decodes
+one production JPEG per request in memory. It checks an exposed red/blue edge
+marker and the output image limits, then retains only bounded numeric metadata
+and an in-memory digest. It logs no headers, bodies, exceptions, pixels or Base64.
+The current marker's GTK draw is acknowledged before requesting it; the actual
+JPEG received through the real app is the final oracle. No capture file is made.
+
+Required initial subset, in order on both desktops:
+
+1. Actual PID-owned Studio cold start with capture off and no assistant history.
+2. Explicit UI image/screen grant, real system source selection and real save.
+3. Two distinct fresh marker JPEGs through actual ScreenState → agent → provider.
+   The first normal SSE reply must be stored once and visibly presented. The
+   second is a held positive control: release unchanged normal text and require
+   actual assistant history plus Studio subtitle. It cannot be `[silent]`/empty.
+4. Hold another ordinary reply, press real Stop, release it late and require no
+   matching assistant history/subtitle. UI must show the source is closed.
+5. Explicit reconnect; hold a normal reply, turn **Send images to the model** off
+   and Save. This tests same-bot save-time model/image-grant revocation without a
+   preceding disconnect. Release late: no matching assistant history/subtitle.
+6. Restore images, Save and explicitly reconnect. Hold a normal reply, turn
+   **Include the screen with every request** off and Save. That UI switch calls
+   Disconnect immediately, so this is **UI disconnect + persisted disable**, not
+   an isolated save-only revocation test. Release late: no matching reply.
+
+Exactly five image-bearing HTTP requests and two presented assistant replies are
+required. A cancellation may close the HTTP socket before the fixture releases
+its normal SSE text; BrokenPipe/ConnectionReset on that write is expected. User
+history rows may already exist before inference; only the unique assistant reply
+and subtitle must be absent. Reconnect is a real new selection after each grant
+revocation; no old response or saved display ID may restore a session.
+
+`app-result.txt` is metadata-only and lists the unproven cases explicitly. The
+fresh success receipt is mandatory, so a zero-test or prematurely exited process
+cannot pass. Ordinary app stdout/stderr is never persisted or uploaded. In the
+fresh fixture only, `app-runtime-diagnostic.py` launches the fixed validated
+`acceptance-app` with the existing flags/environment unchanged. Its exact Popen
+child PID is the controller's identity; `app-session.sh` instead owns the
+supervisor. Child stdout and stderr share an anonymous pipe, consumed in memory
+with a 4 KiB read/line bound, 1 MiB total bound and 8,192-line bound. An overlong
+line is discarded as a whole. The final unterminated line is considered only on
+actual EOF. No raw app-output file, FIFO payload, exception message, backtrace,
+paths, headers, Base64 or captured bytes are retained.
+
+`app-runtime.txt` contains only fixed message-category counts (Rust panic, GTK
+display, bwrap namespace, WebKit sandbox, dynamic loader, EGL init and allocation
+failure), bounded numeric counts and EOF/limit/drain status. These are **message
+observations**, not a proven failure cause or an exhaustive classifier. A SIGKILL
+is not classified as OOM. `app-exit.txt` records the exact signed Popen wait result
+as exit code or signal, whether the child was already dead before cleanup, and
+whether this supervisor requested TERM/KILL. Thus actual exit(137) differs from
+signal 9. A natural nonzero exit/signal cannot pass because the controller happened
+to finish first. Expected owned cleanup is reported separately.
+
+The shell requests cleanup with one fixed atomic marker in its private control
+directory. The supervisor signals/waits only its own child, with bounded TERM
+then KILL grace periods; a dropped/failed controller still triggers this cleanup.
+An output cap triggers explicitly **diagnostic-limit-induced** termination, so
+resulting TERM/KILL/pipe behavior must not be attributed to the original app
+failure. Child exit with a descendant-held pipe has a two-second drain deadline
+and reports `drain_timeout`, not EOF or acceptance. A 240-second supervisor bound
+sits inside the existing whole-session timeout. No sandbox, EGL, GPU or WebKit
+flags are changed to collect this evidence. The existing fresh-account teardown
+still owns any remaining descendant processes; child cleanup is not a claim
+that all subprocess resources quiesced.
+
+Only existing bounded desktop/service diagnostics and the fixed app
+controller/result/binary-hash/runtime/exit text are uploaded. The private data
+root is destroyed, never uploaded.
+
+Still unproven: two real bot sessions, tool-round images, compositor user revoke,
+source removal/change, multiple/scaled/rotated outputs, serial/version variations,
+held-capture races, unsupported-buffer negotiation, frame-persistence scans,
+actual Hindsight payloads, resource-count quiescence, real Quit/shutdown callback,
+Autopilot and physical hotplug/suspend/resume. Cleanup terminates the generated
+app process; that is **not** a claim that its native Quit handler was exercised.
+Do not mark #26 complete or Wayland generally accepted from this subset.
+
+Local `test-app.py` tests synthetic HTTP/JPEG/state/control metadata, hostile
+byte filtering and controlled fake-child exit/cleanup races only. It opens no
+app, GUI, compositor, portal or personal data and performs no capture. The new
+runtime-diagnostic regressions are source prepared and await the maintainer's
+bounded gate; an earlier checkpoint's passing tests do not validate this one.

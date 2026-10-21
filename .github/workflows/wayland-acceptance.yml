@@ -2,6 +2,12 @@ name: Wayland portal prototype
 
 on:
   workflow_dispatch:
+    inputs:
+      full_app:
+        description: 'Also run the initial actual Studio/app subset (does not close issue 26)'
+        required: false
+        default: false
+        type: boolean
   pull_request:
     paths:
       - '.github/workflows/wayland-acceptance.yml'
@@ -83,6 +89,35 @@ jobs:
         run: |
           binary=$(cat "$RUNNER_TEMP/wayland-test-binary")
           bash scripts/wayland-acceptance/run.sh "$ACCEPTANCE_DESKTOP" "$binary"
+      - name: Install memory-only JPEG decoder for opt-in actual-app subset
+        if: github.event_name == 'workflow_dispatch' && inputs.full_app
+        run: sudo apt-get install -y python3-pil
+      - name: Check opt-in app harness with local synthetic fixtures, no desktop
+        if: github.event_name == 'workflow_dispatch' && inputs.full_app
+        run: |
+          bash -n scripts/wayland-acceptance/app-session.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/wayland-acceptance/test-app.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/wayland-acceptance/test-app-session-availability.py
+      - name: Build embedded actual Tauri application without an installer
+        if: github.event_name == 'workflow_dispatch' && inputs.full_app
+        run: |
+          pnpm tauri build --debug --no-bundle
+          test -x src-tauri/target/debug/orbitpal
+      - name: Exercise actual Studio screen grants, fresh provider JPEGs and cancellation
+        if: github.event_name == 'workflow_dispatch' && inputs.full_app
+        env:
+          ACCEPTANCE_DESKTOP: ${{ matrix.desktop }}
+        run: |
+          binary=$(cat "$RUNNER_TEMP/wayland-test-binary")
+          bash scripts/wayland-acceptance/run.sh "$ACCEPTANCE_DESKTOP" "$binary" src-tauri/target/debug/orbitpal
+      - name: Upload bounded text from opt-in actual-app subset, never frames or databases
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.full_app
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wayland-app-${{ matrix.desktop }}-${{ github.sha }}
+          path: ${{ runner.temp }}/wayland-app-${{ matrix.desktop }}/*.txt
+          if-no-files-found: warn
+          retention-days: 7
       - name: Upload bounded text diagnostics, never captured frames
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
