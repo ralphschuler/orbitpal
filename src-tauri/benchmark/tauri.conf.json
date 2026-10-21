@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OrbitPal Renderer Benchmark",
+  "version": "0.0.0",
+  "identifier": "studio.orbitpal.native-render-benchmark",
+  "build": {
+    "devUrl": null,
+    "frontendDist": "../../dist-benchmark"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src ipc: http://ipc.localhost; worker-src blob:; font-src 'none'",
+      "capabilities": [
+        {
+          "identifier": "renderer-benchmark-only",
+          "description": "No plugin or core IPC permissions; only the example's closed numeric handler is registered.",
+          "windows": ["bench-control", "bench-figure-*"],
+          "permissions": []
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["../icons/128x128.png"]
+  }
+}

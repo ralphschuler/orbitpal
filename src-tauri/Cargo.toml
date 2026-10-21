@@ -11,6 +11,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]
 native-world-fixture = []
+# Opt-in nonshipping renderer measurement; no default/release feature changes.
+native-render-benchmark = []
+
+[[example]]
+name = "native_render_bench"
+path = "examples/native_render_bench.rs"
+required-features = ["native-render-benchmark"]
 
 [[example]]
 name = "native_world_fixture"
