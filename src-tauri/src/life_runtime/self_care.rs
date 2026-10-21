@@ -13,6 +13,14 @@ use std::{
     sync::{atomic::AtomicBool, Arc, Mutex},
 };
 use tauri::Manager;
+#[path = "self_care_explore.rs"]
+mod explore;
+
+#[derive(Clone)]
+enum PendingChoice {
+    Care(OfferKey),
+    Explore(crate::world_state::SlotId),
+}
 
 struct Entry {
     session: String,
@@ -21,7 +29,8 @@ struct Entry {
     config_revision: u64,
     home: crate::world_state::coordinates::Point,
     chooser: Chooser,
-    pending: Option<(ActionId, OfferKey)>,
+    pending: Option<(ActionId, PendingChoice)>,
+    exploration: explore::Memory,
     retry_after: u64,
 }
 #[derive(Default)]
@@ -102,6 +111,13 @@ fn goal_options(offers: &[Offer], walk_target: bool, company: bool) -> Vec<Hobby
     if walk_target { available.push(HobbyKind::Explore); }
     if company { available.push(HobbyKind::Company); }
     available
+}
+
+fn record_end(entry: &mut Entry, now: u64, choice: &PendingChoice, end: End, initiative_cooldown_ms: u64) {
+    match choice {
+        PendingChoice::Care(key) => {let _=entry.chooser.record_end(now,key,end);},
+        PendingChoice::Explore(slot) => entry.exploration.record_end(now,slot,end,&entry.config,initiative_cooldown_ms),
+    }
 }
 
 pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
@@ -218,6 +234,7 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
                     home: source.context.position,
                     chooser,
                     pending: None,
+                    exploration: Default::default(),
                     retry_after: 0,
                 },
             );
@@ -226,22 +243,22 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
             continue;
         };
         let policy_now = confirmed.simulation_time().milliseconds();
-        if let Some((id, key)) = &entry.pending {
+        if let Some((id, key)) = entry.pending.clone() {
             match confirmed
                 .current_action()
-                .filter(|current| current.intent().id() == id)
+                .filter(|current| current.intent().id() == &id)
             {
                 Some(current) if current.phase() == ActionPhase::Completed => {
-                    let _ = entry.chooser.record_end(policy_now, key, End::Finished);
+                    record_end(entry, policy_now, &key, End::Finished, u64::from(preferences.initiative_cooldown_ms));
                     entry.pending = None;
                 }
                 Some(current) if current.phase() == ActionPhase::Cancelled => {
-                    let _ = entry.chooser.record_end(policy_now, key, End::Interrupted);
+                    record_end(entry, policy_now, &key, End::Interrupted, u64::from(preferences.initiative_cooldown_ms));
                     entry.pending = None;
                 }
                 Some(_) => continue,
                 None => {
-                    let _ = entry.chooser.record_end(policy_now, key, End::Interrupted);
+                    record_end(entry, policy_now, &key, End::Interrupted, u64::from(preferences.initiative_cooldown_ms));
                     entry.pending = None;
                 }
             }
@@ -260,10 +277,9 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
         let Ok(packs)=state.store.content_packs() else {continue;};
         let walk_allowed = preferences.allowed_animations.iter().any(|a|a=="walk");
         let target_fits = |point| output.binding.safe_centers.contains(crate::world_output::css(point, output.binding.viewport));
-        let walk_target = walk_allowed && slots.iter().any(|slot|
-            slot.position != source.context.position
-                && within_radius(entry.home, slot.position, preferences.movement_radius)
-                && target_fits(slot.position));
+        let explore_targets=explore::candidates(&slots,entry.home,source.context.position,&preferences,
+            explore::WalkObservation::from_binding(&output.binding));
+        let walk_target = !explore_targets.is_empty();
         let mut offers = Vec::new();
         for wanted in [
             Need::Energy,
@@ -305,21 +321,27 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
         let available = goal_options(&offers, walk_target, company);
         // Core -> Store, no await or Core re-entry. Persist only advisory goal
         // status/selection, never a session, action, relationship or completion.
-        let preferences = state.store.social_reconcile_goal(bot, &available)
-            .and_then(|_|state.store.social_snapshot(bot)).ok()
+        let development = state.store.social_reconcile_goal(bot, &available)
+            .and_then(|_|state.store.social_snapshot(bot)).ok();
+        let choice_preferences = development.as_ref()
             .zip(routine_minute(runtime.social_now(), &chrono::Local))
             .map(|(snapshot, minute)|character_preferences(&settings.config, &snapshot.development, minute))
             .unwrap_or_else(|| settings.config.preferences());
-        if let Ok(preferences) = preferences { entry.chooser.update_preferences(preferences); }
-        let Ok(Some(proposal)) = entry.chooser.choose(policy_now, &confirmed, &offers, None) else {
-            continue;
+        if let Ok(preferences) = choice_preferences { entry.chooser.update_preferences(preferences); }
+        let (activity,slot,key) = match entry.chooser.choose(policy_now, &confirmed, &offers, None) {
+            Ok(Some(proposal)) => {
+                let slot=match proposal.offer().target() {
+                    Target::Slot(id)=>Some(id.clone()), Target::Here=>None, Target::Actor(_)=>continue,
+                };
+                (activity(proposal.offer().need()),slot,PendingChoice::Care(proposal.offer().key().clone()))
+            },
+            Ok(None) => {
+                let Some(development)=&development else {continue;};
+                let Some(target)=entry.exploration.choose(policy_now,&development.development,confirmed.needs(),&settings.config,&explore_targets) else {continue;};
+                (Activity::MoveTo,Some(target.id.clone()),PendingChoice::Explore(target.id.clone()))
+            },
+            Err(_)=>continue,
         };
-        let slot = match proposal.offer().target() {
-            Target::Slot(id) => Some(id.clone()),
-            Target::Here => None,
-            Target::Actor(_) => continue,
-        };
-        let key = proposal.offer().key().clone();
         let cancel = Arc::new(AtomicBool::new(false));
         let Some(ticket) = runtime.outputs.ticket() else {
             continue;
@@ -341,7 +363,12 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
         {
             continue;
         }
-        let result = action_host::admit_native_care(
+        let result = if activity==Activity::MoveTo {
+            let Some(slot)=slot else {continue;};
+            action_host::admit_slot_move(&mut core,&state.store,&state.world,bot,&owned.context.profile,
+                fence,source.context,output,permit,slot,cancel,
+                ||runtime.now(),super::wall_ms)
+        } else { action_host::admit_native_care(
             &mut core,
             &state.store,
             &state.world,
@@ -351,12 +378,12 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
             source.context,
             output,
             permit,
-            activity(proposal.offer().need()),
+            activity,
             slot,
             cancel,
             || runtime.now(),
             super::wall_ms,
-        );
+        ) };
         if result.is_ok() {
             if let Some(id) = core
                 .actions
@@ -367,7 +394,7 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
                 entry.pending = Some((id, key));
             }
         } else {
-            let _ = entry.chooser.record_end(policy_now, &key, End::Unavailable);
+            record_end(entry, policy_now, &key, End::Unavailable, u64::from(preferences.initiative_cooldown_ms));
             entry.retry_after = now.saturating_add(2000);
         }
     }
