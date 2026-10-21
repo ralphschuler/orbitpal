@@ -2,7 +2,7 @@
 //! reservation, arrival or completion; every transition below consumes host receipts.
 use super::{cancel_actor_action, start_slot_activity, LifeRuntime};
 use crate::{
-    experience::{ActivityFact, ExperienceRuntime, FactKind, FactPhase},
+    experience::ExperienceRuntime,
     life_domain::{ActionId, Activity, LifeState},
     social::{Coordinator, Directive, Outcome, Participant, Phase, Reason, SceneKind, SceneView},
     social_dialogue::{DialogueHub, Turn},
@@ -412,7 +412,7 @@ fn release(app: &tauri::AppHandle, reservations: &[Reservation]) -> Result<(), S
         if actors.iter().any(|a| a.stamp == old.stamp) {
             state
                 .world
-                .release(&old.stamp, &old.lease, state.life_runtime.now())?;
+                .release_if_present(&old.stamp, &old.lease, state.life_runtime.now())?;
         }
     }
     Ok(())
@@ -608,7 +608,9 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                             .and_then(|leases| leases.iter().find(|r| r.bot == *bot))
                             .cloned()
                             .ok_or(ERROR)?;
-                        release(app, &[old])?;
+                        if planned.is_err() {
+                            release(app, &[old])?;
+                        }
                         let mut m = runtime.social.memory.lock().map_err(|_| ERROR)?;
                         if let Some(leases) = m.leases.get_mut(&scene.id) {
                             leases.retain(|r| r.bot != *bot);
@@ -684,27 +686,7 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                         state.store.social_save_scene(scene)?;
                         if changed && event.outcome() == Outcome::Completed {
                             for bot in &scene.participants {
-                                let fact = ActivityFact {
-                                    id: event.id().into(),
-                                    actor_ids: scene.participants.to_vec(),
-                                    kind: match scene.kind {
-                                        SceneKind::Greeting => FactKind::Greeting,
-                                        SceneKind::Play => FactKind::Play,
-                                        SceneKind::Rest => FactKind::Rest,
-                                    },
-                                    phase: FactPhase::Completed,
-                                    at_ms: event.at_ms(),
-                                    source_event_ids: event
-                                        .source_events()
-                                        .ok_or(ERROR)?
-                                        .iter()
-                                        .map(|id| {
-                                            format!("{}_{}", id.actor_id().as_str(), id.sequence())
-                                        })
-                                        .collect(),
-                                    shared: false,
-                                };
-                                state.store.record_experience_fact(bot, fact)?;
+                                state.store.record_experience_social_event(bot, event)?;
                             }
                         }
                         Ok::<_, String>(())
