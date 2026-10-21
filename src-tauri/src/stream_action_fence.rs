@@ -62,6 +62,28 @@ pub(crate) struct StreamActionFence {
     token: ProfileToken,
 }
 impl StreamActionFence {
+    /// Controlled-clock test seam over the real native connection factory and
+    /// Store token capture. It supplies no surface, executor or production API.
+    #[cfg(test)]
+    pub(crate) fn controlled_for_test(
+        store: &Store,
+        clock: Arc<std::sync::atomic::AtomicU64>,
+        until: u64,
+    ) -> Result<(Self, crate::chat_route::ConnectionContext), String> {
+        let profile = store.profile()?;
+        let mut context = crate::chat_route::ConnectionContext::new(
+            "twitch", &profile, None, Arc::new(AtomicBool::new(false)),
+        )?;
+        context.mark_connected("controlled-native-channel");
+        let source = context.impulse_source("twitch", context.route_id().ok_or(ERROR)?, &profile)?;
+        let lease = DispatchLease {
+            source,
+            deadline: NativeDeadline { until: Instant::now(), controlled: Some((clock, until)) },
+            session_id: "controlled-native-session".into(),
+        };
+        Ok((Self::capture(&lease, store)?, context))
+    }
+
     pub(super) fn capture(lease: &DispatchLease, store: &Store) -> Result<Self, String> {
         if !lease.deadline.current() {
             return Err(ERROR.into());
