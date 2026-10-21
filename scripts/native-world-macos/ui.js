@@ -16,16 +16,49 @@ function inside(child, parent) {
   return child[0] > 0 && child[1] > 0 && child[2] >= parent[2] && child[3] >= parent[3]
     && child[2] + child[0] <= parent[2] + parent[0] && child[3] + child[1] <= parent[3] + parent[1];
 }
-function matchesButton(node, label, actor, walk) {
-  if (node.role() !== 'AXButton') return false;
+function matchesButton(node, label, actor, walk, role = value => value.role()) {
+  if (role(node) !== 'AXButton') return false;
   if (actor) {
     // An empty label is never an alternate actor selector. Require the exact
     // seeded actor's actual native static text inside this button.
     return ['Fixture Nova', 'Fixture Blue'].includes(actor) && walk(node).some(child =>
-      child.role() === 'AXStaticText' && (child.name() === actor || child.value() === actor));
+      role(child) === 'AXStaticText' && (child.name() === actor || child.value() === actor));
   }
   return ['Autopilot', 'Set up desktop', 'Save and start Life', 'Stop Life'].includes(label)
     && node.name() === label;
+}
+function nativeTree(root, budget = {nodes: 0}) {
+  // One operation's read-only snapshot, never retained across UI commands.
+  // JXA collection properties batch the direct children's roles in one event.
+  const roles = new Map([[root, root.role()]]), children = new Map();
+  if (++budget.nodes > 1200) throw 5;
+  function role(node) { return roles.get(node); }
+  function direct(node) {
+    if (children.has(node)) return children.get(node);
+    // Static text and image content cannot contain any of this fixture's HTML
+    // controls. Unknown roles remain traversed; no container path is guessed.
+    if (['AXStaticText', 'AXImage'].includes(role(node))) {
+      children.set(node, []); return [];
+    }
+    const values = node.uiElements(), kinds = node.uiElements.role();
+    if (!Array.isArray(values) || !Array.isArray(kinds) || values.length !== kinds.length
+      || budget.nodes + values.length > 1200
+      || kinds.some(value => typeof value !== 'string' || !value.length || value.length > 64)) throw 5;
+    budget.nodes += values.length;
+    for (let index = 0; index < values.length; index++) roles.set(values[index], kinds[index]);
+    children.set(node, values);
+    return values;
+  }
+  function walk(node) {
+    const queue = [node], result = [];
+    while (queue.length) {
+      if (result.length === 1200) throw 5; // Never accept a truncated ambiguity scan.
+      const current = queue.shift(); result.push(current);
+      queue.push(...direct(current));
+    }
+    return result;
+  }
+  return {role, walk};
 }
 function run(argv) {
   let out = closed(1);
@@ -134,23 +167,20 @@ function run(argv) {
     function windows() { return process().windows(); }
     function main() { return one(windows().filter(w => w.name() === TITLE)); }
     function frame(node) { const p = node.position(), s = node.size(); return [s[0], s[1], p[0], p[1]]; }
-    function walk(root) {
-      const queue = [root], result = [];
-      while (queue.length && result.length < 1200) {
-        const node = queue.shift(); result.push(node);
-        const available = 1200 - result.length - queue.length;
-        if (available > 0) queue.push(...node.uiElements().slice(0, available));
-      }
-      return result;
-    }
     function text(node) {
       const name = node.name();
       return typeof name === 'string' ? name : '';
     }
     function button(label, actor) {
       const current = main();
-      const matches = walk(current).filter(node => matchesButton(node, label, actor, walk));
+      const budget = {nodes: 0};
+      const tree = nativeTree(current, budget);
+      const matches = tree.walk(current).filter(node => matchesButton(node, label, actor, tree.walk, tree.role));
       const node = one(matches);
+      // The cache reduced discovery cost only. Re-read this actual selected
+      // control's exact predicate before enabled/geometry and any real action.
+      const fresh = actor ? nativeTree(node, budget) : null;
+      if (!matchesButton(node, label, actor, fresh ? fresh.walk : () => [], fresh ? fresh.role : undefined)) throw 5;
       out.matched = 1;
       if (node.enabled() !== true || !inside(frame(node), frame(current))) throw 6;
       return node;
@@ -171,8 +201,9 @@ function run(argv) {
       if (selected.enabled() !== true) throw 7;
       click(selected);
     }
-    out.windows = Math.min(windows().length, 16);
-    out.mainVisible = windows().filter(w => w.name() === TITLE).length === 1 ? 1 : 0;
+    const observedWindows = windows();
+    out.windows = Math.min(observedWindows.length, 16);
+    out.mainVisible = observedWindows.filter(w => w.name() === TITLE).length === 1 ? 1 : 0;
     if (argv[0] === 'inspect') {
       button('Autopilot'); // Actual Main WebView AX before any Life action.
       const bars = process().menuBars();
@@ -200,4 +231,4 @@ function run(argv) {
   }
   return JSON.stringify(out);
 }
-if (typeof module !== 'undefined') module.exports = {closed, one, inside, matchesButton, OPERATIONS, run};
+if (typeof module !== 'undefined') module.exports = {closed, one, inside, matchesButton, nativeTree, OPERATIONS, run};
