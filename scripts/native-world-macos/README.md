@@ -25,6 +25,22 @@ production AwakeUnlocked monitor any authority. An absent System Events process
 may also make the nonprompting probe fail; the harness does not change its rights
 or substitute a different controller. No local developer Mac is supported.
 
+The first [actual VM probe, run 39594013069](https://github.com/ralphschuler/orbitpal/actions/runs/39594013069)
+on `de48e0a537211c469bd2d7b04031aa0e407f95fd` reported AX trust but caught a
+native bridge exception before the AppleEvents result. It did not build or launch
+the fixture and does not establish a permission denial. The client now explicitly
+binds the [documented permission function](https://developer.apple.com/documentation/coreservices/3025784-aedeterminepermissiontoautomatet?language=objc)
+with its OSStatus/pointer/event-class/event-ID/Boolean ABI, retaining the native
+descriptor for the call and still passing `askUserIfNeeded:false`. No descriptor
+structure size/layout is fabricated. The next real probe remains required.
+Two closed numeric fields distinguish failures: `aeFunction` records callable
+presence after binding; `probePhase` is 0 initial/AX, 1 binding, 2 descriptor
+factory, 3 descriptor pointer, 4 actual permission call, 5 actual session/display
+checks, 6 all prerequisites completed. Code 8 remains an unknown native exception;
+code 3 requires an actual completed permission query with a nonzero OSStatus.
+No exception text or raw status/session data is exported. Controlled Node VM
+tests exercise the production probe with doubles, never a host permission query.
+
 `ui.js` runs in `/usr/bin/osascript` as a **native JXA/System Events/ObjC client**,
 not in a WKWebView. It never evaluates application JavaScript, calls native IPC,
 injects ACKs or modifies Store state. Apple documents [native UI scripting](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/AutomatetheUserInterface.html)

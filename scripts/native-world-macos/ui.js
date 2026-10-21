@@ -4,7 +4,7 @@ const APP_ID = 'studio.orbitpal.native-world-fixture';
 const TITLE = 'OrbitPal Native World Fixture';
 const OPERATIONS = ['probe', 'inspect', 'autopilot', 'setup', 'nova', 'blue', 'start', 'hide', 'show', 'stop', 'quit'];
 function closed(code, extra) {
-  return Object.assign({version: 1, code, ax: 0, appleEvents: 0, gui: 0, matched: 0, acted: 0, mainVisible: 0, windows: 0}, extra || {});
+  return Object.assign({version: 1, code, ax: 0, appleEvents: 0, gui: 0, probePhase: 0, aeFunction: 0, matched: 0, acted: 0, mainVisible: 0, windows: 0}, extra || {});
 }
 function one(values) { if (!values.length) throw 9; if (values.length !== 1) throw 5; return values[0]; }
 function inside(child, parent) {
@@ -29,10 +29,24 @@ function run(argv) {
     ObjC.import('AppKit'); ObjC.import('ApplicationServices'); ObjC.import('CoreServices');
     out.ax = $.AXIsProcessTrusted() ? 1 : 0;
     if (!out.ax) throw 2; // No prompt option, TCC write or permission request.
+    out.probePhase = 1; // Explicit C binding; umbrella metadata may omit AE.
+    // OSStatus / const AEAddressDesc* / AEEventClass / AEEventID / Boolean.
+    // The real descriptor owns its pointer throughout this synchronous call.
+    ObjC.bindFunction('AEDeterminePermissionToAutomateTarget', ['int', ['void *', 'unsigned int', 'unsigned int', 'bool']]);
+    out.aeFunction = typeof $.AEDeterminePermissionToAutomateTarget === 'function' ? 1 : 0;
+    if (!out.aeFunction) throw 8;
+    out.probePhase = 2; // Native application-address descriptor factory.
     const target = $.NSAppleEventDescriptor.descriptorWithBundleIdentifier('com.apple.systemevents');
+    out.probePhase = 3; // Native retained descriptor's pointer getter.
+    const address = target.aeDesc;
+    if (!address) throw 8;
+    out.probePhase = 4; // Actual permission query, never ask for consent.
     // Public nonprompting permission API, evaluated by the actual osascript client.
-    out.appleEvents = $.AEDeterminePermissionToAutomateTarget(target.aeDesc, 0x2a2a2a2a, 0x2a2a2a2a, false) === 0 ? 1 : 0;
+    const permission = $.AEDeterminePermissionToAutomateTarget(address, 0x2a2a2a2a, 0x2a2a2a2a, false);
+    if (!Number.isInteger(permission)) throw 8;
+    out.appleEvents = permission === 0 ? 1 : 0;
     if (!out.appleEvents) throw 3;
+    out.probePhase = 5; // Actual same-UID, console, login and display checks.
     ObjC.bindFunction('getuid', ['unsigned int', []]);
     const session = ObjC.deepUnwrap($.CGSessionCopyCurrentDictionary());
     const lockKnown = session && Object.prototype.hasOwnProperty.call(session, 'CGSSessionScreenIsLocked');
@@ -41,6 +55,7 @@ function run(argv) {
       && session.kCGSSessionOnConsoleKey === true && session.kCGSessionLoginDoneKey === true
       && (!lockKnown || session.CGSSessionScreenIsLocked === false) ? 1 : 0;
     if (!out.gui) throw 4;
+    out.probePhase = 6; // Every native prerequisite above completed positively.
     if (argv[0] === 'probe') return JSON.stringify(Object.assign(out, {code: 0}));
     const pid = Number(argv[1]);
     if (!Number.isSafeInteger(pid) || pid < 1 || pid > 2147483647 || !argv[2].startsWith('/') || !argv[3].startsWith('/')) throw 1;
@@ -118,4 +133,4 @@ function run(argv) {
   }
   return JSON.stringify(out);
 }
-if (typeof module !== 'undefined') module.exports = {closed, one, inside, matchesButton, OPERATIONS};
+if (typeof module !== 'undefined') module.exports = {closed, one, inside, matchesButton, OPERATIONS, run};
