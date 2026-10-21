@@ -2,9 +2,14 @@
 // All output is closed numeric metadata; native exceptions/UI text are withheld.
 const APP_ID = 'studio.orbitpal.native-world-fixture';
 const TITLE = 'OrbitPal Native World Fixture';
+const SYSTEM_EVENTS_PATH = '/System/Library/CoreServices/System Events.app';
 const OPERATIONS = ['probe', 'inspect', 'autopilot', 'setup', 'nova', 'blue', 'start', 'hide', 'show', 'stop', 'quit'];
 function closed(code, extra) {
-  return Object.assign({version: 1, code, ax: 0, appleEvents: 0, gui: 0, matched: 0, acted: 0, mainVisible: 0, windows: 0}, extra || {});
+  return Object.assign({version: 1, code, ax: 0, appleEvents: 0, gui: 0, probePhase: 0, aeFunction: 0, aeStatusKind: 4, targetRunning: 0, screenPresent: 0, sessionPresent: 0, uidMatch: 0, onConsole: 0, loginDone: 0, lockKnown: 0, lockState: 0, matched: 0, acted: 0, mainVisible: 0, windows: 0}, extra || {});
+}
+function aeStatusKind(status) {
+  // Public AppleEvents.h / MacErrors.h constants; never export a raw OSStatus.
+  return status === 0 ? 0 : status === -1744 ? 1 : status === -1743 ? 2 : status === -600 ? 3 : 4;
 }
 function one(values) { if (!values.length) throw 9; if (values.length !== 1) throw 5; return values[0]; }
 function inside(child, parent) {
@@ -29,18 +34,95 @@ function run(argv) {
     ObjC.import('AppKit'); ObjC.import('ApplicationServices'); ObjC.import('CoreServices');
     out.ax = $.AXIsProcessTrusted() ? 1 : 0;
     if (!out.ax) throw 2; // No prompt option, TCC write or permission request.
+    function systemEventsProcess() {
+      const apps = $.NSRunningApplication.runningApplicationsWithBundleIdentifier('com.apple.systemevents');
+      const count = Number(apps.count);
+      if (count === 0) return null;
+      if (count !== 1) throw 5;
+      const app = apps.objectAtIndex(0), pid = Number(app.processIdentifier);
+      if (!app || app.isTerminated || !Number.isSafeInteger(pid) || pid < 1 || pid > 2147483647
+        || ObjC.unwrap(app.bundleIdentifier) !== 'com.apple.systemevents'
+        || ObjC.unwrap(app.bundleURL.path) !== SYSTEM_EVENTS_PATH
+        || ObjC.unwrap(app.executableURL.path) !== SYSTEM_EVENTS_PATH + '/Contents/MacOS/System Events') throw 5;
+      return {app, pid};
+    }
+    out.probePhase = 7; // Fixed Apple target identity, before any permission query.
+    let systemEvents = null;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      systemEvents = systemEventsProcess();
+      if (systemEvents) break;
+      if (attempt < 19) $.NSThread.sleepForTimeInterval(0.05);
+    }
+    if (!systemEvents) throw 5;
+    out.targetRunning = 1;
+    out.probePhase = 1; // Explicit C binding; umbrella metadata may omit AE.
+    // OSStatus / const AEAddressDesc* / AEEventClass / AEEventID / Boolean.
+    // The real descriptor owns its pointer throughout this synchronous call.
+    ObjC.bindFunction('AEDeterminePermissionToAutomateTarget', ['int', ['void *', 'unsigned int', 'unsigned int', 'bool']]);
+    out.aeFunction = typeof $.AEDeterminePermissionToAutomateTarget === 'function' ? 1 : 0;
+    if (!out.aeFunction) throw 8;
+    out.probePhase = 2; // Native application-address descriptor factory.
     const target = $.NSAppleEventDescriptor.descriptorWithBundleIdentifier('com.apple.systemevents');
+    out.probePhase = 3; // Native retained descriptor's pointer getter.
+    const address = target.aeDesc;
+    if (!address) throw 8;
+    out.probePhase = 7;
+    out.targetRunning = 0;
+    const currentSystemEvents = systemEventsProcess();
+    if (!currentSystemEvents || currentSystemEvents.pid !== systemEvents.pid || systemEvents.app.isTerminated) throw 5;
+    out.targetRunning = 1;
+    out.probePhase = 4; // Actual permission query, never ask for consent.
     // Public nonprompting permission API, evaluated by the actual osascript client.
-    out.appleEvents = $.AEDeterminePermissionToAutomateTarget(target.aeDesc, 0x2a2a2a2a, 0x2a2a2a2a, false) === 0 ? 1 : 0;
+    const permission = $.AEDeterminePermissionToAutomateTarget(address, 0x2a2a2a2a, 0x2a2a2a2a, false);
+    if (!Number.isInteger(permission)) throw 8;
+    out.aeStatusKind = aeStatusKind(permission);
+    out.appleEvents = permission === 0 ? 1 : 0;
     if (!out.appleEvents) throw 3;
+    out.probePhase = 5; // Actual same-UID, console, login and display checks.
     ObjC.bindFunction('getuid', ['unsigned int', []]);
-    const session = ObjC.deepUnwrap($.CGSessionCopyCurrentDictionary());
+    ObjC.import('CoreFoundation');
+    // CFDictionaryRef is toll-free bridged to NSDictionary. Its opaque imported
+    // C return encoding is not an ObjC wrapper for deepUnwrap; bind the same
+    // pointer ABI as id, with no additional session sample or value coercion.
+    ObjC.bindFunction('CGSessionCopyCurrentDictionary', ['id', []]);
+    const sessionDictionary = $.CGSessionCopyCurrentDictionary();
+    let session;
+    if (!sessionDictionary || sessionDictionary.isNil()) {
+      out.sessionPresent = 1;
+      throw 4;
+    }
+    try {
+      if (sessionDictionary.isKindOfClass($.NSDictionary) !== true) throw 4;
+      session = ObjC.deepUnwrap(sessionDictionary);
+    } finally {
+      // Balance the native Copy result's +1 exactly once, after conversion.
+      // The JS primitive copy survives; no borrowed child receives CFRelease.
+      $.CFRelease(sessionDictionary);
+    }
     const lockKnown = session && Object.prototype.hasOwnProperty.call(session, 'CGSSessionScreenIsLocked');
-    out.gui = Number($.NSScreen.screens.count) > 0 && session
-      && session.kCGSSessionUserIDKey === Number($.getuid())
+    const screenCount = Number($.NSScreen.screens.count);
+    // Preserve the original native call's short circuit: getuid runs only when
+    // the screen/session prerequisites were already positive. No extra sample.
+    const processUid = screenCount > 0 && session ? Number($.getuid()) : undefined;
+    out.gui = screenCount > 0 && session
+      && session.kCGSSessionUserIDKey === processUid
       && session.kCGSSessionOnConsoleKey === true && session.kCGSessionLoginDoneKey === true
       && (!lockKnown || session.CGSSessionScreenIsLocked === false) ? 1 : 0;
+    // Diagnostics only: 0 unknown/unread/wrong type, 1 false, 2 true. Never
+    // normalize a bridged number/string to satisfy the unchanged strict gate.
+    const booleanState = value => typeof value === 'boolean' ? value ? 2 : 1 : 0;
+    out.screenPresent = Number.isFinite(screenCount) ? screenCount > 0 ? 2 : 1 : 0;
+    out.sessionPresent = session == null ? 1 : typeof session === 'object' && !Array.isArray(session) ? 2 : 0;
+    if (session) {
+      out.uidMatch = Number.isSafeInteger(session.kCGSSessionUserIDKey) && Number.isSafeInteger(processUid)
+        ? session.kCGSSessionUserIDKey === processUid ? 2 : 1 : 0;
+      out.onConsole = booleanState(session.kCGSSessionOnConsoleKey);
+      out.loginDone = booleanState(session.kCGSessionLoginDoneKey);
+      out.lockKnown = lockKnown ? 2 : 1;
+      out.lockState = lockKnown ? booleanState(session.CGSSessionScreenIsLocked) : 0;
+    }
     if (!out.gui) throw 4;
+    out.probePhase = 6; // Every native prerequisite above completed positively.
     if (argv[0] === 'probe') return JSON.stringify(Object.assign(out, {code: 0}));
     const pid = Number(argv[1]);
     if (!Number.isSafeInteger(pid) || pid < 1 || pid > 2147483647 || !argv[2].startsWith('/') || !argv[3].startsWith('/')) throw 1;
@@ -118,4 +200,4 @@ function run(argv) {
   }
   return JSON.stringify(out);
 }
-if (typeof module !== 'undefined') module.exports = {closed, one, inside, matchesButton, OPERATIONS};
+if (typeof module !== 'undefined') module.exports = {closed, one, inside, matchesButton, OPERATIONS, run};

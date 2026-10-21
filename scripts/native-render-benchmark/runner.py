@@ -391,6 +391,26 @@ def cleanup_identity(identity):
     return bool(escaped)
 
 
+def bootstrap_diagnostic(phase, compositor=None, collector=None, app=None):
+    """Only owned Popen status before cleanup; never read logs, argv or files.
+
+    None means no exit observed (or not started);256 means status unavailable,
+    distinct from every normal exit/signal code. Phase is a fixed host milestone.
+    """
+    if type(phase) is not int or not 0 <= phase <= 8:
+        refuse("invalid_bootstrap_phase")
+    def code(child):
+        if child is None:
+            return None
+        try:
+            value = child.poll()
+        except Exception:
+            return 256
+        return value if value is None or type(value) is int and -255 <= value <= 255 else 256
+    return {"phase": phase, "compositorExit": code(compositor), "collectorExit": code(collector),
+            "appExit": code(app), "artifactExportRejected": False}
+
+
 def execute(mode, binary, output):
     actors, fps = measurement_mode(mode)
     start = time.monotonic()
@@ -410,6 +430,9 @@ def execute(mode, binary, output):
     cleanup_ok = True
     manifest = None
     bus_diagnostic = None
+    phase = 0
+    compositor = collector = app = None
+    bootstrap = None
     try:
         for lookup in (pwd.getpwnam, grp.getgrnam):
             try:
@@ -488,8 +511,10 @@ def execute(mode, binary, output):
             os.chown(directory, uid, gid)  # Root ancestor is handed off last.
         root_exposed = True
         checked_root(str(root), uid, root_files)
+        phase = 1
         compositor = launch("compositor")
         children.append(compositor)
+        phase = 2
         socket = root / "compositor/runtime/orbitpal-benchmark"
         def socket_ready():
             try:
@@ -498,6 +523,7 @@ def execute(mode, binary, output):
             except FileNotFoundError:
                 return False
         wait_for(socket_ready, min(deadline, time.monotonic() + 35), (compositor,))
+        phase = 3
         # The only transport bridged from compositor domain to app domain.
         runtime_files.current()
         os.symlink("../compositor/runtime/orbitpal-benchmark", "orbitpal-benchmark", dir_fd=runtime_files.fd)
@@ -507,9 +533,11 @@ def execute(mode, binary, output):
                                      pass_fds=(root_files.fd,), stdin=subprocess.DEVNULL,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         children.append(collector)
+        phase = 4
         identity_proof.verify()
         app = launch("app")
         children.append(app)
+        phase = 5
         while app.poll() is None:
             if collector.poll() is not None or compositor.poll() is not None:
                 refuse("fixture_scope_or_compositor_failed")
@@ -518,10 +546,13 @@ def execute(mode, binary, output):
             time.sleep(0.1)
         if app.wait(timeout=2) != 0:
             refuse("native_benchmark_failed")
+        phase = 6
         if collector.wait(timeout=min(20, max(0.1, deadline - time.monotonic()))) != 0:
             refuse("numeric_collector_failed")
+        phase = 7
         if root_files.read_metadata("completed.marker", uid) != b"native-renderer-lane-only\n" or not owned_group_empty(groups[0][0]):
             refuse("native_completion_or_scope_drain_failed")
+        phase = 8
         failure = None
     except Refusal as error:
         # Only fixed authored refusal codes; no raw subprocess output/errors.
@@ -531,6 +562,9 @@ def execute(mode, binary, output):
     except Exception:
         failure = "fixture_metadata_unavailable"
     finally:
+        # Sample before our TERM/KILL so forced teardown cannot masquerade as
+        # the original failing child's exit. This observation grants nothing.
+        bootstrap = bootstrap_diagnostic(phase, compositor, collector, app)
         # Independent cleanup steps continue after a failure. Exact new group,
         # account and namespace identities are never inferred from process names.
         # Partial useradd has no vacancy/identity proof. Do not adopt/delete a
@@ -575,6 +609,7 @@ def execute(mode, binary, output):
                 with PinnedDirectory(output) as destination:
                     destination.write_new("fixture-manifest.json", json.dumps(manifest, sort_keys=True) + "\n")
         except Exception:
+            bootstrap["artifactExportRejected"] = True
             failure = failure or "numeric_artifact_invalid"
         if net_created:
             try:
@@ -607,6 +642,7 @@ def execute(mode, binary, output):
               "fullIssue66Acceptance": False, "hardwarePerformanceBaseline": False}
     if bus_diagnostic is not None:
         result["busService"] = bus_diagnostic
+    result["bootstrap"] = bootstrap
     with PinnedDirectory(output) as destination:
         destination.write_new("fixture-result.json", json.dumps(result, sort_keys=True) + "\n")
     # The root collector owns writes; the CI artifact uploader is the original

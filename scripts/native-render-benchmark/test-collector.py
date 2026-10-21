@@ -1,11 +1,16 @@
 #!/usr/bin/python3
 """Synthetic metadata only. Never provisions, launches or samples a real app."""
 from contextlib import ExitStack, contextmanager
+import ast
 import io
 import json
 import os
 from pathlib import Path
+import runpy
+import signal
 import stat
+import subprocess
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -203,6 +208,187 @@ class CollectorTests(unittest.TestCase):
         for error in (Hostile("PRIVATE_SECRET", b"PRIVATE_IMAGE"), collect.Refusal("PRIVATE_PATH")):
             self.assertEqual(collect.failure_summary(error), {"version": 1, "passed": False, "reason": "metadata_unavailable"})
         self.assertEqual(collect.failure_summary(collect.Refusal("process_scope_changed"))["reason"], "process_scope_changed")
+
+
+class CgroupCpuSchemaTests(unittest.TestCase):
+    BASE = b"usage_usec 123\nuser_usec 80\nsystem_usec 43\n"
+    FULL = (BASE + b"nice_usec 17\ncore_sched.force_idle_usec 29\nnr_periods 31\n"
+            b"nr_throttled 7\nthrottled_usec 41\nnr_bursts 2\nburst_usec 53\n")
+
+    def numbers(self, cpu, memory=b"456\n"):
+        def value(path, _limit):
+            return cpu if path.name == "cpu.stat" else memory
+        with patch.object(collect, "bounded", side_effect=value) as read:
+            result = collect.group_numbers(Path("/synthetic"))
+            self.assertEqual([call.args for call in read.call_args_list],
+                             [(Path("/synthetic/cpu.stat"), 8192), (Path("/synthetic/memory.current"), 64)])
+        return result
+
+    def cpu_refusal(self, cpu, reason):
+        with patch.object(collect, "bounded", return_value=cpu) as read:
+            with self.assertRaisesRegex(collect.Refusal, "^" + reason + "$"):
+                collect.group_numbers(Path("/synthetic"))
+            self.assertEqual([call.args for call in read.call_args_list], [(Path("/synthetic/cpu.stat"), 8192)])
+
+    def test_base_full_kernel_forms_and_reordered_fields_keep_usage_separate(self):
+        reordered = b"\n".join(reversed(self.FULL.splitlines())) + b"\n"
+        for cpu in (self.BASE, self.FULL, reordered):
+            self.assertEqual(self.numbers(cpu), (123, 456))
+        # Neither core-forced-idle/nice time nor CFS counters are added to usage.
+        self.assertEqual(self.numbers(self.FULL.replace(b"usage_usec 123", b"usage_usec 0")), (0, 456))
+
+    def test_every_known_value_is_u64_bounded_and_usage_retains_its_signed_limit(self):
+        for field in collect.CPU_STAT_FIELDS:
+            prefix = b"usage_usec 123\n" if field != b"usage_usec" else b""
+            valid = prefix + field + b" " + str(2**64 - 1).encode("ascii") + b"\n"
+            if field == b"usage_usec":
+                with self.assertRaisesRegex(collect.Refusal, "^group_metadata_limit$"):
+                    self.numbers(valid)
+            else:
+                self.assertEqual(self.numbers(valid), (123, 456))
+            for too_large in (str(2**64).encode("ascii"), b"0" * 21):
+                self.cpu_refusal(prefix + field + b" " + too_large + b"\n", "group_metadata_limit")
+
+    def test_each_duplicate_key_including_core_is_rejected_before_memory_read(self):
+        for field in collect.CPU_STAT_FIELDS:
+            prefix = b"usage_usec 123\n" if field != b"usage_usec" else b""
+            self.cpu_refusal(prefix + field + b" 1\n" + field + b" 2\n", "invalid_group_cpu")
+
+    def test_unknown_names_and_dotted_spoofs_remain_closed_refusals(self):
+        for field in (b"unknown_field", b"PRIVATE_PATH", b"core_sched.force_idle_usecs",
+                      b"core_sched.force_idle_usec.extra", b"core-sched.force_idle_usec", b"/private/field"):
+            self.cpu_refusal(self.BASE + field + b" 5\n", "invalid_group_cpu")
+
+    def test_missing_usage_never_becomes_an_invented_zero(self):
+        for cpu in (b"", b"user_usec 80\nsystem_usec 43\n", self.FULL.split(b"\n", 1)[1]):
+            self.cpu_refusal(cpu, "group_cpu_unavailable")
+
+    def test_cpu_rows_require_exact_unsigned_decimal_pairs(self):
+        for row in (b"core_sched.force_idle_usec", b"core_sched.force_idle_usec 1 extra",
+                    b"core_sched.force_idle_usec -1", b"core_sched.force_idle_usec +1",
+                    b"core_sched.force_idle_usec nan", b"core_sched.force_idle_usec inf",
+                    b"core_sched.force_idle_usec 1.5", b"core_sched.force_idle_usec 1e2",
+                    b"core_sched.force_idle_usec \xff", b""):
+            self.cpu_refusal(self.BASE + row + b"\n", "invalid_group_cpu")
+
+    def test_existing_signed_usage_memory_limits_and_read_scope_remain(self):
+        largest = str(2**63 - 1).encode("ascii")
+        self.assertEqual(self.numbers(b"usage_usec " + largest + b"\n", largest + b"\n"), (2**63 - 1, 2**63 - 1))
+        with self.assertRaisesRegex(collect.Refusal, "^group_metadata_limit$"):
+            self.numbers(b"usage_usec " + str(2**63).encode("ascii") + b"\n")
+        with self.assertRaisesRegex(collect.Refusal, "^group_metadata_limit$"):
+            self.numbers(self.BASE, str(2**63).encode("ascii") + b"\n")
+        with self.assertRaisesRegex(collect.Refusal, "^group_memory_unavailable$"):
+            self.numbers(self.BASE, b"max\n")
+
+    def test_real_cpu_stat_read_keeps_the_existing_8192_byte_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "cpu.stat").write_bytes(self.BASE + b" " * 8192)
+            with patch.object(collect, "bounded", wraps=collect.bounded) as read:
+                with self.assertRaisesRegex(collect.Refusal, "^metadata_limit$"):
+                    collect.group_numbers(root)
+                self.assertEqual([call.args for call in read.call_args_list], [(root / "cpu.stat", 8192)])
+
+
+class CollectorExitDiagnosticsTests(unittest.TestCase):
+    def test_exit_manifest_is_literal_unique_nonzero_and_only_authored_refusals(self):
+        source = ast.parse(Path(collect.__file__).read_text(encoding="utf-8"))
+        entries = [node.value for node in source.body if isinstance(node, ast.Assign)
+                   and any(isinstance(target, ast.Name) and target.id == "FAILURE_EXIT_CODES" for target in node.targets)]
+        self.assertEqual(len(entries), 1)
+        self.assertIsInstance(entries[0], ast.Dict)
+        manifest = ast.literal_eval(entries[0])
+        authored = {node.args[0].value for node in ast.walk(source) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name) and node.func.id == "refuse" and len(node.args) == 1
+                    and isinstance(node.args[0], ast.Constant) and type(node.args[0].value) is str}
+        self.assertEqual(len(manifest), 39)
+        self.assertEqual(len(entries[0].keys), len(manifest))  # No shadowed literal key.
+        self.assertTrue(set(manifest) <= authored)
+        self.assertEqual(set(manifest.values()), set(range(64, 103)))
+        self.assertTrue(all(type(value) is int for value in manifest.values()))
+        self.assertEqual(manifest, collect.FAILURE_EXIT_CODES)
+        self.assertEqual(set(manifest), collect.FAILURE_CODES)
+
+    def test_documented_exit_manifest_matches_actual_closed_classification(self):
+        document = Path(collect.__file__).with_name("README.md").read_text(encoding="utf-8")
+        rows = [tuple(column.strip().strip("`") for column in line.split("|")[1:-1])
+                for line in document.splitlines() if line.startswith("|")]
+        manifest = {reason: int(code) for code, reason in rows if code.isascii() and code.isdigit() and 64 <= int(code) <= 102}
+        self.assertEqual(manifest, collect.FAILURE_EXIT_CODES)
+        for reason, code in manifest.items():
+            error = collect.Refusal(reason)
+            self.assertEqual(collect.failure_summary(error)["reason"], reason)
+            self.assertEqual(collect.failure_exit_code(error), code)
+
+    def test_private_unknown_or_forged_errors_never_choose_a_diagnostic_code(self):
+        class PrivateError(Exception):
+            def __str__(self):
+                raise AssertionError("private exception must not be formatted")
+        class ForgedRefusal(collect.Refusal):
+            pass
+        errors = (PrivateError("PRIVATE_SECRET", b"PRIVATE_IMAGE"), OSError("PRIVATE_PATH"),
+                  collect.Refusal("PRIVATE_PATH"), collect.Refusal(75), collect.Refusal(True),
+                  collect.Refusal("process_scope_changed", "PRIVATE_SECRET"),
+                  ForgedRefusal("process_scope_changed"), RuntimeError("process_scope_changed"))
+        for error in errors:
+            self.assertEqual(collect.failure_exit_code(error), 1)
+            self.assertEqual(collect.failure_summary(error)["reason"], "metadata_unavailable")
+
+    def test_actual_main_boundary_classifies_preflight_without_new_file_reads(self):
+        hosted = {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Linux", "RUNNER_ENVIRONMENT": "github-hosted"}
+        cases = (({}, ["collect.py"], 100), (hosted, ["collect.py"], 101),
+                 (hosted, ["collect.py", "--collect", "/not-opened", "1000", "3"], 102))
+        for environment, arguments, code in cases:
+            with self.subTest(code=code), patch.dict(os.environ, environment, clear=True), patch.object(sys, "argv", arguments), \
+                    patch.object(os, "open") as opening, patch.object(sys, "stderr", io.StringIO()) as stderr, \
+                    patch.object(sys, "stdout", io.StringIO()) as stdout:
+                with self.assertRaises(SystemExit) as stopped:
+                    runpy.run_path(collect.__file__, run_name="__main__")
+                self.assertEqual(stopped.exception.code, code)
+                self.assertEqual(stderr.getvalue(), "benchmark-collector-failed\n")
+                self.assertEqual(stdout.getvalue(), "")
+                opening.assert_not_called()
+
+    def test_actual_main_boundary_keeps_private_errors_generic_and_base_exceptions_intact(self):
+        class PrivateError(Exception):
+            def __str__(self):
+                raise AssertionError("private exception must not be formatted")
+        for error in (PrivateError("PRIVATE_SECRET"), KeyboardInterrupt(), SystemExit(23)):
+            def failed_guard(_name):
+                raise error
+            with patch.object(os, "environ", SimpleNamespace(get=failed_guard)), \
+                    patch.object(sys, "stderr", io.StringIO()) as stderr, patch.object(sys, "stdout", io.StringIO()) as stdout:
+                with self.assertRaises(SystemExit if type(error) is PrivateError else type(error)) as stopped:
+                    runpy.run_path(collect.__file__, run_name="__main__")
+                if type(error) is PrivateError:
+                    self.assertEqual(stopped.exception.code, 1)
+                    self.assertEqual(stderr.getvalue(), "benchmark-collector-failed\n")
+                else:
+                    self.assertIs(stopped.exception, error)
+                    self.assertEqual(stderr.getvalue(), "")
+                self.assertEqual(stdout.getvalue(), "")
+
+    @unittest.skipUnless(os.name == "posix", "Linux collector uses POSIX child signal statuses")
+    def test_actual_main_boundary_preserves_real_sigint_and_sigterm_child_statuses(self):
+        # Only this owned tiny Python child receives a real signal. The real
+        # collector boundary runs, but its first guard cannot reach host reads.
+        child = """import os, runpy, sys
+class InterruptedEnvironment:
+    def get(self, _name):
+        os.kill(os.getpid(), int(sys.argv[2]))
+        raise AssertionError('signal did not interrupt')
+os.environ = InterruptedEnvironment()
+runpy.run_path(sys.argv[1], run_name='__main__')
+"""
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(signal=int(signum)):
+                result = subprocess.run([sys.executable, "-I", "-c", child, str(Path(collect.__file__).resolve()), str(int(signum))],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        env={}, timeout=10, check=False)
+                self.assertEqual(result.returncode, -int(signum))
+                self.assertEqual(result.stdout, b"")
+                self.assertNotIn(b"benchmark-collector-failed", result.stderr)
 
 
 class HarnessSafetyTests(unittest.TestCase):
@@ -984,7 +1170,7 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
         # Actual execute/export/result path; all accounts, commands, children,
         # /proc and cgroups are synthetic. This is no native/OS qualification.
         required = ("native.ndjson", "process.ndjson", "collector-summary.json")
-        for missing in (*required, None):
+        for missing in (*required, None, "collector_exit", "compositor_exit", "collector_exit_empty"):
             with tempfile.TemporaryDirectory() as temporary:
                 base = Path(temporary).resolve()
                 roots, groups, namespaces, output = (base / name for name in ("roots", "groups", "netns", "output"))
@@ -1005,10 +1191,16 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                     def verify(self):
                         pass
                 class Child:
+                    def __init__(self, domain):
+                        self.status = 0
+                        if missing in ("collector_exit", "collector_exit_empty", "compositor_exit"):
+                            self.status = (1 if domain == "collector" else None) if missing.startswith("collector") else (-6 if domain == "compositor" else None)
                     def poll(self):
-                        return 0
+                        return self.status
                     def wait(self, **_kwargs):
-                        return 0
+                        return self.status
+                    def terminate(self):
+                        self.status = -15
                 def path(value, *parts):
                     if value == "/tmp":
                         return roots.joinpath(*parts)
@@ -1037,9 +1229,9 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                     if argv[1].endswith("launch.py") and argv[3] == "app":
                         for name in required:
                             if name != missing:
-                                (fixture / name).write_bytes(b'{"count":1}\n')
+                                (fixture / name).write_bytes(b'' if missing == "collector_exit_empty" and name == "native.ndjson" else b'{"count":1}\n')
                         (fixture / "completed.marker").write_bytes(b"native-renderer-lane-only\n")
-                    return Child()
+                    return Child(argv[3] if argv[1].endswith("launch.py") else "collector")
                 def bounded(file, limit):
                     if file == groups / "cgroup.subtree_control":
                         return b"cpu memory"
@@ -1050,7 +1242,7 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                     self.assertEqual(files.read_metadata("fixture.marker", uid), nonce.encode("ascii"))
                     return files.path  # Only literal/tmp prefix is synthetic here.
                 def export(files, destination, **kwargs):
-                    self.assertTrue(kwargs["require_complete"])
+                    self.assertEqual(kwargs["require_complete"], missing not in ("collector_exit", "collector_exit_empty", "compositor_exit"))
                     # Current test UID stands in for the real root collector.
                     return real_export(files, destination, collector_uid=uid, **kwargs)
                 with ExitStack() as stack:
@@ -1073,8 +1265,44 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                 self.assertTrue(record["cleanupConfirmed"])
                 self.assertEqual(record["passed"], missing is None)
                 self.assertEqual(result, 0 if missing is None else 1)
-                self.assertEqual(record["reason"], None if missing is None else "numeric_artifact_invalid")
+                scope_failed = missing in ("collector_exit", "collector_exit_empty", "compositor_exit")
+                self.assertEqual(record["reason"], "fixture_scope_or_compositor_failed" if scope_failed else None if missing is None else "numeric_artifact_invalid")
+                self.assertEqual(record["bootstrap"]["phase"], 5 if scope_failed else 8)
+                self.assertEqual(record["bootstrap"]["artifactExportRejected"], missing in required or missing == "collector_exit_empty")
+                if scope_failed:
+                    # These are the original statuses, not the later -15 from
+                    # our controlled cleanup. Primary refusal is never masked.
+                    self.assertIsNone(record["bootstrap"]["appExit"])
+                    self.assertEqual(record["bootstrap"]["collectorExit"], 1 if missing.startswith("collector") else None)
+                    self.assertEqual(record["bootstrap"]["compositorExit"], -6 if missing == "compositor_exit" else None)
+                if missing == "collector_exit_empty":
+                    self.assertFalse((output / "fixture-manifest.json").exists())
                 self.assertTrue(any(argv[:3] == ["/usr/sbin/ip", "netns", "delete"] for argv in calls))
+
+
+class BootstrapDiagnosticTests(unittest.TestCase):
+    def test_owned_child_exit_status_is_closed_without_reading_any_child_payload(self):
+        class Child:
+            def __init__(self, code): self.code = code
+            def poll(self): return self.code
+        value = runner.bootstrap_diagnostic(5, Child(None), Child(1), Child(None))
+        self.assertEqual(value, {"phase": 5, "compositorExit": None, "collectorExit": 1,
+                                 "appExit": None, "artifactExportRejected": False})
+        self.assertEqual(runner.bootstrap_diagnostic(5, Child(-6))["compositorExit"], -6)
+        for code in (True, 999, "PRIVATE", {"raw": "PRIVATE"}):
+            value = runner.bootstrap_diagnostic(5, Child(code))
+            self.assertEqual(value["compositorExit"], 256)
+            self.assertNotIn("PRIVATE", json.dumps(value))
+
+    def test_unknown_child_probe_is_not_fabricated_as_success_and_cannot_change_phase(self):
+        class Child:
+            def poll(self): raise OSError("PRIVATE")
+        self.assertEqual(runner.bootstrap_diagnostic(2, Child())["compositorExit"], 256)
+        for phase in (True, -1, 9, "5"):
+            with self.assertRaisesRegex(collect.Refusal, "^invalid_bootstrap_phase$"):
+                runner.bootstrap_diagnostic(phase)
+        self.assertEqual(runner.bootstrap_diagnostic(0), {"phase": 0, "compositorExit": None,
+            "collectorExit": None, "appExit": None, "artifactExportRejected": False})
 
 
 class DconfActivatorTests(unittest.TestCase):

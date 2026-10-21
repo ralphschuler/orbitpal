@@ -21,9 +21,107 @@ The first five-second client probe checks existing `AXIsProcessTrusted`,
 same-UID console/login session and an available display. Missing/unknown native
 bridging, permission or GUI capability fails closed. The source uses the existing
 macOS compatibility session keys; it does not grant the application's independent
-production AwakeUnlocked monitor any authority. An absent System Events process
-may also make the nonprompting probe fail; the harness does not change its rights
-or substitute a different controller. No local developer Mac is supported.
+production AwakeUnlocked monitor any authority. The target's required background
+launch below does not change its rights or substitute a different controller.
+No local developer Mac is supported.
+
+The first [actual VM probe, run 39594013069](https://github.com/ralphschuler/orbitpal/actions/runs/39594013069)
+on `de48e0a537211c469bd2d7b04031aa0e407f95fd` reported AX trust but caught a
+native bridge exception before the AppleEvents result. It did not build or launch
+the fixture and does not establish a permission denial. The client now explicitly
+binds the [documented permission function](https://developer.apple.com/documentation/coreservices/3025784-aedeterminepermissiontoautomatet?language=objc)
+with its OSStatus/pointer/event-class/event-ID/Boolean ABI, retaining the native
+descriptor for the call and still passing `askUserIfNeeded:false`. No descriptor
+structure size/layout is fabricated. The next real probe remains required.
+Two closed numeric fields distinguish failures: `aeFunction` records callable
+presence after binding; `probePhase` is 0 initial/AX, 1 binding, 2 descriptor
+factory, 3 descriptor pointer, 4 actual permission call, 5 actual session/display
+checks, 6 all prerequisites completed, 7 fixed System Events source/identity
+preparation or native readback. `targetRunning` is positive only after actual
+same-client running-process identity checks. Code 8 remains an unknown native exception;
+code 3 requires an actual completed permission query with a nonzero OSStatus.
+No exception text or raw status/session data is exported. Controlled Node VM
+tests exercise the production probe with doubles, never a host permission query.
+
+The second [actual VM probe, run 39595025071](https://github.com/ralphschuler/orbitpal/actions/runs/39595025071)
+on `5bcd6dd683bdc0f81b9d5d8b8e828ef052f30c5b` reached the real permission
+call (`aeFunction:1`, `probePhase:4`) and returned code 3. Its artifact did not
+retain the OSStatus category, so it proves neither denial nor an absent target.
+`aeStatusKind` now records only 0 success, 1 consent required (`-1744`), 2 event
+not permitted (`-1743`), 3 target process absent (`-600`), or 4 other/unknown.
+Before a completed query, 4 means unobserved; code/phase still determine which
+operations actually completed. Raw OSStatus and exception/session data remain
+unexported. All nonzero results still fail without asking the user.
+
+The third [actual VM probe, run 39596881584](https://github.com/ralphschuler/orbitpal/actions/runs/39596881584)
+on `02217c145a962234af96fdc92edf25094944740f` positively observed the fixed
+running target, AX trust and a zero permission-query result (`aeStatusKind:0`,
+`appleEvents:1`). It refused at phase 5 (`code:4`, `gui:0`), before the fixture
+build or any UI action. Its compound result does not identify which session or
+display prerequisite failed. Apple's public `CGSession.h` confirms the exact
+string keys used here: a CFNumber UID and CFBoolean console/login indicators.
+Neither those types nor controlled JavaScript booleans prove how the actual
+osascript bridge represented this VM's values.
+
+Seven diagnostic-only fields now describe the already-read phase-5 values:
+`screenPresent`, `sessionPresent`, `uidMatch`, `onConsole`, `loginDone`,
+`lockKnown` and `lockState`. All use 0 for unknown/unread/wrong type, 1 for false
+and 2 for true. `lockKnown:1` means the optional key is absent; `lockState` then
+remains unknown. Missing/incorrect boolean types remain unknown, never truthy
+success. The unchanged strict `gui` predicate remains the authority. Native
+screen/session reads still occur once, and `getuid` retains its original
+screen/session short circuit. No UID, dictionary, session key/value, raw native
+exception or additional native sample is exported. The public [session API](https://developer.apple.com/documentation/coregraphics/cgsessioncopycurrentdictionary())
+and [session property example](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPMultipleUsers/Concepts/FastUserSwitching.html)
+provide source semantics, not evidence of the disposable VM's actual state.
+
+The fourth [actual VM probe, run 39598095989](https://github.com/ralphschuler/orbitpal/actions/runs/39598095989)
+on `9851ba8eec52633e3db30126d9e14b4a28b56259` again passed AX/AppleEvents and
+observed a display (`screenPresent:2`), but the session deepUnwrap result was not
+a plain JS dictionary (`sessionPresent:0`). UID, console and login remained
+unknown; this does not establish an inactive, locked or missing native session.
+No fixture build or UI action ran.
+
+The public SDK declares `CFDictionaryRef` as bridged to `NSDictionary`; Apple's
+[toll-free bridging table](https://developer.apple.com/library/archive/documentation/General/Conceptual/CocoaEncyclopedia/Toll-FreeBridgin/Toll-FreeBridgin.html)
+confirms that pairing. The imported C function's opaque CFDictionary return is
+now explicitly bound with the same pointer ABI as JXA `id`, which Apple's
+[JXA release notes](https://developer.apple.com/library/archive/releasenotes/InterapplicationCommunication/RN-JavaScriptForAutomation/Articles/OSX10-10.html)
+requires for objects. This preserves exactly one actual session call. Nil or an
+unknown native class refuses; only an actual NSDictionary reaches deepUnwrap.
+The [native Copy ownership](https://developer.apple.com/library/archive/documentation/CoreFoundation/Conceptual/CFMemoryMgmt/Concepts/Ownership.html)
+is balanced by exactly one `CFRelease` in `finally` after conversion, including
+conversion failure. Borrowed children are never released. The strict UID and
+Boolean predicates remain unchanged; no integer/string becomes a Boolean.
+
+A separately authorized constructed-only Foundation probe successfully used an
+`id` return binding for `CFDictionaryCreateCopy`, verified its NSDictionary and
+CFDictionary identity, and balanced its own Copy reference. Genuine constructed
+CFBooleans unwrapped to JS booleans while NSNumber integers remained numbers.
+It queried no host session, GUI, process or permissions. That contract check does
+not substitute for the next actual disposable VM session/fixture run.
+
+Apple's public SDK `AppleEvents.h` documents that the address must identify an
+already running target, and returns `procNotFound` otherwise. The same header
+defines the two consent constants; `CarbonCore/MacErrors.h` defines
+`procNotFound`. After the hosted/reviewed-SHA/clean-source guards, the runner now
+checks only the fixed `/System/Library/CoreServices/System Events.app`: canonical
+root-owned non-writable directories, retained no-follow regular Info.plist and
+executable FDs, exact bundle/executable names and repeated file identity. It
+verifies the signature with the explicit Apple requirement (not the broader
+Apple-issued developer requirement), then issues one fixed `/usr/bin/open -g -j
+-a` background launch. Both commands suppress all diagnostics and share the
+original five-second probe deadline. No shell, URI, user argument, activation,
+permission request, AppleEvent automation command or permission retry is added.
+
+Before its first permission call, the same osascript client performs bounded
+native readback of the unique running System Events bundle, fixed bundle and
+executable URL and valid PID. It rejoins the same PID immediately before the
+query. Absent, replaced, ambiguous or foreign targets fail before AppleEvents;
+code 3 still stops on every nonzero result. The new source/launch failure record
+has AX/permission/target observations zero, phase 7 and unknown status kind 4;
+it cannot be mistaken for a completed native query. System Events is not killed
+or given broader rights; its lifetime ends with disposal of the hosted VM.
 
 `ui.js` runs in `/usr/bin/osascript` as a **native JXA/System Events/ObjC client**,
 not in a WKWebView. It never evaluates application JavaScript, calls native IPC,

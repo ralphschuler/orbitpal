@@ -1,8 +1,9 @@
 # Nonshipping native Linux renderer lane
 
 Three-OS CI builds the standalone example and runs its non-GUI protocol tests.
-The actual hosted smoke attempts have reached guard refusals before launching
-the renderer. No qualified measurements or hardware baseline exist; issue #66
+The third actual hosted smoke passed the activator check and standalone build,
+then failed during runtime bootstrap without qualifying the renderer or scope.
+No qualified measurements or hardware baseline exist; issue #66
 stays open. The first executable acceptance remains a **short smoke run** on an
 explicitly disposable GitHub-hosted Linux VM. A successful smoke would
 qualify this fixture's lifecycle and numeric scope, not hardware performance,
@@ -96,7 +97,7 @@ smoke additionally checks the fixed one-Stage/two-WebView scope, three additiona
 cycles, zero live figure/Stage at completion and confirmed cleanup. Missing
 artifacts or an incomplete teardown cannot become success. Software-compositor
 qualification is separate from GPU/present timing, hardware performance and
-full issue#66 acceptance. No actual smoke has run at this documentation point.
+full issue#66 acceptance. No actual smoke has qualified this fixture.
 
 The explicit `pilot`, `pilot3` and `pilot5` modes are separate. Do not run them before the real short smoke
 and isolation checks pass. The existing native driver owns phase times, three
@@ -386,3 +387,160 @@ bus receives the declared template, under the existing isolated UID/socket and
 closed child environment. This source change is not a passed smoke or a native
 performance measurement; all lifecycle/collector checks still have to pass in
 an actual reviewed-source run.
+
+
+## Third actual smoke and bounded bootstrap diagnostics
+
+Run `39591285949`, exact source `1fc6b579bf864fce784b225e9fa780a4878f4849`,
+passed the activator preflight and standalone cold build. Its digest-verified
+single-file artifact records `fixture_scope_or_compositor_failed`, duration
+2.42 seconds and `cleanupConfirmed:true`. That exact refusal occurs after an
+owned Wayland socket was observed and collector/app launchers were created. It
+folds collector and compositor exits together. Neither the failing child nor a
+host capability defect, renderer initialization or a native accepted frame is
+proved by this result. It is not a successful smoke.
+
+A subsequent source-only diagnostic adds the fixed `bootstrap` record to the
+existing result. No process output, arguments, paths or additional files are
+read. The phases record only these host milestones:
+
+| Phase | Observed milestone |
+| --- | --- |
+| 0 | Setup entered |
+| 1 | Pre-workload scope and UID checks complete |
+| 2 | Compositor launcher created |
+| 3 | Owned Wayland socket observed |
+| 4 | Collector launcher created |
+| 5 | App launcher created |
+| 6 | App launcher exited zero |
+| 7 | Collector exited zero |
+| 8 | Existing completion-marker and app-cgroup drain checks passed |
+
+Owned child exit codes are sampled before the runner sends TERM/KILL. A null
+means no exit observed (including not started);256 means status unavailable,
+never success. `artifactExportRejected` marks an exception in the existing
+numeric-export/manifest-write block; the original primary refusal remains
+unchanged. All producer files still require the original pinned-directory,
+owner, stopped-writer and all-source validation. A rejected early/empty numeric
+file gains no fallback read, partial export or authority to pass. These fields
+only narrow a later actual failure; synthetic tests do not qualify native work.
+
+## Fourth actual smoke and closed collector exit diagnostics
+
+Run `39594587871`, exact source `ea0ec1349fea5411803fd642a9ff1d5b982aa6bb`,
+also passed the activator preflight and standalone cold build. Its digest-verified
+single-file result records phase 5, `collectorExit:1`, no observed app/compositor
+exit, `artifactExportRejected:true` and `cleanupConfirmed:true`. The collector
+exited before the runner's cleanup, but the former generic status 1 does not
+identify its exact refusal or prove whether it preceded a native startup error.
+No renderer initialization, frame, host-capability defect or smoke qualification
+is established by that result.
+
+The collector now uses this fixed source-authored exit manifest for the same 39
+reasons already accepted by `failure_summary`. It classifies only an exact
+`Refusal` with one known string argument. Other exceptions, unknown/private
+refusals, subclasses and malformed arguments remain status 1; their payloads are
+never formatted. Existing JSON classification, the fixed stderr message and all
+failure/cleanup/export checks remain unchanged. An OS signal is not a refusal:
+the owned child's negative `Popen` signal status remains distinct. A success
+still requires the original checks and status 0, never any diagnostic status.
+
+| Collector exit | Closed refusal reason |
+| --- | --- |
+| 64 | `unexpected_metadata_type` |
+| 65 | `metadata_limit` |
+| 66 | `invalid_fixture_root` |
+| 67 | `foreign_fixture_root` |
+| 68 | `invalid_fixture_marker` |
+| 69 | `process_metadata_limit` |
+| 70 | `invalid_process_metadata` |
+| 71 | `process_count_limit` |
+| 72 | `invalid_process_list` |
+| 73 | `invalid_process_scope` |
+| 74 | `unexpected_helper_uid` |
+| 75 | `process_scope_changed` |
+| 76 | `helper_network_scope_changed` |
+| 77 | `process_identity_changed` |
+| 78 | `invalid_group_cpu` |
+| 79 | `group_cpu_unavailable` |
+| 80 | `group_memory_unavailable` |
+| 81 | `group_metadata_limit` |
+| 82 | `group_clock_regressed` |
+| 83 | `cgroup_tree_limit` |
+| 84 | `process_scope_sample_raced` |
+| 85 | `invalid_cgroup_child` |
+| 86 | `collector_privilege_missing` |
+| 87 | `dedicated_group_missing` |
+| 88 | `compositor_scope_missing` |
+| 89 | `app_pid_not_observed` |
+| 90 | `invalid_app_pid` |
+| 91 | `foreign_app_pid` |
+| 92 | `network_scope_not_isolated` |
+| 93 | `collector_deadline` |
+| 94 | `unattributed_fresh_account_process` |
+| 95 | `process_identity_limit` |
+| 96 | `numeric_log_limit` |
+| 97 | `app_not_live_at_ready` |
+| 98 | `app_helpers_did_not_drain` |
+| 99 | `native_completion_not_proven` |
+| 100 | `not_disposable_collector` |
+| 101 | `invalid_collector_arguments` |
+| 102 | `invalid_fixture_uid` |
+
+These codes are retained by the existing pre-cleanup `bootstrap.collectorExit`
+field even when numeric export is rejected. They add no process/file/log read,
+raw payload, partial export or permission fallback. They describe an observed
+collector refusal, not necessarily the first cause of a wider startup failure.
+All nonzero statuses still fail. Controlled tests bind the documented table to
+the source literals, exercise the real `__main__` boundary and deliver actual
+SIGINT/SIGTERM only to an owned synthetic Python child; no app is launched.
+
+## Fifth actual smoke and supported CPU-stat schema
+
+Run `39596889579`, exact source `4993ed35c27770545ea613ae2e6fdb4f0d97bb43`,
+passed the activator preflight and standalone build, then failed at phase 5 with
+`collectorExit:78` (`invalid_group_cpu`). Its digest-verified one-file artifact
+also records no observed app/compositor exit, rejected artifact export and
+confirmed cleanup. This proves the collector's closed classification. The
+rejected line, runner kernel configuration and whether another startup error
+preceded the collector refusal remain unobserved; no CPU or renderer measurement
+is qualified.
+
+The former `[a-z_]+` field-name check rejects the upstream
+`core_sched.force_idle_usec` key. Linux's
+[v6.17 accounting writer](https://github.com/torvalds/linux/blob/v6.17/kernel/cgroup/rstat.c#L652-L690)
+emits that field when core scheduling is compiled in, alongside its base usage,
+user, system and nice accounting. The
+[cgroup-v2 CPU interface](https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu-interface-files)
+also defines the five controller-dependent CFS bandwidth fields below. This
+establishes a source compatibility defect; it does not establish which actual
+line Smoke5 rejected.
+
+The collector accepts exactly these ten known keys in any order, with no
+duplicate and no unknown key:
+
+| Key | Meaning and use in this collector |
+| --- | --- |
+| `usage_usec` | Required cumulative CPU execution time; the sole input to CPU deltas |
+| `user_usec` | User CPU time; validated, unused |
+| `system_usec` | System CPU time; validated, unused |
+| `nice_usec` | Nice CPU accounting; validated, unused |
+| `core_sched.force_idle_usec` | Conditional core-scheduling forced-idle accounting; validated, unused |
+| `nr_periods` | CFS bandwidth period count; validated, unused |
+| `nr_throttled` | CFS throttled-period count; validated, unused |
+| `throttled_usec` | CFS throttled duration; validated, unused |
+| `nr_bursts` | CFS bandwidth burst count; validated, unused |
+| `burst_usec` | CFS burst duration; validated, unused |
+
+Time fields use microseconds; the three `nr_` fields are counts. The CFS fields
+describe fair-class bandwidth accounting and are not added to execution time.
+The other nine fields are optional to this parser; absence of `usage_usec`
+always refuses instead of inventing zero. Each present row must contain exactly
+one known key and one unsigned ASCII-decimal value of at most 20 digits, bounded
+by `u64::MAX`. The existing 8192-byte CPU-stat read, 64-byte memory read and signed
+63-bit limits on the used CPU/memory values remain. Unknown keys, duplicates,
+malformed numbers and overflow remain failures. No cgroup/UID/namespace guard,
+read path, zero-baseline rule, artifact validation or qualification requirement
+changes. Controlled fixtures cover the real base-three/full-ten/reordered forms,
+nonzero optional values, all per-field numeric boundaries and refusals; no live
+host cgroup is read by those tests.

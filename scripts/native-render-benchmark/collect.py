@@ -17,18 +17,57 @@ MAX_LOG = 32 * 1024 * 1024
 MAX_PIDS = 256
 MAX_GROUPS = 16
 MEASUREMENT_MODES = {"smoke": (1, 30), "pilot": (1, 30), "pilot3": (3, 30), "pilot5": (5, 20)}
-FAILURE_CODES = frozenset((
-    "unexpected_metadata_type", "metadata_limit", "invalid_fixture_root", "foreign_fixture_root",
-    "invalid_fixture_marker", "process_metadata_limit", "invalid_process_metadata", "process_count_limit",
-    "invalid_process_list", "invalid_process_scope", "unexpected_helper_uid", "process_scope_changed",
-    "helper_network_scope_changed", "process_identity_changed", "invalid_group_cpu", "group_cpu_unavailable",
-    "group_memory_unavailable", "group_metadata_limit", "group_clock_regressed", "cgroup_tree_limit",
-    "process_scope_sample_raced", "invalid_cgroup_child", "collector_privilege_missing", "dedicated_group_missing",
-    "compositor_scope_missing", "app_pid_not_observed", "invalid_app_pid", "foreign_app_pid",
-    "network_scope_not_isolated", "collector_deadline", "unattributed_fresh_account_process",
-    "process_identity_limit", "numeric_log_limit", "app_not_live_at_ready", "app_helpers_did_not_drain",
-    "native_completion_not_proven", "not_disposable_collector", "invalid_collector_arguments", "invalid_fixture_uid",
+# Supported cgroup-v2 cpu.stat keys, including CONFIG_SCHED_CORE's dotted key.
+# Optional accounting/bandwidth fields never substitute for or add to usage_usec.
+CPU_STAT_FIELDS = frozenset((
+    b"usage_usec", b"user_usec", b"system_usec", b"nice_usec", b"core_sched.force_idle_usec",
+    b"nr_periods", b"nr_throttled", b"throttled_usec", b"nr_bursts", b"burst_usec",
 ))
+# Stable diagnostic-only manifest for the existing closed failure classification.
+# Never renumber existing entries or derive a status from arbitrary error data.
+# All are nonzero and below shell signal statuses; unclassified errors remain 1.
+FAILURE_EXIT_CODES = {
+    "unexpected_metadata_type": 64,
+    "metadata_limit": 65,
+    "invalid_fixture_root": 66,
+    "foreign_fixture_root": 67,
+    "invalid_fixture_marker": 68,
+    "process_metadata_limit": 69,
+    "invalid_process_metadata": 70,
+    "process_count_limit": 71,
+    "invalid_process_list": 72,
+    "invalid_process_scope": 73,
+    "unexpected_helper_uid": 74,
+    "process_scope_changed": 75,
+    "helper_network_scope_changed": 76,
+    "process_identity_changed": 77,
+    "invalid_group_cpu": 78,
+    "group_cpu_unavailable": 79,
+    "group_memory_unavailable": 80,
+    "group_metadata_limit": 81,
+    "group_clock_regressed": 82,
+    "cgroup_tree_limit": 83,
+    "process_scope_sample_raced": 84,
+    "invalid_cgroup_child": 85,
+    "collector_privilege_missing": 86,
+    "dedicated_group_missing": 87,
+    "compositor_scope_missing": 88,
+    "app_pid_not_observed": 89,
+    "invalid_app_pid": 90,
+    "foreign_app_pid": 91,
+    "network_scope_not_isolated": 92,
+    "collector_deadline": 93,
+    "unattributed_fresh_account_process": 94,
+    "process_identity_limit": 95,
+    "numeric_log_limit": 96,
+    "app_not_live_at_ready": 97,
+    "app_helpers_did_not_drain": 98,
+    "native_completion_not_proven": 99,
+    "not_disposable_collector": 100,
+    "invalid_collector_arguments": 101,
+    "invalid_fixture_uid": 102,
+}
+FAILURE_CODES = frozenset(FAILURE_EXIT_CODES)
 
 
 class Refusal(Exception):
@@ -50,6 +89,10 @@ def failure_summary(error):
     if type(error) is Refusal and len(error.args) == 1 and type(error.args[0]) is str and error.args[0] in FAILURE_CODES:
         code = error.args[0]
     return {"version": 1, "passed": False, "reason": code}
+
+
+def failure_exit_code(error):
+    return FAILURE_EXIT_CODES.get(failure_summary(error)["reason"], 1)
 
 
 class PinnedDirectory:
@@ -319,11 +362,16 @@ def group_numbers(group):
     fields = {}
     for line in bounded(group / "cpu.stat", 8192).splitlines():
         pair = line.split()
-        if len(pair) != 2 or re.fullmatch(rb"[a-z_]+", pair[0]) is None or not pair[1].isdigit():
+        if len(pair) != 2 or pair[0] not in CPU_STAT_FIELDS or not pair[1].isdigit():
             refuse("invalid_group_cpu")
         if pair[0] in fields:
             refuse("invalid_group_cpu")
-        fields[pair[0]] = int(pair[1])
+        if len(pair[1]) > 20:
+            refuse("group_metadata_limit")
+        value = int(pair[1])
+        if value > 2**64 - 1:
+            refuse("group_metadata_limit")
+        fields[pair[0]] = value
     if b"usage_usec" not in fields:
         refuse("group_cpu_unavailable")
     memory = bounded(group / "memory.current", 64).strip()
@@ -521,6 +569,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
+    except Exception as error:
         print("benchmark-collector-failed", file=sys.stderr)
-        raise SystemExit(1)
+        raise SystemExit(failure_exit_code(error))
