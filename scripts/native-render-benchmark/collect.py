@@ -16,6 +16,7 @@ import time
 MAX_LOG = 32 * 1024 * 1024
 MAX_PIDS = 256
 MAX_GROUPS = 16
+MEASUREMENT_MODES = {"smoke": (1, 30), "pilot": (1, 30), "pilot3": (3, 30), "pilot5": (5, 20)}
 FAILURE_CODES = frozenset((
     "unexpected_metadata_type", "metadata_limit", "invalid_fixture_root", "foreign_fixture_root",
     "invalid_fixture_marker", "process_metadata_limit", "invalid_process_metadata", "process_count_limit",
@@ -36,6 +37,12 @@ class Refusal(Exception):
 
 def refuse(code):
     raise Refusal(code)
+
+
+def measurement_mode(mode):
+    if type(mode) is not str or mode not in MEASUREMENT_MODES:
+        refuse("invalid_benchmark_mode")
+    return MEASUREMENT_MODES[mode]
 
 
 def failure_summary(error):

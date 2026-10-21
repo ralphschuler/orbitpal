@@ -11,10 +11,11 @@ import re
 import stat
 import sys
 
-from collect import PinnedDirectory, Refusal, bounded, checked_root, refuse
+from collect import PinnedDirectory, Refusal, bounded, checked_root, measurement_mode, refuse
 
 
 def environment(root, account, domain, mode, host_net):
+    measurement_mode(mode)
     app = domain == "app"
     home = root if app else root / "compositor"
     values = {"PATH": "/usr/bin:/bin", "HOME": str(home / "home"),
@@ -40,8 +41,9 @@ def main():
     if os.geteuid() != 0 or sys.platform != "linux" or any(os.environ.get(key) != value for key, value in (
             ("GITHUB_ACTIONS", "true"), ("RUNNER_ENVIRONMENT", "github-hosted"), ("RUNNER_OS", "Linux"))):
         refuse("not_disposable_launcher")
-    if len(sys.argv) != 7 or sys.argv[2] not in ("app", "compositor") or sys.argv[5] not in ("smoke", "pilot"):
+    if len(sys.argv) != 7 or sys.argv[2] not in ("app", "compositor"):
         refuse("invalid_launcher_arguments")
+    measurement_mode(sys.argv[5])
     if not re.fullmatch(r"[1-9][0-9]{0,9}", sys.argv[3]) or not re.fullmatch(r"[1-9][0-9]{0,9}", sys.argv[4]):
         refuse("invalid_fixture_identity")
     uid, gid = int(sys.argv[3]), int(sys.argv[4])

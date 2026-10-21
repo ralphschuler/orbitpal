@@ -6,7 +6,7 @@ set -euo pipefail
 : "${ORBITPAL_BENCH_ROOT:?}" "${ORBITPAL_BENCH_DOMAIN:?}" "${ORBITPAL_BENCH_MODE:?}"
 root="$ORBITPAL_BENCH_ROOT"
 [[ "$root" =~ ^/tmp/orbitpal-render-[0-9a-f]{16}$ && -O "$root" && ! -L "$root" ]]
-[[ "$ORBITPAL_BENCH_MODE" == smoke || "$ORBITPAL_BENCH_MODE" == pilot ]]
+[[ "$ORBITPAL_BENCH_MODE" == smoke || "$ORBITPAL_BENCH_MODE" == pilot || "$ORBITPAL_BENCH_MODE" == pilot3 || "$ORBITPAL_BENCH_MODE" == pilot5 ]]
 [[ -z "${DISPLAY+x}" && -z "${TAURI_CONFIG+x}" ]]
 umask 077
 bus_pid= workload_pid=

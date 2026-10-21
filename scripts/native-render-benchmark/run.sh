@@ -2,7 +2,7 @@
 # Nonshipping, disposable VM only. No root operation precedes these guards.
 set -euo pipefail
 [[ "${GITHUB_ACTIONS:-}" == true && "${RUNNER_ENVIRONMENT:-}" == github-hosted && "${RUNNER_OS:-}" == Linux ]]
-[[ $(uname -s) == Linux && $# == 2 && ( "$1" == smoke || "$1" == pilot ) ]]
+[[ $(uname -s) == Linux && $# == 2 && ( "$1" == smoke || "$1" == pilot || "$1" == pilot3 || "$1" == pilot5 ) ]]
 [[ -f "$2" && -x "$2" && ! -L "$2" && "$2" == /* ]]
 : "${RUNNER_TEMP:?}"
 [[ "$RUNNER_TEMP" == /* && -d "$RUNNER_TEMP" && ! -L "$RUNNER_TEMP" ]]

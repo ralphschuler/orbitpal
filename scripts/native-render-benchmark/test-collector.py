@@ -227,6 +227,19 @@ class HarnessSafetyTests(unittest.TestCase):
         self.assertNotEqual(app["HOME"], compositor["HOME"])
         self.assertNotIn("PRIVATE", json.dumps(app))
 
+    def test_only_closed_1_3_5_figure_plans_can_enter_the_launcher_or_driver(self):
+        root = Path("/tmp") / NAME
+        for mode, plan in (("smoke", (1, 30)), ("pilot", (1, 30)), ("pilot3", (3, 30)), ("pilot5", (5, 20))):
+            self.assertEqual(collect.measurement_mode(mode), plan)
+            self.assertEqual(launch.environment(root, "opr0123456789abcdef", "app", mode, NET)["ORBITPAL_BENCH_MODE"], mode)
+        for mode in (None, True, 5, "pilot2", "pilot50", "pilot5 ", "pilot/../../outside", "--command=PRIVATE"):
+            with self.subTest(mode=mode), patch.object(runner.secrets, "token_hex") as nonce:
+                with self.assertRaisesRegex(collect.Refusal, "^invalid_benchmark_mode$"):
+                    runner.execute(mode, Path("/synthetic/native-bench"), Path("/synthetic/output"))
+                nonce.assert_not_called()
+                with self.assertRaisesRegex(collect.Refusal, "^invalid_benchmark_mode$"):
+                    launch.environment(root, "opr0123456789abcdef", "app", mode, NET)
+
     def test_bus_entry_is_only_exact_packaged_a11y_or_dconf_without_delegation(self):
         raw = b"[D-BUS Service]\nName=org.a11y.Bus\nExec=/usr/libexec/at-spi-bus-launcher\nSystemdService=PRIVATE.service\nUser=root\n"
         executable, result = runner.service_entry("org.a11y.Bus", raw)

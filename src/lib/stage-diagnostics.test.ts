@@ -113,10 +113,15 @@ describe('Cumulative Stage observations', () => {
 describe('Closed benchmark page and host replies', () => {
   it('accepts only native-issued safe decimal epochs or the static control page', () => {
     expect(parseBenchmarkPage('?benchmark=control')).toEqual({ kind: 'control' });
-    expect(parseBenchmarkPage('?benchmark=figure&epoch=21')).toEqual({ kind: 'figure', epoch: 21 });
+    expect(parseBenchmarkPage('?benchmark=figure&epoch=21')).toEqual({ kind: 'figure', epoch: 21, fps: 30 });
+    expect(parseBenchmarkPage('?benchmark=figure&epoch=21&fps=20')).toEqual({ kind: 'figure', epoch: 21, fps: 20 });
+    expect(parseBenchmarkPage('?benchmark=figure&epoch=21&fps=30')).toEqual({ kind: 'figure', epoch: 21, fps: 30 });
     for (const query of ['', '?benchmark=control&epoch=1', '?benchmark=figure&epoch=0', '?benchmark=figure&epoch=01',
       '?benchmark=figure&epoch=1&epoch=2', '?benchmark=figure&epoch=1&path=private',
       '?benchmark=figure&epoch=9007199254740992', '?benchmark=figure&epoch=1e2']) expect(parseBenchmarkPage(query)).toBeNull();
+    for (const query of ['?benchmark=figure&epoch=1&fps=10', '?benchmark=figure&epoch=1&fps=020',
+      '?benchmark=figure&epoch=1&fps=20&fps=30', '?benchmark=control&fps=20',
+      '?benchmark=figure&epoch=1&fps=20&asset=external']) expect(parseBenchmarkPage(query)).toBeNull();
   });
   it('rejects unknown fields, foreign epochs, unknown commands and non-success replies', () => {
     expect(parseBenchmarkReply({ accepted: true, epoch: 2, command: 'continue' }, 2)).toBe('continue');
