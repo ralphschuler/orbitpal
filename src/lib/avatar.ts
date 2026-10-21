@@ -1197,10 +1197,15 @@ export class AvatarStage {
     if (this.diagnostics && rafNow !== undefined) this.observeDiagnostic({ kind: 'raf', at: now });
     if (this.disposed) return;
     this.frame = requestAnimationFrame(this.animate);
-    const interval = 1000 / (Number(this.options.profile?.output?.fps) === 30 ? 30 : 60);
+    const fps = Number(this.options.profile?.output?.fps);
+    const interval = 1000 / (fps === 20 ? 20 : fps === 30 ? 30 : 60);
     const sinceRender = now - this.lastRenderTime;
     if (sinceRender < interval - 0.5) return;
-    this.lastRenderTime = now - (sinceRender % interval);
+    // Advance whole due ticks with the same tolerance as the render gate.
+    // Modulo can round a nearly complete interval back to the previous tick,
+    // admitting another draw at the very next RAF instead of the next deadline.
+    const elapsedTicks = Math.max(1, Math.floor((sinceRender + 0.5) / interval));
+    this.lastRenderTime += elapsedTicks * interval;
     const diagnosticStart = this.diagnostics ? performance.now() : 0;
     const dt = Math.min(this.clock.getDelta(), 0.06);
     this.time += dt;

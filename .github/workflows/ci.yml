@@ -91,6 +91,13 @@ jobs:
         run: node scripts/third-party-notices.mjs --strict
       - name: Build frontend assets
         run: pnpm build
+      - name: Build isolated renderer benchmark assets (no app start)
+        run: node scripts/native-render-benchmark/build.mjs
+      - name: Renderer measurement collector and analysis fixtures (no process sampling)
+        if: runner.os == 'Linux'
+        run: |
+          python3 -B scripts/native-render-benchmark/test-collector.py
+          python3 -B scripts/native-render-benchmark/test-analysis.py
       - name: Linux GLib iterator regression (optimized)
         if: runner.os == 'Linux'
         run: |
@@ -100,6 +107,8 @@ jobs:
         env:
           ORBITPAL_NATIVE_FIXTURE_DIR: ${{ runner.temp }}/orbitpal-avatar-fixtures
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Renderer benchmark example compile and protocol tests (no GUI)
+        run: cargo test --manifest-path src-tauri/Cargo.toml --example native_render_bench --features native-render-benchmark --locked
       - name: Linux disposable credential fixture dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install -y gnome-keyring libglib2.0-bin

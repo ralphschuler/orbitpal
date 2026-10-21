@@ -15,6 +15,10 @@ use std::{
     },
 };
 use tauri::Manager;
+#[path="stream_action_fence.rs"]
+mod action_fence;
+pub(crate) use action_fence::StreamActionFence;
+use action_fence::NativeDeadline;
 #[path = "platform_votes.rs"]
 mod vote;
 #[derive(Default)]
@@ -98,24 +102,30 @@ impl PlatformImpulses {
 #[derive(Clone)]
 pub(crate) struct DispatchLease {
     source: ImpulseSource,
-    expires_ms: u64,
+    deadline: NativeDeadline,
     session_id: String,
 }
 impl DispatchLease {
     pub(crate) fn owner(&self)->&str {self.source.owner()}
     pub(crate) fn current(&self, store: &crate::storage::Store) -> bool {
-        if !now().is_some_and(|now| now < self.expires_ms) {
+        if !self.deadline.current() {
             return false;
         }
         store
             .bot_profile(self.source.owner())
-            .is_ok_and(|profile| self.source.current_profile(&profile))
+            .is_ok_and(|profile| self.source.current_profile(&profile) && self.deadline.current())
+    }
+    pub(crate) fn action_fence(&self,store:&crate::storage::Store)->Result<StreamActionFence,String> {
+        StreamActionFence::capture(self,store)
     }
     pub(crate) fn session_id(&self) -> &str {
         &self.session_id
     }
     pub(crate) fn bind_cancel(&self, job: &Arc<AtomicBool>) -> Result<(), String> {
-        self.source.bind_cancel(job)
+        if !self.deadline.current() {job.store(true,Ordering::SeqCst);return Err("impulse_source_expired".into());}
+        self.source.bind_cancel(job)?;
+        if !self.deadline.current() {job.store(true,Ordering::SeqCst);return Err("impulse_source_expired".into());}
+        Ok(())
     }
 }
 fn command(kind: &str, text: &str) -> Option<ImpulseKind> {
@@ -412,6 +422,9 @@ pub(crate) fn pulse(app: &tauri::AppHandle) {
             let Ok(settings) = state.store.experience_settings(&owner) else {
                 continue;
             };
+            // Capture the monotonic origin BEFORE the UTC sample and any
+            // queue/Store wait; later admission never refreshes this deadline.
+            let sampled_at=std::time::Instant::now();
             let Some(now) = now() else { continue };
             if let Ok(mut routes) = registry.routes.lock() {
                 if let Some(entry) = routes
@@ -485,9 +498,10 @@ pub(crate) fn pulse(app: &tauri::AppHandle) {
             let Some(source) = scope.sources.get(platform).cloned() else {
                 continue;
             };
+            let Some(deadline)=NativeDeadline::from_wall(event.expires_ms,now,sampled_at) else {continue;};
             let authority = DispatchLease {
                 source,
-                expires_ms: event.expires_ms,
+                deadline,
                 session_id: scope.session_id.clone(),
             };
             if !authority.current(&state.store) {

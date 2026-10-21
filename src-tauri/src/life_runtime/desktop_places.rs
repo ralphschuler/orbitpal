@@ -225,6 +225,22 @@ impl WindowRestGuard {
 pub(super) struct DesktopPlaces {
     entries: Mutex<BTreeMap<String, Entry>>,
     in_flight: AtomicBool,
+    main_read_in_flight: Arc<AtomicBool>,
+}
+/// Owned by the queued Main closure, not by its timed-out caller. A blocked
+/// Main thread can therefore retain at most one numeric geometry read.
+struct MainReadSlot(Arc<AtomicBool>);
+impl MainReadSlot {
+    fn claim(flag: Arc<AtomicBool>) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| Self(flag))
+    }
+}
+impl Drop for MainReadSlot {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 impl DesktopPlaces {
     pub(super) fn busy(&self, bot: &str) -> bool {
@@ -397,6 +413,13 @@ fn actual_bounds(capture: &Capture) -> bool {
     (position.x, position.y, size.width, size.height) == capture.key.bounds
 }
 async fn read_main(app: &tauri::AppHandle, capture: &Capture) -> Option<GeometrySample> {
+    let slot = MainReadSlot::claim(
+        app.state::<AppState>()
+            .life_runtime
+            .desktop
+            .main_read_in_flight
+            .clone(),
+    )?;
     let (send, receive) = tokio::sync::oneshot::channel();
     let handle = app.clone();
     let capture = capture.clone();
@@ -405,6 +428,7 @@ async fn read_main(app: &tauri::AppHandle, capture: &Capture) -> Option<Geometry
     let deadline = Instant::now() + Duration::from_millis(500);
     if app
         .run_on_main_thread(move || {
+            let _slot = slot;
             let sample = if !queued_cancel.load(Ordering::SeqCst)
                 && Instant::now() < deadline
                 && current(&handle, &capture)
@@ -1024,6 +1048,21 @@ mod tests {
         .is_empty());
     }
     #[test]
+    fn timed_out_callers_cannot_queue_more_geometry_until_actual_main_closure_retires() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let queued = MainReadSlot::claim(flag.clone()).unwrap();
+        // The async caller may stop waiting while the queued closure still owns
+        // this slot. Repeated actor/tick attempts never queue another read.
+        for _ in 0..32 {
+            assert!(MainReadSlot::claim(flag.clone()).is_none());
+        }
+        drop(queued);
+        let successor = MainReadSlot::claim(flag.clone()).unwrap();
+        assert!(MainReadSlot::claim(flag.clone()).is_none());
+        drop(successor);
+        assert!(!flag.load(Ordering::SeqCst));
+    }
+    #[test]
     fn changed_or_removed_window_retires_target_and_cursor_drift_is_bounded() {
         let sample = sample();
         let p = prefs();
@@ -1037,6 +1076,7 @@ mod tests {
             &targets(&changed, &p, 100)
         ));
         changed.window_top = None;
+        changed.window_identity = None;
         assert!(!target_current(
             &target,
             &changed,

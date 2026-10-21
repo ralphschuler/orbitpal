@@ -39,11 +39,18 @@ impl ImpulseRoute {
             return Err("impulse_source_unavailable".into());
         };
         jobs.retain(|weak| weak.upgrade().is_some_and(|job| !job.load(SeqCst)));
-        if jobs.len() >= 64 || self.cancel.load(SeqCst) {
+        if self.cancel.load(SeqCst) {
             job.store(true, SeqCst);
             return Err("impulse_source_cancelled".into());
         }
-        jobs.push(std::sync::Arc::downgrade(job));
+        let weak=std::sync::Arc::downgrade(job);
+        if !jobs.iter().any(|old|std::sync::Weak::ptr_eq(old,&weak)) {
+            if jobs.len()>=64 {
+                job.store(true,SeqCst);
+                return Err("impulse_source_cancelled".into());
+            }
+            jobs.push(weak);
+        }
         if self.cancel.load(SeqCst) {
             job.store(true, SeqCst);
             return Err("impulse_source_cancelled".into());
@@ -375,6 +382,18 @@ mod impulse_route_tests {
     };
     fn profile() -> Value {
         json!({"id":"owner","chat":{"twitch":{"clientId":"client","broadcasterId":"channel","userId":"account","secretId":"reference","sendReplies":false}}})
+    }
+    #[test]
+    fn repeated_exact_job_bind_is_idempotent_even_at_capacity_and_still_revocable() {
+        let route=ImpulseRoute::default();
+        let jobs=(0..64).map(|_|Arc::new(AtomicBool::new(false))).collect::<Vec<_>>();
+        for job in &jobs {route.bind(job).unwrap();}
+        for _ in 0..3 {route.bind(&jobs[0]).unwrap();}
+        assert_eq!(route.jobs.lock().unwrap().len(),64);
+        let additional=Arc::new(AtomicBool::new(false));
+        assert!(route.bind(&additional).is_err());assert!(additional.load(Ordering::SeqCst));
+        route.cancel();assert!(jobs.iter().all(|job|job.load(Ordering::SeqCst)));
+        assert!(route.bind(&jobs[0]).is_err());
     }
     #[test]
     fn native_read_source_requires_actual_route_and_owner_binding_not_reply_rights() {

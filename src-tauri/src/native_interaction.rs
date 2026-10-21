@@ -214,6 +214,7 @@ pub async fn open_native_character_menu(
     }
     let nonce = uuid::Uuid::new_v4().simple().to_string();
     let texts = labels(&language);
+    let choices = crate::life_runtime::native_interaction_choices(&app, &bot_id);
     let mut items = vec![];
     for (index, kind) in ["pet", "play", "home", "pause"].iter().enumerate() {
         items.push(
@@ -221,7 +222,7 @@ pub async fn open_native_character_menu(
                 &app,
                 format!("experience-menu-{nonce}-{kind}"),
                 texts[index],
-                true,
+                choices[index],
                 None::<&str>,
             )
             .map_err(|_| "interaction_unavailable")?,
@@ -258,6 +259,10 @@ pub async fn open_native_character_menu(
         tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         cancel_exact(&expiry_app, None, Some(&expiry_nonce));
     });
+    if !(owner.current)() {
+        cancel_exact(&app, Some(&bot_id), Some(&nonce));
+        return Err("interaction_unavailable".into());
+    }
     let result = owner.window.popup_menu_at(
         &menu,
         tauri::PhysicalPosition::new(owner.point.0, owner.point.1),

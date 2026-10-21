@@ -255,6 +255,9 @@ async fn start_activity_guarded(
 ) -> Result<LifeState, String> {
     let state = app.state::<AppState>();
     let cancel = Arc::new(AtomicBool::new(false));
+    let stream_source=if let Some((_,lease))=platform {Some(lease.action_fence(&state.store)?)}
+        else if let Some(guard)=&guard {guard.action_fence(&state.store)?} else {None};
+    if let Some(source)=&stream_source {source.bind_cancel(&cancel)?;}
     if let Some(guard)=&window_rest {
         if activity!=Activity::Rest || slot.is_some() || reserved.is_some() || point.is_some()
             || expected.as_ref().is_none_or(|output|!guard.current(bot,output,state.life_runtime.now())) {return Err(ERROR.into());}
@@ -294,6 +297,7 @@ async fn start_activity_guarded(
     drop(state.generation.try_lock().map_err(|_| ERROR)?);
     let mut core = runtime.core.lock().map_err(|_| ERROR)?;
     drop(state.generation.try_lock().map_err(|_| ERROR)?);
+    if stream_source.as_ref().is_some_and(|source|!source.current() || core.sessions.get(source.owner()).is_none_or(|session|session.session_id!=source.session_id())) {return Err(ERROR.into());}
     if guard.as_ref().is_some_and(|guard|!guard.source_current(&state.store)
         || guard.source_session().is_some_and(|(owner,session)|core.sessions.get(owner).is_none_or(|actual|actual.session_id!=session))) {return Err(ERROR.into());}
     if platform.is_some_and(|(owner,lease)|!lease.current(&state.store)
@@ -376,7 +380,11 @@ async fn start_activity_guarded(
             return Err(ERROR.into());
         }
     }
-    if let Some(guard)=window_rest {
+    if let Some(stream)=stream_source {
+        if window_rest.is_some() || point.is_some(){return Err(ERROR.into());}
+        action_host::admit_native_stream_activity(&mut core,&state.store,&state.world,bot,&owned.context.profile,
+            fence,source.context,output,permit,activity,slot,stream,cancel,||runtime.now(),super::wall_ms)?;
+    } else if let Some(guard)=window_rest {
         action_host::admit_native_window_rest(&mut core,&state.store,&state.world,bot,&owned.context.profile,
             fence,source.context,output,permit,guard,cancel,||runtime.now(),super::wall_ms)?;
     } else if activity == Activity::MoveTo {

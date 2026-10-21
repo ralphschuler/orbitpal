@@ -62,6 +62,10 @@ impl SceneActionGuard {
                 .as_ref()
                 .is_none_or(|source| source.authority.current(store))
     }
+    pub(crate) fn action_fence(&self,store:&crate::storage::Store)->Result<Option<crate::platform_impulses::StreamActionFence>,String> {
+        if !self.current(){return Err(ERROR.into());}
+        self.group.source.as_ref().map(|source|source.authority.action_fence(store)).transpose()
+    }
     pub(crate) fn source_session(&self) -> Option<(&str, &str)> {
         self.group
             .source

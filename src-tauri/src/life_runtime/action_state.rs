@@ -60,6 +60,7 @@ pub(crate) struct NativeJob {
     pub grouped: bool,
     pub content: Option<super::content_host::ContentUse>,
     pub window_rest: Option<super::desktop_places::WindowRestGuard>,
+    pub stream_source: Option<crate::platform_impulses::StreamActionFence>,
     pub visual: Option<crate::world_output::VisualExecution>,
     pub native_permit: Option<super::native_scene::NativeActionPermit>,
     pub native_rest_output: Option<crate::world_output::OutputProof>,

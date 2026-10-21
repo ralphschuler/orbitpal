@@ -2,10 +2,12 @@
 //! An offer never bypasses the existing surface, World lease or executor gates.
 use super::{action_host, LifeRuntime};
 use crate::{
+    character_development::HobbyKind,
     life_domain::{ActionId, ActionPhase, Activity},
     life_self_care::{CareConfig, Chooser, End, Need, Offer, OfferKey, Target},
     world_state::AnchorKind,
 };
+use chrono::Timelike;
 use std::{
     collections::BTreeMap,
     sync::{atomic::AtomicBool, Arc, Mutex},
@@ -50,6 +52,56 @@ fn activity(need: Need) -> Activity {
         Need::Engagement => Activity::Play,
         Need::Social => Activity::Socialize,
     }
+}
+
+/// The elapsed clock keeps event ordering stable; routines still follow the
+/// operator's local day (including the offset at that anchored instant).
+fn routine_minute<T: chrono::TimeZone>(epoch_ms: u64, zone: &T) -> Option<u16> {
+    let instant = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(i64::try_from(epoch_ms).ok()?)?;
+    let local = instant.with_timezone(zone);
+    Some((local.hour() * 60 + local.minute()) as u16)
+}
+
+fn same_goal_world(a: &crate::world_output::MotionBinding, b: &crate::world_output::MotionBinding) -> bool {
+    a.world_instance_id == b.world_instance_id && a.stage_id == b.stage_id
+        && a.config_revision == b.config_revision && a.topology_revision == b.topology_revision
+}
+
+/// Read an existing partner through Core's retained registry, never another
+/// member's Owned lock. These observations are goal hints, not action permits.
+fn current_company(
+    core: &super::core::Core,
+    store: &crate::storage::Store,
+    experience: &crate::experience::ExperienceRuntime,
+    output: &crate::world_output::OutputProof,
+    now: u64,
+) -> bool {
+    core.sessions.iter().any(|(bot, session)| {
+        if bot == &output.binding.actor_id || session.mode != super::core::Mode::Life
+            || session.storage_failed || !session.output || experience.paused(bot).unwrap_or(true)
+            || core.local_fence(bot, now).is_none() { return false; }
+        let Some(life) = &session.state else { return false; };
+        let Ok(partner) = core.world_outputs.ready(bot, now) else { return false; };
+        if !matches!(&partner.route, crate::world_output::SourceRoute::Native(route) if route.context_current(core, now))
+            || !same_goal_world(&output.binding, &partner.binding)
+            || partner.binding.actor_id != life.actor_id().as_str()
+            || partner.binding.source_world_id != life.world_id().as_str()
+            || !partner.binding.station_supported { return false; }
+        let Ok(settings) = store.experience_settings(bot) else { return false; };
+        if !["idle", "walk"].iter().all(|motion|settings.preferences.allowed_animations.iter().any(|allowed|allowed.as_str()==*motion)) {
+            return false;
+        }
+        store.bot_profile(bot).ok().is_some_and(|profile|
+            store.action_profile_token(bot, &profile).ok() == Some(partner.profile_token))
+    })
+}
+
+fn goal_options(offers: &[Offer], walk_target: bool, company: bool) -> Vec<HobbyKind> {
+    let mut available = Vec::new();
+    if offers.iter().any(|offer|offer.need()==Need::Engagement) { available.push(HobbyKind::Play); }
+    if walk_target { available.push(HobbyKind::Explore); }
+    if company { available.push(HobbyKind::Company); }
+    available
 }
 
 pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
@@ -206,6 +258,12 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
             continue;
         };
         let Ok(packs)=state.store.content_packs() else {continue;};
+        let walk_allowed = preferences.allowed_animations.iter().any(|a|a=="walk");
+        let target_fits = |point| output.binding.safe_centers.contains(crate::world_output::css(point, output.binding.viewport));
+        let walk_target = walk_allowed && slots.iter().any(|slot|
+            slot.position != source.context.position
+                && within_radius(entry.home, slot.position, preferences.movement_radius)
+                && target_fits(slot.position));
         let mut offers = Vec::new();
         for wanted in [
             Need::Energy,
@@ -213,11 +271,15 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
             Need::Engagement,
             Need::Social,
         ] {
+            // The current adapter renders these activities through real visible
+            // idle dwell. A saved animation name alone supplies no capability.
+            if !output.binding.station_supported { continue; }
             let mut candidates = slots
                 .iter()
                 .filter_map(|slot| {
-                    if need(slot.kind)!=wanted || !preferences.allowed_animations.iter().any(|a|a=="walk")
-                        || !within_radius(entry.home,slot.position,preferences.movement_radius) {return None;}
+                    if need(slot.kind)!=wanted || !walk_allowed
+                        || !within_radius(entry.home,slot.position,preferences.movement_radius)
+                        || !target_fits(slot.position) {return None;}
                     let weight=if let Some(reference)=&slot.content_ref {
                         super::content_host::resolve_for_state(&packs,reference,slot.kind,activity(wanted),&confirmed,&settings.config)?.behavior.map_or(100,|behavior|behavior.weight)
                     } else {100};
@@ -238,9 +300,16 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
                 }
             }
         }
-        let preferences = state.store.social_snapshot(bot).map(|snapshot|
-            character_preferences(&settings.config, &snapshot.development, ((runtime.social_now()/60_000)%1440) as u16))
-            .unwrap_or_else(|_| settings.config.preferences());
+        let company = walk_allowed && output.binding.station_supported
+            && current_company(&core, &state.store, &experience, &output, now);
+        let available = goal_options(&offers, walk_target, company);
+        // Core -> Store, no await or Core re-entry. Persist only advisory goal
+        // status/selection, never a session, action, relationship or completion.
+        let preferences = state.store.social_reconcile_goal(bot, &available)
+            .and_then(|_|state.store.social_snapshot(bot)).ok()
+            .zip(routine_minute(runtime.social_now(), &chrono::Local))
+            .map(|(snapshot, minute)|character_preferences(&settings.config, &snapshot.development, minute))
+            .unwrap_or_else(|| settings.config.preferences());
         if let Ok(preferences) = preferences { entry.chooser.update_preferences(preferences); }
         let Ok(Some(proposal)) = entry.chooser.choose(policy_now, &confirmed, &offers, None) else {
             continue;
@@ -353,5 +422,85 @@ mod tests {
             Point::new(450_001, 500_000).unwrap(),
             250
         ));
+    }
+
+    #[test]
+    fn routines_use_the_injected_local_offset_and_wrap_the_local_day() {
+        use chrono::TimeZone;
+        let at=chrono::Utc.with_ymd_and_hms(2026,10,21,23,30,0).unwrap().timestamp_millis() as u64;
+        let east=chrono::FixedOffset::east_opt(2*3600).unwrap();
+        let west=chrono::FixedOffset::west_opt(5*3600).unwrap();
+        assert_eq!(routine_minute(at,&east),Some(90));
+        assert_eq!(routine_minute(at,&west),Some(18*60+30));
+        let winter=chrono::FixedOffset::east_opt(3600).unwrap();
+        assert_eq!(routine_minute(at,&winter),Some(30));
+        assert_eq!(routine_minute(at+30*60_000,&west),Some(19*60));
+        assert!(routine_minute(u64::MAX,&east).is_none());
+    }
+
+    #[test]
+    fn local_routine_time_changes_a_real_chooser_proposal_in_the_same_environment() {
+        use chrono::TimeZone;
+        use crate::{character_development::{Character,Routine},life_domain::{ActorId,LifeState,Needs,WorldId}};
+        let at=chrono::Utc.with_ymd_and_hms(2026,10,21,7,30,0).unwrap().timestamp_millis() as u64;
+        let local=chrono::FixedOffset::east_opt(2*3600).unwrap();
+        let mut character=Character::default();
+        character.routines.push(Routine{start_minute:9*60,end_minute:10*60,kind:HobbyKind::Play,weight:500});
+        let config=CareConfig::default();
+        let state=LifeState::new(ActorId::new("nova").unwrap(),WorldId::new("world_nova").unwrap(),Needs::new(5000,10000,5000,10000).unwrap());
+        let offers=vec![Offer::new(Need::Energy,Target::Here,0).unwrap(),Offer::new(Need::Engagement,Target::Here,0).unwrap()];
+        let choose=|minute| {
+            let mut chooser=Chooser::new(&state,config.policy().unwrap(),character_preferences(&config,&character,minute).unwrap());
+            chooser.choose(0,&state,&offers,None).unwrap().unwrap().offer().need()
+        };
+        assert_eq!(choose(routine_minute(at,&local).unwrap()),Need::Engagement);
+        assert_eq!(choose(routine_minute(at,&chrono::Utc).unwrap()),Need::Energy);
+    }
+
+    #[test]
+    fn observed_goal_options_persist_pause_and_resume_without_starting_life() {
+        use crate::character_development::GoalStatus;
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture { fn drop(&mut self) {let _=std::fs::remove_dir_all(&self.0);} }
+        let fixture=Fixture(std::env::temp_dir().join(format!("orbitpal-care-goal-{}",uuid::Uuid::new_v4())));
+        let store=crate::storage::Store::new(fixture.0.clone()).unwrap();
+        let bot=store.profile().unwrap()["id"].as_str().unwrap().to_owned();
+        store.social_reconcile_goal(&bot,&goal_options(&[],false,false)).unwrap();
+        assert!(store.social_snapshot(&bot).unwrap().development.goal.is_none());
+        // A supported real Here offer is sufficient for a small Play goal;
+        // it claims neither a station lease nor a completed activity.
+        let offers=vec![Offer::new(Need::Engagement,Target::Here,1000).unwrap()];
+        store.social_reconcile_goal(&bot,&goal_options(&offers,false,false)).unwrap();
+        let initial=store.social_snapshot(&bot).unwrap();
+        let goal=initial.development.goal.clone().unwrap();
+        assert_eq!(goal.kind,HobbyKind::Play);assert_eq!(goal.progress,0);
+        store.social_reconcile_goal(&bot,&goal_options(&offers,false,false)).unwrap();
+        assert_eq!(store.social_snapshot(&bot).unwrap().revision,initial.revision,"unchanged availability must not churn revisions");
+        store.social_reconcile_goal(&bot,&goal_options(&[],false,false)).unwrap();
+        assert_eq!(store.social_snapshot(&bot).unwrap().development.goal.unwrap().status,GoalStatus::Paused);
+        drop(store);
+        let store=crate::storage::Store::new(fixture.0.clone()).unwrap();
+        assert_eq!(store.social_snapshot(&bot).unwrap().development.goal.unwrap().status,GoalStatus::Paused);
+        store.social_reconcile_goal(&bot,&goal_options(&offers,false,false)).unwrap();
+        let resumed=store.social_snapshot(&bot).unwrap().development.goal.unwrap();
+        assert_eq!(resumed,goal);
+        assert!(store.load_life(&bot).unwrap().is_none(),"a persisted goal cannot start a Life session");
+    }
+
+    #[test]
+    fn company_and_exploration_require_their_distinct_current_observations() {
+        use crate::character_development::Character;
+        let mut character=Character::default();
+        character.interests.company=1000;character.interests.explore=800;character.interests.play=0;
+        character.reconcile_goal(&goal_options(&[],false,false));
+        assert!(character.goal.is_none());
+        character.reconcile_goal(&goal_options(&[],true,false));
+        assert_eq!(character.goal.as_ref().unwrap().kind,HobbyKind::Explore);
+        character.reconcile_goal(&goal_options(&[],false,true));
+        assert_eq!(character.goal.as_ref().unwrap().status,crate::character_development::GoalStatus::Paused);
+        character.goal=None;
+        character.reconcile_goal(&goal_options(&[],false,true));
+        assert_eq!(character.goal.as_ref().unwrap().kind,HobbyKind::Company);
+        assert_eq!(character.goal.as_ref().unwrap().progress,0);
     }
 }

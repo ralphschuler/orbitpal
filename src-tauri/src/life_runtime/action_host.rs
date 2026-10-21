@@ -36,8 +36,13 @@ fn with_actions<T>(
     core.actions = Some(actions);
     result
 }
+fn stream_current(core:&Core,source:&crate::platform_impulses::StreamActionFence,now:u64)->bool {
+    source.current() && core.local_fence(source.owner(),now).is_some()
+        && core.sessions.get(source.owner()).is_some_and(|session|session.session_id==source.session_id())
+}
 fn current(core: &Core, job: &NativeJob, now: u64) -> bool {
     !job.cancel.load(Ordering::SeqCst)
+        && job.stream_source.as_ref().is_none_or(|source|stream_current(core,source,now))
         && job.window_rest.as_ref().is_none_or(|guard|job.visual.as_ref().is_some_and(|visual|guard.current(job.key.actor().as_str(),&visual.output,now)))
         && core.local_current(job.key.actor().as_str(), &job.fence, now)
         && job.slot.as_ref().is_none_or(|slot| slot.fresh(now))
@@ -233,6 +238,7 @@ fn admit_rest_bound(
             grouped: false,
             content: None,
             window_rest: None,
+            stream_source: None,
             visual: None,
             native_rest_output: native.as_ref().map(|(output,_)|output.clone()),
             native_permit: native.map(|(_,permit)|permit),
@@ -312,6 +318,7 @@ fn commit_request(
             .apply_life_action_checked(bot, wall(), |actual, tx| {
                 if !cancelling
                     && (!current(core, job, now())
+                        || job.stream_source.as_ref().is_some_and(|source|!source.transaction_current(tx))
                         || job.content.as_ref().is_some_and(|usage|!crate::storage::content_pack_store::current(tx,usage,job.slot.as_ref().map(|slot|slot.target().kind),job.visual.as_ref().map_or(Activity::MoveTo,|visual|visual.activity)))
                         || job
                             .visual
@@ -749,7 +756,21 @@ pub(crate) fn admit_native_window_rest(
     if !guard.current(bot,&output,now()){return Err(UNAVAILABLE.into());}
     guard.bind(&cancel)?;
     let goal=Goal::Here(context.position);
-    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,Some(permit),None,cancel,now,wall,Activity::Rest,Some(guard))
+    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,Some(permit),None,cancel,now,wall,Activity::Rest,Some(guard),None)
+}
+/// Sealed chat provenance is an additional constraint, never a replacement
+/// for the actual native owner, World slot or renderer/executor acknowledgements.
+pub(crate) fn admit_native_stream_activity(
+    core:&mut Core,store:&Store,world:&WorldHub,bot:&str,profile:&Value,
+    fence:LocalFence,context:ActionContext,output:crate::world_output::OutputProof,
+    permit:super::native_scene::NativeActionPermit,activity:Activity,slot:Option<crate::world_state::SlotId>,
+    source:crate::platform_impulses::StreamActionFence,cancel:Arc<AtomicBool>,now:impl Fn()->u64,wall:impl Fn()->u64,
+)->Result<(),String>{
+    if !stream_current(core,&source,now()){return Err(UNAVAILABLE.into());}
+    source.bind_cancel(&cancel)?;
+    let target=slot.as_ref().map(|slot|world.slot_target(store,&context,slot)).transpose()?;
+    let goal=match &target {Some(target)=>Goal::Slot{id:target.id.clone(),kind:target.kind,position:target.position},None=>Goal::Here(context.position)};
+    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,Some(permit),target,cancel,now,wall,activity,None,Some(source))
 }
 /// Exercises the shared slot transaction using an actual selected-Studio
 /// registration. This exposes no product Slot route or native surface grant.
@@ -780,7 +801,7 @@ fn admit_visual_activity(
     slot_target: Option<crate::world_hub::ActionSlotTarget>, cancel: Arc<AtomicBool>,
     now: impl Fn() -> u64, wall: impl Fn() -> u64, activity: Activity,
 ) -> Result<(), String> {
-    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,native_permit,slot_target,cancel,now,wall,activity,None)
+    admit_visual_activity_guarded(core,store,world,bot,profile,fence,context,output,goal,native_permit,slot_target,cancel,now,wall,activity,None,None)
 }
 fn admit_visual_activity_guarded(
     core: &mut Core, store: &Store, world: &WorldHub, bot: &str, profile: &Value,
@@ -789,6 +810,7 @@ fn admit_visual_activity_guarded(
     slot_target: Option<crate::world_hub::ActionSlotTarget>, cancel: Arc<AtomicBool>,
     now: impl Fn() -> u64, wall: impl Fn() -> u64, activity: Activity,
     window_rest: Option<super::desktop_places::WindowRestGuard>,
+    stream_source: Option<crate::platform_impulses::StreamActionFence>,
 ) -> Result<(), String> {
     let target = match &goal { Goal::Point(point) | Goal::Here(point) | Goal::Slot { position: point, .. } => *point, _ => return Err(UNAVAILABLE.into()) };
     with_actions(core, |actions, core| {
@@ -804,6 +826,7 @@ fn admit_visual_activity_guarded(
             }
             || !core.world_outputs.check_proof(&output, now())
             || window_rest.as_ref().is_some_and(|guard|!guard.current(bot,&output,now()))
+            || stream_source.as_ref().is_some_and(|source|!stream_current(core,source,now()))
         {
             return Err(UNAVAILABLE.into());
         }
@@ -841,6 +864,7 @@ fn admit_visual_activity_guarded(
                         || !core.local_admission_current(bot, &fence, now())
                         || !core.world_outputs.check_proof(&visual.output, now())
                         || window_rest.as_ref().is_some_and(|guard|!guard.current(bot,&visual.output,now()))
+                        || stream_source.as_ref().is_some_and(|source|!stream_current(core,source,now()) || !source.transaction_current(tx))
                         || native_permit.as_ref().is_some_and(|permit| !permit.current(core, now()) || !permit.matches_output(&visual.output))
                         || content.as_ref().is_some_and(|usage| !crate::storage::content_pack_store::current(tx,usage,slot_target.as_ref().map(|s|s.kind),activity))
                         || !crate::storage::action_store::matches(
@@ -885,6 +909,7 @@ fn admit_visual_activity_guarded(
             }
         } else { None };
         if slot.as_ref().is_some_and(|slot| !slot.fresh(now()) || world.validate_action_slot_current(core, store, &context, slot, &now).is_err())
+            || stream_source.as_ref().is_some_and(|source|!stream_current(core,source,now()))
             || window_rest.as_ref().is_some_and(|guard|!guard.current(bot,&visual.output,now()))
             || native_permit.as_ref().is_some_and(|permit| !permit.current(core, now()) || !permit.matches_output(&visual.output))
             || cancel.load(Ordering::SeqCst)
@@ -912,6 +937,7 @@ fn admit_visual_activity_guarded(
                 grouped: false,
                 content,
                 window_rest,
+                stream_source,
                 visual: Some(visual),
                 native_rest_output: None,
                 native_permit,
