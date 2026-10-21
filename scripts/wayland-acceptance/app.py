@@ -381,9 +381,12 @@ class Studio:
                  "entryRoleCount": 0, "exactEntryCount": 0,
                  "exactShowingCount": 0, "exactOffscreenCount": 0,
                  "normalizedNameOnlyCount": 0, "metadataUnavailableCount": 0,
-                 "scrollAttempts": 0, "writeAttempts": 0, "expired": 0}
+                 "scrollAttempts": 0, "writeAttempts": 0, "expired": 0,
+                 "nativeOperation": 0}
 
-        def native(call):
+        def native(call, operation=None):
+            if operation is not None:
+                stats["nativeOperation"] = operation
             if time.monotonic() >= deadline:
                 raise Refusal("app_control_missing")
             result = call()
@@ -446,16 +449,21 @@ class Studio:
             node = locate()  # Fresh frame/identity/state immediately before editing.
             if node is None:
                 raise Refusal("app_control_missing")
-            if not native(lambda: self.enabled(node)) or not native(lambda: node.getState().contains(self.a.STATE_EDITABLE)):
+            # Closed outer-call milestones only, not capability/operation ACKs:
+            # 1 enabled, 2 editable state, 3 EditableText, 4 fresh acquisition,
+            # 5 identity, 6 fresh enabled, 7 fresh editable state, 8 text write.
+            if not native(lambda: self.enabled(node), 1) or not native(lambda: node.getState().contains(self.a.STATE_EDITABLE), 2):
                 raise Refusal("app_entry_not_editable")
+            stats["nativeOperation"] = 3
             editor = native(node.queryEditableText)
+            stats["nativeOperation"] = 4
             fresh = locate()
-            if fresh is None or native(lambda: node is fresh or node == fresh) is not True:
+            if fresh is None or native(lambda: node is fresh or node == fresh, 5) is not True:
                 raise Refusal("app_control_missing")
-            if not native(lambda: self.enabled(fresh)) or not native(lambda: fresh.getState().contains(self.a.STATE_EDITABLE)):
+            if not native(lambda: self.enabled(fresh), 6) or not native(lambda: fresh.getState().contains(self.a.STATE_EDITABLE), 7):
                 raise Refusal("app_entry_not_editable")
             stats["writeAttempts"] = 1
-            if native(lambda: editor.setTextContents(value)) is not True:
+            if native(lambda: editor.setTextContents(value), 8) is not True:
                 raise Refusal("app_entry_write_failed")
             # Existing save() still requires the actual committed SQLite values.
         except Exception:

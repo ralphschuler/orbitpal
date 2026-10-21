@@ -2306,12 +2306,77 @@ class ModelEntryRevealTests(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertTrue(lines[0].startswith("app-model-entry: "))
         value = json.loads(lines[0].removeprefix("app-model-entry: "))
-        self.assertEqual(set(value), {"version", "control", "lookupCount", "examinedNodeCount", "exactNameCount", "entryRoleCount", "exactEntryCount", "exactShowingCount", "exactOffscreenCount", "normalizedNameOnlyCount", "metadataUnavailableCount", "scrollAttempts", "writeAttempts", "expired"})
+        self.assertEqual(set(value), {"version", "control", "lookupCount", "examinedNodeCount", "exactNameCount", "entryRoleCount", "exactEntryCount", "exactShowingCount", "exactOffscreenCount", "normalizedNameOnlyCount", "metadataUnavailableCount", "scrollAttempts", "writeAttempts", "expired", "nativeOperation"})
         self.assertTrue(all(type(item) is int and 0 <= item <= 1200 for item in value.values()))
         self.assertLessEqual(value["scrollAttempts"], 2)
         self.assertLessEqual(value["writeAttempts"], 1)
+        self.assertLessEqual(value["nativeOperation"], 8)
         self.assertNotIn("PRIVATE", text)
         return value
+
+    def test_unsupported_editable_interface_is_identified_before_any_write(self):
+        node = self.entry_node()
+        studio, _, _ = self.fixture([node])
+        node.queryEditableText.side_effect = NotImplementedError("PRIVATE_INTERFACE_FAILURE")
+        error, output = self.invoke(studio)
+        self.assertIs(type(error), NotImplementedError)
+        value = self.diagnostic(output)
+        self.assertEqual((value["nativeOperation"], value["lookupCount"], value["writeAttempts"], value["expired"]), (3, 2, 0, 0))
+        node.queryEditableText.assert_called_once_with()
+        node.write.assert_not_called()
+        node.scroll.assert_not_called()
+        # Exercise the actual exception wrapper, not a duplicate phase parser.
+        trace, functions = error.__traceback__, []
+        while trace:
+            functions.append(trace.tb_frame.f_code.co_name)
+            trace = trace.tb_next
+        self.assertIn("native", functions)
+        self.assertNotIn("PRIVATE", json.dumps(app.failure_diagnostic(error)))
+
+    def test_pre_and_post_interface_enabled_failures_have_distinct_closed_operations(self):
+        for operation in (1, 6):
+            node = self.entry_node()
+            studio, _, _ = self.fixture([node])
+            studio.enabled = Mock(side_effect=[True, RuntimeError("PRIVATE_ENABLED_FAILURE")] if operation == 6
+                                  else RuntimeError("PRIVATE_ENABLED_FAILURE"))
+            error, output = self.invoke(studio)
+            self.assertIs(type(error), RuntimeError)
+            value = self.diagnostic(output)
+            self.assertEqual((value["nativeOperation"], value["writeAttempts"], value["expired"]), (operation, 0, 0))
+            self.assertEqual(value["lookupCount"], 3 if operation == 6 else 2)
+            self.assertEqual(node.queryEditableText.call_count, int(operation == 6))
+            self.assertEqual(studio.enabled.call_count, 2 if operation == 6 else 1)
+            node.write.assert_not_called()
+            self.assertNotIn("PRIVATE", json.dumps(app.failure_diagnostic(error)))
+
+    def test_editable_interface_getter_failure_is_marked_before_native_method_lookup(self):
+        class UnsupportedInterface(SwitchRevealTests.Node):
+            @property
+            def queryEditableText(self):
+                raise NotImplementedError("PRIVATE_INTERFACE_GETTER_FAILURE")
+        node = UnsupportedInterface("API base URL", 20,
+                                    ("visible", "showing", "editable", "enabled", "sensitive"))
+        node.write = Mock()
+        studio, _, _ = self.fixture([node])
+        error, output = self.invoke(studio)
+        self.assertIs(type(error), NotImplementedError)
+        value = self.diagnostic(output)
+        self.assertEqual((value["nativeOperation"], value["lookupCount"], value["writeAttempts"]), (3, 2, 0))
+        node.write.assert_not_called()
+        self.assertNotIn("PRIVATE", json.dumps(app.failure_diagnostic(error)))
+
+    def test_native_write_exception_retains_one_attempt_without_diagnostic_queries(self):
+        node = self.entry_node()
+        studio, _, _ = self.fixture([node])
+        node.write.side_effect = NotImplementedError("PRIVATE_WRITE_FAILURE")
+        error, output = self.invoke(studio)
+        self.assertIs(type(error), NotImplementedError)
+        value = self.diagnostic(output)
+        self.assertEqual((value["nativeOperation"], value["lookupCount"], value["writeAttempts"], value["expired"]), (8, 3, 1, 0))
+        node.queryEditableText.assert_called_once_with()
+        node.write.assert_called_once_with("PRIVATE_FIELD_VALUE")
+        node.scroll.assert_not_called()
+        self.assertNotIn("PRIVATE", json.dumps(app.failure_diagnostic(error)))
 
     def test_showing_fixed_fields_write_once_without_window_focus_or_extra_scroll(self):
         for name in ("API base URL", "Model", "Model Load models"):
