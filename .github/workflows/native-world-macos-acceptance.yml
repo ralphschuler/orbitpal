@@ -40,7 +40,7 @@ jobs:
           evidence=$(mktemp -d "$RUNNER_TEMP/native-world-macos.XXXXXXXX")
           chmod 0700 "$evidence"
           printf 'NATIVE_WORLD_EVIDENCE=%s\n' "$evidence" >> "$GITHUB_ENV"
-          printf 'CARGO_TARGET_DIR=%s/native-world-macos-build\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'CARGO_TARGET_DIR=%s/src-tauri/target/native-world-macos-fixture\n' "$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -80,9 +80,21 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          cache: pnpm
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: stable
+      - name: Cache locked native dependencies (rebuild workspace crates)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri -> target/native-world-macos-fixture
+          shared-key: native-world-macos-dependencies
+          cache-all-crates: false
+          cache-workspace-crates: false
+          cache-bin: false
+          # A failed GUI qualification still produced reusable dependencies.
+          cache-on-failure: true
+          save-if: ${{ github.repository == 'ralphschuler/orbitpal' && github.event_name == 'workflow_dispatch' }}
       - name: Build production frontend and isolated actual Wry example (no launch)
         shell: bash
         run: |
