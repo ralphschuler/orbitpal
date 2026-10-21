@@ -106,17 +106,18 @@ export class StageDiagnosticCounters {
   }
 }
 
-export type BenchmarkPage = { kind: 'control' } | { kind: 'figure'; epoch: number };
+export type BenchmarkPage = { kind: 'control' } | { kind: 'figure'; epoch: number; fps: 20 | 30 };
 export function parseBenchmarkPage(search: string): BenchmarkPage | null {
   const entries = [...new URLSearchParams(search)];
   if (entries.length === 1 && entries[0][0] === 'benchmark' && entries[0][1] === 'control') return { kind: 'control' };
-  if (entries.length !== 2 || entries.some(([key]) => key !== 'benchmark' && key !== 'epoch')) return null;
+  if ((entries.length !== 2 && entries.length !== 3) || entries.some(([key]) => key !== 'benchmark' && key !== 'epoch' && key !== 'fps')) return null;
   const params = new URLSearchParams(search);
   const raw = params.get('epoch');
   if (params.getAll('benchmark').length !== 1 || params.getAll('epoch').length !== 1 || params.get('benchmark') !== 'figure'
+    || params.getAll('fps').length > 1 || (params.has('fps') && params.get('fps') !== '20' && params.get('fps') !== '30')
     || raw === null || !/^[1-9][0-9]{0,15}$/.test(raw)) return null;
   const epoch = Number(raw);
-  return Number.isSafeInteger(epoch) && epoch > 0 ? { kind: 'figure', epoch } : null;
+  return Number.isSafeInteger(epoch) && epoch > 0 ? { kind: 'figure', epoch, fps: params.get('fps') === '20' ? 20 : 30 } : null;
 }
 export type BenchmarkCommand = 'continue' | 'dom_out' | 'dom_in' | 'dispose';
 export type BenchmarkPacket = StageDiagnosticsSnapshot & { version: 1; epoch: number; sequence: number; disposed: boolean; domOut: boolean };

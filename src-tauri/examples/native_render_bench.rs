@@ -43,7 +43,8 @@ struct Shared {
     root: PathBuf,
     start: Instant,
     smoke: bool,
-    mount: Mutex<Option<Mount>>,
+    actors: u64,
+    mounts: Mutex<Vec<Mount>>,
     log: Mutex<Log>,
     failed: AtomicBool,
     finished: AtomicBool,
@@ -61,7 +62,7 @@ impl Shared {
 
 /// No environment values, paths, exception strings or external content enter logs.
 #[cfg(target_os = "linux")]
-fn fixture_root() -> Result<(PathBuf, bool), Error> {
+fn fixture_root() -> Result<(PathBuf, bool, u64), Error> {
     use std::os::unix::fs::MetadataExt;
     for (key, value) in [("GITHUB_ACTIONS","true"), ("RUNNER_ENVIRONMENT","github-hosted"), ("RUNNER_OS","Linux"),
         ("ORBITPAL_NATIVE_RENDER_BENCH","disposable-linux-only"), ("GDK_BACKEND","wayland"), ("WAYLAND_DISPLAY","orbitpal-benchmark")] {
@@ -71,7 +72,8 @@ fn fixture_root() -> Result<(PathBuf, bool), Error> {
         return Err("unsafe_benchmark_environment");
     }
     let args: Vec<_> = std::env::args().collect();
-    if args.len() != 3 || args[1] != "--mode" || !["smoke","pilot"].contains(&args[2].as_str()) { return Err("invalid_benchmark_arguments"); }
+    if args.len() != 3 || args[1] != "--mode" { return Err("invalid_benchmark_arguments"); }
+    let (smoke, actors) = measurement_mode(&args[2]).ok_or("invalid_benchmark_arguments")?;
     let root = PathBuf::from(std::env::var_os("ORBITPAL_BENCH_ROOT").ok_or("missing_fixture_root")?);
     let name = root.file_name().and_then(|s| s.to_str()).ok_or("invalid_fixture_root")?;
     let nonce = name.strip_prefix("orbitpal-render-").ok_or("invalid_fixture_root")?;
@@ -99,17 +101,25 @@ fn fixture_root() -> Result<(PathBuf, bool), Error> {
     if fs::read_to_string("/proc/self/cgroup").map_err(|_| "process_scope_unavailable")? != expected_group {
         return Err("foreign_process_scope");
     }
-    Ok((root, args[2] == "smoke"))
+    Ok((root, smoke, actors))
 }
 #[cfg(not(target_os = "linux"))]
-fn fixture_root() -> Result<(PathBuf, bool), Error> { Err("linux_disposable_session_required") }
+fn fixture_root() -> Result<(PathBuf, bool, u64), Error> { Err("linux_disposable_session_required") }
+
+fn measurement_mode(mode: &str) -> Option<(bool, u64)> {
+    match mode { "smoke" => Some((true, 1)), "pilot" => Some((false, 1)),
+        "pilot3" => Some((false, 3)), "pilot5" => Some((false, 5)), _ => None }
+}
+fn figure_epoch(cycle: u64, ordinal: u64, actors: u64) -> Result<u64, Error> {
+    if !matches!(actors, 1 | 3 | 5) || ordinal >= actors || cycle > 20 { return Err("invalid_figure_bank"); }
+    Ok(cycle * 5 + ordinal + 1)
+}
 
 #[tauri::command]
 async fn bench_batch(window: WebviewWindow, state: tauri::State<'_, Arc<Shared>>, packet: Packet) -> Result<Reply, Error> {
     state.ensure_live()?;
-    let mut guard = state.mount.lock().map_err(|_| "mount_unavailable")?;
-    let mount = guard.as_mut().ok_or("no_active_measurement")?;
-    if window.label() != mount.label { return Err("foreign_benchmark_window"); }
+    let mut guard = state.mounts.lock().map_err(|_| "mount_unavailable")?;
+    let mount = guard.iter_mut().find(|mount| window.label() == mount.label).ok_or("foreign_benchmark_window")?;
     let now = Instant::now();
     let reply = mount.protocol.accept(packet).inspect_err(|_| { state.failed.store(true, Ordering::SeqCst); })?;
     mount.last_batch = Some(now);
@@ -140,8 +150,8 @@ async fn sleep_checked(state: &Arc<Shared>, duration: Duration) -> Result<(), Er
     let until = Instant::now() + duration;
     while Instant::now() < until {
         state.ensure_live()?;
-        { let guard = state.mount.lock().map_err(|_| "mount_unavailable")?;
-          if let Some(mount) = guard.as_ref() {
+        { let guard = state.mounts.lock().map_err(|_| "mount_unavailable")?;
+          for mount in guard.iter() {
               if mount.destroyed.load(Ordering::SeqCst) { return Err("unexpected_figure_destruction"); }
               if mount.last_batch.is_some_and(|at|at.elapsed()>Duration::from_secs(8)) { return Err("measurement_batch_stalled"); }
           }
@@ -150,35 +160,38 @@ async fn sleep_checked(state: &Arc<Shared>, duration: Duration) -> Result<(), Er
     }
     Ok(())
 }
-async fn create_mount(app: &tauri::AppHandle, state: &Arc<Shared>, epoch: u64) -> Result<(), Error> {
+async fn create_mount(app: &tauri::AppHandle, state: &Arc<Shared>, epoch: u64, ordinal: u64) -> Result<(), Error> {
     let label = format!("bench-figure-{epoch}"); let destroyed = Arc::new(AtomicBool::new(false));
-    { let mut guard = state.mount.lock().map_err(|_| "mount_unavailable")?;
-      if guard.is_some() { return Err("overlapping_figure"); }
-      *guard = Some(Mount { protocol: Protocol::new(epoch)?, label:label.clone(),window:None,destroyed:destroyed.clone(),last_batch:None,first_draw:false,phase:"initial_draw",phase_gate:None,stable_phase:false });
+    { let mut guard = state.mounts.lock().map_err(|_| "mount_unavailable")?;
+      if ordinal >= state.actors || guard.len() as u64 != ordinal || guard.iter().any(|m| m.protocol.epoch == epoch) { return Err("overlapping_figure"); }
+      guard.push(Mount { protocol: Protocol::new(epoch)?, label:label.clone(),window:None,destroyed:destroyed.clone(),last_batch:None,first_draw:false,phase:"initial_draw",phase_gate:None,stable_phase:false });
     }
     let root = state.root.clone();
+    let fps = if state.actors == 5 { 20 } else { 30 };
     let window = on_main(app, state, move |app| {
-        let query=format!("benchmark=figure&epoch={epoch}");
-        let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(format!("benchmark.html?benchmark=figure&epoch={epoch}").into()))
-            .title("OrbitPal renderer fixture").inner_size(640.0,640.0).resizable(false)
+        let query=format!("benchmark=figure&epoch={epoch}&fps={fps}");
+        let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(format!("benchmark.html?{query}").into()))
+            .title("OrbitPal renderer fixture").inner_size(480.0,480.0).position((ordinal % 3) as f64 * 480.0, (ordinal / 3) as f64 * 480.0).resizable(false)
             .data_directory(root.join(format!("webview-{epoch}")))
             .on_navigation(move |url| fixture_navigation(url,&query))
             .build().map_err(|_| "figure_window_failed")?;
         window.on_window_event(move |event| { if matches!(event,tauri::WindowEvent::Destroyed) { destroyed.store(true,Ordering::SeqCst); } });
         Ok(window)
     }).await?;
-    state.mount.lock().map_err(|_| "mount_unavailable")?.as_mut().ok_or("mount_missing")?.window = Some(window);
+    state.mounts.lock().map_err(|_| "mount_unavailable")?.iter_mut().find(|m| m.protocol.epoch == epoch).ok_or("mount_missing")?.window = Some(window);
     let until = Instant::now()+Duration::from_secs(30);
     loop {
         sleep_checked(state,Duration::from_millis(100)).await?;
-        if state.mount.lock().map_err(|_| "mount_unavailable")?.as_ref().is_some_and(|m|m.first_draw) { break; }
+        if state.mounts.lock().map_err(|_| "mount_unavailable")?.iter().any(|m|m.protocol.epoch == epoch && m.first_draw) { break; }
         if Instant::now()>until { return Err("first_actual_submission_missing"); }
     }
     state.log(json!({"kind":"first_actual_submission","epoch":epoch}))
 }
 async fn phase(app:&tauri::AppHandle,state:&Arc<Shared>,name:&'static str,command:Command,control_visible:bool,duration:Duration)->Result<(),Error> {
     let transition_start=Instant::now();
-    { let mut guard=state.mount.lock().map_err(|_|"mount_unavailable")?;let mount=guard.as_mut().ok_or("mount_missing")?;mount.phase=name;mount.protocol.command=command;mount.phase_gate=Some(PhaseGate::new(mount.protocol.epoch,command)?);mount.stable_phase=false; }
+    { let mut guard=state.mounts.lock().map_err(|_|"mount_unavailable")?;
+      if guard.len() as u64 != state.actors { return Err("mount_missing"); }
+      for mount in guard.iter_mut() { mount.phase=name;mount.protocol.command=command;mount.phase_gate=Some(PhaseGate::new(mount.protocol.epoch,command)?);mount.stable_phase=false; } }
     state.log(json!({"kind":"phase_transition_start","phase":name,"requestedDomOut":command==Command::DomOut,"requestedControlVisible":control_visible}))?;
     on_main(app,state,move|app| {let control=app.get_webview_window("bench-control").ok_or("control_missing")?;
         if control_visible {control.show()} else {control.hide()}.map_err(|_|"control_visibility_failed")?;
@@ -186,31 +199,43 @@ async fn phase(app:&tauri::AppHandle,state:&Arc<Shared>,name:&'static str,comman
     let ack_until=Instant::now()+Duration::from_secs(30);
     loop {
         sleep_checked(state,Duration::from_millis(100)).await?;
-        let mut guard=state.mount.lock().map_err(|_|"mount_unavailable")?;
-        let mount=guard.as_mut().ok_or("mount_missing")?;
-        if mount.phase_gate.as_ref().is_some_and(PhaseGate::acknowledged) {mount.stable_phase=true;break;}
+        let mut guard=state.mounts.lock().map_err(|_|"mount_unavailable")?;
+        if guard.len() as u64 != state.actors { return Err("mount_missing"); }
+        if guard.iter().all(|mount| mount.phase_gate.as_ref().is_some_and(PhaseGate::acknowledged)) {
+            for mount in guard.iter_mut() { mount.stable_phase=true; } break;
+        }
         if Instant::now()>ack_until {return Err("phase_acknowledgement_missing");}
     }
     state.log(json!({"kind":"phase_start","phase":name,"durationMs":duration.as_millis() as u64,"transitionMs":transition_start.elapsed().as_millis() as u64,"laterDomAck":true,"freshSubmissionAfterCommandRequired":command==Command::DomIn}))?;
     sleep_checked(state,duration).await
 }
 async fn close_mount(app:&tauri::AppHandle,state:&Arc<Shared>)->Result<(),Error> {
-    {let mut guard=state.mount.lock().map_err(|_|"mount_unavailable")?;let mount=guard.as_mut().ok_or("mount_missing")?;mount.phase="orderly_dispose";mount.protocol.command=Command::Dispose;mount.phase_gate=None;mount.stable_phase=false;}
+    {let mut guard=state.mounts.lock().map_err(|_|"mount_unavailable")?;
+     if guard.len() as u64 != state.actors { return Err("mount_missing"); }
+     for mount in guard.iter_mut() {mount.phase="orderly_dispose";mount.protocol.command=Command::Dispose;mount.phase_gate=None;mount.stable_phase=false;} }
     let until=Instant::now()+Duration::from_secs(15);
-    let (window,destroyed,epoch)=loop {
+    let windows=loop {
         sleep_checked(state,Duration::from_millis(100)).await?;
-        let guard=state.mount.lock().map_err(|_|"mount_unavailable")?;let mount=guard.as_ref().ok_or("mount_missing")?;
-        if mount.protocol.previous.as_ref().is_some_and(|p|p.disposed) {break (mount.window.clone().ok_or("figure_handle_missing")?,mount.destroyed.clone(),mount.protocol.epoch);}
+        let guard=state.mounts.lock().map_err(|_|"mount_unavailable")?;
+        if guard.len() as u64 != state.actors { return Err("mount_missing"); }
+        if guard.iter().all(|mount|mount.protocol.previous.as_ref().is_some_and(|p|p.disposed)) {
+            break guard.iter().map(|mount|Ok((mount.window.clone().ok_or("figure_handle_missing")?,mount.destroyed.clone(),mount.protocol.epoch))).collect::<Result<Vec<_>,Error>>()?;
+        }
         if Instant::now()>until {return Err("actual_dispose_ack_missing");}
     };
-    on_main(app,state,move|_|window.close().map_err(|_|"figure_close_failed")).await?;
+    let closing=windows.iter().map(|(window,_,_)|window.clone()).collect::<Vec<_>>();
+    on_main(app,state,move|_| {for window in closing {window.close().map_err(|_|"figure_close_failed")?;} Ok(())}).await?;
     let until=Instant::now()+Duration::from_secs(15);
-    while !destroyed.load(Ordering::SeqCst) {
+    while !windows.iter().all(|(_,destroyed,_)|destroyed.load(Ordering::SeqCst)) {
         state.ensure_live()?; if Instant::now()>until{return Err("native_destroyed_not_observed");}
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    state.mount.lock().map_err(|_|"mount_unavailable")?.take();
-    state.log(json!({"kind":"native_destroyed_after_actual_dispose","epoch":epoch}))
+    state.mounts.lock().map_err(|_|"mount_unavailable")?.clear();
+    for (_,_,epoch) in windows {state.log(json!({"kind":"native_destroyed_after_actual_dispose","epoch":epoch}))?;} Ok(())
+}
+
+async fn create_bank(app:&tauri::AppHandle,state:&Arc<Shared>,cycle:u64)->Result<(),Error> {
+    for ordinal in 0..state.actors { create_mount(app,state,figure_epoch(cycle,ordinal,state.actors)?,ordinal).await?; } Ok(())
 }
 async fn drive(app:tauri::AppHandle,state:Arc<Shared>)->Result<(),Error> {
     let ready_until=Instant::now()+Duration::from_secs(30);
@@ -223,16 +248,17 @@ async fn drive(app:tauri::AppHandle,state:Arc<Shared>)->Result<(),Error> {
     let baseline=Duration::from_secs(if state.smoke{1}else{60});
     let warm=Duration::from_secs(if state.smoke{2}else{600});
     let quarter=Duration::from_secs(if state.smoke{2}else{450});
-    state.log(json!({"kind":"scope","version":1,"actors":1,"simultaneousStages":1,"nativeWebviews":2,"mode":if state.smoke{"smoke"}else{"pilot"},"softwareGpuQualificationOnly":true,"gpuDuration":null,"gpuUtilization":null,"displayPresentTiming":null,"instrumentationOverhead":null,"missingMetricsReason":"not_qualified","normalAppBootstrap":false,"fullIssue66Acceptance":false}))?;
+    let mode=if state.smoke{"smoke"}else{match state.actors {3=>"pilot3",5=>"pilot5",_=>"pilot"}};
+    state.log(json!({"kind":"scope","version":1,"actors":state.actors,"simultaneousStages":state.actors,"nativeWebviews":state.actors+1,"framesPerSecond":if state.actors==5{20}else{30},"requestedFigureLogicalWidth":480,"requestedFigureLogicalHeight":480,"nativePlacementConfirmed":false,"mode":mode,"softwareGpuQualificationOnly":true,"gpuDuration":null,"gpuUtilization":null,"displayPresentTiming":null,"instrumentationOverhead":null,"missingMetricsReason":"not_qualified","normalAppBootstrap":false,"fullIssue66Acceptance":false}))?;
     state.log(json!({"kind":"control_only_before"}))?;sleep_checked(&state,baseline).await?;
-    create_mount(&app,&state,1).await?;
+    create_bank(&app,&state,0).await?;
     phase(&app,&state,"warmup",Command::DomIn,true,warm).await?;
     for (name,command,shown) in [("control_shown_dom_in",Command::DomIn,true),("control_shown_dom_out",Command::DomOut,true),("control_hidden_dom_out",Command::DomOut,false),("control_hidden_dom_in",Command::DomIn,false)] {
         phase(&app,&state,name,command,shown,quarter).await?;
     }
     close_mount(&app,&state).await?;
     let cycles=if state.smoke{3}else{20};
-    for epoch in 2..=(cycles+1) {create_mount(&app,&state,epoch).await?;close_mount(&app,&state).await?;}
+    for cycle in 1..=cycles {create_bank(&app,&state,cycle).await?;close_mount(&app,&state).await?;}
     state.log(json!({"kind":"control_only_after","additionalOrderlyCycles":cycles}))?;
     sleep_checked(&state,baseline).await?;
     state.log(json!({"kind":"completed","activeFixtureStages":0,"activeFigureWindows":0,"additionalOrderlyCycles":cycles,"fullAppOrRawCloseCleanupProven":false}))?;
@@ -240,14 +266,14 @@ async fn drive(app:tauri::AppHandle,state:Arc<Shared>)->Result<(),Error> {
     state.finished.store(true,Ordering::SeqCst);app.exit(0);Ok(())
 }
 fn main() {
-    let (root,smoke)=match fixture_root(){Ok(value)=>value,Err(code)=>{eprintln!("benchmark-refused: {code}");std::process::exit(1)}};
+    let (root,smoke,actors)=match fixture_root(){Ok(value)=>value,Err(code)=>{eprintln!("benchmark-refused: {code}");std::process::exit(1)}};
     if fs::write(root.join("app.pid"),std::process::id().to_string()).is_err() { eprintln!("benchmark-refused: fixture_pid_unavailable");std::process::exit(1); }
     let context=tauri::generate_context!("benchmark/tauri.conf.json");
     if context.config().identifier!=ID || !context.config().app.windows.is_empty() || context.config().build.dev_url.is_some() {
         eprintln!("benchmark-refused: unexpected_embedded_context");std::process::exit(1);
     }
     let file=match OpenOptions::new().write(true).create_new(true).open(root.join("native.ndjson")) {Ok(file)=>file,Err(_)=>{eprintln!("benchmark-refused: fixture_log_exists_or_unavailable");std::process::exit(1)}};
-    let state=Arc::new(Shared{root,start:Instant::now(),smoke,mount:Mutex::new(None),log:Mutex::new(Log{file,bytes:0}),failed:AtomicBool::new(false),finished:AtomicBool::new(false)});
+    let state=Arc::new(Shared{root,start:Instant::now(),smoke,actors,mounts:Mutex::new(Vec::new()),log:Mutex::new(Log{file,bytes:0}),failed:AtomicBool::new(false),finished:AtomicBool::new(false)});
     let setup_state=state.clone();let exit_state=state.clone();
     let app=tauri::Builder::default().manage(state).invoke_handler(tauri::generate_handler![bench_batch]).setup(move|app| {
         let root=setup_state.root.clone();
@@ -277,6 +303,22 @@ fn main() {
 mod navigation_tests {
     use super::*;
     #[test]
+    fn pilot_actor_counts_are_closed_and_every_retired_bank_has_new_epochs() {
+        assert_eq!(measurement_mode("smoke"), Some((true,1)));
+        assert_eq!(measurement_mode("pilot"), Some((false,1)));
+        assert_eq!(measurement_mode("pilot3"), Some((false,3)));
+        assert_eq!(measurement_mode("pilot5"), Some((false,5)));
+        for mode in ["pilot2", "pilot50", "3", "--actors=5", "pilot5 "] { assert!(measurement_mode(mode).is_none()); }
+        for actors in [1,3,5] {
+            let mut epochs=std::collections::BTreeSet::new();
+            for cycle in 0..=20 {for ordinal in 0..actors {assert!(epochs.insert(figure_epoch(cycle,ordinal,actors).unwrap()));}}
+            assert_eq!(epochs.len() as u64,actors*21);
+            assert!(figure_epoch(0,actors,actors).is_err());
+            assert!(figure_epoch(21,0,actors).is_err());
+        }
+        assert!(figure_epoch(0,0,2).is_err());
+    }
+    #[test]
     fn navigation_is_only_the_exact_embedded_role_and_epoch() {
         for prefix in ["tauri://localhost", "http://tauri.localhost"] {
             let exact=format!("{prefix}/benchmark.html?benchmark=figure&epoch=1");
@@ -286,6 +328,11 @@ mod navigation_tests {
                 "/benchmark.html?benchmark=figure&epoch=1&path=other"] {
                 assert!(!fixture_navigation(&url::Url::parse(&format!("{prefix}{suffix}")).unwrap(),"benchmark=figure&epoch=1"));
             }
+        }
+        let query="benchmark=figure&epoch=7&fps=20";
+        assert!(fixture_navigation(&url::Url::parse(&format!("tauri://localhost/benchmark.html?{query}")).unwrap(),query));
+        for wrong in ["benchmark=figure&epoch=7&fps=30", "benchmark=figure&epoch=2&fps=20", "benchmark=figure&epoch=7&fps=20&actors=5"] {
+            assert!(!fixture_navigation(&url::Url::parse(&format!("tauri://localhost/benchmark.html?{wrong}")).unwrap(),query));
         }
         for raw in ["tauri://other/benchmark.html?benchmark=control", "http://tauri.localhost:8080/benchmark.html?benchmark=control",
             "http://user@tauri.localhost/benchmark.html?benchmark=control", "https://example.com/benchmark.html?benchmark=control"] {

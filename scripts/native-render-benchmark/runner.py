@@ -21,7 +21,7 @@ import subprocess
 import sys
 import time
 
-from collect import PinnedDirectory, Refusal, bounded, checked_root, membership, numeric_pids, refuse, scoped_pids, uid_inventory
+from collect import PinnedDirectory, Refusal, bounded, checked_root, measurement_mode, membership, numeric_pids, refuse, scoped_pids, uid_inventory
 
 
 SOURCE = Path(__file__).resolve().parent
@@ -309,6 +309,7 @@ def cleanup_identity(identity):
 
 
 def execute(mode, binary, output):
+    actors, fps = measurement_mode(mode)
     start = time.monotonic()
     deadline = start + MAX_SECONDS
     nonce = secrets.token_hex(8)
@@ -385,7 +386,7 @@ def execute(mode, binary, output):
             shutil.copyfileobj(source, destination, 1024 * 1024)
         fixed_binary.chmod(0o700)
         os.chown(fixed_binary, uid, gid)
-        manifest = {"version": 1, "mode": mode, "backendRequested": "llvmpipe",
+        manifest = {"version": 1, "mode": mode, "actors": actors, "framesPerSecond": fps, "backendRequested": "llvmpipe",
                     "nativeBinarySha256": sha256(fixed_binary), "logicalCpuCount": os.cpu_count(),
                     "kernelRelease": platform.release(), "architecture": platform.machine(),
                     "physicalGpuPermissionsChanged": False, "nativeLaneOnly": True,
@@ -534,8 +535,9 @@ def execute(mode, binary, output):
 def main():
     hosted_root()
     os.umask(0o077)
-    if len(sys.argv) != 5 or sys.argv[1] != "--mode" or sys.argv[2] not in ("smoke", "pilot") or sys.argv[3] != "--binary":
+    if len(sys.argv) != 5 or sys.argv[1] != "--mode" or sys.argv[3] != "--binary":
         refuse("invalid_fixture_arguments")
+    measurement_mode(sys.argv[2])
     binary = Path(sys.argv[4])
     info = binary.lstat()
     if not binary.is_absolute() or not stat.S_ISREG(info.st_mode) or not info.st_mode & 0o111:

@@ -82,10 +82,26 @@ artifacts or an incomplete teardown cannot become success. Software-compositor
 qualification is separate from GPU/present timing, hardware performance and
 full issue#66 acceptance. No actual smoke has run at this documentation point.
 
-The explicit `pilot` mode is separate. Do not run it before the real short smoke
+The explicit `pilot`, `pilot3` and `pilot5` modes are separate. Do not run them before the real short smoke
 and isolation checks pass. The existing native driver owns phase times, three
 additional orderly-close cycles for smoke versus twenty for pilot, fixed Nova
-loading, unique window epochs and exact numeric IPC. The pilot requests ten
+loading, unique window epochs and exact numeric IPC. `pilot` owns one figure at
+30fps, `pilot3` owns three simultaneous figures at30fps, and `pilot5` owns five
+at20fps. Each figure has its own actual AvatarStage and WebView, requesting fixed
+480×480 logical content dimensions and a three-column/two-row grid. Wayland
+compositor placement and native occlusion are not confirmed by this fixture. A separate control WebView never constructs a Stage. These are isolated
+renderer windows, not production Studio/overlay or OBS exposure measurements.
+The smoke remains one figure at30fps and cannot select a long mode.
+
+All figure windows must independently report a fresh post-load submission
+before warmup. Each phase starts only after every current epoch has confirmed
+the DOM command; restoring in-view needs a fresh submission from every figure.
+One stalled, destroyed, failed or unacknowledged figure fails the bank. Each
+orderly cycle disposes every Stage and observes every exact native window's
+Destroyed event before creating a new bank with fresh epochs. CPU/RSS continue
+to cover the entire app cgroup and cannot be attributed to only one figure.
+
+Each pilot requests ten
 minutes of warmup followed by four 7.5-minute measurement phases, plus control
 baselines and close cycles. Neither the elapsed duration nor the software-GPU
 runner establishes a measured hardware baseline or a performance target.

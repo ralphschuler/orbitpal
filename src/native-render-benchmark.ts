@@ -16,7 +16,7 @@ const profile = {
   emotes: [], motions: [],
 };
 
-async function figure(epoch: number): Promise<void> {
+async function figure(epoch: number, fps: 20 | 30): Promise<void> {
   const diagnostics = new StageDiagnosticCounters();
   const fresh = new FreshSubmissionGate();
   let stage: AvatarStage | undefined;
@@ -53,7 +53,7 @@ async function figure(epoch: number): Promise<void> {
   try {
     const { AvatarStage: ActualStage } = await import('./lib/avatar');
     if (pageClosed) return;
-    stage = new ActualStage(host, { profile, motionSource: 'fixed', speaking: false, level: 0, emotion: 'neutral',
+    stage = new ActualStage(host, { profile: { ...profile, output: { ...profile.output, fps } }, motionSource: 'fixed', speaking: false, level: 0, emotion: 'neutral',
       transparent: false, audioEnabled: false }, () => diagnostics.observe({ kind: 'failure' }), undefined,
       observation => { diagnostics.observe(observation); fresh.observe(observation); });
     await stage.loadAsset(undefined, [], '', profile.id);
@@ -65,6 +65,6 @@ async function figure(epoch: number): Promise<void> {
   if (!pageClosed) batcher.start();
 }
 
-if (page?.kind === 'figure') void figure(page.epoch);
+if (page?.kind === 'figure') void figure(page.epoch, page.fps);
 else if (page?.kind !== 'control') status.textContent = 'Benchmark request unavailable.';
 // The control page intentionally creates no Stage, renderer, RAF or timer.
