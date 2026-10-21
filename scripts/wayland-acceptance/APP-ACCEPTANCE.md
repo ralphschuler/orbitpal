@@ -40,18 +40,49 @@ stock-grammar compatibility fix, not a general PAM control interpreter; the
 remaining real stack, child login1 session, selector and cleanup still require
 a fresh actual run.
 
-The two fixed model fields now use fresh PID/executable/unique Studio-frame
-acquisition, including VISIBLE offscreen entries. At most two real native
-`scrollTo` requests may reveal a field within its original 12-second deadline.
-Only a fresh SHOWING, enabled, editable exact field receives one native
-`EditableText.setTextContents` call. No window focus, global key/pointer or
-JavaScript route is added; ordinary message entry and capture/chooser gates stay
-unchanged. Actual SQLite save readback still establishes the persisted settings.
-A terminal `app-model-entry` line contains only bounded lookup/role/name-match
-counts, reveal/write counts, a fixed field code (1 endpoint, 2 model), and expiry.
-No text/value/tree is logged, and no post-deadline diagnostic AX query is made.
-The previous receipt does not prove whether offscreen state, a native popup or
-another accessibility condition caused its missing-field result.
+The actual [02217c1 run](https://github.com/ralphschuler/orbitpal/actions/runs/39596885370)
+found one exact SHOWING endpoint field on both desktops, then failed in the
+actual `queryEditableText()` call before any write. WebKitGTK 2.52.6's
+[direct AT-SPI backend](https://github.com/WebKit/WebKit/blob/webkitgtk-2.52.6/Source/WebCore/accessibility/atspi/AccessibilityObjectAtspi.h)
+exposes Text without an EditableText interface; the EDITABLE state alone does
+not establish that interface. Both portal baselines passed; this app run did not.
+
+Actual-app orchestration now explicitly binds `native_input.FixtureInput` to
+the original private root, live loopback Receiver/socket/thread and nonce.
+Only three fixed fields may receive input: its exact endpoint, the fixed fixture
+model, and the exact closed current armed case/nonce message. This is an explicit
+native guest input mode, never a catch-and-fallback or arbitrary text endpoint.
+Each field keeps one original 12-second deadline and at most two reveal scrolls.
+Before and after one Ctrl+A/text sequence, the controller requires fresh owned
+PID/executable, unique SHOWING Main ACTIVE, same exact enabled editable entry
+FOCUSED, and actual read-only Text. A genuine entry `grabFocus` may request focus;
+its return alone does not pass. Actual Text must equal the expected value, and
+the existing SQLite Save proof remains mandatory. No key attempt is retried after
+uncertain delivery. Capture/chooser grants and their evidence are unchanged.
+
+GNOME uses a dedicated connection on the exact private bus and an input-only
+[Mutter 50.1 RemoteDesktop session](https://github.com/GNOME/mutter/blob/50.1/data/dbus-interfaces/org.gnome.Mutter.RemoteDesktop.xml).
+Its unique owner PID/UID must match the retained actual compositor start identity.
+It never associates a ScreenCast session or uses clipboard APIs. KDE requires an
+actually advertised v6 `keyboard_keysym` interface, the exact private socket peer,
+and the existing executable/interface authorization. The actual earlier KDE job
+installed `plasma-wayland-protocols 1.20.0-2`; its
+[upstream protocol](https://github.com/KDE/plasma-wayland-protocols/blob/v1.20.0/src/protocols/fake-input.xml)
+includes keysym v6. No US keycode mapping or v4 text fallback exists. Existing
+pointer/Escape modes still bind at most v4. The KDE helper emits only fixed
+`ready`/`done` tokens; the controller rechecks focus after `ready` before sending
+one bounded validated stdin line. Neither token establishes delivery or consent.
+Pressed keys/modifiers are released in cleanup and only the own device/session
+is destroyed; disconnect is also required on error/deadline. No timeout is extended.
+The backend protocols are private/version-specific and actual input/focus/text
+delivery on either desktop remains unproved until a new actual run passes.
+
+Terminal `app-model-entry` diagnostics contain bounded counts, fixed field codes
+(1 endpoint, 2 model, 3 message) and expiry. In explicit native mode operation
+3 means Text interface, 4 focus request, 5 focus readback, 6 transport preparation,
+7 one key sequence, 8 fresh value readback. Legacy EditableText fixtures retain
+their original operation meanings. No text/value/tree or raw native error is
+logged, and diagnostics do not query AX after the deadline.
 
 PAM grammar remains fail-closed. Additional `pam-session-capability` numeric
 fields locate a refused non-session rule without exporting a config line:

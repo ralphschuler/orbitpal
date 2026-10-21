@@ -15,6 +15,7 @@ import time
 import uuid
 
 from provider import Receiver, Refusal
+from native_input import FixtureInput, MESSAGE
 
 
 PHASES = frozenset((
@@ -42,6 +43,7 @@ TRACEBACK_METADATA_LIMIT = 32
 OWNED_SOURCES = {
     str(Path(__file__).resolve()): "app.py",
     str(Path(__file__).with_name("provider.py").resolve()): "provider.py",
+    str(Path(__file__).with_name("native_input.py").resolve()): "native_input.py",
 }
 EXCEPTION_TYPES = (
     (Refusal, "Refusal"), (FileNotFoundError, "FileNotFoundError"),
@@ -80,6 +82,8 @@ REFUSAL_CODES = frozenset((
     'tools_must_be_disabled', 'unexpected_app_executable', 'unexpected_auth_or_transport',
     'unexpected_content_type', 'unexpected_saved_app_state', 'unexpected_selected_bot',
     'unsolicited_inference', 'wrong_model_or_stream', 'wrong_release', 'wrong_turn_or_image_count',
+    'private_input_deadline', 'private_input_scope', 'private_input_owner',
+    'private_input_value', 'private_input_focus', 'private_input_readback', 'private_input_unavailable',
 ))
 _current_phase = "controller_entry"
 _emitted_phases = set()
@@ -226,6 +230,11 @@ class Studio:
         self.sequence = 0
         self.database = root / "data/studio.streamer-ai.cohost/cohost.sqlite3"
         self.frame = None
+        self.native_input = None
+
+    def bind_native_input(self, receiver, nonce):
+        """Explicit private guest mode, bound to this exact live loopback fixture."""
+        self.native_input = FixtureInput(self.root, receiver, nonce)
 
     def nodes(self, include_offscreen=False, frame=None):
         phase("studio_registry_query")
@@ -360,7 +369,7 @@ class Studio:
         self.action(self.one(name, {self.a.ROLE_PUSH_BUTTON}))
 
     def entry(self, name, value):
-        if name in MODEL_ENTRIES:
+        if name in MODEL_ENTRIES or getattr(self, "native_input", None) is not None:
             return self.model_entry(name, value)
         node = self.one(name, {self.a.ROLE_ENTRY, self.a.ROLE_TEXT})
         if not self.enabled(node) or not node.getState().contains(self.a.STATE_EDITABLE):
@@ -370,13 +379,14 @@ class Studio:
             raise Refusal("app_entry_write_failed")
 
     def model_entry(self, name, value):
-        """Bounded reveal/write of two fixed native fields, never global input."""
-        if name not in MODEL_ENTRIES:
-            raise Refusal("app_control_missing")
+        """Bounded fixed-field reveal, with explicitly bound native guest input."""
         deadline = time.monotonic() + 12
+        policy = getattr(self, "native_input", None)
+        if name not in MODEL_ENTRIES and not (policy is not None and name == MESSAGE):
+            raise Refusal("app_control_missing")
         roles = {self.a.ROLE_ENTRY, self.a.ROLE_TEXT}
         names = {"Model", "Model Load models"} if name == "Model" else {name}
-        stats = {"version": 1, "control": 1 if name == "API base URL" else 2,
+        stats = {"version": 1, "control": 1 if name == "API base URL" else 3 if name == MESSAGE else 2,
                  "lookupCount": 0, "examinedNodeCount": 0, "exactNameCount": 0,
                  "entryRoleCount": 0, "exactEntryCount": 0,
                  "exactShowingCount": 0, "exactOffscreenCount": 0,
@@ -445,6 +455,8 @@ class Studio:
             return None
 
         try:
+            if policy is not None:
+                native(lambda: policy.validate(name, value))
             self.wait(locate, "app_control_missing", seconds=max(0, deadline - time.monotonic()))
             node = locate()  # Fresh frame/identity/state immediately before editing.
             if node is None:
@@ -454,6 +466,9 @@ class Studio:
             # 5 identity, 6 fresh enabled, 7 fresh editable state, 8 text write.
             if not native(lambda: self.enabled(node), 1) or not native(lambda: node.getState().contains(self.a.STATE_EDITABLE), 2):
                 raise Refusal("app_entry_not_editable")
+            if policy is not None:
+                policy.write(self, name, value, node, locate, native, deadline, stats)
+                return
             stats["nativeOperation"] = 3
             editor = native(node.queryEditableText)
             stats["nativeOperation"] = 4
@@ -935,6 +950,7 @@ def run(root):
     phase("actual_studio_coldstart")
     nonce = uuid.uuid4().hex[:16]
     with Receiver(nonce) as receiver:
+        studio.bind_native_input(receiver, nonce)
         phase("configure_real_voice_off")
         phase("configure_voice_navigation")
         studio.button("Character & voice")

@@ -5,9 +5,11 @@ import base64
 import io
 import importlib.util
 import json
+import os
 from pathlib import Path
 import socket
 import sqlite3
+import stat
 import sys
 import time
 import tempfile
@@ -18,6 +20,7 @@ from unittest.mock import Mock, patch
 
 from PIL import Image
 import app
+import native_input
 import provider
 
 DIRECTORY = Path(__file__).resolve().parent
@@ -2509,6 +2512,356 @@ class ModelEntryRevealTests(unittest.TestCase):
         node.write.assert_called_once_with("synthetic")
         with self.assertRaisesRegex(provider.Refusal, "^app_control_missing$"):
             studio.model_entry("PRIVATE_UNKNOWN_FIELD", "synthetic")
+
+
+class NativeFixtureInputTests(unittest.TestCase):
+    """Actual policy and fixed-field writer, with no native transport or GUI."""
+    def policy(self):
+        receiver = provider.Receiver.__new__(provider.Receiver)
+        receiver.state = provider.State(NONCE)
+        receiver.server = SimpleNamespace(server_address=("127.0.0.1", 32123),
+                                          socket=Mock(getsockname=Mock(return_value=("127.0.0.1", 32123))))
+        receiver.thread = Mock(is_alive=Mock(return_value=True))
+        with patch.object(native_input, "private_environment", return_value=((1, 2), (1, 3))), patch.object(native_input, "compositor_identity", return_value=("gnome", 123, b"456", 1, 4)):
+            policy = native_input.FixtureInput(Path("/disposable"), receiver, NONCE)
+        return policy, receiver
+
+    def guards(self):
+        return (patch.object(native_input, "private_environment", return_value=((1, 2), (1, 3))),
+                patch.object(native_input, "compositor_identity", return_value=("gnome", 123, b"456", 1, 4)))
+
+    def test_private_environment_rejects_host_bus_display_root_owner_and_socket_changes(self):
+        root = Path("/tmp/orbitpal-wayland.abcdefgh")
+        environment = {"ORBITPAL_WAYLAND_ACCEPTANCE": "synthetic-desktop-only", "ORBITPAL_ACCEPTANCE_MODE": "app",
+                       "ORBITPAL_ACCEPTANCE_ROOT": str(root),
+                       "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Linux",
+                       "XDG_RUNTIME_DIR": str(root / "runtime"), "WAYLAND_DISPLAY": "orbitpal-acceptance",
+                       "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(root / "runtime/session-bus")}
+        def metadata(path):
+            directory = path in (root, root / "runtime")
+            return SimpleNamespace(st_mode=(stat.S_IFDIR | 0o700) if directory else (stat.S_IFSOCK | 0o600),
+                                   st_uid=1000, st_dev=1, st_ino=1 if path == root else 2)
+        with patch.object(native_input.os, "getuid", return_value=1000), patch.object(native_input.os, "geteuid", return_value=1000), patch.object(native_input.Path, "resolve", lambda path, **_: path), patch.object(native_input.Path, "lstat", metadata):
+            with patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(native_input.private_environment(root), ((1, 1), (1, 2)))
+            for key, value in (("GITHUB_ACTIONS", "false"), ("RUNNER_ENVIRONMENT", "self-hosted"),
+                               ("ORBITPAL_ACCEPTANCE_MODE", "prototype"), ("DISPLAY", ":0"),
+                               ("ORBITPAL_ACCEPTANCE_ROOT", "/tmp/other"),
+                               ("WAYLAND_SOCKET", "3"), ("DBUS_SESSION_BUS_ADDRESS", "unix:path=/host/bus"),
+                               ("WAYLAND_DISPLAY", "host"), ("XDG_RUNTIME_DIR", "/run/user/1000")):
+                with self.subTest(key=key), patch.dict(os.environ, {**environment, key: value}, clear=True), self.assertRaises(provider.Refusal):
+                    native_input.private_environment(root)
+            for mode, owner in ((stat.S_IFDIR | 0o755, 1000), (stat.S_IFLNK | 0o700, 1000), (stat.S_IFDIR | 0o700, 1001)):
+                with patch.dict(os.environ, environment, clear=True), patch.object(native_input.Path, "lstat", return_value=SimpleNamespace(st_mode=mode, st_uid=owner)), self.assertRaises(provider.Refusal):
+                    native_input.private_environment(root)
+            with patch.dict(os.environ, environment, clear=True), patch.object(native_input.os, "getuid", return_value=0), self.assertRaises(provider.Refusal):
+                native_input.private_environment(root)
+
+    def test_compositor_identity_uses_exact_fresh_pid_executable_uid_and_starttime(self):
+        wanted = Path("/usr/bin/gnome-shell")
+        raw = b"123 (gnome shell) S 1 " + b"0 " * 17 + b"456 0\n"
+        def metadata(path):
+            return SimpleNamespace(st_mode=stat.S_IFREG | 0o755, st_uid=1000 if str(path).startswith("/proc/") else 0, st_dev=1, st_ino=4)
+        with patch.dict(os.environ, {"ORBITPAL_ACCEPTANCE_DESKTOP": "gnome", "ORBITPAL_ACCEPTANCE_COMPOSITOR_PID": "123"}), patch.object(native_input.os, "getuid", return_value=1000), patch.object(native_input.Path, "stat", metadata), patch.object(native_input.Path, "resolve", return_value=wanted), patch.object(native_input.Path, "open", side_effect=lambda *_args, **_kwargs: io.BytesIO(raw)):
+            self.assertEqual(native_input.compositor_identity(), ("gnome", 123, b"456", 1, 4))
+            for invalid in (b"124 (gnome shell) S 1 " + b"0 " * 17 + b"456 0\n", b"PRIVATE_BAD_PROC", raw.replace(b") S ", b") Z "), b"x" * 4097):
+                with self.subTest(size=len(invalid)), patch.object(native_input.Path, "open", side_effect=lambda *_args, **_kwargs: io.BytesIO(invalid)), self.assertRaises(provider.Refusal):
+                    native_input.compositor_identity()
+            with patch.object(native_input.Path, "resolve", side_effect=[wanted, Path("/usr/bin/other")]), self.assertRaises(provider.Refusal):
+                native_input.compositor_identity()
+            with patch.object(native_input.Path, "stat", return_value=SimpleNamespace(st_uid=1001)), self.assertRaises(provider.Refusal):
+                native_input.compositor_identity()
+
+    def test_policy_only_accepts_original_loopback_model_and_current_closed_message(self):
+        policy, receiver = self.policy()
+        one, two = self.guards()
+        with one, two:
+            policy.validate("API base URL", receiver.base_url)
+            policy.validate("Model", native_input.MODEL)
+            for case in provider.CASES:
+                receiver.state.plan = {"case": case}
+                policy.validate(native_input.MESSAGE, f"ORBITPAL_WAYLAND_{case}_{NONCE}")
+            for name, value in (("Password", "PRIVATE"), ("Model", "other"), ("API base URL", "http://127.0.0.1:32124/v1"),
+                                (native_input.MESSAGE, f"ORBITPAL_WAYLAND_unknown_{NONCE}"),
+                                (native_input.MESSAGE, "ORBITPAL_WAYLAND_held_disable_" + "f" * 16),
+                                (native_input.MESSAGE, f"ORBITPAL_WAYLAND_fresh_red_{NONCE}"),
+                                ("Model", native_input.MODEL + "\n")):
+                with self.subTest(name=name), self.assertRaises(provider.Refusal):
+                    policy.validate(name, value)
+
+    def test_binding_refuses_receiver_lookalikes_and_invalid_or_replaced_nonce(self):
+        _, receiver = self.policy()
+        one, two = self.guards()
+        with one, two:
+            for candidate, nonce in ((SimpleNamespace(state=receiver.state), NONCE),
+                                     (receiver, "F" * 16), (receiver, NONCE + "\n"), (receiver, 1),
+                                     (receiver, "f" * 16)):
+                with self.subTest(type=type(candidate).__name__), self.assertRaises(provider.Refusal):
+                    native_input.FixtureInput(Path("/disposable"), candidate, nonce)
+            receiver.state = SimpleNamespace(nonce=NONCE)
+            with self.assertRaises(provider.Refusal):
+                native_input.FixtureInput(Path("/disposable"), receiver, NONCE)
+
+    def test_original_receiver_socket_thread_nonce_and_scope_cannot_be_replaced(self):
+        for changed in ("state", "server", "socket", "thread", "nonce", "closed", "port", "dead"):
+            policy, receiver = self.policy()
+            if changed == "state": receiver.state = provider.State(NONCE)
+            if changed == "server": receiver.server = SimpleNamespace(server_address=("127.0.0.1", 32123))
+            if changed == "socket": receiver.server.socket = Mock()
+            if changed == "thread": receiver.thread = Mock()
+            if changed == "nonce": receiver.state.nonce = "f" * 16
+            if changed == "closed": receiver.state.closed = True
+            if changed == "port": receiver.server.socket.getsockname.return_value = ("127.0.0.1", 32124)
+            if changed == "dead": receiver.thread.is_alive.return_value = False
+            one, two = self.guards()
+            with self.subTest(changed=changed), one, two, self.assertRaises(provider.Refusal):
+                policy.validate("Model", native_input.MODEL)
+        for function, value in (("private_environment", ((1, 99), (1, 3))),
+                                ("compositor_identity", ("gnome", 123, b"999", 1, 4))):
+            policy, _ = self.policy()
+            one, two = self.guards()
+            with one, two, patch.object(native_input, function, return_value=value), self.assertRaises(provider.Refusal):
+                policy.validate("Model", native_input.MODEL)
+
+    def test_key_sequence_balances_control_and_every_printable_fixture_character(self):
+        sequence = native_input.key_sequence("http://127.0.0.1:32123/v1")
+        self.assertEqual(sequence[:4], [(0xffe3, True), (97, True), (97, False), (0xffe3, False)])
+        held = set()
+        for symbol, down in sequence:
+            if down: held.add(symbol)
+            else: held.remove(symbol)
+        self.assertEqual(held, set())
+        for value in ("", "x" * 129, "a b", "a\n", "a\x00", "é", 1):
+            with self.subTest(value=type(value).__name__), self.assertRaises(provider.Refusal):
+                native_input.key_sequence(value)
+
+    def field(self, name="API base URL"):
+        node = ModelEntryRevealTests().entry_node(name)
+        node.value = "old"
+        node.queryText = Mock(side_effect=lambda: SimpleNamespace(characterCount=len(node.value), getText=Mock(return_value=node.value)))
+        focus = Mock(side_effect=lambda: (node.states.add("focused") or True))
+        node.queryComponent = Mock(return_value=SimpleNamespace(grabFocus=focus))
+        studio, frame, _ = ModelEntryRevealTests().fixture([node])
+        frame.states.add("active")
+        studio.a.STATE_FOCUSED = "focused"
+        policy, receiver = self.policy()
+        studio.native_input = policy
+        transport = Mock()
+        transport.__enter__ = Mock(return_value=transport)
+        transport.__exit__ = Mock(return_value=False)
+        transport.replace.side_effect = lambda value: setattr(node, "value", value)
+        policy.open = Mock(return_value=transport)
+        return studio, node, frame, receiver, transport
+
+    def invoke(self, studio, value, name="API base URL", clock=None):
+        clock, output = [0.0] if clock is None else clock, io.StringIO()
+        timer = SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda delay: clock.__setitem__(0, clock[0] + delay))
+        one, two = self.guards()
+        with one, two, patch.object(app, "process_parent", side_effect=SwitchRevealTests().parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app, "time", timer), patch.object(native_input, "time", timer), patch.object(app, "sys", SimpleNamespace(stderr=output)):
+            try:
+                studio.entry(name, value)
+            except Exception as error:
+                return error, output.getvalue()
+        return None, output.getvalue()
+
+    def test_all_three_actual_entry_routes_focus_type_once_and_freshly_read_real_text(self):
+        for name, value in (("API base URL", "http://127.0.0.1:32123/v1"), ("Model", native_input.MODEL),
+                            (native_input.MESSAGE, f"ORBITPAL_WAYLAND_fresh_red_{NONCE}")):
+            studio, node, _, receiver, transport = self.field(name)
+            receiver.state.plan = {"case": "fresh_red"}
+            error, output = self.invoke(studio, value, name)
+            self.assertIsNone(error, output)
+            self.assertEqual(output, "")
+            transport.replace.assert_called_once_with(value)
+            transport.__exit__.assert_called_once()
+            node.queryComponent().grabFocus.assert_called_once_with()
+            node.queryEditableText.assert_not_called()
+            self.assertGreater(node.queryText.call_count, 3)
+
+    def test_false_focus_or_no_observed_focus_and_inactive_window_never_open_input(self):
+        for case in ("false", "unobserved", "inactive"):
+            studio, node, frame, _, transport = self.field()
+            node.queryComponent().grabFocus.side_effect = None
+            node.queryComponent().grabFocus.return_value = case != "false"
+            if case == "inactive":
+                frame.states.discard("active")
+                node.states.add("focused")
+            clock = [0.0]
+            error, output = self.invoke(studio, "http://127.0.0.1:32123/v1", clock=clock)
+            self.assertEqual(error.code, "app_window_not_active" if case == "inactive" else "private_input_focus")
+            studio.native_input.open.assert_not_called()
+            transport.replace.assert_not_called()
+            if case != "false": self.assertLess(clock[0], 12.2)
+            self.assertNotIn("http", output)
+
+    def test_focus_or_identity_loss_during_transport_preparation_prevents_keys(self):
+        for case in ("focus", "identity", "active"):
+            studio, node, frame, _, transport = self.field()
+            def prepare():
+                if case == "focus": node.states.discard("focused")
+                if case == "identity": frame.children = [ModelEntryRevealTests().entry_node()]
+                if case == "active": frame.states.discard("active")
+                return transport
+            transport.__enter__.side_effect = prepare
+            error, _ = self.invoke(studio, "http://127.0.0.1:32123/v1")
+            self.assertIsInstance(error, provider.Refusal)
+            transport.replace.assert_not_called()
+            transport.__exit__.assert_called_once()
+
+    def test_wrong_readback_or_uncertain_delivery_never_retries_input_and_cleans_up(self):
+        for case in ("unchanged", "exception", "late", "focus_lost"):
+            studio, node, _, _, transport = self.field()
+            clock = [0.0]
+            def replace(value):
+                if case == "exception": raise RuntimeError("PRIVATE_NATIVE_ERROR")
+                if case == "late": clock[0] = 12.0
+                if case == "focus_lost": node.states.discard("focused")
+            transport.replace.side_effect = replace
+            error, output = self.invoke(studio, "http://127.0.0.1:32123/v1", clock=clock)
+            self.assertIsNotNone(error)
+            transport.replace.assert_called_once()
+            transport.__exit__.assert_called_once()
+            self.assertNotIn("PRIVATE", output)
+            self.assertNotIn("http", output)
+            self.assertLess(clock[0], 12.2)
+
+    def test_text_interface_absence_and_disabled_control_fail_before_native_input(self):
+        for case in ("text", "disabled"):
+            studio, node, _, _, transport = self.field()
+            if case == "text": node.queryText.side_effect = NotImplementedError("PRIVATE")
+            if case == "disabled": node.states.remove("enabled")
+            error, _ = self.invoke(studio, "http://127.0.0.1:32123/v1")
+            self.assertIsNotNone(error)
+            studio.native_input.open.assert_not_called()
+            transport.replace.assert_not_called()
+
+
+class PrivateInputTransportTests(unittest.TestCase):
+    """Production transport code with fixed D-Bus/subprocess doubles, no IPC."""
+    def test_kde_waits_for_fixed_ready_then_sends_only_one_stdin_line_and_requires_done(self):
+        policy = SimpleNamespace(root=Path("/disposable"))
+        for marker, code, output in ((b"ready\n", 0, b"done\n"), (b"other\n", 0, b"done\n"),
+                                     (b"ready\n", 1, b"done\n"), (b"ready\n", 0, b"other\n")):
+            process = Mock(stdin=io.BytesIO(), stdout=io.BytesIO(marker), returncode=code)
+            process.poll.return_value = code
+            process.communicate.return_value = (output, None)
+            with self.subTest(marker=marker, code=code, output=output), patch.object(native_input.Path, "lstat", return_value=SimpleNamespace(st_mode=stat.S_IFREG | 0o700, st_uid=1000)), patch.object(native_input.os, "getuid", return_value=1000), patch.object(native_input.subprocess, "Popen", return_value=process) as start, patch.object(native_input.select, "select", return_value=([process.stdout], [], [])), patch.object(native_input.time, "monotonic", return_value=0):
+                error = None
+                try:
+                    with native_input.KdeInput(policy, 12) as transport:
+                        transport.replace(native_input.MODEL)
+                except provider.Refusal as caught:
+                    error = caught
+                self.assertEqual(error is None, marker == b"ready\n" and code == 0 and output == b"done\n")
+                self.assertEqual(start.call_args.args[0], ["/disposable/pointer", "--fixture-text"])
+                if marker == b"ready\n":
+                    process.communicate.assert_called_once_with(b"orbitpal-wayland-fixture\n", timeout=12)
+                else:
+                    process.communicate.assert_not_called()
+                process.wait.assert_called()
+
+    def gnome(self, fail=None):
+        class Variant:
+            def __init__(self, signature, value): self.signature, self.value = signature, value
+            def get_type_string(self): return self.signature
+            def unpack(self): return self.value
+            def get_child_value(self, _): return self
+            def get_variant(self): return Variant("u", 1)
+            def get_uint32(self): return self.value
+        events = []
+        def call(destination, path, interface, method, arguments, reply, flags, timeout, cancellable):
+            events.append((destination, path, interface, method, arguments, reply, flags, timeout, cancellable))
+            if fail and fail(method, arguments): raise RuntimeError("PRIVATE_DBUS_ERROR")
+            value = {"GetNameOwner": (":1.45",), "GetConnectionUnixProcessID": (123,),
+                     "GetConnectionUnixUser": (1000,), "Get": (None,),
+                     "CreateSession": (native_input.GnomeInput.PATH + "/Session/u1",)}.get(method, ())
+            return Variant(reply, value)
+        connection = Mock(call_sync=Mock(side_effect=call), close_sync=Mock(return_value=True))
+        gio = SimpleNamespace(Cancellable=Mock(return_value=Mock()), DBusCallFlags=SimpleNamespace(NO_AUTO_START=4),
+            DBusConnectionFlags=SimpleNamespace(AUTHENTICATION_CLIENT=1, MESSAGE_BUS_CONNECTION=2),
+            DBusConnection=SimpleNamespace(new_for_address_sync=Mock(return_value=connection)))
+        glib = SimpleNamespace(Variant=Variant, VariantType=SimpleNamespace(new=lambda value: value))
+        policy = SimpleNamespace(compositor=("gnome", 123, b"456", 1, 4))
+        return policy, gio, glib, connection, events
+
+    def invoke_gnome(self, fail=None, value=native_input.MODEL):
+        policy, gio, glib, connection, events = self.gnome(fail)
+        timer = Mock()
+        error = None
+        with patch.dict(sys.modules, {"gi": SimpleNamespace(repository=SimpleNamespace(Gio=gio, GLib=glib)), "gi.repository": SimpleNamespace(Gio=gio, GLib=glib)}), patch.dict(native_input.os.environ, {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/disposable/runtime/session-bus"}), patch.object(native_input.os, "getuid", return_value=1000), patch.object(native_input, "compositor_identity", return_value=policy.compositor), patch.object(native_input.threading, "Timer", return_value=timer), patch.object(native_input.time, "monotonic", return_value=0):
+            try:
+                with native_input.GnomeInput(policy, 12) as transport:
+                    transport.replace(value)
+            except Exception as caught:
+                error = caught
+        return error, gio, connection, events, timer
+
+    def test_gnome_uses_own_connection_exact_owner_typed_keys_and_stops_only_own_session(self):
+        error, gio, connection, events, timer = self.invoke_gnome()
+        self.assertIsNone(error)
+        self.assertEqual(gio.DBusConnection.new_for_address_sync.call_args.args[:2], ("unix:path=/disposable/runtime/session-bus", 3))
+        keys = [event[4].value for event in events if event[3] == "NotifyKeyboardKeysym"]
+        self.assertEqual(keys, native_input.key_sequence(native_input.MODEL))
+        self.assertTrue(all(event[0] == ":1.45" and event[1].endswith("/Session/u1") and event[4].signature == "(ub)" for event in events if event[3] == "NotifyKeyboardKeysym"))
+        self.assertTrue(all(event[6] == 4 and 0 < event[7] <= 12000 for event in events))
+        self.assertEqual([e[3] for e in events].count("Start"), 1)
+        self.assertEqual([e[3] for e in events].count("Stop"), 1)
+        connection.close_sync.assert_called_once_with(gio.Cancellable.return_value)
+        connection.close.assert_not_called()
+        timer.cancel.assert_called_once_with()
+
+    def test_uncertain_gnome_press_releases_control_and_key_before_session_cleanup(self):
+        once = [False]
+        def fail(method, arguments):
+            if method == "NotifyKeyboardKeysym" and arguments.value == (97, True) and not once[0]:
+                once[0] = True
+                return True
+            return False
+        error, _, connection, events, _ = self.invoke_gnome(fail)
+        self.assertIs(type(error), RuntimeError)
+        keys = [event[4].value for event in events if event[3] == "NotifyKeyboardKeysym"]
+        self.assertEqual(keys, [(0xffe3, True), (97, True), (97, False), (0xffe3, False)])
+        self.assertEqual([e[3] for e in events].count("Stop"), 1)
+        connection.close_sync.assert_called_once()
+        self.assertNotIn("PRIVATE", json.dumps(app.failure_diagnostic(error)))
+
+    def test_wrong_gnome_uid_or_replaced_owner_or_expired_clock_never_delivers_keys(self):
+        policy, _, _, _, _ = self.gnome()
+        transport = native_input.GnomeInput(policy, 12)
+        for replies in ((":1.45", 124, 1000), (":1.45", 123, 1001), ("bad",)):
+            with self.subTest(replies=replies), patch.object(transport, "bus", side_effect=replies), patch.object(native_input.os, "getuid", return_value=1000), patch.object(native_input, "compositor_identity", return_value=policy.compositor), self.assertRaises(provider.Refusal):
+                transport.owner()
+        transport.peer = ":1.45"
+        with patch.object(transport, "owner", return_value=":1.46"), patch.object(transport, "key") as key, self.assertRaises(provider.Refusal):
+            transport.replace(native_input.MODEL)
+        key.assert_not_called()
+        with patch.object(native_input.time, "monotonic", return_value=12), self.assertRaises(provider.Refusal):
+            native_input.remaining(12)
+
+    def test_all_uncertain_held_symbols_get_release_attempts_even_if_one_release_errors(self):
+        transport = native_input.GnomeInput(SimpleNamespace(), 12)
+        transport.peer, transport.path, transport.held = ":1.45", "/own/session", [0xffe3, 97]
+        transport.call = Mock(side_effect=[RuntimeError("PRIVATE_RELEASE_ERROR"), None])
+        with self.assertRaisesRegex(provider.Refusal, "^private_input_unavailable$"):
+            transport.release()
+        self.assertEqual([item.args[5] for item in transport.call.call_args_list], [(97, False), (0xffe3, False)])
+        self.assertEqual(transport.held, [97])
+
+    def test_gnome_reply_types_deadline_and_cancelled_close_remain_fail_closed(self):
+        policy, gio, glib, connection, _ = self.gnome()
+        transport = native_input.GnomeInput(policy, 12)
+        transport.Gio, transport.GLib, transport.connection, transport.cancel = gio, glib, connection, Mock()
+        connection.call_sync.return_value = SimpleNamespace(get_type_string=lambda: "(s)")
+        connection.call_sync.side_effect = None
+        with patch.object(native_input.time, "monotonic", return_value=0), self.assertRaisesRegex(provider.Refusal, "^private_input_owner$"):
+            transport.call("peer", "/path", "interface", "method", "(s)", ("fixed",), "(u)")
+        with patch.object(native_input.time, "monotonic", return_value=12), self.assertRaisesRegex(provider.Refusal, "^private_input_deadline$"):
+            transport.call("peer", "/path", "interface", "method", "(s)", ("fixed",), "(u)")
+        self.assertEqual(connection.call_sync.call_count, 1)
+        with patch.object(native_input.time, "monotonic", return_value=12), self.assertRaisesRegex(provider.Refusal, "^private_input_unavailable$"):
+            transport.__exit__(None, None, None)
+        connection.close_sync.assert_not_called()
+        connection.close.assert_called_once_with(None, None, None)
 
 
 if __name__ == "__main__":

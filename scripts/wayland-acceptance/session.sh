@@ -73,6 +73,7 @@ if [[ "$ORBITPAL_ACCEPTANCE_DESKTOP" == gnome ]]; then
   monitor=1280x960
   if [[ "${ORBITPAL_ACCEPTANCE_MODE:-prototype}" == app ]]; then monitor=1920x1200; fi
   start compositor gnome-shell --wayland --headless --virtual-monitor="$monitor" --wayland-display=orbitpal-acceptance --no-x11
+  export ORBITPAL_ACCEPTANCE_COMPOSITOR_PID="${pids[-1]}"
   wait_for 'GNOME compositor' dbus_name org.gnome.Mutter.ScreenCast
   backend_package=xdg-desktop-portal-gnome
 else
@@ -85,6 +86,7 @@ else
   width=1280; height=960
   if [[ "${ORBITPAL_ACCEPTANCE_MODE:-prototype}" == app ]]; then width=1920; height=1200; fi
   start compositor env QT_LOGGING_RULES='kwin_core.debug=true;KWIN_UTILS.debug=true' kwin_wayland --virtual --width "$width" --height "$height" --output-count 1 --socket orbitpal-acceptance --no-lockscreen --no-global-shortcuts
+  export ORBITPAL_ACCEPTANCE_COMPOSITOR_PID="${pids[-1]}"
   wait_for 'KWin compositor' dbus_name org.kde.KWin
   # The exact real compositor must use OpenGL. QPainter is insufficient for its
   # output screencast implementation; never count that fallback as acceptance.

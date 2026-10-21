@@ -8,7 +8,8 @@
  * https://github.com/KDE/kwin/blob/v6.6.4/src/wayland_server.cpp
  * KWin then authenticates this bound input device and routes pointer events:
  * https://github.com/KDE/kwin/blob/v6.6.4/src/backends/fakeinput/fakeinputdevice.cpp
- * Bind at most protocol v4; Escape needs its real keyboard_key request:
+ * Pointer/Escape bind at most v4. The explicit fixed-text mode requires v6
+ * keyboard_keysym; it never guesses a US evdev keycode layout:
  * https://github.com/KDE/plasma-wayland-protocols/blob/v1.19.0/src/protocols/fake-input.xml
  */
 #define _GNU_SOURCE
@@ -35,6 +36,7 @@
 #include "fake-input-client-protocol.h"
 
 static struct org_kde_kwin_fake_input *input;
+static bool text_mode;
 
 static void timed_out(int signal_number)
 {
@@ -73,7 +75,9 @@ static void global(void *data, struct wl_registry *registry, uint32_t name,
                    const char *interface, uint32_t version)
 {
     (void)data;
-    if (!input && version >= 3 && strcmp(interface, "org_kde_kwin_fake_input") == 0)
+    if (text_mode && !input && version >= 6 && strcmp(interface, "org_kde_kwin_fake_input") == 0)
+        input = wl_registry_bind(registry, name, &org_kde_kwin_fake_input_interface, 6);
+    else if (!text_mode && !input && version >= 3 && strcmp(interface, "org_kde_kwin_fake_input") == 0)
         input = wl_registry_bind(registry, name, &org_kde_kwin_fake_input_interface,
                                  version < 4 ? version : 4);
 }
@@ -90,6 +94,52 @@ static const struct wl_registry_listener registry_listener = {
     .global_remove = global_remove,
 };
 
+/* The Python controller additionally binds these values to its actual current
+ * Receiver/nonce. The native helper never accepts arbitrary text or controls. */
+static bool fixture_text(const char *value)
+{
+    if (strcmp(value, "orbitpal-wayland-fixture") == 0)
+        return true;
+    static const char endpoint[] = "http://127.0.0.1:";
+    if (strncmp(value, endpoint, sizeof(endpoint) - 1) == 0) {
+        const char *digits = value + sizeof(endpoint) - 1;
+        char *end;
+        errno = 0;
+        const unsigned long port = strtoul(digits, &end, 10);
+        char canonical[80];
+        if (*digits >= '1' && *digits <= '9' && errno == 0 && port <= 65535
+            && strcmp(end, "/v1") == 0
+            && snprintf(canonical, sizeof(canonical), "%s%lu/v1", endpoint, port) > 0
+            && strcmp(value, canonical) == 0)
+            return true;
+    }
+    const char *cases[] = {"fresh_red", "fresh_blue", "held_stop", "held_images_off", "held_disable"};
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        char prefix[80];
+        const int length = snprintf(prefix, sizeof(prefix), "ORBITPAL_WAYLAND_%s_", cases[i]);
+        if (length > 0 && strncmp(value, prefix, (size_t)length) == 0
+            && strlen(value + length) == 16
+            && strspn(value + length, "0123456789abcdef") == 16)
+            return true;
+    }
+    return false;
+}
+
+static bool text_peer(int fd)
+{
+    struct ucred peer;
+    socklen_t size = sizeof(peer);
+    const char *raw = getenv("ORBITPAL_ACCEPTANCE_COMPOSITOR_PID");
+    char *end;
+    if (!raw || !*raw || strspn(raw, "0123456789") != strlen(raw))
+        return false;
+    errno = 0;
+    const long pid = strtol(raw, &end, 10);
+    return errno == 0 && *end == '\0' && pid > 0 && pid <= INT_MAX
+        && getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &peer, &size) == 0
+        && size == sizeof(peer) && peer.pid == pid && peer.uid == geteuid();
+}
+
 int main(int argc, char **argv)
 {
     struct sigaction timeout_action = {0};
@@ -100,8 +150,10 @@ int main(int argc, char **argv)
     alarm(5); /* Includes connection, registry discovery and every round trip. */
 
     double x = 0, y = 0;
+    text_mode = argc == 2 && strcmp(argv[1], "--fixture-text") == 0;
     bool escape = argc == 2 && strcmp(argv[1], "--escape") == 0;
-    if ((!escape && (argc != 3 || !coordinate(argv[1], 1280, &x) || !coordinate(argv[2], 960, &y)))
+    if ((!escape && !text_mode && (argc != 3 || !coordinate(argv[1], 1280, &x) || !coordinate(argv[2], 960, &y)))
+        || (text_mode && !marker("ORBITPAL_ACCEPTANCE_MODE", "app"))
         || geteuid() == 0 || getuid() != geteuid()
         || !marker("ORBITPAL_WAYLAND_ACCEPTANCE", "synthetic-desktop-only")
         || !marker("GITHUB_ACTIONS", "true")
@@ -122,6 +174,13 @@ int main(int argc, char **argv)
         return 1;
     }
     const char *basename = strrchr(root, '/');
+    if (text_mode && (strncmp(root, "/tmp/orbitpal-wayland.", sizeof("/tmp/orbitpal-wayland.") - 1) != 0
+        || strlen(root) != sizeof("/tmp/orbitpal-wayland.") - 1 + 8
+        || strspn(root + sizeof("/tmp/orbitpal-wayland.") - 1,
+                   "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != 8)) {
+        fputs("Invalid fixed text acceptance root\n", stderr);
+        return 1;
+    }
     if (!basename || strncmp(basename + 1, "orbitpal-wayland.", sizeof("orbitpal-wayland.") - 1) != 0
         || snprintf(expected_runtime, sizeof(expected_runtime), "%s/runtime", root)
              >= (int)sizeof(expected_runtime)
@@ -154,6 +213,11 @@ int main(int argc, char **argv)
         fputs("Cannot connect to the private acceptance Wayland socket\n", stderr);
         return 1;
     }
+    if (text_mode && (!text_peer(fd) || strcmp(display_name, "orbitpal-acceptance") != 0)) {
+        close(fd);
+        fputs("Private text compositor identity mismatch\n", stderr);
+        return 1;
+    }
     struct wl_display *display = wl_display_connect_to_fd(fd);
     if (!display) {
         /* The process exits here; no connection can be reused after failure. */
@@ -168,10 +232,40 @@ int main(int argc, char **argv)
         fputs("KWin fake-input v3/v4 is unavailable to the registered helper\n", stderr);
         goto cleanup;
     }
-    org_kde_kwin_fake_input_authenticate(input, "OrbitPal synthetic acceptance pointer",
-                                       "Select a monitor in the disposable acceptance dialog");
+    org_kde_kwin_fake_input_authenticate(input,
+                                       text_mode ? "OrbitPal fixed fixture text" : "OrbitPal synthetic acceptance pointer",
+                                       text_mode ? "Type fixed values in the disposable Studio" : "Select a monitor in the disposable acceptance dialog");
     if (wl_display_roundtrip(display) < 0)
         goto connection_failed;
+    if (text_mode) {
+        /* Ready is only a transport handshake. Parent freshly rechecks exact
+         * Main ACTIVE + editor FOCUSED before it sends the one fixed line. */
+        char value[130];
+        if (fputs("ready\n", stdout) < 0 || fflush(stdout) != 0
+            || !fgets(value, sizeof(value), stdin))
+            goto cleanup;
+        const size_t count = strlen(value);
+        if (count < 2 || count > 129 || value[count - 1] != '\n')
+            goto cleanup;
+        value[count - 1] = '\0';
+        if (!fixture_text(value))
+            goto cleanup;
+        /* All key events are ordered on this one device/connection. The final
+         * round trip is not a value ACK; only real AT-SPI Text readback is. */
+        const uint32_t control = 0xffe3;
+        org_kde_kwin_fake_input_keyboard_keysym(input, control, WL_KEYBOARD_KEY_STATE_PRESSED);
+        org_kde_kwin_fake_input_keyboard_keysym(input, 'a', WL_KEYBOARD_KEY_STATE_PRESSED);
+        org_kde_kwin_fake_input_keyboard_keysym(input, 'a', WL_KEYBOARD_KEY_STATE_RELEASED);
+        org_kde_kwin_fake_input_keyboard_keysym(input, control, WL_KEYBOARD_KEY_STATE_RELEASED);
+        for (const unsigned char *c = (const unsigned char *)value; *c; ++c) {
+            org_kde_kwin_fake_input_keyboard_keysym(input, *c, WL_KEYBOARD_KEY_STATE_PRESSED);
+            org_kde_kwin_fake_input_keyboard_keysym(input, *c, WL_KEYBOARD_KEY_STATE_RELEASED);
+        }
+        if (wl_display_roundtrip(display) < 0)
+            goto connection_failed;
+        result = 0;
+        goto cleanup;
+    }
     if (escape) {
         if (wl_proxy_get_version((struct wl_proxy *)input) < 4) {
             fputs("KDE chooser cancellation requires genuine input protocol v4\n", stderr);
@@ -199,11 +293,24 @@ int main(int argc, char **argv)
 connection_failed:
     fputs("Private acceptance pointer event delivery failed\n", stderr);
 cleanup:
-    if (input)
-        wl_proxy_destroy((struct wl_proxy *)input); /* v3/v4 have no destructor request. */
+    if (input) {
+        if (text_mode) {
+            /* Release even an uncertain press, then destroy only this device.
+             * KWin also releases its retained pressedKeys on disconnect. */
+            org_kde_kwin_fake_input_keyboard_keysym(input, 'a', WL_KEYBOARD_KEY_STATE_RELEASED);
+            org_kde_kwin_fake_input_keyboard_keysym(input, 0xffe3, WL_KEYBOARD_KEY_STATE_RELEASED);
+            org_kde_kwin_fake_input_destroy(input);
+            if (wl_display_roundtrip(display) < 0)
+                result = 1;
+        } else {
+            wl_proxy_destroy((struct wl_proxy *)input); /* v3/v4 unchanged. */
+        }
+    }
     if (registry)
         wl_registry_destroy(registry);
     wl_display_disconnect(display);
     alarm(0);
+    if (text_mode && result == 0 && (fputs("done\n", stdout) < 0 || fflush(stdout) != 0))
+        return 1;
     return result;
 }
