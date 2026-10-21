@@ -45,6 +45,12 @@ Administrators retain bypass for recovery and explicitly authorized maintenance.
 
 CI also tests the release packaging scripts, generates strict third-party notices and runs the Linux GLib source-hash/optimized regression checks. The advisory workflow runs JavaScript and Rust dependency checks. Fix failing checks; do not disable them or add broad advisory exclusions. Track upstream maintenance limitations explicitly, as in the [2026-10-19 audit and follow-up issues](docs/AUDIT-2026-10-19.md).
 
+Linux CI checks all workflow schemas and expression contexts before installing
+build dependencies, using the official [actionlint v1.7.12 release](https://github.com/rhysd/actionlint/releases/tag/v1.7.12)
+with a pinned Linux archive SHA256. ShellCheck is outside this workflow syntax
+check. The only ignored diagnostic is its outdated runner-label table's missing
+`ubuntu-26.04` entry; expression/context errors remain failures.
+
 ## AI-assisted work
 
 Read [AGENTS.md](AGENTS.md) before editing. The contributor remains responsible for the full diff, licensing and validation. Disclose substantial AI assistance and identify the checks actually performed. Never fabricate test results, provider responses or benchmark data. Repository instructions govern source contributions; per-character instruction files govern runtime bots and must not override repository or host security policies. Humans review and merge contributions; agents must not self-approve, publish releases or use maintainers' accounts without explicit authorization.
