@@ -15,8 +15,31 @@ use std::{
         Arc,
     },
 };
+/// Host-elected transport. Native identity is never deserialized from IPC.
+#[derive(Clone, Default)]
+pub(crate) enum SourceRoute {
+    #[default]
+    Studio,
+    Native(crate::life_runtime::native_scene::NativeRouteProof),
+}
+impl SourceRoute {
+    fn same(&self, other:&Self) -> bool {
+        match (self,other) {
+            (Self::Studio,Self::Studio) => true,
+            (Self::Native(a),Self::Native(b)) => a.same_route(b),
+            _ => false,
+        }
+    }
+    fn calibration_current(&self, now:u64) -> bool {
+        match self { Self::Studio => true, Self::Native(p) => p.preparing_current(now) || p.live_current(now) }
+    }
+    pub(crate) fn live_current(&self, now:u64) -> bool {
+        match self { Self::Studio => true, Self::Native(p) => p.live_current(now) }
+    }
+}
 #[derive(Clone)]
 pub(crate) struct NativeSource {
+    pub route: SourceRoute,
     pub context: WorldActionFence,
     pub profile_token: ProfileToken,
     pub ui_connection: String,
@@ -27,10 +50,11 @@ pub(crate) struct NativeSource {
     pub effective_scale: f64,
     pub native_walk: bool,
     pub owner: bool,
+    pub native_framing: Option<NativePhysicalPolicy>,
 }
 impl NativeSource {
     fn same_binding(&self, other: &Self) -> bool {
-        self.context.session == other.context.session
+        self.route.same(&other.route) && self.context.session == other.context.session
             && self.context.source_world == other.context.source_world
             && self.context.stage == other.context.stage
             && self.context.instance_id == other.context.instance_id
@@ -45,6 +69,7 @@ impl NativeSource {
             && self.effective_scale == other.effective_scale
             && self.native_walk == other.native_walk
             && self.owner == other.owner
+            && self.native_framing == other.native_framing
     }
 }
 #[derive(Clone)]
@@ -67,6 +92,7 @@ struct Attachment {
 }
 #[derive(Clone)]
 pub(crate) struct OutputProof {
+    pub route: SourceRoute,
     pub stamp: OutputStamp,
     pub binding: MotionBinding,
     pub cancel: Arc<AtomicBool>,
@@ -76,7 +102,7 @@ pub(crate) struct OutputProof {
 #[derive(Default)]
 pub(crate) struct Registry {
     entries: BTreeMap<String, Attachment>,
-    surface: Option<(String, String)>,
+    surfaces: BTreeMap<String, String>,
     next_revision: u64,
     outbox: VecDeque<MotionCommand>,
     terminals: VecDeque<(
@@ -117,6 +143,22 @@ pub(crate) fn canonical(point: CssPoint, viewport: CssSize) -> Result<Point, Ren
     )
     .map_err(|_| RenderReason::ProtocolError)
 }
+/// Non-authorizing camera math: callers still supply and validate a genuine
+/// source, new submitted frames and the frozen all-pose measured enclosure.
+pub(super) fn measured_safe_centers(safe:Rect,clip:CssRect,viewport:CssSize,envelope:EnvelopeExtents)->CssRect {
+    CssRect {
+        left:(f64::from(safe.min().x())/f64::from(SCALE)*viewport.width).max(clip.left)+envelope.left,
+        top:(f64::from(safe.min().y())/f64::from(SCALE)*viewport.height).max(clip.top)+envelope.top,
+        right:(f64::from(safe.max().x())/f64::from(SCALE)*viewport.width).min(clip.right)-envelope.right,
+        bottom:(f64::from(safe.max().y())/f64::from(SCALE)*viewport.height).min(clip.bottom)-envelope.bottom,
+    }
+}
+#[path = "semantic.rs"]
+mod semantic;
+#[path = "dispatch.rs"]
+mod dispatch;
+pub(crate) use dispatch::RoutedWorldCommand;
+
 impl Registry {
     fn revision(&mut self) -> Result<u64, RenderReason> {
         self.next_revision = self
@@ -140,16 +182,22 @@ impl Registry {
                 id: uuid::Uuid::new_v4().to_string(),
                 expires_in_ms: TTL_MS as u16,
                 expected: entry.stamp.clone(),
-                camera_policy: CameraPolicy::WorldIsoV1,
+                camera_policy: if entry.source.native_framing.is_some() { CameraPolicy::NativePhysicalIsoV1 } else { CameraPolicy::WorldIsoV1 },
+                native_framing: entry.source.native_framing,
                 enclosure_kind: EnclosureKind::ConservativeSubmittedGeometryV1,
                 profile_scale: entry.source.profile_scale,
                 effective_scale: entry.source.effective_scale,
-                expected_reference_local: entry.binding.as_ref().map(|b| b.reference_local),
+                expected_reference_local: entry.binding.as_ref().map(|b| b.reference_local)
+                    .or_else(|| entry.source.native_framing.map(|_| LocalReference { x:0.0, y:1.45, z:0.0 })),
             },
         });
     }
     fn reply(entry: &Attachment, challenge: bool, now: u64) -> RegisteredWorldActor {
         let readiness = if entry.cancel.load(Ordering::SeqCst) {
+            Readiness::Unavailable {
+                reason: RenderReason::Cancelled,
+            }
+        } else if !entry.source.route.calibration_current(now) {
             Readiness::Unavailable {
                 reason: RenderReason::Cancelled,
             }
@@ -164,7 +212,7 @@ impl Registry {
                     reason: RenderReason::Expired,
                 })
         } else if let Some(binding) = entry.binding.as_ref().filter(|_| {
-            entry
+            entry.source.route.live_current(now) && entry
                 .observed
                 .is_some_and(|t| now >= t && now - t <= TTL_MS)
         }) {
@@ -195,7 +243,13 @@ impl Registry {
         source: NativeSource,
         now: u64,
     ) -> Result<(RegisteredWorldActor, Arc<AtomicBool>, bool), RenderReason> {
-        if !request.valid()
+        let valid_request = match &source.route {
+            SourceRoute::Studio => request.valid(),
+            SourceRoute::Native(_) => request.valid_native_scope() && request.studio_proof.is_none(),
+        };
+        if !valid_request
+            || !source.route.calibration_current(now)
+            || matches!(&source.route, SourceRoute::Native(_)) != source.native_framing.is_some()
             || !counter(now.saturating_add(1))
             || request.actor_id != source.context.session.actor_id().as_str()
             || request.world_instance_id != source.context.instance_id
@@ -204,7 +258,18 @@ impl Registry {
             || ![source.profile_scale, source.effective_scale]
                 .into_iter()
                 .all(|s| s.is_finite() && (0.3..=2.5).contains(&s))
+            || source.native_framing.is_some_and(|policy| !policy.valid()
+                || !near(policy.viewport().width, source.viewport_limit.width)
+                || !near(policy.viewport().height, source.viewport_limit.height))
         {
+            return Err(RenderReason::ScopeMismatch);
+        }
+        // A Studio repaint cannot replace a physically retained native owner,
+        // including revoked/expired work still awaiting exact cleanup. Its
+        // read-only semantic mirror is a separate projection.
+        if self.entries.get(&request.actor_id).is_some_and(|e|
+            matches!(source.route, SourceRoute::Studio)
+                && matches!(&e.source.route, SourceRoute::Native(route) if route.retained())) {
             return Err(RenderReason::ScopeMismatch);
         }
         if let Some(entry) = self.entries.get_mut(&request.actor_id) {
@@ -220,20 +285,21 @@ impl Registry {
                 return Ok((Self::reply(entry, true, now), entry.cancel.clone(), false));
             }
         }
-        self.entries
-            .retain(|_, entry| !entry.cancel.load(Ordering::SeqCst));
+        self.entries.retain(|_, entry| !entry.cancel.load(Ordering::SeqCst)
+            || matches!(&entry.source.route, SourceRoute::Native(route) if route.retained()));
         if !self.entries.contains_key(&request.actor_id) && self.entries.len() >= MAX_LAYERS {
             return Err(RenderReason::Capacity);
         }
         let revision = self.revision()?;
-        let surface = match &self.surface {
-            Some((ui, id)) if ui == &source.ui_connection => id.clone(),
-            _ => {
-                let value = uuid::Uuid::new_v4().to_string();
-                self.surface = Some((source.ui_connection.clone(), value.clone()));
-                value
-            }
-        };
+        let namespace = match &source.route { SourceRoute::Studio => format!("studio:{}",source.ui_connection),
+            SourceRoute::Native(p) => format!("native:{}",p.namespace()) };
+        // Only namespaces with a retained attachment survive. This stays
+        // bounded by MAX_LAYERS rather than renderer-controlled mount strings.
+        self.surfaces.retain(|_,id| self.entries.values().any(|e| &e.surface == id));
+        if !self.surfaces.contains_key(&namespace) && self.surfaces.len() >= MAX_LAYERS {
+            return Err(RenderReason::Capacity);
+        }
+        let surface = self.surfaces.entry(namespace).or_insert_with(||uuid::Uuid::new_v4().to_string()).clone();
         if let Some(old) = self.entries.remove(&request.actor_id) {
             old.cancel.store(true, Ordering::SeqCst);
         }
@@ -302,9 +368,14 @@ impl Registry {
             .ok_or(RenderReason::Unregistered)?;
         let pending = entry.pending.as_ref().ok_or(RenderReason::StaleBinding)?;
         if received > now
+            || !source.route.calibration_current(now)
             || now - received > FRAME_MS
             || !report.valid()
             || report.enclosure_kind != pending.challenge.enclosure_kind
+            // The host-prescribed first reference must match before binding.
+            // Renewals reach the frozen binding comparison below, which also
+            // revokes an existing binding when its reference changes.
+            || (entry.binding.is_none() && pending.challenge.expected_reference_local.is_some_and(|reference| reference != report.reference_local))
             || !entry.source.same_binding(source)
             || entry.cancel.load(Ordering::SeqCst)
             || now < pending.issued
@@ -326,11 +397,17 @@ impl Registry {
             || !full.contains_rect(report.clip)
             || !report.clip.contains_rect(report.posed_bounds)
             || !hull.contains_rect(report.posed_bounds)
+            || entry.source.native_framing.is_some_and(|policy|
+                (policy.viewport().width - report.viewport.width).abs() > 0.5
+                    || (policy.viewport().height - report.viewport.height).abs() > 0.5
+                    || !near(report.applied_model_scale, entry.source.effective_scale))
         {
             return Err(RenderReason::MeasurementUnavailable);
         }
-        // world_iso_v1: orthographic span8, elevation pi/6, positive cameraZ.
-        let unit = 8.0 / report.viewport.height / report.applied_model_scale;
+        // Both closed policies use elevation pi/6 and positive cameraZ. Native
+        // span comes only from the host's retained normal physical reference.
+        let span = entry.source.native_framing.map_or(8.0, |policy| policy.vertical_span);
+        let unit = span / report.viewport.height / report.applied_model_scale;
         let expected = GroundBasis {
             right: GroundVector { x: unit, z: 0.0 },
             down: GroundVector {
@@ -349,25 +426,11 @@ impl Registry {
             .envelope_extents
             .top
             .max(report.envelope_extents.bottom);
-        let safe = entry.source.safe_region;
-        let left = (f64::from(safe.min().x()) / f64::from(SCALE) * report.viewport.width)
-            .max(report.clip.left)
-            + radius_x;
-        let top = (f64::from(safe.min().y()) / f64::from(SCALE) * report.viewport.height)
-            .max(report.clip.top)
-            + radius_y;
-        let right = (f64::from(safe.max().x()) / f64::from(SCALE) * report.viewport.width)
-            .min(report.clip.right)
-            - radius_x;
-        let bottom = (f64::from(safe.max().y()) / f64::from(SCALE) * report.viewport.height)
-            .min(report.clip.bottom)
-            - radius_y;
-        let safe_centers = CssRect {
-            left,
-            top,
-            right,
-            bottom,
-        };
+        // Preserve Studio's established symmetric safe region. Native uses the
+        // actual asymmetric all-pose envelope around its prescribed rig anchor.
+        let safe_envelope=match &source.route { SourceRoute::Native(_)=>report.envelope_extents,
+            SourceRoute::Studio=>EnvelopeExtents{left:radius_x,right:radius_x,top:radius_y,bottom:radius_y} };
+        let safe_centers=measured_safe_centers(entry.source.safe_region,report.clip,report.viewport,safe_envelope);
         let position = css(source.context.position, report.viewport);
         if !safe_centers.valid()
             || !safe_centers.contains(position)
@@ -419,6 +482,8 @@ impl Registry {
             measurement_revision: s.measurement_revision,
             reference_revision: s.reference_revision,
             enclosure_kind: pending.challenge.enclosure_kind,
+            camera_policy: source.native_framing.map(|_| CameraPolicy::NativePhysicalIsoV1),
+            native_framing: source.native_framing,
             viewport: report.viewport,
             safe_centers,
             maximum_footprint: CssSize {
@@ -455,7 +520,7 @@ impl Registry {
         if !e.source.owner {
             return Err(RenderReason::ScopeMismatch);
         }
-        if e.cancel.load(Ordering::SeqCst) {
+        if e.cancel.load(Ordering::SeqCst) || !e.source.route.live_current(now) {
             return Err(RenderReason::Cancelled);
         }
         if e.observed.is_none_or(|t| now < t || now - t > TTL_MS) {
@@ -465,6 +530,7 @@ impl Registry {
             return Err(RenderReason::UnsupportedCapability);
         }
         Ok(OutputProof {
+            route: e.source.route.clone(),
             stamp: OutputStamp::new(e.stamp.render_session_id.clone(), e.stamp.binding_sequence)
                 .map_err(|_| RenderReason::ProtocolError)?,
             binding: b.clone(),
@@ -550,9 +616,16 @@ impl Registry {
                 .then(|| bot.clone())
         });
         if let Some(key) = key {
-            if let Some(e) = self.entries.remove(&key) {
+            if let Some(e) = self.entries.get(&key) {
                 e.cancel.store(true, Ordering::SeqCst);
+                // Revocation is immediate, but a native physical cleanup lease
+                // must remain visible to replacement/pruning barriers until its
+                // exact member acknowledges actual restoration or retirement.
+                if matches!(&e.source.route, SourceRoute::Native(route) if route.retained()) {
+                    return true;
+                }
             }
+            self.entries.remove(&key);
             true
         } else {
             false

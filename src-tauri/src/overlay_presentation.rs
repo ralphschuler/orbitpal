@@ -146,6 +146,7 @@ impl PresentationHub {
     pub fn guarded_window(&self,id:&str)->bool{self.native.guarded(id)||self.bots.lock().map(|bots|bots.get(id).is_some_and(|bot|bot.normal.is_some())).unwrap_or(true)}
     pub(crate) fn native_guarded(&self,id:&str)->bool{self.native.guarded(id)}
     pub(crate) fn any_native_work(&self)->bool{self.native.any_work()}
+    pub(crate) fn blocks_dialog_scheduling(&self,handoffs:&[crate::life_runtime::native_scene::NativeDialogueHandoff],now:u64)->bool{self.native.blocks_dialog_scheduling(handoffs,now)}
     pub(crate) fn admit_dialog(&self)->Result<(),String>{if self.any_native_work(){Err("Der Co-Host verarbeitet bereits eine Nachricht. Bitte warten oder abbrechen.".into())}else{Ok(())}}
     pub(crate) fn retain_native_window(&self,id:&str,window:tauri::WebviewWindow,signals:Arc<WindowSignals>,tracked:bool)->bool{
         self.retain_layout_window(id,Arc::new(native_layout::TauriLayoutWindow{window}),signals,tracked)

@@ -1,5 +1,6 @@
-//! Studio-only transport adapter. Registration does not start Life. Native/OBS
-//! visual execution is deliberately unsupported until their real adapters exist.
+//! Main operator/Studio transport. Native movement delegates to the retained
+//! NativeActionPermit factory and exact constructor-bound command dispatcher.
+//! Registration, mirror metadata and command evaluation never start Life.
 use super::{
     action_host, actions,
     core::{Core, Mode},
@@ -41,7 +42,7 @@ fn sample(app: &tauri::AppHandle, profile: &Value) -> Result<StudioSample, Strin
         visible,
     })
 }
-fn native_walk(app: &tauri::AppHandle, profile: &Value) -> bool {
+pub(super) fn native_walk(app: &tauri::AppHandle, profile: &Value) -> bool {
     let asset = profile["avatar"]["assetPath"].as_str();
     if asset.is_none() || asset == Some("nova") {
         return true;
@@ -70,6 +71,7 @@ fn source(
     }
     let ui = core.world_ui_connection(now).ok_or(ERROR)?.to_owned();
     let state = app.state::<AppState>();
+    if state.life_runtime.session_outputs.has_retained_constructor(bot) { return Err(ERROR.into()); }
     if state.store.bot_profile(bot)? != *profile {
         return Err(ERROR.into());
     }
@@ -98,6 +100,7 @@ fn source(
         .as_f64()
         .unwrap_or(profile_scale);
     Ok(NativeSource {
+        route: SourceRoute::Studio,
         context,
         profile_token: state
             .store
@@ -116,6 +119,7 @@ fn source(
         effective_scale,
         native_walk: walk,
         owner,
+        native_framing: None,
     })
 }
 #[tauri::command]
@@ -160,7 +164,8 @@ pub async fn register_world_output(
             &request.actor_id,
             "main",
             (&proof.connection_id, proof.sequence),
-            || core.world_outputs.register(&request, source, now),
+            || state.life_runtime.session_outputs.admit_studio_world_registration(&request.actor_id,
+                || core.world_outputs.register(&request, source, now)),
         )
         .map_err(safe)
 }
@@ -323,10 +328,15 @@ pub async fn start_life_move(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     bot_id: String,
-    target: crate::world_state::coordinates::Point,
-    ui: super::action_state::UiProof,
+    target: Option<crate::world_state::coordinates::Point>,
+    slot_id: Option<String>,
+    ui: Option<super::action_state::UiProof>,
+    native_intent_id: Option<String>,
 ) -> Result<Value, String> {
     main_only(window.label())?;
+    if let Some(id)=native_intent_id{return super::native_scene_actions::start_move(app,bot_id,id,target,slot_id).await;}
+    if slot_id.is_some(){return Err(ERROR.into());}
+    let target=target.ok_or(ERROR)?;let ui=ui.ok_or(ERROR)?;
     let state = app.state::<AppState>();
     state.updater.ensure_idle()?;
     let intent = state
@@ -432,20 +442,20 @@ pub async fn start_life_move(
 }
 pub(crate) fn publish(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-    let commands = state
-        .life_runtime
-        .core
-        .lock()
-        .ok()
-        .map(|mut c| {
-            let mut result = vec![];
-            while let Some(command) = c.world_outputs.take_command() {
-                result.push(command);
-            }
-            result
-        })
-        .unwrap_or_default();
+    let commands = state.life_runtime.core.lock().ok().map(|mut core| {
+        let mut commands = Vec::new();
+        let now = state.life_runtime.now();
+        while let Some(command) = core.world_outputs.take_routed_command(now) { commands.push(command); }
+        commands
+    }).unwrap_or_default();
+    // Capture the exact route under Core, then release it before any Native
+    // Scene/Owned lookup or Main delivery. Native commands never reach mirrors.
     for command in commands {
-        let _ = app.emit_to("main", "cohost://world-action", command);
+        match command {
+            RoutedWorldCommand::Studio(command) => { let _ = app.emit_to("main", "cohost://world-action", command); }
+            RoutedWorldCommand::Native { command, route, issued_at } =>
+                super::native_scene_dispatch::enqueue(app, command, route, issued_at),
+            RoutedWorldCommand::Unavailable(command) => super::native_scene_dispatch::reject(app, &command),
+        }
     }
 }

@@ -448,6 +448,10 @@ impl WorldState {
             .get(actor.as_str())
             .and_then(|actor| actor.handle.clone())
     }
+    /// Current validated resource geometry only; this grants no reservation.
+    pub(crate) fn slot_geometry(&self, slot: &SlotId) -> Option<(AnchorKind, Point)> {
+        self.resources.get(slot).map(|resource| (resource.kind, resource.position))
+    }
     fn identity(&mut self) -> Result<u64, WorldError> {
         let id = self.next_identity;
         if id >= MAX_COUNTER {

@@ -27,7 +27,10 @@
     "Die native Figurenausgabe ist nicht aktuell bestätigt.": "The native character output is not currently confirmed.",
     "Die sichtbare Figurenausgabe ist nicht mehr aktuell.": "The visible character output is no longer current.",
     "Beende zuerst Eingaben, Ausgaben und offene Änderungen. Eine sichtbare Bewegung erfordert einen bereits gestarteten Life-Modus.": "Finish inputs, outputs and unsaved changes first. Visible movement requires Life mode to be already running.",
-    "Die World-Darstellung ist momentan nicht verfügbar. Prüfe Life, Bühne und Studio-Ausgabe.": "World rendering is currently unavailable. Check Life, stage and Studio output."
+    "Die World-Darstellung ist momentan nicht verfügbar. Prüfe Life, Bühne und Studio-Ausgabe.": "World rendering is currently unavailable. Check Life, stage and Studio output.",
+    "Eine aktive Desktopfigur steuert ihre Bewegung. Studio und OBS zeigen ihre bestätigte Tätigkeit als Spiegelansicht.": "An active desktop character controls its movement. Studio and OBS mirror its confirmed activity.",
+    "Zum Platz {name} gehen": "Go to place {name}",
+    "Die Desktopaktion benötigt eine aktuelle, freie native Figur. Bitte erneut versuchen.": "The desktop action requires a current, available native character. Please try again."
   },
   "fr": {
     "Sichtbare 3D-Bühne": "Scène 3D visible",
@@ -57,7 +60,10 @@
     "Die native Figurenausgabe ist nicht aktuell bestätigt.": "La sortie native du personnage n’est pas confirmée actuellement.",
     "Die sichtbare Figurenausgabe ist nicht mehr aktuell.": "La sortie visible du personnage n’est plus à jour.",
     "Beende zuerst Eingaben, Ausgaben und offene Änderungen. Eine sichtbare Bewegung erfordert einen bereits gestarteten Life-Modus.": "Terminez d’abord les saisies, les sorties et les modifications en cours. Le déplacement visible nécessite un mode Life déjà démarré.",
-    "Die World-Darstellung ist momentan nicht verfügbar. Prüfe Life, Bühne und Studio-Ausgabe.": "L’affichage World est actuellement indisponible. Vérifiez Life, la scène et la sortie Studio."
+    "Die World-Darstellung ist momentan nicht verfügbar. Prüfe Life, Bühne und Studio-Ausgabe.": "L’affichage World est actuellement indisponible. Vérifiez Life, la scène et la sortie Studio.",
+    "Eine aktive Desktopfigur steuert ihre Bewegung. Studio und OBS zeigen ihre bestätigte Tätigkeit als Spiegelansicht.": "Un personnage actif sur le bureau dirige ses déplacements. Studio et OBS affichent son activité confirmée en miroir.",
+    "Zum Platz {name} gehen": "Aller à l’emplacement {name}",
+    "Die Desktopaktion benötigt eine aktuelle, freie native Figur. Bitte erneut versuchen.": "L’action sur le bureau nécessite un personnage natif actuel et disponible. Veuillez réessayer."
   },
   "es": {
     "Sichtbare 3D-Bühne": "Escenario 3D visible",
@@ -87,6 +93,9 @@
     "Die native Figurenausgabe ist nicht aktuell bestätigt.": "La salida nativa del personaje no está confirmada actualmente.",
     "Die sichtbare Figurenausgabe ist nicht mehr aktuell.": "La salida visible del personaje ya no está actualizada.",
     "Beende zuerst Eingaben, Ausgaben und offene Änderungen. Eine sichtbare Bewegung erfordert einen bereits gestarteten Life-Modus.": "Finaliza las entradas, salidas y cambios pendientes. El movimiento visible requiere que el modo Life ya esté iniciado.",
-    "Die World-Darstellung ist momentan nicht verfügbar. Prüfe Life, Bühne und Studio-Ausgabe.": "La visualización World no está disponible actualmente. Comprueba Life, el escenario y la salida Studio."
+    "Die World-Darstellung ist momentan nicht verfügbar. Prüfe Life, Bühne und Studio-Ausgabe.": "La visualización World no está disponible actualmente. Comprueba Life, el escenario y la salida Studio.",
+    "Eine aktive Desktopfigur steuert ihre Bewegung. Studio und OBS zeigen ihre bestätigte Tätigkeit als Spiegelansicht.": "Un personaje activo en el escritorio controla su movimiento. Studio y OBS reflejan su actividad confirmada.",
+    "Zum Platz {name} gehen": "Ir al lugar {name}",
+    "Die Desktopaktion benötigt eine aktuelle, freie native Figur. Bitte erneut versuchen.": "La acción del escritorio requiere un personaje nativo actual y disponible. Inténtalo de nuevo."
   }
 }

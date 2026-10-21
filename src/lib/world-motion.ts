@@ -137,10 +137,13 @@ export function parseMotionBinding(value: unknown): MotionBinding | null {
     || Math.abs(maximumFootprint.width - 2 * Math.max(envelopeExtents.left, envelopeExtents.right)) > 1e-7
     || Math.abs(maximumFootprint.height - 2 * Math.max(envelopeExtents.top, envelopeExtents.bottom)) > 1e-7
     || safeCenters.right > viewport.width || safeCenters.bottom > viewport.height || !inside(position, safeCenters)
-    || maximumFootprint.width > viewport.width || maximumFootprint.height > viewport.height
-    || safeCenters.left < maximumFootprint.width / 2 || safeCenters.top < maximumFootprint.height / 2
-    || safeCenters.right > viewport.width - maximumFootprint.width / 2
-    || safeCenters.bottom > viewport.height - maximumFootprint.height / 2) return null;
+    // maximumFootprint remains symmetric metadata. Feasibility follows the
+    // actual all-pose asymmetric envelope around the immutable rig reference.
+    || envelopeExtents.left + envelopeExtents.right > viewport.width
+    || envelopeExtents.top + envelopeExtents.bottom > viewport.height
+    || safeCenters.left < envelopeExtents.left || safeCenters.top < envelopeExtents.top
+    || safeCenters.right > viewport.width - envelopeExtents.right
+    || safeCenters.bottom > viewport.height - envelopeExtents.bottom) return null;
   return Object.freeze({ ...data, viewport, safeCenters, maximumFootprint, position, groundBasis, referenceLocal, envelopeExtents }) as MotionBinding;
 }
 export function parseWorldMotionCommand(value: unknown): WorldMotionCommand | null {

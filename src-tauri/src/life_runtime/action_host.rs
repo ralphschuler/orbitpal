@@ -23,6 +23,7 @@ use std::sync::{
 pub(super) const UNAVAILABLE: &str =
     "Die stille Pause ist momentan nicht verfügbar. Prüfe Life, Studio, Bühne und Ausgabe.";
 pub(super) const UNSUPPORTED:&str="Visuelle Lebensaktionen benötigen eine bestätigte Darstellung. Diese Verbindung folgt in einer späteren Version.";
+const SLOT_LEASE_MS: u64 = 5_000;
 fn invalid(_: impl std::fmt::Debug) -> String {
     UNAVAILABLE.into()
 }
@@ -38,6 +39,9 @@ fn with_actions<T>(
 fn current(core: &Core, job: &NativeJob, now: u64) -> bool {
     !job.cancel.load(Ordering::SeqCst)
         && core.local_current(job.key.actor().as_str(), &job.fence, now)
+        && job.slot.as_ref().is_none_or(|slot| slot.fresh(now))
+        && job.native_permit.as_ref().is_none_or(|permit|
+            permit.current(core, now) && job.visual.as_ref().map(|visual|&visual.output).or(job.native_rest_output.as_ref()).is_some_and(|output|permit.matches_output(output)&&core.world_outputs.check_proof(output,now)))
         && job
             .visual
             .as_ref()
@@ -52,7 +56,7 @@ fn replace(core: &mut Core, job: &NativeJob, snapshot: &LifeSnapshot) {
         None,
     );
 }
-/// Visual dispatch remains explicitly unsupported until #72's registered output.
+/// Activities without a concrete native rendering protocol remain unsupported.
 /// No Plan/ordinal or visual Offer is fabricated on this error path.
 pub(crate) fn visual_request() -> Result<(), String> {
     Err(UNSUPPORTED.into())
@@ -70,6 +74,40 @@ pub(crate) fn admit_rest(
     now: impl Fn() -> u64,
     wall: impl Fn() -> u64,
 ) -> Result<(), String> {
+    admit_rest_bound(core,store,world,bot,profile,fence,context,None,cancel,now,wall)
+}
+
+/// Zero-effect Here rest under the actual owner. This supplies no station
+/// animation or renderer ACK; the existing native dwell clock remains truthful.
+pub(crate) fn admit_native_rest(
+    core: &mut Core,
+    store: &Store,
+    world: &WorldHub,
+    bot: &str,
+    profile: &Value,
+    fence: LocalFence,
+    context: ActionContext,
+    output: crate::world_output::OutputProof,
+    permit: super::native_scene::NativeActionPermit,
+    cancel: Arc<AtomicBool>,
+    now: impl Fn() -> u64,
+    wall: impl Fn() -> u64,
+) -> Result<(), String> {
+    admit_rest_bound(core,store,world,bot,profile,fence,context,Some((output,permit)),cancel,now,wall)
+}
+fn admit_rest_bound(
+    core: &mut Core,
+    store: &Store,
+    world: &WorldHub,
+    bot: &str,
+    profile: &Value,
+    fence: LocalFence,
+    context: ActionContext,
+    native: Option<(crate::world_output::OutputProof,super::native_scene::NativeActionPermit)>,
+    cancel: Arc<AtomicBool>,
+    now: impl Fn() -> u64,
+    wall: impl Fn() -> u64,
+) -> Result<(), String> {
     with_actions(core, |actions, core| {
         let actor = ActorId::new(bot).map_err(invalid)?;
         actions.forget(bot);
@@ -80,19 +118,24 @@ pub(crate) fn admit_rest(
         {
             return Err(UNAVAILABLE.into());
         }
+        if native.as_ref().is_some_and(|(output,permit)| !permit.current(core,now())||!permit.matches_output(output)||!core.world_outputs.check_proof(output,now())) {return Err(UNAVAILABLE.into());}
+        let output_stamp=match &native {
+            Some((output,_))=>output.stamp.clone(),
+            None=>OutputStamp::new(format!("native-rest-{}",fence.session),fence.revision).map_err(invalid)?,
+        };
         let authority = NativeAuthority::new(
             context.session.clone(),
             context.source_world.clone(),
             context.stage.clone(),
             context.config_revision,
             context.topology_revision,
-            OutputStamp::new(format!("native-rest-{}", fence.session), fence.revision)
-                .map_err(invalid)?,
-            fence.revision,
+            output_stamp,
+            native.as_ref().map_or(fence.revision,|(output,_)|output.binding.asset_revision),
         )
         .map_err(invalid)?;
         let caps = Capabilities::new(authority.clone(), vec![], true).map_err(invalid)?;
         let persisted_profile = store.action_profile_token(bot, profile).map_err(invalid)?;
+        if native.as_ref().is_some_and(|(output,_)|output.profile_token!=persisted_profile){return Err(UNAVAILABLE.into());}
         let (commit, prepared) = world.with_action_context(store, &context, || {
             if store.bot_profile(bot).map_err(invalid)? != *profile {
                 return Err(UNAVAILABLE.into());
@@ -100,13 +143,14 @@ pub(crate) fn admit_rest(
             store
                 .apply_life_action_checked(bot, wall(), |actual, tx| {
                     if cancel.load(Ordering::SeqCst)
+                        || native.as_ref().is_some_and(|(output,permit)|!permit.current(core,now())||!permit.matches_output(output)||!core.world_outputs.check_proof(output,now()))
                         || !core.local_current(bot, &fence, now())
                         || !crate::storage::action_store::matches(
                             tx,
                             bot,
                             &persisted_profile,
                             &context.record,
-                            profile["output"]["mode"] != "overlay",
+                            native.is_none() && profile["output"]["mode"] != "overlay",
                         )
                     {
                         return Err(LifeStoreError::InvalidInput);
@@ -186,6 +230,9 @@ pub(crate) fn admit_rest(
         };
         let job = NativeJob {
             visual: None,
+            native_rest_output: native.as_ref().map(|(output,_)|output.clone()),
+            native_permit: native.map(|(_,permit)|permit),
+            slot: None,
             authority,
             key,
             fence,
@@ -253,7 +300,7 @@ fn commit_request(
                             bot,
                             &job.persisted_profile,
                             &job.world.record,
-                            job.profile["output"]["mode"] != "overlay",
+                            job.native_permit.is_none() && job.profile["output"]["mode"] != "overlay",
                         ))
                 {
                     return Err(LifeStoreError::InvalidInput);
@@ -296,9 +343,13 @@ fn commit_request(
     if cancelling {
         operation()
     } else {
-        world
-            .with_action_context(store, &job.world, || Ok(operation()))
-            .map_err(|_| Failure::Interrupted)?
+        if let Some(slot) = &job.slot {
+            world.with_action_slot_context(store, &job.world, slot, now, || Ok(operation()))
+                .map_err(|_| Failure::Interrupted)?
+        } else {
+            world.with_action_context(store, &job.world, || Ok(operation()))
+                .map_err(|_| Failure::Interrupted)?
+        }
     }
 }
 
@@ -313,7 +364,7 @@ pub(crate) fn poll(
         let _ = actions.executor.advance(now());
         let ids = actions.jobs.keys().cloned().collect::<Vec<_>>();
         for id in ids {
-            let Some(job) = actions.jobs.get(&id).cloned() else {
+            let Some(mut job) = actions.jobs.get(&id).cloned() else {
                 continue;
             };
             let status = actions.executor.status(&job.key);
@@ -325,9 +376,14 @@ pub(crate) fn poll(
             ) {
                 let valid = current(core, &job, now())
                     && store.bot_profile(&id).ok().as_ref() == Some(&job.profile)
-                    && world
-                        .with_action_context(store, &job.world, || Ok(()))
-                        .is_ok();
+                    && if let Some(slot) = &mut job.slot {
+                        world.renew_action_slot_current(core, store, &job.world, slot, SLOT_LEASE_MS, &now).is_ok()
+                    } else {
+                        world.with_action_context(store, &job.world, || Ok(())).is_ok()
+                    }
+                    && current(core, &job, now())
+                    && store.bot_profile(&id).ok().as_ref() == Some(&job.profile);
+                if valid { actions.jobs.insert(id.clone(), job.clone()); }
                 if !valid {
                     job.cancel.store(true, Ordering::SeqCst);
                     let _ = actions.executor.fail(
@@ -574,7 +630,7 @@ pub(crate) fn status(
     let actions = core.actions.as_ref().ok_or(UNAVAILABLE)?;
     let runtime=actions.jobs.get(bot).and_then(|job|actions.executor.snapshot(&job.key)).or_else(||actions.retired.iter().rev().find(|s|s.action_id.actor_id().as_str()==bot).cloned()).map(|s|json!({"actionId":s.action_id,"presentation":s.presentation,"status":s.status,"failure":s.failure,"activeMilliseconds":s.active_ms}));
     Ok(
-        json!({"version":1,"instanceId":actions.instance_id,"sequence":actions.sequence,"botId":bot,"availability":availability,"reason":reason,"visualAvailable":core.world_output_current(bot,now) && profile["output"]["mode"].as_str().unwrap_or("studio")=="studio" && store.profile().ok().is_some_and(|p|p["id"]==bot),"confirmed":confirmed,"runtime":runtime}),
+        json!({"version":1,"instanceId":actions.instance_id,"sequence":actions.sequence,"botId":bot,"availability":availability,"reason":reason,"visualAvailable":core.world_output_current(bot,now) && (core.world_outputs.source(bot).is_some_and(|source|matches!(source.route,crate::world_output::SourceRoute::Native(_))) || profile["output"]["mode"].as_str().unwrap_or("studio")=="studio" && store.profile().ok().is_some_and(|p|p["id"]==bot)),"confirmed":confirmed,"runtime":runtime}),
     )
 }
 
@@ -582,8 +638,8 @@ pub(crate) fn status(
 #[path = "action_tests.rs"]
 mod tests;
 
-/// Real checked Plan for selected Studio MoveTo only. No model/voice/provider
-/// readiness is involved; an actual registered exposed frame is required.
+/// Real checked Plan for selected Studio MoveTo. The separate actual-native
+/// entry below additionally requires its factory-owned NativeActionPermit.
 pub(crate) fn admit_move(
     core: &mut Core,
     store: &Store,
@@ -598,6 +654,52 @@ pub(crate) fn admit_move(
     now: impl Fn() -> u64,
     wall: impl Fn() -> u64,
 ) -> Result<(), String> {
+    admit_visual_move(core, store, world, bot, profile, fence, context, output, Goal::Point(target), None, None, cancel, now, wall)
+}
+/// A native scene permit is required separately from slot geometry. Neither a
+/// caller's slot ID nor a private layout observation grants this authority.
+pub(crate) fn admit_slot_move(
+    core: &mut Core, store: &Store, world: &WorldHub, bot: &str, profile: &Value,
+    fence: LocalFence, context: ActionContext, output: crate::world_output::OutputProof,
+    permit: super::native_scene::NativeActionPermit, slot: crate::world_state::SlotId,
+    cancel: Arc<AtomicBool>, now: impl Fn() -> u64, wall: impl Fn() -> u64,
+) -> Result<(), String> {
+    if !permit.current(core, now()) || !permit.matches_output(&output) || !core.local_current(bot, &fence, now()) || cancel.load(Ordering::SeqCst) {
+        return Err(UNAVAILABLE.into());
+    }
+    let target = world.slot_target(store, &context, &slot)?;
+    let goal = Goal::Slot { id: target.id.clone(), kind: target.kind, position: target.position };
+    admit_visual_move(core, store, world, bot, profile, fence, context, output, goal, Some(permit), Some(target), cancel, now, wall)
+}
+pub(crate) fn admit_native_move(
+    core: &mut Core, store: &Store, world: &WorldHub, bot: &str, profile: &Value,
+    fence: LocalFence, context: ActionContext, output: crate::world_output::OutputProof,
+    permit: super::native_scene::NativeActionPermit, target: crate::world_state::coordinates::Point,
+    cancel: Arc<AtomicBool>, now: impl Fn() -> u64, wall: impl Fn() -> u64,
+) -> Result<(), String> {
+    admit_visual_move(core, store, world, bot, profile, fence, context, output, Goal::Point(target), Some(permit), None, cancel, now, wall)
+}
+/// Exercises the shared slot transaction using an actual selected-Studio
+/// registration. This exposes no product Slot route or native surface grant.
+#[cfg(test)]
+pub(super) fn admit_studio_slot_fixture(
+    core: &mut Core, store: &Store, world: &WorldHub, bot: &str, profile: &Value,
+    fence: LocalFence, context: ActionContext, output: crate::world_output::OutputProof,
+    slot: crate::world_state::SlotId, cancel: Arc<AtomicBool>,
+    now: impl Fn() -> u64, wall: impl Fn() -> u64,
+) -> Result<(), String> {
+    let target = world.slot_target(store, &context, &slot)?;
+    let goal = Goal::Slot { id: target.id.clone(), kind: target.kind, position: target.position };
+    admit_visual_move(core, store, world, bot, profile, fence, context, output, goal, None, Some(target), cancel, now, wall)
+}
+fn admit_visual_move(
+    core: &mut Core, store: &Store, world: &WorldHub, bot: &str, profile: &Value,
+    fence: LocalFence, context: ActionContext, output: crate::world_output::OutputProof,
+    goal: Goal, native_permit: Option<super::native_scene::NativeActionPermit>,
+    slot_target: Option<crate::world_hub::ActionSlotTarget>, cancel: Arc<AtomicBool>,
+    now: impl Fn() -> u64, wall: impl Fn() -> u64,
+) -> Result<(), String> {
+    let target = match &goal { Goal::Point(point) | Goal::Slot { position: point, .. } => *point, _ => return Err(UNAVAILABLE.into()) };
     with_actions(core, |actions, core| {
         let actor = ActorId::new(bot).map_err(invalid)?;
         actions.forget(bot);
@@ -605,7 +707,10 @@ pub(crate) fn admit_move(
             || !actions.executor.can_admit(&actor)
             || !core.local_current(bot, &fence, now())
             || cancel.load(Ordering::SeqCst)
-            || !core.world_output_current(bot, now())
+            || match &native_permit {
+                Some(permit) => !permit.current(core, now()) || !permit.matches_output(&output),
+                None => !core.world_output_current(bot, now()),
+            }
             || !core.world_outputs.check_proof(&output, now())
         {
             return Err(UNAVAILABLE.into());
@@ -634,12 +739,13 @@ pub(crate) fn admit_move(
                     if cancel.load(Ordering::SeqCst)
                         || !core.local_current(bot, &fence, now())
                         || !core.world_outputs.check_proof(&visual.output, now())
+                        || native_permit.as_ref().is_some_and(|permit| !permit.current(core, now()) || !permit.matches_output(&visual.output))
                         || !crate::storage::action_store::matches(
                             tx,
                             bot,
                             &persisted_profile,
                             &context.record,
-                            true,
+                            native_permit.is_none(),
                         )
                     {
                         return Err(LifeStoreError::InvalidInput);
@@ -649,7 +755,7 @@ pub(crate) fn admit_move(
                         actual.state(),
                         actual.random(),
                         Activity::MoveTo,
-                        Goal::Point(target),
+                        goal.clone(),
                         Presentation::Visual,
                         &caps,
                     )
@@ -669,50 +775,33 @@ pub(crate) fn admit_move(
             planned.state().clone(),
             None,
         );
+        let slot = if let Some(target) = slot_target {
+            match world.reserve_action_slot_current(core, store, &context, target, prepared.action_id().clone(), SLOT_LEASE_MS, &now) {
+                Ok(slot) => Some(slot),
+                Err(_) => {
+                    cancel_uninstalled_move(core, store, world, bot, &fence, &planned, &now, &wall);
+                    return Err(UNAVAILABLE.into());
+                }
+            }
+        } else { None };
+        if slot.as_ref().is_some_and(|slot| !slot.fresh(now()) || world.validate_action_slot_current(core, store, &context, slot, &now).is_err())
+            || native_permit.as_ref().is_some_and(|permit| !permit.current(core, now()) || !permit.matches_output(&visual.output))
+            || cancel.load(Ordering::SeqCst)
+            || !core.local_current(bot, &fence, now())
+            || !core.world_outputs.check_proof(&visual.output, now())
+        {
+            if let Some(slot) = &slot { let _ = world.release(&context.session, &slot.lease(), now()); }
+            cancel_uninstalled_move(core, store, world, bot, &fence, &planned, &now, &wall);
+            return Err(UNAVAILABLE.into());
+        }
         let key = match actions
             .executor
-            .install_plan(prepared, planned.state(), None, now())
+            .install_plan(prepared, planned.state(), slot.as_ref().map(|slot| slot.lease()), now())
         {
             Ok(key) => key,
             Err(_) => {
-                let action = planned
-                    .state()
-                    .current_action()
-                    .ok_or(UNAVAILABLE)?
-                    .intent()
-                    .id()
-                    .clone();
-                match store.apply_life_action_checked(bot, wall(), |actual, _| {
-                    if actual
-                        .state()
-                        .current_action()
-                        .is_none_or(|a| a.intent().id() != &action)
-                    {
-                        return Err(LifeStoreError::InvalidInput);
-                    }
-                    Ok((
-                        LifeEvent::Cancel {
-                            action_id: action.clone(),
-                            reason: CancelReason::Unavailable,
-                        },
-                        actual.state().revision(),
-                        (),
-                    ))
-                }) {
-                    Ok((commit, _)) => {
-                        core.replace_confirmed(
-                            bot,
-                            &fence.session,
-                            fence.revision,
-                            commit.snapshot.state().clone(),
-                            None,
-                        );
-                    }
-                    Err(_) => {
-                        core.mark_storage_failure(bot, now());
-                        world.revoke_actor(store, bot);
-                    }
-                }
+                if let Some(slot) = &slot { let _ = world.release(&context.session, &slot.lease(), now()); }
+                cancel_uninstalled_move(core, store, world, bot, &fence, &planned, &now, &wall);
                 return Err(UNAVAILABLE.into());
             }
         };
@@ -720,6 +809,9 @@ pub(crate) fn admit_move(
             bot.into(),
             NativeJob {
                 visual: Some(visual),
+                native_rest_output: None,
+                native_permit,
+                slot,
                 authority,
                 key,
                 fence,
@@ -733,6 +825,23 @@ pub(crate) fn admit_move(
         actions.changed();
         Ok(())
     })
+}
+fn cancel_uninstalled_move(
+    core: &mut Core, store: &Store, world: &WorldHub, bot: &str, fence: &LocalFence,
+    planned: &LifeSnapshot, now: &impl Fn() -> u64, wall: &impl Fn() -> u64,
+) {
+    let Some(action) = planned.state().current_action().map(|action| action.intent().id().clone()) else {
+        core.mark_storage_failure(bot, now()); world.revoke_actor(store, bot); return;
+    };
+    match store.apply_life_action_checked(bot, wall(), |actual, _| {
+        if actual.state().current_action().is_none_or(|current| current.intent().id() != &action) {
+            return Err(LifeStoreError::InvalidInput);
+        }
+        Ok((LifeEvent::Cancel { action_id: action.clone(), reason: CancelReason::Unavailable }, actual.state().revision(), ()))
+    }) {
+        Ok((commit, _)) => { core.replace_confirmed(bot, &fence.session, fence.revision, commit.snapshot.state().clone(), None); }
+        Err(_) => { core.mark_storage_failure(bot, now()); world.revoke_actor(store, bot); }
+    }
 }
 fn flush_visual_dispatch(actions: &mut NativeActions, core: &mut Core, now: u64) {
     while let Some(dispatch) = actions.executor.take_dispatch() {
@@ -921,12 +1030,21 @@ pub(crate) fn visual_report(
             let position = visual
                 .observe(frame, kind, received, now())
                 .map_err(|_| Failure::Protocol)?;
+            if let Some(slot) = &mut job.slot {
+                world.renew_action_slot_current(core, store, &job.world, slot, SLOT_LEASE_MS, &now)
+                    .map_err(|_| Failure::Interrupted)?;
+            }
             let before = store
                 .load_life(&fence.actor_id)
                 .map_err(|_| Failure::Storage)?
                 .ok_or(Failure::Storage)?;
             if !visual.fresh(now()) || !current(core, &job, now()) {
                 return Err(Failure::Interrupted);
+            }
+            if let Some(slot) = &job.slot {
+                world.with_action_slot_context(store, &job.world, slot, &now, || {
+                    if current(core, &job, now()) && visual.fresh(now()) { Ok(()) } else { Err(UNAVAILABLE.into()) }
+                }).map_err(|_| Failure::Interrupted)?;
             }
             let status = actions.executor.status(&job.key);
             if !matches!(
@@ -978,11 +1096,13 @@ pub(crate) fn visual_report(
                 }
             }
             if kind != ReportKind::Delivered {
-                job.world = world
-                    .apply_visual_progress(store, &job.world, position, || {
-                        current(core, &job, now()) && visual.fresh(now())
-                    })
-                    .map_err(|_| Failure::Interrupted)?;
+                job.world = if let Some(slot) = &job.slot {
+                    world.apply_slot_progress(store, &job.world, slot, position, &now, ||
+                        current(core, &job, now()) && visual.fresh(now()))
+                } else {
+                    world.apply_visual_progress(store, &job.world, position, ||
+                        current(core, &job, now()) && visual.fresh(now()))
+                }.map_err(|_| Failure::Interrupted)?;
             }
             core.world_outputs
                 .accept_frame(&visual.output, frame, position, received)

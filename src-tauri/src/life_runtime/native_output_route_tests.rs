@@ -560,3 +560,78 @@ fn inactive_and_foreign_layout_records_cannot_be_classifying_or_current(){
     assert_eq!(routes.layout_state(&foreign,0),LayoutRouteState::Revoked);
     assert_eq!(routes.layout_state(&active,0),LayoutRouteState::Current);assert!(!cancel.load(Ordering::SeqCst));routes.release_layout(&active);
 }
+
+
+#[test]
+fn actual_document_callback_revokes_current_pending_and_output_without_fabricated_window_loss() {
+    let runtime=super::super::LifeRuntime::default();output_ui(&runtime);
+    let a=Arc::new(WindowSignals::default());let b=Arc::new(WindowSignals::default());
+    assert!(runtime.native_output_window_registered("a","avatar-a",&a));
+    assert!(runtime.native_output_window_registered("b","avatar-b",&b));
+    let pending=begin(&runtime.native_routes,"a",&a,0);let other=begin(&runtime.native_routes,"b",&b,0);
+    let job=output_watch(&runtime,"a");let other_job=output_watch(&runtime,"b");
+    let surface=Arc::new(AtomicBool::new(false));
+    assert!(runtime.outputs.watch_surface(runtime.outputs.ticket().unwrap(),"a","avatar-a","native-document-surface",1,&surface,("native-output-fixture",1)));
+    let generation=runtime.outputs.ticket();let revision=pending.window.revision;let instance=pending.window.instance.clone();
+    runtime.native_document_route_revoked("a",&a);
+    assert_ne!(runtime.outputs.ticket(),generation);assert!(job.load(Ordering::SeqCst));assert!(surface.load(Ordering::SeqCst));
+    assert!(pending.cancel.load(Ordering::SeqCst));assert!(pending.window.cancel.load(Ordering::SeqCst));
+    assert!(matches!(runtime.native_routes.take_preparation(&pending,1),Err(RouteError::StaleWindow)));
+    assert!(!other.cancel.load(Ordering::SeqCst));assert!(!other_job.load(Ordering::SeqCst));
+    let next=runtime.native_routes.witness("a","avatar-a",&a,1).unwrap();
+    assert_eq!(next.instance,instance,"document change retains the actual constructor");assert!(next.revision>revision);
+    runtime.native_routes.take_preparation(&other,1).unwrap();
+}
+
+#[test]
+fn document_reload_cancels_actual_layout_but_keeps_cleanup_charged_until_exact_release() {
+    let routes=NativeOutputRoutes::default();let outputs=super::super::action_output::OutputGate::default();
+    let signals=tracked(&routes,"a");let other=tracked(&routes,"b");layout_ui(&routes);
+    let (route,cancel)=layout_handoff(&routes,"a",&signals,0);let (other_route,other_cancel)=layout_handoff(&routes,"b",&other,0);
+    assert!(routes.revoke_document("a",&signals,&outputs));assert!(cancel.load(Ordering::SeqCst));
+    assert_eq!(routes.layout_state(&route,0),LayoutRouteState::Revoked);assert!(routes.state.lock().unwrap().layouts.contains_key(&route.id));
+    assert!(!other_cancel.load(Ordering::SeqCst));assert!(routes.layout_current(&other_route,0));
+    assert!(routes.release_layout(&route));assert!(!routes.state.lock().unwrap().layouts.contains_key(&route.id));assert!(routes.release_layout(&other_route));
+}
+
+#[test]
+fn missing_document_callback_conservatively_revokes_output_under_the_route_boundary() {
+    let runtime=super::super::LifeRuntime::default();output_ui(&runtime);
+    let signals=Arc::new(WindowSignals::default());
+    assert!(runtime.native_output_window_registered("a","avatar-a",&signals));
+    assert!(runtime.native_output_window_changed("a",&signals,NativeWindowChange::Closing));
+    let job=output_watch(&runtime,"a");let other=output_watch(&runtime,"other");let generation=runtime.outputs.ticket();
+    assert!(!runtime.native_routes.revoke_document("a",&signals,&runtime.outputs));
+    assert_ne!(runtime.outputs.ticket(),generation);assert!(job.load(Ordering::SeqCst));assert!(!other.load(Ordering::SeqCst));
+    assert!(!runtime.native_routes.state.lock().unwrap().windows.contains_key("a"),"missing callback creates no constructor or grant");
+}
+
+#[test]
+fn retired_document_callback_cannot_change_successor_output_generation_or_pending_identity() {
+    let runtime=super::super::LifeRuntime::default();output_ui(&runtime);
+    let old=Arc::new(WindowSignals::default());assert!(runtime.native_output_window_registered("a","avatar-a",&old));
+    let old_pending=begin(&runtime.native_routes,"a",&old,0);
+    let current=Arc::new(WindowSignals::default());assert!(runtime.native_output_window_registered("a","avatar-a",&current));
+    assert!(old_pending.cancel.load(Ordering::SeqCst));let pending=begin(&runtime.native_routes,"a",&current,0);
+    let job=output_watch(&runtime,"a");let generation=runtime.outputs.ticket();
+    runtime.native_document_route_revoked("a",&old);
+    let foreign=Arc::new(WindowSignals::default());runtime.native_document_route_revoked("a",&foreign);
+    assert_eq!(runtime.outputs.ticket(),generation);assert!(!job.load(Ordering::SeqCst));assert!(!pending.cancel.load(Ordering::SeqCst));assert!(!pending.window.cancel.load(Ordering::SeqCst));
+    let witness=runtime.native_routes.witness("a","avatar-a",&current,1).unwrap();assert_eq!(witness.revision,pending.window.revision);assert_eq!(witness.instance,pending.window.instance);
+    runtime.native_routes.take_preparation(&pending,1).unwrap();
+}
+
+
+#[test]
+fn poisoned_document_callback_cancels_actual_pending_and_output_without_recovery() {
+    let runtime=super::super::LifeRuntime::default();output_ui(&runtime);
+    let signals=Arc::new(WindowSignals::default());assert!(runtime.native_output_window_registered("a","avatar-a",&signals));
+    let pending=begin(&runtime.native_routes,"a",&signals,0);let job=output_watch(&runtime,"a");let other=output_watch(&runtime,"other");let generation=runtime.outputs.ticket();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{let _guard=runtime.native_routes.state.lock().unwrap();panic!("synthetic document route poison");})).is_err());
+    assert!(!runtime.native_routes.revoke_document("a",&signals,&runtime.outputs));
+    assert_ne!(runtime.outputs.ticket(),generation);assert!(job.load(Ordering::SeqCst));assert!(!other.load(Ordering::SeqCst));
+    assert!(pending.cancel.load(Ordering::SeqCst));assert!(pending.window.cancel.load(Ordering::SeqCst));assert!(runtime.native_routes.state.is_poisoned());
+    assert!(matches!(runtime.native_routes.witness("a","avatar-a",&signals,1),Err(RouteError::Unavailable)));
+    assert!(matches!(runtime.native_routes.take_preparation(&pending,1),Err(RouteError::Unavailable)));
+    assert!(runtime.native_routes.state.is_poisoned());
+}

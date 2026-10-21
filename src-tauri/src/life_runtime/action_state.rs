@@ -21,6 +21,7 @@ pub(crate) struct UiProof {
 }
 #[derive(Clone)]
 pub(crate) struct RestIntent {
+    pub native: Option<super::native_scene_actions::NativeIntent>,
     pub move_target: Option<crate::world_state::coordinates::Point>,
     pub serial: u64,
     pub bot: String,
@@ -56,6 +57,9 @@ pub(crate) struct WorldActionFence {
 #[derive(Clone)]
 pub(crate) struct NativeJob {
     pub visual: Option<crate::world_output::VisualExecution>,
+    pub native_permit: Option<super::native_scene::NativeActionPermit>,
+    pub native_rest_output: Option<crate::world_output::OutputProof>,
+    pub slot: Option<crate::world_hub::SlotReservation>,
     pub authority: NativeAuthority,
     pub key: JobKey,
     pub fence: LocalFence,

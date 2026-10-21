@@ -20,7 +20,7 @@
   import {LifeOutputVersions,type LifeOutput} from './lib/life-output';
   import {applyOverlayVisibility} from './lib/overlay-visibility';
   import { LifeUI } from './lib/life-ui';
-  import { actionChanged, requestQuietRest, requestLifeMove } from './lib/life-actions';
+  import { actionChanged, requestQuietRestForOutput, requestLifeMove,requestNativeLifeMove,requestNativeLifeSlot } from './lib/life-actions';
   import {lifeStartContext} from './lib/life-start-context';
   import {lifeSceneParticipants,LIFE_SCENE_OVER_LIMIT} from './lib/life-scene-participants';
   import {parseWorldSettings} from './lib/world-state';
@@ -463,7 +463,7 @@
     const target=profile.id,revision=operatorRevision,epoch=turnEpoch,reporter=lifeUi;
     const current=()=>appAlive&&profile.id===target&&operatorRevision===revision&&turnEpoch===epoch&&lifeUi===reporter&&!quietRestBlocked;
     if(!current())throw actionChanged();
-    return requestQuietRest(call,reporter,target,current,()=>{nativeOperatorPending=false;lifeActivity=false;});
+    return requestQuietRestForOutput(call,reporter,target,current,()=>{nativeOperatorPending=false;lifeActivity=false;});
   }
   async function registerWorld(request:Omit<RegisterWorldActor,'studioProof'>){
     const reporter=lifeUi,target=profile.id,revision=operatorRevision,epoch=turnEpoch;
@@ -475,12 +475,19 @@
       return call('register_world_output',{request:{...request,studioProof:proof}});
     });
   }
-  async function startWorldMove(targetPoint:CanonicalPoint){
+  async function startWorldMove(targetPoint:CanonicalPoint,nativeOwner=false){
     if(quietRestBlocked||!lifeUi)throw new Error(translate('Beende zuerst Eingaben, Ausgaben und offene Änderungen. Eine sichtbare Bewegung erfordert einen bereits gestarteten Life-Modus.'));
     invalidateNativePlayback();
     const target=profile.id,revision=operatorRevision,epoch=turnEpoch,reporter=lifeUi;
     const current=()=>appAlive&&page==='autopilot'&&profile.id===target&&operatorRevision===revision&&turnEpoch===epoch&&lifeUi===reporter&&!quietRestBlocked;
+    if(nativeOwner)return requestNativeLifeMove(call,target,targetPoint,current);
     return requestLifeMove(call,reporter,target,targetPoint,current,()=>{nativeOperatorPending=false;lifeActivity=false;});
+  }
+  async function startWorldSlot(slotId:string){
+    if(quietRestBlocked)throw actionChanged();
+    invalidateNativePlayback();const target=profile.id,revision=operatorRevision,epoch=turnEpoch;
+    const current=()=>appAlive&&page==='autopilot'&&profile.id===target&&operatorRevision===revision&&turnEpoch===epoch&&!quietRestBlocked;
+    return requestNativeLifeSlot(call,target,slotId,current);
   }
   async function reportLife(activity=false) {
     if(!native||!lifeMounted||!lifeUi)return;
@@ -1067,7 +1074,13 @@
     cleanup.push(registerOperatorDialogBarrier(ensureOperatorBarrier));
     if(native)void lifeListeners.then(async()=>{if(disposed)return;await refresh();if(disposed)return;await lifeUi.connect();if(disposed)return;lifeMounted=true;await refreshLifeRuntime();await reportLife();}).catch(error=>{if(!disposed){lifeMounted=true;lifeError=prettyError(error);}});
     let lastActivity=0;
-    const activity=(event:Event)=>{if(!event.isTrusted)return;++operatorRevision;nativeOperatorPending=true;invalidateNativePlayback();lifeActivity=true;const now=Date.now();if(now-lastActivity>=500){lastActivity=now;void reportLife(true);}};
+    const activity=(event:Event)=>{if(!event.isTrusted)return;
+      // Only these explicit operator buttons use the native-intent handler,
+      // which cancels pending work while retaining its exact physical owner.
+      // The World target picker only chooses local geometry. The submit
+      // command performs native admission; all text edits, dialogs and other
+      // input keep the ordinary global cancellation path below.
+      if(event.target instanceof Element&&event.target.closest('button[data-native-life-command]'))return;++operatorRevision;nativeOperatorPending=true;invalidateNativePlayback();lifeActivity=true;const now=Date.now();if(now-lastActivity>=500){lastActivity=now;void reportLife(true);}};
     for(const name of ['pointerdown','keydown','input']){window.addEventListener(name,activity,{capture:true});cleanup.push(()=>window.removeEventListener(name,activity,{capture:true}));}
     const heartbeat=setInterval(()=>{void reportLife();},2000);cleanup.push(()=>clearInterval(heartbeat));
     subscribe('cohost://autopilot',acceptAutopilot);
@@ -1165,7 +1178,7 @@
       {#if worldDirty&&page!=='autopilot'}<div class="scope-strip shared"><span>{$t('Gemeinsamer Bühnenentwurf wartet auf Speichern oder Verwerfen.')}</span><button class="text-link" onclick={()=>navigate('autopilot')}>{$t('Zum Bühnenentwurf')}</button></div>{/if}
       <div class="wake-control" hidden={page!=='studio'&&!profile.wakeWord?.enabled}><WakeWord {permissionContext} sttConfig={profile.stt} bind:config={profile.wakeWord} botId={profile.id} sttProvider={profile.stt.provider} blocked={updateInstalling||busy||speaking||speechPreparing||emoteSoundPlaying||externalEmotePlaying||microphone||microphoneStarting||transcribing} stopSignal={wakeStopSignal} onTrigger={text=>runMessage(text,'microphone','Streamer',profile.id,undefined,false)} onError={message=>notify(message,true)} onConfigChange={()=>persist(true)} onActiveChange={active=>wakeActive=active}/></div>
 
-      <div hidden={page!=='autopilot'}><WorldStatePanel bind:this={worldPanel} {bots} selectedBotId={profile.id} outputUrl={overlayUrl} displays={outputDisplays} visible={page==='autopilot'} disabled={updateInstalling||saving||switchingBot||creatingBot} executionBlocked={quietRestBlocked} registerWorld={registerWorld} onStart={startLifeScene} onStop={stopAll} active={!!lifeRuntime?.sessions.some(session=>session.active)} starting={autopilotPending} onMove={startWorldMove} onDirtyChange={value=>worldDirty=value} onBusyChange={value=>worldBusy=value} confirmDiscard={confirmWorldDiscard}/></div>
+      <div hidden={page!=='autopilot'}><WorldStatePanel bind:this={worldPanel} {bots} selectedBotId={profile.id} outputUrl={overlayUrl} displays={outputDisplays} visible={page==='autopilot'} disabled={updateInstalling||saving||switchingBot||creatingBot} executionBlocked={quietRestBlocked} registerWorld={registerWorld} onStart={startLifeScene} onStop={stopAll} active={!!lifeRuntime?.sessions.some(session=>session.active)} starting={autopilotPending} onMove={startWorldMove} onSlotMove={startWorldSlot} onDirtyChange={value=>worldDirty=value} onBusyChange={value=>worldBusy=value} confirmDiscard={confirmWorldDiscard}/></div>
 
       {#if page==='studio'}
         <section class="crew-panel"><div class="crew-heading"><div><h2>{$t("Deine Stream-Crew")} <HelpTip text={$t("Der Live-Chat ist die gemeinsame Eingabe. Eigene Ansprache und Antwortmodus legst du pro Bot unter Verbindungen fest. Antworten werden nacheinander gesprochen.")}/><span>{$t('{count} Ausgaben aktiv',{count:formatNumber(liveBots.length,$locale)})}</span></h2></div><button class="button secondary small" disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending} onclick={()=>{botDialog=true;botCopy=false;botCharacter='nova'}}><Plus size={14}/>{$t("Bot hinzufügen")}</button></div><div class="crew-list">{#each bots as bot}<article class="crew-card" class:editing={bot.id===profile.id}><button class="crew-identity" onclick={()=>selectBot(bot.id)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending}><span class="bot-initial">{bot.name.charAt(0)}</span><span><strong>{bot.name}</strong><small>{bot.id===profile.id?$t("Zum Bearbeiten ausgewählt"):bot.profile?.model?.provider||$t("Eigenes Profil")}</small></span></button><div class="crew-actions"><button class="button small" class:secondary={!(botEnabled(bot))} class:live-output={botEnabled(bot)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending} onclick={()=>toggleBotLive(bot)}><Monitor size={12}/>{botEnabled(bot)?$t("Ausgabe beenden"):$t("Figur zeigen")}</button><button class="icon-button" title={$t('Eigener OBS-Link für {name}',{name:bot.name})} aria-label={$t('Eigener OBS-Link für {name}',{name:bot.name})} onclick={()=>copyBotObs(bot)} disabled={busy||microphone||microphoneStarting||transcribing||switchingBot||creatingBot||saving||autopilotPending}><Copy size={14}/></button></div></article>{/each}</div></section>

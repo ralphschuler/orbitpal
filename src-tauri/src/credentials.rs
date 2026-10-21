@@ -7,6 +7,7 @@ pub(crate) const SERVICE: &str = "streamer-ai-cohost";
 
 #[cfg(not(test))]
 pub(crate) fn entry(id: &str) -> keyring_core::Result<Entry> {
+    #[cfg(feature="native-world-fixture")] return Err(crate::native_world_fixture::deny_credential());
     #[cfg(target_os = "macos")]
     return apple_native_keyring_store::keychain::Store::new()?.build(SERVICE, id, None);
 

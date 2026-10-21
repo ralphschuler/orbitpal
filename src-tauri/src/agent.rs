@@ -26,13 +26,17 @@ async fn send_with_origin(app:tauri::AppHandle,text:String,source:String,user:St
     if text.len()>20_000{return Err("Nachricht ist zu lang (maximal 20.000 Bytes)".into());}
     if !public_source(&source){return Err("Ungültige Nachrichtenquelle".into());}
     let viewer=!["operator","microphone"].contains(&source.as_str());
-    let state=app.state::<crate::AppState>();state.life_runtime.before_dialog(&app,origin)?;
+    let state=app.state::<crate::AppState>();
     state.updater.ensure_idle()?;
     let _turn=state.generation.try_lock().map_err(|_|"Der Co-Host verarbeitet bereits eine Nachricht. Bitte warten oder abbrechen.".to_owned())?;
     let id=reply_id(&state,request_id.as_deref())?;
     let cancel=Arc::new(AtomicBool::new(false));
     *state.cancel.lock().map_err(|e|e.to_string())?=Some(cancel.clone());
-    let result=run(&app,&id,&text,&source,&user,viewer,&selected,cancel.clone(),bot_id.as_deref(),None,reply_route_id.as_deref(),None,origin).await;
+    let result=async{
+        state.life_runtime.before_dialog(&app,origin).await?;
+        if cancel.load(Ordering::SeqCst){return Err("Antwort abgebrochen".into());}
+        run(&app,&id,&text,&source,&user,viewer,&selected,cancel.clone(),bot_id.as_deref(),None,reply_route_id.as_deref(),None,origin).await
+    }.await;
     *state.cancel.lock().map_err(|e|e.to_string())?=None;
     match &result {
         Err(e)=>{event(&app,&id,"error",e);let _=app.emit("cohost://agent",json!({"kind":"status","turnId":id,"status":"idle"}));},
@@ -42,10 +46,13 @@ async fn send_with_origin(app:tauri::AppHandle,text:String,source:String,user:St
 }
 pub async fn send_runtime_autopilot(app:tauri::AppHandle,claim:crate::life_runtime::core::Claim)->Result<Value,String>{
     let bot_id=claim.bot_id.clone();let request_id=Some(claim.turn_id.clone());
-    let state=app.state::<crate::AppState>();state.updater.ensure_idle()?;state.presentation.admit_dialog()?;
+    let state=app.state::<crate::AppState>();state.updater.ensure_idle()?;
     let _turn=state.generation.try_lock().map_err(|_|"Der Co-Host verarbeitet bereits eine Nachricht oder ein Update".to_owned())?;
     // A queued or playing answer must finish before autonomous speech can begin.
     if state.overlay.has_any_pending_speech(){return Err("Bitte die vorbereitete oder laufende Sprachausgabe vor dem nächsten Autopilot-Beitrag beenden".into());}
+    *state.cancel.lock().map_err(|e|e.to_string())?=Some(claim.cancel.clone());
+    let result=async{
+    state.life_runtime.quiesce_native_for_dialog(&app,crate::usage_budget::Origin::Autopilot).await?;
     state.life_runtime.check_cloud(&app,&claim).await?;
     let profile=state.store.bot_profile(&bot_id)?;
     if !crate::providers::dialog_model_ready(&profile["model"]){return Err("Bitte zuerst ein Sprachmodell für diesen Bot auswählen".into());}
@@ -53,10 +60,11 @@ pub async fn send_runtime_autopilot(app:tauri::AppHandle,claim:crate::life_runti
     let ticket=state.autopilot.admit(&bot_id,&crate::autopilot::config(&profile)?)?;
     state.life_runtime.bind(&claim,ticket.cancel.clone())?;
     let cancel=ticket.cancel.clone();*state.cancel.lock().map_err(|error|error.to_string())?=Some(cancel.clone());
-    let result=run(&app,&id,"Gelegenheit für einen kurzen eigenen Beitrag. Prüfe, ob du jetzt etwas Sinnvolles beitragen möchtest.","autopilot","Autopilot",false,&[],cancel,Some(&bot_id),Some(&ticket),None,Some(&claim),crate::usage_budget::Origin::Autopilot).await;
+    run(&app,&id,"Gelegenheit für einen kurzen eigenen Beitrag. Prüfe, ob du jetzt etwas Sinnvolles beitragen möchtest.","autopilot","Autopilot",false,&[],cancel,Some(&bot_id),Some(&ticket),None,Some(&claim),crate::usage_budget::Origin::Autopilot).await
+    }.await;
     *state.cancel.lock().map_err(|error|error.to_string())?=None;
-    if let Err(error)=&result{event(&app,&id,"error",error);}
-    let _=app.emit("cohost://agent",json!({"kind":"status","turnId":id,"status":"idle"}));result
+    if let Err(error)=&result{event(&app,&claim.turn_id,"error",error);}
+    let _=app.emit("cohost://agent",json!({"kind":"status","turnId":claim.turn_id,"status":"idle"}));result
 }
 async fn run(app:&tauri::AppHandle,id:&str,text:&str,source:&str,user:&str,viewer:bool,selected:&[String],cancel:Arc<AtomicBool>,bot_id:Option<&str>,autopilot:Option<&crate::autopilot::Ticket>,reply_route_id:Option<&str>,runtime_claim:Option<&crate::life_runtime::core::Claim>,origin:crate::usage_budget::Origin)->Result<Value,String> {
     let state=app.state::<crate::AppState>();

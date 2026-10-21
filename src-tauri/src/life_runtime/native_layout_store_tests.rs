@@ -85,6 +85,8 @@ impl LayoutHost for Host{
         if observed==LayoutRouteState::Classifying{self.classifying_reads.fetch_add(1,Ordering::SeqCst);}
         observed
     }
+    fn stage_surface(&self,r:&LayoutRoute,c:&Arc<native_layout::SurfaceCell>)->Result<(),LayoutError>{self.routes.stage_surface(r,c,self.now()).map_err(|_|LayoutError::Stale)}
+    fn validate_live(&self,cancel:&Arc<AtomicBool>)->Result<(),LayoutError>{if cancel.load(Ordering::SeqCst)||self.gate.snapshot().state!=crate::life_availability::Availability::AwakeUnlocked{Err(LayoutError::Stale)}else{Ok(())}}
     fn release_route(&self,r:&LayoutRoute)->bool{let released=if self.fail_release.load(Ordering::SeqCst){false}else{self.routes.release_layout(r)};self.release_calls.fetch_add(1,Ordering::SeqCst);released}
     fn finish(&self,o:&Arc<LayoutOwner>)->bool{self.finish_calls.fetch_add(1,Ordering::SeqCst);let hook=self.before_finish.lock().unwrap().take();if let Some(hook)=hook{hook();}if self.fail_finish.load(Ordering::SeqCst){return false;}assert!(self.hub.finish_native(o));true}
     fn policy(&self)->Option<crate::storage::profile_mutation::NativeLayoutPolicy>{let policy=self.f.lock().unwrap().store.native_layout_policy("nova");self.policy_reads.fetch_add(1,Ordering::SeqCst);policy}
@@ -319,4 +321,120 @@ async fn unmatched_geometry_is_terminal_even_if_classification_is_later_finished
     assert!(h.owned().cancel.load(Ordering::SeqCst));h.finish_classification(true);
     h.pump_until(||task.is_finished()).await;assert!(task.await.unwrap().is_err());
     assert!(h.owned().cancel.load(Ordering::SeqCst));h.window.delayed.store(false,Ordering::SeqCst);h.window.flush();h.released().await;
+}
+
+
+// Durable physical ownership/leases; Registry, document IPC and actual renderer
+// admission remain root-owned. These genuine driver/Store fixtures mint no
+// renderer measurement or action completion on behalf of a public caller.
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn pending_surface_proof_calibrates_only_and_drop_retains_exact_cleanup(){
+    let h=Host::new();let before=h.f.lock().unwrap().store.load_life("nova").unwrap().unwrap().state().clone();
+    let p=h.prepared().await;let g=p.begin_promotion(0).unwrap();let proof=g.proof();
+    assert!(proof.preparing_current(0));assert!(!proof.live_current(0));assert!(!proof.current(0));assert!(proof.same_surface(&proof.clone()));
+    assert_eq!(h.owned().phase(),crate::overlay_presentation::LayoutPhase::PromotionPending);
+    assert!(!h.f.lock().unwrap().core.world_output_current("nova",0));
+    drop(g);assert!(!proof.preparing_current(0));assert!(!proof.live_current(0));assert!(h.hub.any_native_work());
+    h.released().await;assert_eq!(h.window.bounds().unwrap(),normal());
+    assert_eq!(h.f.lock().unwrap().store.load_life("nova").unwrap().unwrap().state(),&before);
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn live_surface_passes_original_d5_only_with_strictly_new_successful_frame_leases(){
+    let h=Host::new();let p=h.prepared().await;let g=p.begin_promotion(0).unwrap();let pending=g.proof();
+    let live=g.commit_live(1,0,0).unwrap();let proof=live.proof();assert!(pending.same_surface(&proof));assert!(!pending.preparing_current(0));
+    for n in 1..=12{let now=n*1000;h.now.store(now,Ordering::SeqCst);live.accepted_frame(n+1,now,now).unwrap();while h.main.step(){}assert!(proof.live_current(now));}
+    assert_eq!(h.owned().deadline,5000,"Live does not rewrite preparation D5");assert!(h.hub.any_native_work());assert_eq!(h.window.bounds().unwrap(),arena());
+    assert!(!h.f.lock().unwrap().core.world_output_current("nova",0),"physical promotion alone installs no Registry/action grant");
+    h.now.store(17001,Ordering::SeqCst);assert!(!proof.live_current(17001));assert!(live.accepted_frame(99,17001,17001).is_err());
+    drop(live);h.released().await;assert_eq!(h.window.bounds().unwrap(),normal());
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn repeated_backward_future_and_delayed_frames_never_renew_or_revive_live(){
+    let h=Host::new();let live=h.prepared().await.begin_promotion(0).unwrap().commit_live(10,0,0).unwrap();
+    h.now.store(100,Ordering::SeqCst);live.accepted_frame(11,100,100).unwrap();
+    assert!(live.accepted_frame(11,101,101).is_err());assert!(live.accepted_frame(12,100,100).is_err());assert!(live.accepted_frame(12,99,100).is_err());
+    assert!(live.accepted_frame(12,101,100).is_err());assert!(live.accepted_frame(12,101,500).is_err());
+    h.now.store(5100,Ordering::SeqCst);assert!(live.current(5100));
+    h.now.store(5101,Ordering::SeqCst);assert!(!live.current(5101));assert!(live.accepted_frame(12,5101,5101).is_err());
+    drop(live);h.released().await;
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn expired_pending_or_stale_first_calibration_cannot_win_cleanup_publication(){
+    for stale in [false,true]{
+        let h=Host::new();let g=h.prepared().await.begin_promotion(0).unwrap();let proof=g.proof();
+        let now=if stale{251}else{5001};h.now.store(now,Ordering::SeqCst);
+        if !stale{assert!(h.owned().cleanup_required(now));}
+        assert!(g.commit_live(1,0,now).is_err());assert!(!proof.live_current(now));assert!(!proof.preparing_current(now));
+        h.released().await;assert_eq!(h.window.bounds().unwrap(),normal());
+    }
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn live_stop_and_owner_drop_invalidate_all_read_only_clones_without_freeing_guard_early(){
+    for explicit in [false,true]{
+        let h=Host::new();let live=h.prepared().await.begin_promotion(0).unwrap().commit_live(1,0,0).unwrap();let proof=live.proof();let retained=proof.clone();
+        if explicit{h.stop();assert!(!proof.current(0));}
+        drop(live);assert!(!proof.current(0));assert!(!retained.current(0));assert!(h.hub.any_native_work());assert!(h.hub.admit_dialog().is_err());
+        h.released().await;assert_eq!(h.window.bounds().unwrap(),normal());assert!(!retained.current(0));
+    }
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn raw_geometry_after_live_revokes_even_if_a_late_classifier_claims_success(){
+    let h=Host::new();let live=h.prepared().await.begin_promotion(0).unwrap().commit_live(1,0,0).unwrap();let proof=live.proof();
+    let fact=h.routes.begin_geometry("nova",&h.signals,&h.outputs).unwrap();assert!(!proof.current(0));
+    h.routes.finish_geometry(fact,true);assert!(!proof.current(0));assert!(live.accepted_frame(2,1,1).is_err());
+    drop(live);h.released().await;assert_eq!(h.window.bounds().unwrap(),normal());
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn live_release_ack_waits_for_real_finish_and_keeps_failed_finish_guarded(){
+    let h=Host::new();let live=h.prepared().await.begin_promotion(0).unwrap().commit_live(1,0,0).unwrap();
+    let (entered_tx,entered_rx)=std::sync::mpsc::channel();let barrier=Arc::new(std::sync::Barrier::new(2));let held=barrier.clone();
+    *h.before_finish.lock().unwrap()=Some(Box::new(move||{entered_tx.send(()).unwrap();held.wait();}));
+    let release=tokio::spawn(live.release());
+    h.pump_until(||entered_rx.try_recv().is_ok()).await;
+    assert!(!release.is_finished());assert!(h.hub.any_native_work());barrier.wait();
+    h.pump_until(||release.is_finished()).await;assert_eq!(release.await.unwrap(),native_layout::NativeLayoutRestoreOutcome::Restored);
+    let h=Host::new();let live=h.prepared().await.begin_promotion(0).unwrap().commit_live(1,0,0).unwrap();h.fail_finish.store(true,Ordering::SeqCst);
+    let release=tokio::spawn(live.release());h.pump_until(||release.is_finished()).await;assert_eq!(release.await.unwrap(),native_layout::NativeLayoutRestoreOutcome::GuardedUnavailable);assert!(h.hub.any_native_work());
+    h.fail_finish.store(false,Ordering::SeqCst);h.hub.forget_window("nova",&h.signals);h.released().await;
+}
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn session_layout_permission_needs_exact_arc_but_not_studio_connection(){
+    let h=Host::new();h.routes.ui_disconnect("studio");let session=Arc::new(AtomicBool::new(false));let foreign=Arc::new(AtomicBool::new(false));
+    let ui=h.routes.session_layout(&session).unwrap();let wrong=h.routes.session_layout(&foreign).unwrap();let handle=h.hub.native_handle("nova").unwrap();
+    let witness=h.routes.witness("nova","avatar-nova",&h.signals,0).unwrap();let ticket=h.routes.begin_preparation(witness,0).unwrap();let cancel=Arc::new(AtomicBool::new(false));
+    let route=h.routes.retain_preparation(&ticket,&h.signals,&cancel,&ui,0).unwrap();let owner=h.hub.reserve_native(&handle,&handle.sample().unwrap(),0,5000,cancel.clone()).unwrap();
+    assert!(h.routes.handoff_preparation(&ticket,&h.signals,&cancel,&wrong,0).is_err());
+    h.routes.handoff_preparation(&ticket,&h.signals,&cancel,&ui,0).unwrap();assert!(h.routes.layout_current(&route,0));
+    session.store(true,Ordering::SeqCst);assert!(!h.routes.layout_current(&route,0));assert!(cancel.load(Ordering::SeqCst));assert!(!foreign.load(Ordering::SeqCst));
+    owner.begin_restore().unwrap();assert!(owner.restore_once(false,false,||true).unwrap());assert!(h.hub.finish_native(&owner));assert!(h.routes.release_layout(&route));
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn pending_promotion_release_waits_for_exact_hub_and_route_completion(){
+    let h=Host::new();let g=h.prepared().await.begin_promotion(0).unwrap();let proof=g.proof();
+    let release=tokio::spawn(g.release());h.pump_until(||h.owned().cancel.load(Ordering::SeqCst)).await;
+    assert!(!proof.preparing_current(0));assert!(!proof.live_current(0));
+    h.pump_until(||release.is_finished()).await;
+    assert_eq!(release.await.unwrap(),native_layout::NativeLayoutRestoreOutcome::Restored);
+    assert!(!h.hub.any_native_work());assert_eq!(h.window.bounds().unwrap(),normal());assert_eq!(h.finish_calls.load(Ordering::SeqCst),1);assert_eq!(h.release_calls.load(Ordering::SeqCst),1);
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn promotion_keeps_the_identical_normal_owner_and_never_frees_capacity_at_live(){
+    let h=Host::new();let p=h.prepared().await;let original=h.owned();let handle=h.hub.native_handle("nova").unwrap();
+    let g=p.begin_promotion(0).unwrap();assert!(Arc::ptr_eq(&original,&h.owned()));
+    let live=g.commit_live(1,0,0).unwrap();assert!(Arc::ptr_eq(&original,&h.owned()));
+    assert!(matches!(h.hub.reserve_native(&handle,&handle.sample().unwrap(),0,5000,Arc::new(AtomicBool::new(false))),Err(LayoutError::Busy)));
+    assert!(!h.hub.finish_native(&original),"a Live owner has not acknowledged restoration");
+    assert!(live.current(0));drop(live);assert!(h.hub.any_native_work());h.released().await;assert_eq!(h.window.bounds().unwrap(),normal());
+}
+
+#[tokio::test(flavor="multi_thread",worker_threads=2)]
+async fn queued_prepared_observation_drains_through_pending_without_false_abort_or_grant(){
+    let h=Host::new();let p=h.prepared().await;
+    h.wait_until(||h.owned().in_flight()).await;assert!(!h.main.queue.lock().unwrap().is_empty());
+    let g=p.begin_promotion(0).unwrap();let proof=g.proof();assert!(!proof.preparing_current(0));assert!(!proof.live_current(0));
+    assert!(h.main.step(),"drain the actual previously queued read-only getter");h.wait_until(||!h.owned().in_flight()).await;
+    assert!(proof.preparing_current(0));assert!(!h.owned().cancel.load(Ordering::SeqCst));
+    let live=g.commit_live(1,0,0).unwrap();assert!(live.current(0));drop(live);h.released().await;
 }

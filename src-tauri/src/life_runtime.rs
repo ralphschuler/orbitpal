@@ -10,6 +10,18 @@ pub(crate) mod native_layout;
 pub(crate) use native_output_route::NativeWindowChange;
 #[path = "life_runtime/session_output.rs"]
 pub(crate) mod session_output;
+#[path = "life_runtime/native_scene.rs"]
+pub(crate) mod native_scene;
+#[path = "life_runtime/native_scene_host.rs"]
+mod native_scene_host;
+#[path = "life_runtime/native_document.rs"]
+mod native_document;
+#[path = "life_runtime/native_scene_document.rs"]
+pub(crate) mod native_scene_document;
+#[path = "life_runtime/native_scene_ipc.rs"]
+pub(crate) mod native_scene_ipc;
+#[path = "life_runtime/native_scene_lifecycle.rs"]
+mod native_scene_lifecycle;
 #[path = "life_runtime/action_state.rs"]
 pub(crate) mod action_state;
 #[path = "life_runtime/actions.rs"]
@@ -20,6 +32,12 @@ pub(crate) mod cloud;
 pub(crate) mod core;
 #[path = "life_runtime/world_output.rs"]
 pub(crate) mod world_output;
+#[path = "life_runtime/semantic_mirrors.rs"]
+pub(crate) mod semantic_mirrors;
+#[path = "life_runtime/native_scene_actions.rs"]
+pub(crate) mod native_scene_actions;
+#[path = "life_runtime/native_scene_dispatch.rs"]
+pub(crate) mod native_scene_dispatch;
 use self::core::{Claim, Core, Mode, RuntimeSnapshot, SpeechConfig};
 use crate::{
     life_availability::{
@@ -100,6 +118,7 @@ pub fn operator_command(command: &str) -> bool {
     !matches!(
         command,
         "get_app_state"
+            | "prepare_native_life_action"
             | "get_api_connections"
             | "get_api_binding"
             | "get_world_output_status"
@@ -108,6 +127,7 @@ pub fn operator_command(command: &str) -> bool {
             | "report_world_action"
             | "unregister_world_output"
             | "get_world_state"
+            | "get_world_semantic_mirrors"
             | "get_world_settings"
             | "get_life_runtime"
             | "get_life_bot"
@@ -116,6 +136,10 @@ pub fn operator_command(command: &str) -> bool {
             | "disconnect_life_ui"
             | "report_life_ui"
             | "set_life_mode"
+            // Async scene rollback may target an obsolete session. Its exact
+            // handler cancels only a matching session/lease; pre-handler global
+            // activity would revoke a successor before that check can run.
+            | "stop_life_session_exact"
             | "set_autopilot"
             | "send_automatic_message"
             | "get_speech_audio"
@@ -150,7 +174,11 @@ pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
                 invoke.message.command(),
                 "start_life_rest" | "start_life_move"
             ) {
-                actions::prepare_operator(&state, invoke);
+                // A host-issued native intent is validated by the main handler
+                // against its exact retained permit. It must not run the Studio
+                // prehandler that revokes the very owner it needs to move.
+                let native_intent=matches!(invoke.message.payload(),tauri::ipc::InvokeBody::Json(value) if value["nativeIntentId"].as_str().is_some());
+                if !native_intent {actions::prepare_operator(&state, invoke);}
             } else {
                 state.life_runtime.operator_activity();
             }
@@ -162,6 +190,9 @@ pub struct LifeRuntime {
     outputs: action_output::OutputGate,
     native_routes: native_output_route::NativeOutputRoutes,
     pub(crate) session_outputs: session_output::SessionOutputs,
+    native_scenes: native_scene::NativeScenes,
+    native_documents: native_document::Documents,
+    native_lifecycle: native_scene_lifecycle::Lifecycle,
     core: Mutex<Core>,
     monitor: OnceLock<NativeMonitor>,
     started: Instant,
@@ -174,6 +205,9 @@ impl Default for LifeRuntime {
             outputs: action_output::OutputGate::default(),
             native_routes: native_output_route::NativeOutputRoutes::default(),
             session_outputs: session_output::SessionOutputs::default(),
+            native_scenes: native_scene::NativeScenes::default(),
+            native_documents: native_document::Documents::default(),
+            native_lifecycle: native_scene_lifecycle::Lifecycle::default(),
             core: Mutex::new(Core::new(SystemSnapshot {
                 state: Availability::Unknown,
                 reason: SystemReason::Initializing,
@@ -188,6 +222,14 @@ impl Default for LifeRuntime {
     }
 }
 impl LifeRuntime {
+    /// A coalesced native wake hint. It grants neither a session nor a retry.
+    pub(crate) fn native_scene_wake(&self, bot: Option<&str>) { self.native_lifecycle.wake(bot); }
+    /// Only an actual generation-owned dialog calls this before quiescing.
+    pub(crate) fn native_scene_dialog_started(&self) { self.native_lifecycle.dialog_started(); }
+    pub(crate) fn native_scene_status(&self) -> Vec<native_scene_lifecycle::Projection> { self.native_lifecycle.snapshot(self.now()) }
+    pub(crate) fn native_document_route_revoked(&self,bot:&str,signals:&Arc<crate::window_signals::WindowSignals>){
+        self.native_routes.revoke_document(bot,signals,&self.outputs);
+    }
     pub fn session_output(&self, bot: &str) -> Result<session_output::Projection, String> {
         self.session_outputs.snapshot(bot)
     }
@@ -324,7 +366,10 @@ impl LifeRuntime {
     }
     pub fn invalidate_bot(&self, app: &tauri::AppHandle, bot: &str) {
         self.native_routes.revoke(Some(bot));
-        self.outputs.geometry(Some(bot));
+        self.outputs.semantic_geometry(Some(bot));
+        // The operator activity below invalidates the global UI epoch. Fence
+        // delivered, still-unpinned documents for every participant as well.
+        self.outputs.bot(None);
         if let Ok(mut core) = self.core.lock() {
             core.invalidate_bot(bot, self.now());
             core.operator_activity(self.now());
@@ -384,7 +429,8 @@ impl LifeRuntime {
         write: impl FnOnce() -> Result<Value, String>,
     ) -> Result<(Value, Option<crate::autopilot::Runtime>), String> {
         self.native_routes.revoke(Some(bot));
-        self.outputs.geometry(Some(bot));
+        self.outputs.semantic_geometry(Some(bot));
+        self.outputs.bot(None);
         let mut core = self.core.lock().map_err(|_| UNAVAILABLE)?;
         core.invalidate_bot(bot, self.now());
         core.operator_activity(self.now());
@@ -410,7 +456,7 @@ impl LifeRuntime {
     pub fn stop(&self, app: &tauri::AppHandle, bot: Option<&str>) {
         self.session_outputs.cancel(app, bot);
         self.native_routes.revoke(bot);
-        self.outputs.geometry(bot);
+        self.outputs.semantic_geometry(bot);
         let state = app.state::<crate::AppState>();
         // Runtime -> AutopilotHub -> Store is the admitted mutation/commit order.
         // Keep Stop and a concurrent new Start indivisible; emit only after unlock.
@@ -498,7 +544,7 @@ impl LifeRuntime {
 
     pub(crate) fn invalidate_world_presentation(&self, bot: Option<&str>) {
         self.native_routes.revoke(bot);
-        self.outputs.geometry(bot);
+        self.outputs.semantic_geometry(bot);
     }
     /// Only the actual native constructor supplies this Arc. Tracking never
     /// enables World registration; an unprepared window remains unsupported.
@@ -550,6 +596,7 @@ impl LifeRuntime {
     }
     pub fn shutdown(&self, app: &tauri::AppHandle) {
         self.stopping.store(true, Ordering::SeqCst);
+        self.native_lifecycle.cancel();
         self.stop(app, None);
         if let Ok(mut core) = self.core.lock() {
             core.shutdown(self.now());
@@ -700,6 +747,7 @@ impl LifeRuntime {
         let _ = self.with_world(app, |world, store, sessions, now| {
             world.synchronize(store, &sessions, topology, now)
         });
+        self.native_lifecycle.pulse(app);
         self.poll_actions(app);
         let pending = self.core.lock().ok().and_then(|core| core.pending());
         if let Some((claim, generating)) = pending {
@@ -734,12 +782,13 @@ impl LifeRuntime {
                 || state.overlay.has_any_pending_speech()
                 // Same app-wide presentation/generation barrier as pending
                 // speech: not a new persisted per-bot autonomy mode.
-                || state.presentation.any_native_work()
+                || native_scene::blocks_dialog_scheduling(app)
                 || state.generation.try_lock().is_err();
             let claim = self.core.lock().ok().and_then(|mut core| {
                 core.claim(self.now(), blocked, uuid::Uuid::new_v4().to_string())
             });
             if let Some(claim) = claim {
+                self.native_lifecycle.claim_started();
                 if monitor.gate.watch(&claim.cancel).is_none() {
                     if let Ok(mut core) = self.core.lock() {
                         core.finish(&claim, self.now());
@@ -1132,6 +1181,7 @@ async fn finish_start(
         drop(core);
         state.life_runtime.session_outputs.publish(app,bot);
         publish(app);
+        state.life_runtime.native_scene_wake(Some(bot));
         return state.life_runtime.snapshot_for(&state.autopilot);
     }
     if let Some(previous) = core.take_session(bot, state.life_runtime.now()) {
@@ -1175,6 +1225,7 @@ async fn finish_start(
     state.life_runtime.session_outputs.publish(app,bot);
     crate::autopilot::publish(app, runtime);
     publish(app);
+    state.life_runtime.native_scene_wake(Some(bot));
     state.life_runtime.snapshot_for(&state.autopilot)
 }
 
@@ -1311,6 +1362,7 @@ mod host_tests {
             "report_life_ui",
             "get_life_runtime",
             "get_usage_budget",
+            "stop_life_session_exact",
         ] {
             assert!(!operator_command(command), "{command}");
         }

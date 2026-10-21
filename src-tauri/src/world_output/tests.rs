@@ -13,6 +13,7 @@ use serde_json::json;
 use std::sync::atomic::Ordering;
 fn source() -> NativeSource {
     NativeSource {
+        route: SourceRoute::Studio,
         context: WorldActionFence {
             session: SessionStamp::new(ActorId::new("nova").unwrap(), "life-session", 1).unwrap(),
             source_world: WorldId::new("lineage").unwrap(),
@@ -35,6 +36,7 @@ fn source() -> NativeSource {
         effective_scale: 1.0,
         native_walk: true,
         owner: true,
+        native_framing: None,
     }
 }
 fn request() -> RegisterWorldActor {
@@ -492,4 +494,57 @@ fn faster_stationary_cadence_preserves_first_frame_span_and_does_not_count_deliv
         .is_ok());
     assert_eq!(visual.stable.len(), 3);
     assert_eq!(visual.stable.front().unwrap().1, 20);
+}
+
+
+#[test]
+fn studio_unregister_keeps_exact_scope_revokes_and_removes_before_fresh_successor() {
+    let (mut registry, source, proof) = ready();
+    let request = UnregisterWorldActor {
+        version: 1,
+        render_session_id: proof.binding.render_session_id.clone(),
+        binding_sequence: proof.binding.binding_sequence,
+    };
+    assert!(!registry.unregister(&request, "other-ui"));
+    let mut wrong = request.clone();
+    wrong.binding_sequence += 1;
+    assert!(!registry.unregister(&wrong, "studio"));
+    assert!(!proof.cancel.load(Ordering::SeqCst));
+    assert!(registry.ready("nova", 10).is_ok());
+    assert!(registry.unregister(&request, "studio"));
+    assert!(proof.cancel.load(Ordering::SeqCst));
+    assert!(registry.status("nova", 10).is_none());
+    assert!(!registry.unregister(&request, "studio"));
+    let (next, next_cancel, created) = registry.register(&self::request(), source, 11).unwrap();
+    assert!(created);
+    assert_ne!(next.render_session_id, request.render_session_id);
+    assert!(!registry.unregister(&request, "studio"));
+    assert!(!next_cancel.load(Ordering::SeqCst));
+    assert!(matches!(next.readiness, Readiness::AwaitingMeasurement { .. }));
+    // Status never issues a measurement challenge. The new registration reply
+    // above carries it; until its actual measurement, status stays unavailable.
+    let status = registry.status("nova", 11).unwrap();
+    assert_eq!(status.render_session_id, next.render_session_id);
+    assert_eq!(status.binding_sequence, next.binding_sequence);
+    assert!(matches!(status.readiness, Readiness::Unavailable { reason: RenderReason::Expired }));
+}
+
+#[test]
+fn studio_owner_candidate_never_becomes_a_native_semantic_owner() {
+    // Exercise the real Registry admission with the existing synthetic Studio
+    // source; even owner=true and measured Studio data supply no Native route.
+    let mut registry = Registry::default();
+    let (reply, _, _) = registry.register(&request(), source(), 0).unwrap();
+    assert!(matches!(reply.role, RenderRole::OwnerCandidate));
+    let system = crate::life_availability::Snapshot {
+        state: crate::life_availability::Availability::Unknown,
+        reason: crate::life_availability::Reason::Initializing,
+        generation: 1, source: crate::life_availability::Source::Unsupported,
+    };
+    let core = crate::life_runtime::core::Core::new(system);
+    assert!(registry.semantic_mirrors(&core, 0).is_empty());
+    let challenge = challenge(&reply);
+    registry.measurement(&measurement(&challenge, 1), &source(), 0, 0).unwrap();
+    assert!(registry.semantic_mirrors(&core, 0).is_empty());
+    assert!(core.sessions.is_empty());
 }

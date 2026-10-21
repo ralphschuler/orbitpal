@@ -9,6 +9,14 @@ edition = "2021"
 name = "orbitpal_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+native-world-fixture = []
+
+[[example]]
+name = "native_world_fixture"
+path = "examples/native_world_fixture.rs"
+required-features = ["native-world-fixture"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

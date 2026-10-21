@@ -10,6 +10,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { waitForDevTools } from './chrome-devtools.mjs';
+import { decoderProgressEvent, decoderProgressTimeout } from './avatar-decoder-progress.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'orbitpal-decoders-'));
 const candidates = [process.env.ORBITPAL_TEST_BROWSER, '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, 'Google/Chrome/Application/chrome.exe'), process.env['PROGRAMFILES(X86)'] && path.join(process.env['PROGRAMFILES(X86)'], 'Google/Chrome/Application/chrome.exe')].filter(Boolean);
@@ -48,8 +49,13 @@ try {
   socket = new WebSocket(endpoint);
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
   let sequence = 0; const pending = new Map(); const remote = [];
+  let progressSessionId, progressPolicyIndex = -1, lastProgress;
   socket.onmessage = ({ data }) => {
     const message = JSON.parse(data);
+    // Only one sanitized record from this fixture's current main-page session.
+    // Workers, other console output and old-policy messages cannot replace it.
+    const progress = decoderProgressEvent(message, progressSessionId, progressPolicyIndex);
+    if (progress) lastProgress = progress;
     if (message.id) { const promise = pending.get(message.id); if (promise) { pending.delete(message.id); message.error ? promise.reject(new Error(JSON.stringify(message.error))) : promise.resolve(message.result); } }
     if (message.method === 'Target.attachedToTarget') { call('Runtime.enable', {}, message.params.sessionId).catch(() => {}); call('Log.enable', {}, message.params.sessionId).catch(() => {}); call('Network.enable', {}, message.params.sessionId).catch(() => {}); }
     if (message.method === 'Log.entryAdded' && message.params.entry.level === 'error') console.error('Browser log:', message.params.entry.text);
@@ -64,7 +70,8 @@ try {
   await call('Runtime.enable', {}, sessionId);
   await call('Log.enable', {}, sessionId);
   await call('Target.setAutoAttach', { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }, sessionId);
-  for (const [name, csp] of [['OBS', obsCsp], ['native WebView policy', nativeCsp]]) {
+  for (const [policyIndex, [name, csp]] of [['OBS', obsCsp], ['native WebView policy', nativeCsp]].entries()) {
+    progressSessionId = undefined; progressPolicyIndex = policyIndex; lastProgress = undefined;
     policy = csp;
     await call('Page.navigate', { url: origin + '/tests/browser/avatar-decoders.html?' + encodeURIComponent(name) }, sessionId);
     const deadline = Date.now() + 30000;
@@ -74,7 +81,9 @@ try {
       if (Date.now() > deadline) throw new Error('Fixture module failed to load');
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    const result = await Promise.race([call('Runtime.evaluate', { expression: 'window.runAvatarDecoderFixtures()', awaitPromise: true, returnByValue: true }, sessionId), new Promise((_, reject) => setTimeout(() => reject(new Error('Decoder/render fixtures timed out')), 120000).unref())]);
+    progressSessionId = sessionId;
+    const result = await Promise.race([call('Runtime.evaluate', { expression: `window.runAvatarDecoderFixtures(${policyIndex})`, awaitPromise: true, returnByValue: true }, sessionId), new Promise((_, reject) => setTimeout(() => reject(new Error(decoderProgressTimeout(lastProgress))), 120000).unref())]);
+    progressSessionId = undefined;
     assert.equal(result.exceptionDetails, undefined, JSON.stringify(result.exceptionDetails));
     assert.ok(result.result.value.results.length >= 79);
     assert.deepEqual(result.result.value.violations, []);

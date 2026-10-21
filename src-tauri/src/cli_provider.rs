@@ -86,6 +86,7 @@ fn failure(label: &str, status: Option<i32>, output: &[u8], errors: &[u8]) -> St
 }
 
 pub async fn status(config: &Value) -> Result<Value, String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     let command = executable(config)?;
     let workspace = Workspace::new()?;
     let mut cmd = process(&command, &workspace)?; cmd.arg("--version");
@@ -142,6 +143,7 @@ fn validate_claude_effort(model:Option<&str>,effort:Option<&str>)->Result<(),Str
 }
 
 pub async fn models(config:&Value)->Result<Value,String>{
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     status(config).await?;
     if config["provider"]=="claude-code"{
         let presets=[("haiku","Haiku · CLI-Alias"),("sonnet","Sonnet · CLI-Alias"),("opus","Opus · CLI-Alias"),("claude-haiku-4-5-20251001","Haiku 4.5"),("claude-sonnet-4-6","Sonnet 4.6"),("claude-opus-4-6","Opus 4.6"),("claude-opus-4-7","Opus 4.7"),("claude-opus-4-8","Opus 4.8"),("claude-sonnet-5","Sonnet 5"),("claude-opus-5","Opus 5")];
@@ -236,6 +238,7 @@ fn claude_result(output:&[u8],streaming:bool)->Result<Value,String>{
 }
 
 pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, _api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>) -> Result<Completion, String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     // Older app servers may silently ignore unknown fields, so verify the
     // version before relying on environments: [] as the OS-tool boundary.
     validate_options(config)?;
