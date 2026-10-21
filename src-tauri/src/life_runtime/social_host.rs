@@ -634,6 +634,9 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
         }
         for directive in directives {
             match &directive {
+                Directive::Trace { scene } => {
+                    state.store.social_save_scene(scene)?;
+                }
                 Directive::Record { event } => {
                     state.store.social_apply_event(event)?;
                 }

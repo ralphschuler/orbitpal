@@ -166,6 +166,9 @@ impl SocialEvent {
 }
 #[derive(Clone, Debug)]
 pub(crate) enum Directive {
+    Trace {
+        scene: SceneView,
+    },
     Reserve {
         scene: SceneView,
         slots: [SlotId; 2],
@@ -391,6 +394,9 @@ impl Coordinator {
             }
             let scene = next.scenes.get_mut(id).unwrap();
             scene.view.phase = Phase::ResourcesReserved;
+            next.outbox.push_back(Directive::Trace {
+                scene: scene.view.clone(),
+            });
             scene.view.phase = Phase::Approach;
             next.outbox.push_back(Directive::Approach {
                 scene: scene.view.clone(),

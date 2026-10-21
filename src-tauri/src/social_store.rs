@@ -46,6 +46,7 @@ pub(crate) struct SocialSnapshot {
     pub summary: Summary,
     pub development: Character,
     pub scenes: Vec<SceneView>,
+    pub trace: Vec<SceneView>,
     pub dialogue: DialogueSettings,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -109,7 +110,7 @@ pub(crate) fn initialize(db: &mut Connection) -> Result<(), String> {
     let tx = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(err)?;
-    tx.execute_batch("CREATE TABLE IF NOT EXISTS social_schema(version INTEGER NOT NULL); INSERT INTO social_schema(version) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM social_schema); CREATE TABLE IF NOT EXISTS social_meta(id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL,epoch INTEGER NOT NULL); INSERT OR IGNORE INTO social_meta VALUES(1,0,0); CREATE TABLE IF NOT EXISTS social_bots(owner TEXT PRIMARY KEY,revision INTEGER NOT NULL,sequence INTEGER NOT NULL,mask INTEGER NOT NULL,context_sequence INTEGER NOT NULL,context_mask INTEGER NOT NULL,action_world TEXT NOT NULL,action_ordinal INTEGER NOT NULL,character TEXT NOT NULL,summary TEXT NOT NULL,context_goal TEXT NOT NULL); CREATE TABLE IF NOT EXISTS social_relationships(owner TEXT NOT NULL,other TEXT NOT NULL,familiarity INTEGER NOT NULL,affection INTEGER NOT NULL,PRIMARY KEY(owner,other)); CREATE TABLE IF NOT EXISTS social_memories(owner TEXT NOT NULL,event_id TEXT NOT NULL,sequence INTEGER NOT NULL,kind TEXT NOT NULL,outcome TEXT NOT NULL,participants TEXT NOT NULL,at_ms INTEGER NOT NULL,shared INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,event_id)); CREATE TABLE IF NOT EXISTS social_dialogue_days(owner TEXT NOT NULL,day INTEGER NOT NULL,tokens INTEGER NOT NULL,cost INTEGER NOT NULL,PRIMARY KEY(owner,day)); CREATE TABLE IF NOT EXISTS social_dialogue_clock(id INTEGER PRIMARY KEY CHECK(id=1),day INTEGER NOT NULL); INSERT OR IGNORE INTO social_dialogue_clock VALUES(1,0); CREATE TABLE IF NOT EXISTS social_dialogue_policies(owner TEXT PRIMARY KEY,revision INTEGER NOT NULL,policy TEXT NOT NULL); CREATE TABLE IF NOT EXISTS social_scenes(id TEXT PRIMARY KEY,sequence INTEGER NOT NULL,actor_a TEXT NOT NULL,actor_b TEXT NOT NULL,terminal INTEGER NOT NULL,view TEXT NOT NULL);").map_err(err)?;
+    tx.execute_batch("CREATE TABLE IF NOT EXISTS social_schema(version INTEGER NOT NULL); INSERT INTO social_schema(version) SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM social_schema); CREATE TABLE IF NOT EXISTS social_meta(id INTEGER PRIMARY KEY CHECK(id=1),sequence INTEGER NOT NULL,epoch INTEGER NOT NULL); INSERT OR IGNORE INTO social_meta VALUES(1,0,0); CREATE TABLE IF NOT EXISTS social_bots(owner TEXT PRIMARY KEY,revision INTEGER NOT NULL,sequence INTEGER NOT NULL,mask INTEGER NOT NULL,context_sequence INTEGER NOT NULL,context_mask INTEGER NOT NULL,action_world TEXT NOT NULL,action_ordinal INTEGER NOT NULL,character TEXT NOT NULL,summary TEXT NOT NULL,context_goal TEXT NOT NULL); CREATE TABLE IF NOT EXISTS social_relationships(owner TEXT NOT NULL,other TEXT NOT NULL,familiarity INTEGER NOT NULL,affection INTEGER NOT NULL,PRIMARY KEY(owner,other)); CREATE TABLE IF NOT EXISTS social_memories(owner TEXT NOT NULL,event_id TEXT NOT NULL,sequence INTEGER NOT NULL,kind TEXT NOT NULL,outcome TEXT NOT NULL,participants TEXT NOT NULL,at_ms INTEGER NOT NULL,shared INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(owner,event_id)); CREATE TABLE IF NOT EXISTS social_dialogue_days(owner TEXT NOT NULL,day INTEGER NOT NULL,tokens INTEGER NOT NULL,cost INTEGER NOT NULL,PRIMARY KEY(owner,day)); CREATE TABLE IF NOT EXISTS social_dialogue_clock(id INTEGER PRIMARY KEY CHECK(id=1),day INTEGER NOT NULL); INSERT OR IGNORE INTO social_dialogue_clock VALUES(1,0); CREATE TABLE IF NOT EXISTS social_dialogue_policies(owner TEXT PRIMARY KEY,revision INTEGER NOT NULL,policy TEXT NOT NULL); CREATE TABLE IF NOT EXISTS social_scene_trace(scene_id TEXT NOT NULL,sequence INTEGER NOT NULL,ordinal INTEGER NOT NULL,phase TEXT NOT NULL,actor_a TEXT NOT NULL,actor_b TEXT NOT NULL,view TEXT NOT NULL,PRIMARY KEY(scene_id,ordinal),UNIQUE(scene_id,phase)); CREATE TABLE IF NOT EXISTS social_scenes(id TEXT PRIMARY KEY,sequence INTEGER NOT NULL,actor_a TEXT NOT NULL,actor_b TEXT NOT NULL,terminal INTEGER NOT NULL,view TEXT NOT NULL);").map_err(err)?;
     let versions: Vec<i64> = {
         let mut s = tx
             .prepare("SELECT version FROM social_schema LIMIT 2")
@@ -360,6 +361,59 @@ fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
     }
     Ok(changed)
 }
+fn trace_scene(tx: &Transaction, scene: &SceneView) -> Result<(), String> {
+    let phase = encode(&scene.phase)?;
+    if tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM social_scene_trace WHERE scene_id=?1 AND phase=?2)",
+            params![scene.id, phase],
+            |r| r.get::<_, bool>(0),
+        )
+        .map_err(err)?
+    {
+        return Ok(());
+    }
+    let ordinal: i64 = tx
+        .query_row(
+            "SELECT count(*) FROM social_scene_trace WHERE scene_id=?1",
+            [&scene.id],
+            |r| r.get(0),
+        )
+        .map_err(err)?;
+    if !(0..16).contains(&ordinal) {
+        return Err("social trace capacity".into());
+    }
+    tx.execute(
+        "INSERT INTO social_scene_trace VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            scene.id,
+            sql_counter(scene.sequence)?,
+            ordinal,
+            phase,
+            scene.participants[0],
+            scene.participants[1],
+            encode(scene)?
+        ],
+    )
+    .map_err(err)?;
+    Ok(())
+}
+fn scene_trace(db: &Connection, id: &str) -> Result<Vec<SceneView>, String> {
+    let mut statement=db.prepare("SELECT CASE WHEN length(CAST(view AS BLOB))<=32768 THEN view END FROM social_scene_trace WHERE actor_a=?1 OR actor_b=?1 ORDER BY sequence DESC,ordinal ASC LIMIT 256").map_err(err)?;
+    let rows = statement
+        .query_map([id], |r| r.get::<_, String>(0))
+        .map_err(err)?;
+    let mut trace = vec![];
+    for row in rows {
+        let scene: SceneView = serde_json::from_str(&row.map_err(err)?).map_err(err)?;
+        scene.validate()?;
+        if !scene.participants.iter().any(|p| p == id) {
+            return Err(FAIL.into());
+        }
+        trace.push(scene);
+    }
+    Ok(trace)
+}
 fn memories(db: &Connection, id: &str, shared: bool) -> Result<Vec<Memory>, String> {
     let sql = if shared {
         "SELECT CASE WHEN length(CAST(event_id AS BLOB))<=96 THEN event_id END,sequence,CASE WHEN length(CAST(kind AS BLOB))<=32 THEN kind END,CASE WHEN length(CAST(outcome AS BLOB))<=32 THEN outcome END,CASE WHEN length(CAST(participants AS BLOB))<=256 THEN participants END,at_ms,shared,CASE WHEN length(CAST(owner AS BLOB))<=96 THEN owner END FROM social_memories WHERE owner=?1 OR shared=1 ORDER BY sequence DESC,at_ms DESC LIMIT 16"
@@ -488,7 +542,13 @@ impl Store {
             .map_err(err)?;
         let changed = apply(&tx, event)?;
         tx.execute("INSERT INTO social_scenes VALUES(?1,?2,?3,?4,1,?5) ON CONFLICT(id) DO UPDATE SET terminal=1,view=excluded.view",params![scene.id,sql_counter(scene.sequence)?,scene.participants[0],scene.participants[1],encode(scene)?]).map_err(err)?;
+        trace_scene(&tx, scene)?;
         tx.execute("DELETE FROM social_scenes WHERE terminal=1 AND id NOT IN(SELECT id FROM social_scenes ORDER BY sequence DESC LIMIT 64)",[]).map_err(err)?;
+        tx.execute(
+            "DELETE FROM social_scene_trace WHERE scene_id NOT IN(SELECT id FROM social_scenes)",
+            [],
+        )
+        .map_err(err)?;
         tx.commit().map_err(err)?;
         Ok(changed)
     }
@@ -524,7 +584,13 @@ impl Store {
             return Err("social scene capacity".into());
         }
         tx.execute("INSERT INTO social_scenes VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET terminal=excluded.terminal,view=excluded.view",params![scene.id,sql_counter(scene.sequence)?,scene.participants[0],scene.participants[1],scene.phase.terminal(),encode(scene)?]).map_err(err)?;
+        trace_scene(&tx, scene)?;
         tx.execute("DELETE FROM social_scenes WHERE terminal=1 AND id NOT IN(SELECT id FROM social_scenes ORDER BY sequence DESC LIMIT 64)",[]).map_err(err)?;
+        tx.execute(
+            "DELETE FROM social_scene_trace WHERE scene_id NOT IN(SELECT id FROM social_scenes)",
+            [],
+        )
+        .map_err(err)?;
         tx.commit().map_err(err)
     }
     /// Once on application startup, before any explicit Life start. No session/lease is restored.
@@ -555,6 +621,7 @@ impl Store {
             apply(&tx, &event)?;
             scene.phase = Phase::Cancelled;
             scene.reason = Some(Reason::Restart);
+            trace_scene(&tx, &scene)?;
             tx.execute(
                 "UPDATE social_scenes SET terminal=1,view=?2 WHERE id=?1",
                 params![scene.id, encode(&scene)?],
@@ -605,6 +672,7 @@ impl Store {
             summary: b.summary,
             development: b.character,
             scenes,
+            trace: scene_trace(&db, id)?,
             dialogue: dialogue_settings(&db, id)?,
         })
     }

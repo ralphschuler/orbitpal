@@ -255,3 +255,39 @@ fn simultaneous_invitations_have_a_deterministic_exclusive_winner() {
     assert_eq!(run(false), vec!["a"]);
     assert_eq!(run(false), run(true));
 }
+
+#[test]
+fn reserved_trace_is_emitted_only_after_both_host_reservations_succeed() {
+    let states = states(["nova", "blue"]);
+    let participants = states.map(|s| actor(&s));
+    for success in [false, true] {
+        let mut coordinator = Coordinator::default();
+        let view = coordinator
+            .invite(
+                1,
+                SceneKind::Greeting,
+                participants.clone(),
+                [SlotId::new("left").unwrap(), SlotId::new("right").unwrap()],
+                100,
+            )
+            .unwrap();
+        coordinator.respond(&view.id, true, 100).unwrap();
+        coordinator.reserved(&view.id, success, 100).unwrap();
+        let trace = coordinator
+            .drain()
+            .into_iter()
+            .filter_map(|d| match d {
+                Directive::Trace { scene } => Some(scene.phase),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            trace,
+            if success {
+                vec![Phase::ResourcesReserved]
+            } else {
+                vec![]
+            }
+        );
+    }
+}

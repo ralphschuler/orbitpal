@@ -220,6 +220,10 @@ fn restart_marks_pending_scene_interrupted_without_success_or_session() {
     assert_eq!(view.summary.completed, 0);
     assert_eq!(view.summary.cancelled, 1);
     assert_eq!(view.scenes[0].reason, Some(Reason::Restart));
+    assert_eq!(
+        view.trace.iter().map(|v| v.phase).collect::<Vec<_>>(),
+        vec![Phase::Approach, Phase::Cancelled]
+    );
     assert!(!serde_json::to_string(&view)
         .unwrap()
         .contains("session_nova"));
@@ -343,6 +347,7 @@ fn terminal_pair_and_scene_commit_atomically_and_accept_retained_actual_completi
         let snap = s.social_snapshot(id).unwrap();
         assert_eq!(snap.summary.completed, 1);
         assert_eq!(snap.scenes[0].phase, Phase::Completed);
+        assert_eq!(snap.trace.iter().filter(|s| s.id == scene.id).count(), 1);
     }
 }
 #[test]
