@@ -80,7 +80,25 @@ function run(argv) {
     if (!out.appleEvents) throw 3;
     out.probePhase = 5; // Actual same-UID, console, login and display checks.
     ObjC.bindFunction('getuid', ['unsigned int', []]);
-    const session = ObjC.deepUnwrap($.CGSessionCopyCurrentDictionary());
+    ObjC.import('CoreFoundation');
+    // CFDictionaryRef is toll-free bridged to NSDictionary. Its opaque imported
+    // C return encoding is not an ObjC wrapper for deepUnwrap; bind the same
+    // pointer ABI as id, with no additional session sample or value coercion.
+    ObjC.bindFunction('CGSessionCopyCurrentDictionary', ['id', []]);
+    const sessionDictionary = $.CGSessionCopyCurrentDictionary();
+    let session;
+    if (!sessionDictionary || sessionDictionary.isNil()) {
+      out.sessionPresent = 1;
+      throw 4;
+    }
+    try {
+      if (sessionDictionary.isKindOfClass($.NSDictionary) !== true) throw 4;
+      session = ObjC.deepUnwrap(sessionDictionary);
+    } finally {
+      // Balance the native Copy result's +1 exactly once, after conversion.
+      // The JS primitive copy survives; no borrowed child receives CFRelease.
+      $.CFRelease(sessionDictionary);
+    }
     const lockKnown = session && Object.prototype.hasOwnProperty.call(session, 'CGSSessionScreenIsLocked');
     const screenCount = Number($.NSScreen.screens.count);
     // Preserve the original native call's short circuit: getuid runs only when

@@ -75,6 +75,32 @@ exception or additional native sample is exported. The public [session API](http
 and [session property example](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPMultipleUsers/Concepts/FastUserSwitching.html)
 provide source semantics, not evidence of the disposable VM's actual state.
 
+The fourth [actual VM probe, run 39598095989](https://github.com/ralphschuler/orbitpal/actions/runs/39598095989)
+on `9851ba8eec52633e3db30126d9e14b4a28b56259` again passed AX/AppleEvents and
+observed a display (`screenPresent:2`), but the session deepUnwrap result was not
+a plain JS dictionary (`sessionPresent:0`). UID, console and login remained
+unknown; this does not establish an inactive, locked or missing native session.
+No fixture build or UI action ran.
+
+The public SDK declares `CFDictionaryRef` as bridged to `NSDictionary`; Apple's
+[toll-free bridging table](https://developer.apple.com/library/archive/documentation/General/Conceptual/CocoaEncyclopedia/Toll-FreeBridgin/Toll-FreeBridgin.html)
+confirms that pairing. The imported C function's opaque CFDictionary return is
+now explicitly bound with the same pointer ABI as JXA `id`, which Apple's
+[JXA release notes](https://developer.apple.com/library/archive/releasenotes/InterapplicationCommunication/RN-JavaScriptForAutomation/Articles/OSX10-10.html)
+requires for objects. This preserves exactly one actual session call. Nil or an
+unknown native class refuses; only an actual NSDictionary reaches deepUnwrap.
+The [native Copy ownership](https://developer.apple.com/library/archive/documentation/CoreFoundation/Conceptual/CFMemoryMgmt/Concepts/Ownership.html)
+is balanced by exactly one `CFRelease` in `finally` after conversion, including
+conversion failure. Borrowed children are never released. The strict UID and
+Boolean predicates remain unchanged; no integer/string becomes a Boolean.
+
+A separately authorized constructed-only Foundation probe successfully used an
+`id` return binding for `CFDictionaryCreateCopy`, verified its NSDictionary and
+CFDictionary identity, and balanced its own Copy reference. Genuine constructed
+CFBooleans unwrapped to JS booleans while NSNumber integers remained numbers.
+It queried no host session, GUI, process or permissions. That contract check does
+not substitute for the next actual disposable VM session/fixture run.
+
 Apple's public SDK `AppleEvents.h` documents that the address must identify an
 already running target, and returns `procNotFound` otherwise. The same header
 defines the two consent constants; `CarbonCore/MacErrors.h` defines
