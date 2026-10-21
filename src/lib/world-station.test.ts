@@ -34,7 +34,7 @@ describe('trusted station offer contract', () => {
     expect(parseWorldMotionCommand({...station(),activity:'move_to'})).toBeNull();
   });
   it('cannot run a station from a legacy or explicitly unsupported measured binding', () => {
-    const legacy = {...binding()} as Partial<MotionBinding>; delete legacy.stationSupported;
+    const { stationSupported: _stationSupported, ...legacy } = binding();
     for (const value of [legacy,{...binding(),stationSupported:false}]) {
       const parsed=parseMotionBinding(value)!; expect(parsed.stationSupported).toBe(false);
       const follower=new WorldMotionFollower();expect(follower.bind(parsed,0)).toBe(true);
