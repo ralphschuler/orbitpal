@@ -28,6 +28,11 @@ pub(super) struct CareMemory {
     entries: Mutex<BTreeMap<String, Entry>>,
 }
 impl CareMemory {
+    pub(super) fn origin(&self, bot: &str) -> Option<(String, (String, u64, u64), crate::world_state::coordinates::Point)> {
+        let entries = self.entries.lock().ok()?;
+        let entry = entries.get(bot)?;
+        Some((entry.session.clone(), entry.world_context.clone(), entry.home))
+    }
     pub(super) fn package_actors(&self, package: &str) -> Result<Vec<String>, String> {
         Ok(self
             .entries
@@ -83,7 +88,7 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
     for member in members {
         let bot = member.constructor.bot();
         let now = runtime.now();
-        if experience.paused(bot).unwrap_or(true) {
+        if experience.paused(bot).unwrap_or(true) || runtime.social.busy(bot) {
             continue;
         }
         let Ok(preferences) = state
@@ -304,7 +309,7 @@ pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
     }
 }
 
-fn within_radius(
+pub(super) fn within_radius(
     home: crate::world_state::coordinates::Point,
     target: crate::world_state::coordinates::Point,
     radius: u16,

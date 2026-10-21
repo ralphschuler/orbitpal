@@ -282,6 +282,7 @@ pub fn report_playback(app:&tauri::AppHandle,id:&str,bot_id:&str,speaking:bool,e
         let _=app.emit("cohost://playback",event);
         entry.clone()
     };
+    let _=crate::life_runtime::social_host::presented(app,id,bot_id);
     if speaking&&entry.hindsight["enabled"].as_bool()==Some(true)&&entry.hindsight["autoRetain"].as_bool()!=Some(false){
         let handle=app.clone();let entry=entry.clone();
         tauri::async_runtime::spawn(async move{

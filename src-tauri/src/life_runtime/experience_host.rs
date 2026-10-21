@@ -84,6 +84,8 @@ pub(crate) async fn experience_preferences_changed(
 ) -> Result<(), String> {
     preferences.validate()?;
     app.state::<ExperienceRuntime>().cancel_impulses(bot)?;
+    let state = app.state::<AppState>();
+    state.life_runtime.social.cancel_actor(bot, state.life_runtime.social_now())?;
     cancel_actor_action(app, bot)
 }
 
@@ -93,6 +95,8 @@ pub(crate) async fn experience_pause_changed(
     _paused: bool,
 ) -> Result<(), String> {
     app.state::<ExperienceRuntime>().cancel_impulses(bot)?;
+    let state = app.state::<AppState>();
+    state.life_runtime.social.cancel_actor(bot, state.life_runtime.social_now())?;
     cancel_actor_action(app, bot)
 }
 
@@ -137,6 +141,9 @@ async fn start_activity(
         return Err(ERROR.into());
     }
     let runtime = &state.life_runtime;
+    // Copy advisory origin before Owned/Core: Care's chooser lock precedes
+    // these locks, so admission must never acquire it in the inverse order.
+    let origin = runtime.care.origin(bot);
     let monitor = runtime.monitor.get().ok_or(ERROR)?;
     let system = monitor.refresh().await;
     let topology = state.world.sample_topology(app).await;
@@ -177,6 +184,18 @@ async fn start_activity(
         return Err(ERROR.into());
     }
     let fence = core.local_fence(bot, runtime.now()).ok_or(ERROR)?;
+    let preferences = state.store.experience_settings(bot)?.preferences;
+    let target = slot.as_ref().map(|id| state.world.slot_target(&state.store, &source.context, id))
+        .transpose()?.map(|slot| slot.position).unwrap_or(source.context.position);
+    let home = origin.filter(|(session, context, _)| session == &fence.session
+        && context == &(source.context.instance_id.clone(), source.context.config_revision, source.context.topology_revision))
+        .map(|(_, _, point)| point).unwrap_or(source.context.position);
+    let moving = target != source.context.position;
+    if !preferences.allowed_animations.iter().any(|animation| animation == "idle")
+        || (moving && !preferences.allowed_animations.iter().any(|animation| animation == "walk"))
+        || !super::self_care::within_radius(home, target, preferences.movement_radius) {
+        return Err(ERROR.into());
+    }
     let output = core
         .world_outputs
         .ready(bot, runtime.now())
@@ -281,8 +300,12 @@ pub(crate) async fn request_character_interaction(
     if busy || state.overlay.has_any_pending_speech() {
         return Ok(result(bot, request.kind, "declined", Some("busy")));
     }
-    if request.target_actor_id.is_some() {
-        return Ok(result(bot, request.kind, "declined", Some("unavailable")));
+    if let Some(target) = &request.target_actor_id {
+        if request.kind != InteractionKind::Play { return Ok(result(bot, request.kind, "declined", Some("unavailable"))); }
+        return Ok(match super::social_host::request(app, bot, target, crate::social::SceneKind::Play) {
+            Ok(_) => result(bot, request.kind, "waiting", None),
+            Err(_) => result(bot, request.kind, "declined", Some("unavailable")),
+        });
     }
     if request.kind == InteractionKind::Pet {
         let profile = state.store.bot_profile(bot)?;

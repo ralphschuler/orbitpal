@@ -944,6 +944,19 @@ impl WorldHub {
         world.validate_reservation(lease, &member, now).map_err(|_| UNAVAILABLE)?;
         Ok(session.stamp.clone())
     }
+    /// Idempotent retirement of one opaque scene lease, never a slot-ID delete.
+    /// A replacement lease is preserved; only typed expiry is an absent result.
+    pub(crate) fn release_if_present(&self, session: &SessionStamp, lease: &SlotLease, now: u64) -> Result<bool, String> {
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        if hub.bound.get(session.actor_id().as_str()) != Some(session) { return Err(UNAVAILABLE.into()); }
+        let world = hub.world.as_mut().ok_or(UNAVAILABLE)?;
+        let member = world.member_handle(session.actor_id()).ok_or(UNAVAILABLE)?;
+        match world.release(lease, &member, now) {
+            Ok(released) => Ok(released),
+            Err(crate::world_state::WorldError::Expired) => Ok(false),
+            Err(_) => Err(UNAVAILABLE.into()),
+        }
+    }
     pub(super) fn output_targets(&self) -> Vec<String> {
         let Ok(mut hub) = self.inner.lock() else {
             return Vec::new();

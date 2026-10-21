@@ -1107,6 +1107,17 @@ impl Core {
             );
         }
     }
+    /// A deduplicated actual event can make an existing session due. This is
+    /// only a scheduling hint; claim-time system/UI/output/model gates and the
+    /// native rolling attempt budget still decide whether any turn may start.
+    pub(crate) fn wake_event_speech(&mut self, bot: &str, raw: u64) -> bool {
+        let now = self.clock(raw);
+        let Some(session) = self.sessions.get_mut(bot).filter(|session| session.mode == Mode::Life
+            && session.config.speak && !session.storage_failed) else { return false; };
+        session.due = session.due.min(now);
+        self.changed();
+        true
+    }
     pub fn generated(&mut self, claim: &Claim, raw: u64) {
         if !self.current(claim, raw) {
             return;
