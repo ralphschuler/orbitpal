@@ -4,8 +4,9 @@ OrbitPal owns one native runtime for all explicitly started bot sessions. Starti
 Ambient enables the existing wandering/gesture presentation and optional
 spontaneous speech. Starting Life initializes or loads that bot's confirmed local
 Life state and runs bounded native simulation checkpoints. Life disables Ambient
-wandering/gesture ownership; it does not add an autonomous world-object/action
-planner or social scene policy.
+wandering/gesture ownership. Native care, exploration and social pulses now choose
+bounded proposals and submit eligible work through the existing World and action
+executor. A proposal is not a reservation, presentation acknowledgement or reward.
 
 Sessions start only through the Studio operator command. Profiles retain their
 configuration and confirmed per-bot Life state, but activation, session IDs,
@@ -16,7 +17,7 @@ providers may use their supported default model.
 ## Starting from the desktop layout
 
 In Autopilot, choose characters in the visual editor and drag their handles to
-arrange the layout. Add rest, meeting or play places from the tray and resize the
+arrange the layout. Add rest, snack, meeting or play places from the tray and resize the
 movement area with its corner handles. Arrow keys move the selected handle;
 Shift uses larger steps. Escape cancels an unfinished drag, and Delete removes
 an eligible selected item. No coordinate entry is required.
@@ -32,8 +33,8 @@ to the current session; it does not change the profile's saved output mode or
 streaming flag. New session-created windows use the selected monitor and saved
 relative placement, clamped to its real bounds. Existing independently opened
 windows retain their placement. This is initial window placement, not a World
-MoveTo or arrival acknowledgement. Life remains stationary outside explicitly
-supported World actions; Ambient retains its roaming behaviour.
+MoveTo or arrival acknowledgement. Life moves only through supported native-issued
+World actions; Ambient retains its separate roaming behaviour.
 
 Session-created constructors retain temporary placement/close provenance until
 they are recreated. If one is explicitly retained for ordinary overlay output,
@@ -79,6 +80,29 @@ simulation ticks do not invalidate a speech session. Deferred writes keep their
 previous checkpoint. Storage failure pauses the affected bot; it does not reset
 or fabricate another bot's state. Confirmed lock/sleep rebases time, clock gaps
 advance at most one bounded checkpoint, and there are no catch-up speech bursts.
+
+Care runs only for an explicitly started Life session with a current native owner,
+fresh accepted output and the existing UI/system admission fences. Confirmed needs,
+saved care preferences and currently free, reachable compatible places determine
+its proposal. Supported work includes rest/recharge, snack, play and social care;
+an allowed Here fallback does not claim a station visit and has a reduced effect.
+When care has no choice and no need is urgent, an active Explore goal may propose
+a reachable place through the same native MoveTo path. Local routines and earned
+preferences affect choices without creating new capabilities. Quiet and Focus
+still permit silent care while suppressing unsolicited conversational output.
+
+The social pulse proposes bounded greetings, shared play or rest for two eligible
+participants on the same current World. It uses needs, interests and local routines,
+then rechecks actual owners, distinct compatible free places and busy state before
+inviting. Acceptance, approach and execution remain separate phases; both exact
+actions must have real committed completion evidence before shared success or
+relationship/album credit. Cooldown/backoff survive temporary observation gaps,
+and each execution binds its actual frozen native job deadline once. Stop, source
+loss, timeout and participant changes retain the ordinary cancellation and resource
+cleanup paths. These pulses require no model, voice, capture or provider account.
+See [Social Life](SOCIAL-LIFE.md) and [World output](WORLD-OUTPUT.md) for the checked
+action, duration and persistence boundaries. Their implementation does not establish
+the real native window, hidden/background or OS lifecycle acceptance below.
 
 ## Window and presentation availability
 
