@@ -97,6 +97,7 @@ jobs:
         run: |
           bash -n scripts/wayland-acceptance/app-session.sh
           PYTHONDONTWRITEBYTECODE=1 python3 scripts/wayland-acceptance/test-app.py
+          PYTHONDONTWRITEBYTECODE=1 python3 scripts/wayland-acceptance/test-app-session-availability.py
       - name: Build embedded actual Tauri application without an installer
         if: github.event_name == 'workflow_dispatch' && inputs.full_app
         run: |

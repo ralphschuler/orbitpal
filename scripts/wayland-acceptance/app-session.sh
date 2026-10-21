@@ -73,6 +73,9 @@ for ((attempt=0; attempt<100; attempt++)); do
   kill -0 "$supervisor_pid" 2>/dev/null || break
   sleep 0.05
 done
+# Read-only environment evidence for the exact supervisor-owned child. A missing
+# record or any login1 outcome is an observation, never an actual-app verdict.
+/usr/bin/timeout --signal=KILL 5s /usr/bin/python3 "$root/harness/app-session-availability.py" "$supervisor_pid" >/dev/null 2>&1 || true
 /usr/bin/python3 "$root/harness/app.py" >"$root/app-controller.txt" 2>&1
 test -f "$root/control/app-passed"
 grep -Fxq 'real-app-initial-subset-complete' "$root/control/app-passed"

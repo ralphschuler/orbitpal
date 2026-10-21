@@ -36,6 +36,10 @@ cleanup() {
     for name in app-controller app-result app-binary app-exit app-runtime; do
       if sudo test -f "$root/$name.txt" && ! sudo test -L "$root/$name.txt"; then sudo head -c 65536 "$root/$name.txt" >"$diagnostic/$name.txt"; fi
     done
+    # This additional observation is a closed numeric record, capped separately.
+    if sudo test -f "$root/app-session-availability.txt" && ! sudo test -L "$root/app-session-availability.txt"; then
+      sudo head -c 2048 "$root/app-session-availability.txt" >"$diagnostic/app-session-availability.txt"
+    fi
   fi
   if ! sudo rm -rf -- "$root"; then printf 'Failed to remove the private test root\n' >&2; result=1; fi
   # Only unload the software device this invocation itself loaded. No existing
