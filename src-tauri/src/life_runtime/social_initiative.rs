@@ -116,7 +116,7 @@ mod tests {
     fn actor(id:&str,energy:u16,engagement:u16,social:u16)->Actor {
         let life=LifeState::new(ActorId::new(id).unwrap(),WorldId::new(format!("world_{id}")).unwrap(),Needs::new(energy,9000,engagement,social).unwrap());
         let slots=[AnchorKind::Meeting,AnchorKind::Play,AnchorKind::Rest].into_iter().enumerate().flat_map(|(kind_index,kind)|
-            (0..2).map(move|index|ActionSlotTarget{id:SlotId::new(format!("slot_{kind_index}_{index}")).unwrap(),kind,position:Point::new(400_000+index*100_000,500_000).unwrap(),content_ref:None})).collect::<Vec<_>>();
+            (0..2).map(move|index|ActionSlotTarget{anchor_id:crate::world_state::AnchorId::new("fixture-object").unwrap(),id:SlotId::new(format!("slot_{kind_index}_{index}")).unwrap(),kind,position:Point::new(400_000+index*100_000,500_000).unwrap(),content_ref:None})).collect::<Vec<_>>();
         let groups=slots.chunks(2).map(|slots|slots.iter().map(|slot|slot.id.clone()).collect()).collect();
         Actor{participant:Participant{actor:life.actor_id().clone(),world:life.world_id().clone(),session:format!("session_{id}"),generation:1,available:true,needs:life.needs(),character:Character::default(),familiarity:0,affection:0},
             scope:super::super::Scope{instance:"actual_world".into(),revision:1,topology:1},slots,groups,life,station_supported:true,initiative_cooldown_ms:60_000}

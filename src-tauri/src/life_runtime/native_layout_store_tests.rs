@@ -432,7 +432,9 @@ async fn promotion_keeps_the_identical_normal_owner_and_never_frees_capacity_at_
 #[tokio::test(flavor="multi_thread",worker_threads=2)]
 async fn queued_prepared_observation_drains_through_pending_without_false_abort_or_grant(){
     let h=Host::new();let p=h.prepared().await;
-    h.wait_until(||h.owned().in_flight()).await;assert!(!h.main.queue.lock().unwrap().is_empty());
+    // The producer marks in-flight before handing the getter to Main. Observe
+    // the actual queue as well before testing a queued-read promotion race.
+    h.wait_until(||h.owned().in_flight()&&!h.main.queue.lock().unwrap().is_empty()).await;
     let g=p.begin_promotion(0).unwrap();let proof=g.proof();assert!(!proof.preparing_current(0));assert!(!proof.live_current(0));
     assert!(h.main.step(),"drain the actual previously queued read-only getter");h.wait_until(||!h.owned().in_flight()).await;
     assert!(proof.preparing_current(0));assert!(!h.owned().cancel.load(Ordering::SeqCst));

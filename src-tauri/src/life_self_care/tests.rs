@@ -83,6 +83,24 @@ fn each_urgent_need_selects_only_a_supplied_advisory_offer() {
         );
     }
 }
+#[test]
+fn learned_object_affinity_ranks_only_the_winning_need_without_overriding_admission() {
+    let snapshot=state([9000,9000,1000,9000]);
+    let plain=offer(Need::Engagement,"toy_a",0);
+    let favorite=offer(Need::Engagement,"toy_b",0).learned_affinity(1000).unwrap();
+    let chosen=chooser(&snapshot).choose(0,&snapshot,&[plain.clone(),favorite.clone()],None).unwrap().unwrap();
+    assert_eq!(chosen.offer().target(),favorite.target());
+    let hungry=state([9000,0,1000,9000]);
+    let food=offer(Need::Nourishment,"food",0);
+    let chosen=chooser(&hungry).choose(0,&hungry,&[plain,favorite.clone(),food],None).unwrap().unwrap();
+    assert_eq!(chosen.offer().need(),Need::Nourishment);
+    let mut blocked=chooser(&snapshot);
+    blocked.record_end(0,favorite.key(),End::Unavailable).unwrap();
+    let alternative=offer(Need::Engagement,"toy_a",0);
+    let chosen=blocked.choose(2000,&snapshot,&[favorite,alternative.clone()],None).unwrap().unwrap();
+    assert_eq!(chosen.offer().target(),alternative.target());
+    assert!(offer(Need::Engagement,"invalid",0).learned_affinity(1001).is_err());
+}
 
 #[test]
 fn no_admissible_offer_does_not_invent_food_rest_or_completion() {

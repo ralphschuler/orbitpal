@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-"""Synthetic metadata only. Never provisions, launches or samples a real app."""
+"""Metadata and isolated bus fixtures. Never provisions accounts or a real app."""
 from contextlib import ExitStack, contextmanager
 import ast
 import io

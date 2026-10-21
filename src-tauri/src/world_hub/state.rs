@@ -86,6 +86,7 @@ pub(crate) use crate::life_runtime::action_state::WorldActionFence as ActionCont
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ActionSlotTarget {
     pub(crate) id: SlotId,
+    pub(crate) anchor_id: crate::world_state::AnchorId,
     pub(crate) kind: AnchorKind,
     pub(crate) position: Point,
     pub(crate) content_ref: Option<crate::content_packs::ContentRef>,
@@ -719,7 +720,7 @@ impl WorldHub {
             let packs = store.content_packs().map_err(|_|UNAVAILABLE)?;
             if crate::content_packs::resolve_object(&packs, reference, kind).is_none() {return Err(UNAVAILABLE.into());}
         }
-        Ok(ActionSlotTarget { id: slot.clone(), kind, position, content_ref })
+        Ok(ActionSlotTarget { id: slot.clone(), anchor_id: anchor.id().clone(), kind, position, content_ref })
     }
     /// Offers are current observations; admission still reserves the exact slot
     /// in the existing World transaction and may lose a race to another actor.
@@ -738,7 +739,7 @@ impl WorldHub {
                 .and_then(|packs|crate::content_packs::resolve_object(packs,reference,anchor.kind())).is_none()) {continue;}
             for slot in anchor.slots() {
                 if snapshot.occupied.iter().any(|occupied| occupied.slot_id == *slot.id()) { continue; }
-                result.push(ActionSlotTarget { id: slot.id().clone(), kind: anchor.kind(), position: slot.position(), content_ref:anchor.content_ref().cloned() });
+                result.push(ActionSlotTarget { id: slot.id().clone(), anchor_id: anchor.id().clone(), kind: anchor.kind(), position: slot.position(), content_ref:anchor.content_ref().cloned() });
             }
         }
         result.sort_by(|left, right| left.id.cmp(&right.id));

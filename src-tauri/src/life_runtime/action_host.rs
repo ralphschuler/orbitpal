@@ -118,6 +118,7 @@ fn admit_rest_bound(
         let actor = ActorId::new(bot).map_err(invalid)?;
         actions.forget(bot);
         if actions.actor_busy(bot)
+            || !actions.has_admission_capacity()
             || !actions.executor.can_admit(&actor)
             || !core.local_admission_current(bot, &fence, now())
             || cancel.load(Ordering::SeqCst)
@@ -276,10 +277,47 @@ fn admit_rest_bound(
         Ok(())
     })
 }
+/// A completed real native Slot job can expose only its stable object reference.
+/// This is never deserialized from IPC or constructed by a planner/model.
+#[derive(Clone)]
+pub(crate) struct ObjectUseWitness {
+    action: crate::life_domain::ActionId,
+    object: crate::storage::object_preferences::ObjectReference,
+    fence: Option<LocalFence>,
+}
+impl ObjectUseWitness {
+    pub(crate) fn action(&self)->&crate::life_domain::ActionId {&self.action}
+    pub(crate) fn object(&self)->&crate::storage::object_preferences::ObjectReference {&self.object}
+    pub(crate) fn fence(&self)->Option<&LocalFence>{self.fence.as_ref()}
+    fn from_native_job(job:&NativeJob,snapshot:&LifeSnapshot)->Option<Self>{
+        if job.native_permit.is_none() || job.visual.is_none() {return None;}
+        let completed=snapshot.state().current_action().filter(|action|action.phase()==crate::life_domain::ActionPhase::Completed
+            && action.intent().id()==job.key.action_id()
+            && matches!(action.intent().activity(),Activity::Rest|Activity::Recharge|Activity::Snack|Activity::Play|Activity::Socialize))?;
+        let slot=job.slot.as_ref()?;
+        Some(Self{action:completed.intent().id().clone(),object:crate::storage::object_preferences::ObjectReference::from_slot(job.world.stage.as_str(),slot.target()),fence:Some(job.fence.clone())})
+    }
+    /// Controlled Store source fixture only. This supplies no native permit,
+    /// renderer receipt, reservation or actual platform qualification.
+    #[cfg(test)]
+    pub(crate) fn fixture(action:crate::life_domain::ActionId,object:crate::storage::object_preferences::ObjectReference)->Self {Self{action,object,fence:None}}
+}
+
 /// The token authorizes only the exact actual database snapshot/event. No await
 /// occurs from authorization through SQLite commit and confirmed installation.
 fn record_native_fact(actions: &mut NativeActions, store: &Store, job: &NativeJob, snapshot: &LifeSnapshot) -> Result<(), Failure> {
-    if job.native_permit.is_none() || job.visual.is_none() || job.grouped { return Ok(()); }
+    if job.native_permit.is_none() || job.visual.is_none() { return Ok(()); }
+    if let Some(witness)=ObjectUseWitness::from_native_job(job,snapshot) {
+        if job.grouped {
+            // Optional preference storage cannot change a paired action's
+            // acknowledgement. The committed scene's bounded fact retry owns
+            // this immutable source after its actual terminal cleanup.
+            actions.group_object_uses.entry(job.key.actor().as_str().into()).or_insert((snapshot.clone(),witness));
+            return Ok(());
+        }
+        store.social_credit_object_use(job.key.actor().as_str(),snapshot,&witness).map_err(|_|Failure::Storage)?;
+    }
+    if job.grouped {return Ok(());}
     let state = snapshot.state();
     if state.current_action().is_some_and(|action| action.phase()==crate::life_domain::ActionPhase::Completed) {
         store.social_credit_activity(job.key.actor().as_str(), snapshot).map_err(|_|Failure::Storage)?;
@@ -398,7 +436,11 @@ pub(crate) fn poll(
         for (bot,(snapshot,attempts)) in pending {
             let Some(job)=actions.jobs.get(&bot).cloned() else {continue;};
             if record_native_fact(actions,store,&job,&snapshot).is_err() {
-                core.mark_storage_failure(&bot,now());
+                // The immutable fact may settle after Stop or replacement;
+                // optional failure cannot pause that successor's session.
+                if core.local_current(&bot,&job.fence,now()) {
+                    core.mark_storage_failure(&bot,now());
+                }
                 if attempts<2 {actions.fact_pending.insert(bot,(snapshot,attempts+1));}
             }
         }
@@ -829,6 +871,7 @@ fn admit_visual_activity_guarded(
         let actor = ActorId::new(bot).map_err(invalid)?;
         actions.forget(bot);
         if actions.actor_busy(bot)
+            || !actions.has_admission_capacity()
             || !actions.executor.can_admit(&actor)
             || !core.local_admission_current(bot, &fence, now())
             || cancel.load(Ordering::SeqCst)

@@ -19,6 +19,8 @@ pub(crate) mod life_store;
 pub(crate) mod life_care_store;
 #[path="social_store.rs"]
 pub(crate) mod social_store;
+#[path="object_preferences.rs"]
+pub(crate) mod object_preferences;
 #[path="experience_store.rs"]
 mod experience_store;
 #[path="content_pack_store.rs"] pub(crate) mod content_pack_store;

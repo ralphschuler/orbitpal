@@ -134,6 +134,18 @@ pub(crate) fn reset_social_development(
     state.store.social_snapshot(&bot_id)
 }
 #[tauri::command]
+pub(crate) fn reset_social_object_preferences(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    bot_id: String,
+) -> Result<SocialSnapshot, String> {
+    mutate(&window, &state)?;
+    crate::life_runtime::social_host::cancel_actor(&app, &bot_id)?;
+    state.store.social_reset_object_preferences(&bot_id)?;
+    state.store.social_snapshot(&bot_id)
+}
+#[tauri::command]
 pub(crate) fn set_social_dialogue_policy(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,

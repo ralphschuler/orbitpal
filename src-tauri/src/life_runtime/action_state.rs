@@ -75,6 +75,9 @@ pub(crate) struct NativeJob {
 }
 pub(crate) struct NativeActions {
     pub fact_pending: BTreeMap<String, (crate::storage::life_store::LifeSnapshot, u8)>,
+    /// Immutable completed grouped sources awaiting the scene's terminal
+    /// transaction. These carry no executor, renderer or reservation authority.
+    pub group_object_uses: BTreeMap<String, (crate::storage::life_store::LifeSnapshot, super::action_host::ObjectUseWitness)>,
     pub fact_notifications: std::collections::BTreeSet<String>,
     pub executor: Executor,
     pub jobs: BTreeMap<String, NativeJob>,
@@ -87,6 +90,7 @@ impl NativeActions {
         let id = uuid::Uuid::new_v4().to_string();
         Self {
             fact_pending: Default::default(),
+            group_object_uses: Default::default(),
             fact_notifications: Default::default(),
             executor: Executor::new(id.clone()).expect("native UUID"),
             jobs: BTreeMap::new(),
@@ -97,6 +101,12 @@ impl NativeActions {
     }
     pub fn changed(&mut self) {
         self.sequence = self.sequence.saturating_add(1).min(MAX_COUNTER);
+    }
+    /// Every installed job reserves room for its possible grouped completion.
+    /// Completed jobs can temporarily count twice until poll retires them.
+    pub fn has_admission_capacity(&self) -> bool {
+        self.group_object_uses.len().saturating_add(self.jobs.len())
+            < crate::action_executor::MAX_JOBS
     }
     pub fn busy(&self) -> bool {
         self.jobs.values().any(|job| {
@@ -131,7 +141,7 @@ impl NativeActions {
         self.changed();
     }
     pub fn actor_busy(&self, id: &str) -> bool {
-        self.fact_pending.contains_key(id) || self.jobs.get(id).is_some_and(|job| {
+        self.fact_pending.contains_key(id) || self.group_object_uses.contains_key(id) || self.jobs.get(id).is_some_and(|job| {
             self.executor.status(&job.key).is_some_and(|status| {
                 !matches!(
                     status,

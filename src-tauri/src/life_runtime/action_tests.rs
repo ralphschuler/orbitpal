@@ -175,6 +175,32 @@ impl Fixture {
         .unwrap();
     }
 }
+#[test]
+fn pending_grouped_object_sources_reserve_installed_jobs_before_another_plan() {
+    let mut f=Fixture::new(&["nova","other"]);
+    f.start("nova");
+    let source=f.store.load_life("nova").unwrap().unwrap();
+    let action=source.state().current_action().unwrap().intent().id().clone();
+    // Capacity-only controlled metadata: this fixture grants no native slot
+    // completion or Store credit. The actual installed job reserves the last
+    // remaining room before any optional source can be appended.
+    let witness=super::ObjectUseWitness::fixture(action,crate::storage::object_preferences::ObjectReference{
+        stage_id:"stage".into(),object_id:"toy".into(),kind:crate::world_state::AnchorKind::Play,content_ref:None,
+    });
+    let actions=f.core.actions.as_mut().unwrap();
+    for index in 0..crate::action_executor::MAX_JOBS-1 {
+        actions.group_object_uses.insert(format!("pending_{index}"),(source.clone(),witness.clone()));
+    }
+    assert_eq!(actions.jobs.len(),1);
+    let before=f.store.load_life("other").unwrap().unwrap();
+    let profile=f.store.bot_profile("other").unwrap();
+    let context=f.context("other");
+    let fence=f.core.local_fence("other",0).unwrap();
+    assert!(admit_rest(&mut f.core,&f.store,&f.world,"other",&profile,fence,context,
+        Arc::new(AtomicBool::new(false)),||0,||100).is_err());
+    assert_eq!(f.store.load_life("other").unwrap().unwrap(),before,"capacity rejection must not publish a Plan or consume an ordinal");
+    assert_eq!(f.core.actions.as_ref().unwrap().group_object_uses.len(),crate::action_executor::MAX_JOBS-1);
+}
 pub(crate) fn run(case: &str) {
     match case {
         "complete" => {

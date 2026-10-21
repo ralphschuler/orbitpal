@@ -261,6 +261,7 @@ mod tests {
     #[test]
     fn real_slot_selection_is_kind_filtered_nearest_and_stable_on_ties() {
         let slot = |id, kind, x| ActionSlotTarget {
+            anchor_id: crate::world_state::AnchorId::new("fixture-object").unwrap(),
             id: SlotId::new(id).unwrap(),
             kind,
             position: point(x, 500_000),
@@ -285,6 +286,7 @@ mod tests {
     #[test]
     fn home_requires_a_free_rest_slot_not_a_play_slot_or_here_fallback() {
         let slots = vec![ActionSlotTarget {
+            anchor_id: crate::world_state::AnchorId::new("fixture-object").unwrap(),
             id: SlotId::new("play-seat").unwrap(),
             kind: AnchorKind::Play,
             position: point(500_000, 500_000),
@@ -300,6 +302,7 @@ mod tests {
         let geometry = movement();
         let mut prefs = Preferences::default();
         let slots = vec![ActionSlotTarget {
+            anchor_id: crate::world_state::AnchorId::new("fixture-object").unwrap(),
             id: SlotId::new("rest-seat").unwrap(), kind: AnchorKind::Rest,
             position: geometry.position, content_ref: None,
         }];
@@ -317,12 +320,14 @@ mod tests {
         };
         let slots = vec![
             ActionSlotTarget {
+            anchor_id: crate::world_state::AnchorId::new("fixture-object").unwrap(),
                 id: SlotId::new("nearest-rest").unwrap(),
                 kind: AnchorKind::Rest,
                 position: point(450_000, 500_000),
                 content_ref: None,
             },
             ActionSlotTarget {
+            anchor_id: crate::world_state::AnchorId::new("fixture-object").unwrap(),
                 id: SlotId::new("fitting-rest").unwrap(),
                 kind: AnchorKind::Rest,
                 position: point(250_000, 500_000),

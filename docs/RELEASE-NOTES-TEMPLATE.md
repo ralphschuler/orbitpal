@@ -3,6 +3,7 @@
 - Choose a saved energy render profile: at most 20 FPS, pixel ratio 1 and no dynamic shadows. Hidden views avoid unnecessary GPU submissions while native Life and Stop keep running independently.
 - Select a second character explicitly for a play invitation. Studio and the native menu recheck the same social coordinator; missing or stale selections cannot become a solo rewarded activity.
 - Use the typed native Pet action when the current character has an explicitly allowed, uniquely resolved authored Pet clip. Successful frames and native acknowledgements govern completion; missing capabilities stay unavailable.
+- Let confirmed object use build private per-character affinities. Preferences distinguish stable objects and exact package versions; need priority and native action admission remain authoritative. Private social notifications stay in Studio.
 - Read daily recaps in the local calendar, with confirmed hobby/goal milestones and access to all retained album facts and social memories. Private entries still require explicit sharing before public preview.
 - Prepare an empty private system-bus transport for the isolated GNOME renderer harness, preserving its scope and absent host services.
 - Reconcile the existing implementation against all 18 open issues and record dependency order and remaining acceptance. There were no open pull requests at the initial inventory.

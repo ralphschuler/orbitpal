@@ -244,6 +244,7 @@ pub(crate) struct Offer {
     key: OfferKey,
     travel_cost: u16,
     weight: u16,
+    learned_affinity: u16,
 }
 impl Offer {
     pub(crate) fn new(need: Need, target: Target, travel_cost: u16) -> Result<Self, Error> {
@@ -254,11 +255,16 @@ impl Offer {
             key: OfferKey { need, target },
             travel_cost,
             weight: 100,
+            learned_affinity: 0,
         })
     }
     pub(crate) fn weighted(mut self, weight:u16)->Result<Self,Error> {
         if !(1..=1000).contains(&weight){return Err(Error::Offer);}
         self.weight=weight; Ok(self)
+    }
+    pub(crate) fn learned_affinity(mut self,affinity:u16)->Result<Self,Error>{
+        if affinity>1000 {return Err(Error::Offer);}
+        self.learned_affinity=affinity;Ok(self)
     }
     pub(crate) fn key(&self) -> &OfferKey {
         &self.key
@@ -458,10 +464,19 @@ impl Chooser {
                     }
                 }
             }
-            Ok(best.map(|(offer, score)| Proposal {
-                offer: offer.clone(),
-                score,
-                selection: Selection::New,
+            Ok(best.map(|(best, base_score)| {
+                // Need selection above is unchanged. Learned object preference
+                // can rank only eligible alternatives of that winning need.
+                let rank=|offer:&Offer,score:u64|score.saturating_mul(1000+u64::from(offer.learned_affinity)/4)/1000;
+                let mut preferred=(best,base_score,rank(best,base_score));
+                for offer in offers.iter().filter(|offer|offer.need()==best.need()){
+                    if !next.available(offer,now) || offer.need().level(needs)>=next.policy.rules[offer.need().index()].start_below {continue;}
+                    let score=next.score(needs,offer);let weighted=rank(offer,score);
+                    if score>0 && (weighted>preferred.2 || weighted==preferred.2 && offer.key()<preferred.0.key()) {
+                        preferred=(offer,score,weighted);
+                    }
+                }
+                Proposal{offer:preferred.0.clone(),score:preferred.1,selection:Selection::New}
             }))
         })
     }

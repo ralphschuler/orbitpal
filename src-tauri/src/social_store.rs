@@ -45,6 +45,7 @@ pub(crate) struct SocialSnapshot {
     pub memories: Vec<Memory>,
     pub summary: Summary,
     pub development: Character,
+    pub object_preferences: Vec<super::object_preferences::ObjectAffinity>,
     pub scenes: Vec<SceneView>,
     pub trace: Vec<SceneView>,
     pub dialogue: DialogueSettings,
@@ -123,7 +124,7 @@ pub(crate) fn initialize(db: &mut Connection) -> Result<(), String> {
     }
     tx.commit().map_err(err)
 }
-fn owner(db: &Connection, fixed: Option<&str>, id: &str) -> Result<(), String> {
+pub(super) fn owner(db: &Connection, fixed: Option<&str>, id: &str) -> Result<(), String> {
     if !valid_id(id)
         || fixed.is_some_and(|scope| scope != id)
         || !db
@@ -233,7 +234,7 @@ pub(super) fn seed_template_character(
     state.character.validate()?;
     save_bot(tx, id, &state)
 }
-fn bump(tx: &Transaction) -> Result<(), String> {
+pub(super) fn bump(tx: &Transaction) -> Result<(), String> {
     if tx
         .execute(
             "UPDATE social_meta SET epoch=epoch+1 WHERE id=1 AND epoch<?1",
@@ -501,7 +502,7 @@ fn memories(db: &Connection, id: &str, shared: bool) -> Result<Vec<Memory>, Stri
     Ok(result)
 }
 impl Store {
-    fn social_ready(&self) -> Result<(), String> {
+    pub(super) fn social_ready(&self) -> Result<(), String> {
         let mut db = self.db.lock().map_err(err)?;
         initialize(&mut db)
     }
@@ -665,6 +666,14 @@ impl Store {
         tx.commit().map_err(err)
     }
     pub(crate) fn social_snapshot(&self, id: &str) -> Result<SocialSnapshot, String> {
+        self.social_snapshot_with_objects(id,true)
+    }
+    /// Runtime participant observations never depend on optional
+    /// per-object preference storage or project those private preferences.
+    pub(crate) fn social_native_snapshot(&self,id:&str)->Result<SocialSnapshot,String>{
+        self.social_snapshot_with_objects(id,false)
+    }
+    fn social_snapshot_with_objects(&self,id:&str,include_objects:bool)->Result<SocialSnapshot,String>{
         self.social_ready()?;
         let db = self.db.lock().map_err(err)?;
         owner(&db, self.fixed_profile.as_deref(), id)?;
@@ -705,6 +714,7 @@ impl Store {
             memories: memories(&db, id, false)?,
             summary: b.summary,
             development: b.character,
+            object_preferences: if include_objects {super::object_preferences::entries(&db,id)?} else {vec![]},
             scenes,
             trace: scene_trace(&db, id)?,
             dialogue: dialogue_settings(&db, id)?,
