@@ -616,6 +616,45 @@ class PrivatePamSession(unittest.TestCase):
             self.assertNotIn("raw-sensitive", json.dumps(value))
             self.assertNotIn("secret", json.dumps(value))
 
+    def test_unknown_password_module_is_still_refused_with_closed_rule_metadata(self):
+        files = self.stack()
+        files["common-password"] = b"password optional pam_gnome_keyring.so\n"
+        value = self.pam.capability(files.__getitem__, lambda _: b"259.9-1", lambda _: b"public-module")
+        self.assertEqual((value["supported"], value["code"]), (0, 4))
+        self.assertEqual([value[key] for key in ("stackFile", "stackRule", "stackModule", "stackControl", "stackArguments")], [5, 2, 1, 4, 0])
+        self.assertNotIn("keyring", json.dumps(value))
+
+    def test_unknown_rule_arguments_and_names_never_escape_or_become_supported(self):
+        for text, module, arguments in ((b"password optional pam_gnome_keyring.so PRIVATE_ARGUMENT\n", 1, 1),
+                                        (b"password optional pam_private.so PRIVATE_ARGUMENT\n", 0, 1),
+                                        (b"password malformed PRIVATE_CONFIG\n", 0, 0)):
+            files = self.stack()
+            files["common-password"] = text
+            value = self.pam.capability(files.__getitem__, lambda _: b"259.9-1", lambda _: b"module")
+            self.assertEqual(value["supported"], 0)
+            self.assertEqual(value["stackFile"], 5)
+            self.assertEqual(value["stackModule"], module)
+            self.assertEqual(value["stackArguments"], arguments)
+            self.assertNotIn("PRIVATE", json.dumps(value))
+
+    def test_account_auth_and_session_keyring_rules_remain_refused(self):
+        for name, rule in (("common-account", b"account optional pam_gnome_keyring.so\n"),
+                           ("common-auth", b"auth optional pam_gnome_keyring.so\n"),
+                           ("common-session", b"session optional pam_gnome_keyring.so auto_start\n")):
+            files = self.stack()
+            files[name] = rule
+            value = self.pam.capability(files.__getitem__, lambda _: b"259.9-1", lambda _: b"module")
+            self.assertEqual((value["supported"], value["code"]), (0, 4))
+            self.assertNotIn("keyring", json.dumps(value))
+
+    def test_success_and_unclassified_parser_failure_have_zero_closed_refusal_fields(self):
+        files = self.stack()
+        for raw in (files["common-session"], b"session optional pam_systemd.so class=none\n"):
+            files["common-session"] = raw
+            value = self.pam.capability(files.__getitem__, lambda _: b"259.9-1", lambda _: b"module")
+            self.assertEqual([value[key] for key in ("stackFile", "stackRule", "stackModule", "stackControl", "stackArguments")], [0, 0, 0, 0, 0])
+            self.assertLess(len(json.dumps(value)), 8192)
+
     def bus(self):
         root = Path("/tmp/orbitpal-wayland.Abc12345")
         account = "opw12345"

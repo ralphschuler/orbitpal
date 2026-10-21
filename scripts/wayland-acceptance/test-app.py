@@ -2272,5 +2272,179 @@ class CompatibleNativeSelectionTests(unittest.TestCase):
         outside.press.assert_not_called()
         outside.scroll.assert_not_called()
 
+
+
+class ModelEntryRevealTests(unittest.TestCase):
+    """Real fixed-field acquisition/EditableText with native doubles only."""
+    def entry_node(self, name="API base URL", showing=True, editable=True, enabled=True, pid=42):
+        states = ["visible"] + (["showing"] if showing else []) + (["editable"] if editable else [])
+        if enabled:
+            states += ["enabled", "sensitive"]
+        node = SwitchRevealTests.Node(name, 20, states, pid=pid)
+        node.write = Mock(return_value=True)
+        node.queryEditableText = Mock(return_value=SimpleNamespace(setTextContents=node.write))
+        return node
+
+    def fixture(self, nodes):
+        studio, frame, desktop = SwitchRevealTests().fixture(nodes)
+        studio.a.ROLE_ENTRY, studio.a.ROLE_TEXT = 20, 21
+        studio.a.STATE_EDITABLE = "editable"
+        frame.states.discard("active")
+        return studio, frame, desktop
+
+    def invoke(self, studio, name="API base URL", clock=None, executable=None):
+        clock, errors = [0.0] if clock is None else clock, io.StringIO()
+        with patch.object(app, "process_parent", side_effect=SwitchRevealTests().parents), patch.object(app.Path, "resolve", side_effect=executable or (lambda **_: studio.root / "acceptance-app")), patch.object(app, "phase"), patch.object(app, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda delay: clock.__setitem__(0, clock[0] + delay))), patch.object(app, "sys", SimpleNamespace(stderr=errors)):
+            try:
+                studio.entry(name, "PRIVATE_FIELD_VALUE")
+            except Exception as error:
+                return error, errors.getvalue()
+        return None, errors.getvalue()
+
+    def diagnostic(self, text):
+        lines = text.splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("app-model-entry: "))
+        value = json.loads(lines[0].removeprefix("app-model-entry: "))
+        self.assertEqual(set(value), {"version", "control", "lookupCount", "examinedNodeCount", "exactNameCount", "entryRoleCount", "exactEntryCount", "exactShowingCount", "exactOffscreenCount", "normalizedNameOnlyCount", "metadataUnavailableCount", "scrollAttempts", "writeAttempts", "expired"})
+        self.assertTrue(all(type(item) is int and 0 <= item <= 1200 for item in value.values()))
+        self.assertLessEqual(value["scrollAttempts"], 2)
+        self.assertLessEqual(value["writeAttempts"], 1)
+        self.assertNotIn("PRIVATE", text)
+        return value
+
+    def test_showing_fixed_fields_write_once_without_window_focus_or_extra_scroll(self):
+        for name in ("API base URL", "Model", "Model Load models"):
+            node = self.entry_node(name)
+            studio, frame, _ = self.fixture([node])
+            frame.queryComponent = Mock(side_effect=AssertionError("no window focus"))
+            error, output = self.invoke(studio, "Model" if name.startswith("Model") else name)
+            self.assertIsNone(error)
+            self.assertEqual(output, "")
+            node.write.assert_called_once_with("PRIVATE_FIELD_VALUE")
+            node.scroll.assert_not_called()
+            frame.queryComponent.assert_not_called()
+            self.assertNotIn("active", frame.states)
+
+    def test_offscreen_scroll_reacquires_new_showing_identity_before_actual_write(self):
+        old, fresh = self.entry_node(showing=False), self.entry_node()
+        studio, frame, _ = self.fixture([old])
+        def reveal(_):
+            frame.children = [fresh]
+            return True
+        old.scroll.side_effect = reveal
+        error, output = self.invoke(studio)
+        self.assertIsNone(error)
+        self.assertEqual(output, "")
+        old.scroll.assert_called_once_with(0)
+        old.queryEditableText.assert_not_called()
+        fresh.write.assert_called_once_with("PRIVATE_FIELD_VALUE")
+        fresh.scroll.assert_not_called()
+
+    def test_permanent_offscreen_keeps_two_scrolls_and_original_deadline(self):
+        node = self.entry_node(showing=False)
+        studio, _, _ = self.fixture([node])
+        clock = [0.0]
+        error, output = self.invoke(studio, clock=clock)
+        self.assertEqual(error.code, "app_control_missing")
+        value = self.diagnostic(output)
+        self.assertEqual((value["exactEntryCount"], value["exactOffscreenCount"], value["scrollAttempts"], value["expired"]), (1, 1, 2, 1))
+        self.assertGreaterEqual(clock[0], 12)
+        self.assertLess(clock[0], 12.2)
+        node.write.assert_not_called()
+
+    def test_hidden_foreign_wrong_role_wrong_name_and_other_window_never_receive_input(self):
+        for case in ("hidden", "foreign", "role", "name", "other_window"):
+            node = self.entry_node(name="PRIVATE_OTHER_NAME" if case == "name" else "API base URL", pid=99 if case == "foreign" else 42)
+            if case == "hidden": node.states.remove("visible")
+            if case == "role": node.role = 5
+            studio, _, desktop = self.fixture([] if case == "other_window" else [node])
+            if case == "other_window":
+                desktop.children.append(SwitchRevealTests.Node("PRIVATE_OTHER_WINDOW", 10, ("visible", "showing"), children=[node]))
+            error, output = self.invoke(studio)
+            self.assertEqual(error.code, "app_control_missing")
+            self.diagnostic(output)
+            node.scroll.assert_not_called()
+            node.queryEditableText.assert_not_called()
+
+    def test_duplicate_and_noneditable_or_disabled_fields_refuse_without_write(self):
+        for case in ("duplicate", "disabled", "readonly"):
+            node = self.entry_node(enabled=case != "disabled", editable=case != "readonly")
+            studio, _, _ = self.fixture([node, self.entry_node()] if case == "duplicate" else [node])
+            error, output = self.invoke(studio)
+            self.assertEqual(error.code, "ambiguous_app_control" if case == "duplicate" else "app_entry_not_editable")
+            self.diagnostic(output)
+            node.write.assert_not_called()
+
+    def test_scroll_refusal_and_executable_change_cannot_reuse_the_old_node(self):
+        for changed in (False, True):
+            node = self.entry_node(showing=False)
+            studio, _, _ = self.fixture([node])
+            executable = [studio.root / "acceptance-app"]
+            def reveal(_):
+                if changed: executable[0] = Path("/PRIVATE_FOREIGN_APP")
+                return changed
+            node.scroll.side_effect = reveal
+            error, output = self.invoke(studio, executable=lambda **_: executable[0])
+            self.assertEqual(error.code, "unexpected_app_executable" if changed else "app_action_refused")
+            self.diagnostic(output)
+            node.write.assert_not_called()
+
+    def test_replacement_during_editor_query_cannot_write_via_stale_interface(self):
+        node, replacement = self.entry_node(), self.entry_node()
+        studio, frame, _ = self.fixture([node])
+        def editor():
+            frame.children = [replacement]
+            return SimpleNamespace(setTextContents=node.write)
+        node.queryEditableText.side_effect = editor
+        error, output = self.invoke(studio)
+        self.assertEqual(error.code, "app_control_missing")
+        self.diagnostic(output)
+        node.write.assert_not_called()
+        replacement.write.assert_not_called()
+
+    def test_late_native_query_cannot_write_or_trigger_post_deadline_probe(self):
+        node, clock = self.entry_node(), [0.0]
+        studio, _, _ = self.fixture([node])
+        def editor():
+            clock[0] = 12
+            return SimpleNamespace(setTextContents=node.write)
+        node.queryEditableText.side_effect = editor
+        error, output = self.invoke(studio, clock=clock)
+        self.assertEqual(error.code, "app_control_missing")
+        value = self.diagnostic(output)
+        self.assertEqual(value["expired"], 1)
+        self.assertEqual(value["lookupCount"], 2)
+        node.write.assert_not_called()
+
+    def test_whitespace_is_diagnostic_only_and_native_write_refusal_stays_failure(self):
+        node = self.entry_node(name="  API base URL ")
+        studio, _, _ = self.fixture([node])
+        error, output = self.invoke(studio)
+        self.assertEqual(error.code, "app_control_missing")
+        self.assertEqual(self.diagnostic(output)["normalizedNameOnlyCount"], 1)
+        node.write.assert_not_called()
+        node = self.entry_node()
+        node.write.return_value = False
+        studio, _, _ = self.fixture([node])
+        error, output = self.invoke(studio)
+        self.assertEqual(error.code, "app_entry_write_failed")
+        self.assertEqual(self.diagnostic(output)["writeAttempts"], 1)
+
+    def test_message_entry_keeps_its_existing_route_and_unknown_model_name_is_refused(self):
+        studio = app.Studio.__new__(app.Studio)
+        studio.a = SimpleNamespace(ROLE_ENTRY=20, ROLE_TEXT=21, STATE_EDITABLE="editable")
+        node = self.entry_node("Message to your cohost")
+        focus = Mock()
+        node.queryComponent = Mock(return_value=SimpleNamespace(grabFocus=focus))
+        studio.one, studio.enabled = Mock(return_value=node), Mock(return_value=True)
+        studio.entry("Message to your cohost", "synthetic")
+        studio.one.assert_called_once_with("Message to your cohost", {20, 21})
+        focus.assert_called_once_with()
+        node.write.assert_called_once_with("synthetic")
+        with self.assertRaisesRegex(provider.Refusal, "^app_control_missing$"):
+            studio.model_entry("PRIVATE_UNKNOWN_FIELD", "synthetic")
+
+
 if __name__ == "__main__":
     unittest.main()

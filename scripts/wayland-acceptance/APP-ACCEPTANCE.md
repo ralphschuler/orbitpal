@@ -1,12 +1,17 @@
 # Opt-in actual Studio/application subset
 
-The actual-app subset **has not passed**. In run 39572226669 both real GNOME/KDE
-jobs built the embedded application and passed the separate baseline, then the
-PAM capability preflight refused the packaged login session grammar (code 4)
-before creating an account or launching the actual app. Earlier app-start
-failures remain separate evidence. Issue #26 remains open. The default workflow/run.sh path still runs
-the separate successful `real_portal_prototype` baseline. Neither local harness
-tests nor that baseline establish the application cases below.
+The actual-app subset **has not passed**. In [run 39583461054](https://github.com/ralphschuler/orbitpal/actions/runs/39583461054),
+head `46cea4417c8b47a8ed3f599d530a09be99004141`, both separate portal
+baselines passed. The GNOME actual-app job refused PAM capability code 4 before
+account/app creation. Its first four PAM file hashes matched the supported KDE
+stack; only `common-password` differed. The exported hashes do not identify the
+refused rule. KDE constructed a real, typed active/unlocked/not-preparing child
+login1 session, reached native Compatible selection, then failed the showing-only
+`API base URL` entry lookup. The child was alive until expected TERM cleanup;
+PAM cleanup was confirmed. No app success receipt exists. Earlier failures remain
+separate evidence. Issue #26 remains open. The default workflow/run.sh path still
+runs the separate successful `real_portal_prototype` baseline. Neither local
+harness tests nor that baseline establish the application cases below.
 
 The refused `/etc/pam.d/login` SHA-256 was
 `71b58114fcdc0e037b9700a92f14638a4a24f8480f23b03cc26740511fdd56dc` on both
@@ -19,6 +24,29 @@ modules still require the existing owned-file validation. This is a bounded
 stock-grammar compatibility fix, not a general PAM control interpreter; the
 remaining real stack, child login1 session, selector and cleanup still require
 a fresh actual run.
+
+The two fixed model fields now use fresh PID/executable/unique Studio-frame
+acquisition, including VISIBLE offscreen entries. At most two real native
+`scrollTo` requests may reveal a field within its original 12-second deadline.
+Only a fresh SHOWING, enabled, editable exact field receives one native
+`EditableText.setTextContents` call. No window focus, global key/pointer or
+JavaScript route is added; ordinary message entry and capture/chooser gates stay
+unchanged. Actual SQLite save readback still establishes the persisted settings.
+A terminal `app-model-entry` line contains only bounded lookup/role/name-match
+counts, reveal/write counts, a fixed field code (1 endpoint, 2 model), and expiry.
+No text/value/tree is logged, and no post-deadline diagnostic AX query is made.
+The previous receipt does not prove whether offscreen state, a native popup or
+another accessibility condition caused its missing-field result.
+
+PAM grammar remains fail-closed. Additional `pam-session-capability` numeric
+fields locate a refused non-session rule without exporting a config line:
+`stackFile` uses 1 login, 2 common-auth, 3 common-account, 4 common-session,
+5 common-password; `stackRule` is 1 malformed rule or 2 unrecognized module.
+`stackModule` recognizes only 1 gnome-keyring, 2 exec, 3 kwallet5, 4 kwallet6;
+0 means unknown. `stackControl` is 1 required, 2 requisite, 3 sufficient,
+4 optional, 5 bracket control; `stackArguments` is 0 absent or 1 present.
+Unclassified failures and supported stacks leave these fields zero. These codes
+do not permit any new module or argument. No guessed GNOME rule is accepted.
 
 The manual workflow input `full_app` defaults to false. When explicitly enabled,
 each existing Ubuntu26.04 GNOME/KDE job first runs its normal baseline, then builds
@@ -129,6 +157,5 @@ Do not mark #26 complete or Wayland generally accepted from this subset.
 
 Local `test-app.py` tests synthetic HTTP/JPEG/state/control metadata, hostile
 byte filtering and controlled fake-child exit/cleanup races only. It opens no
-app, GUI, compositor, portal or personal data and performs no capture. The new
-runtime-diagnostic regressions are source prepared and await the maintainer's
-bounded gate; an earlier checkpoint's passing tests do not validate this one.
+app, GUI, compositor, portal or personal data and performs no capture. Controlled tests cover the native acquisition, parser/privacy and child
+cleanup seams; they do not establish actual AT-SPI or portal success.

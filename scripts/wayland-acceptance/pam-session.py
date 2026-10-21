@@ -40,6 +40,18 @@ class Refused(Exception):
     pass
 
 
+class StackRefused(Refused):
+    """Closed stock-parser metadata; never retain the actual line/arguments."""
+    def __init__(self, file, rule, module=None, control=None, arguments=False):
+        self.file = PAM_FILES.index(file) + 1
+        self.rule = rule  # 1 malformed non-session rule, 2 unknown module.
+        self.module = {"pam_gnome_keyring.so": 1, "pam_exec.so": 2,
+                       "pam_kwallet5.so": 3, "pam_kwallet6.so": 4}.get(module, 0)
+        self.control = {"required": 1, "requisite": 2, "sufficient": 3,
+                        "optional": 4}.get(control, 5 if control and control.startswith("[") else 0)
+        self.arguments = int(arguments)
+
+
 class Absent(Exception):
     def __init__(self, kind):
         self.kind = kind  # 1 exact NoSuchUnit, 2 exact NoSuchUser; never text.
@@ -95,9 +107,11 @@ def session_stack(read):
             if not re.match(r"^-?session\s", line):
                 # Account rules do run. Unknown external/exec modules or custom
                 # directives must not pass merely because session rules look safe.
-                other = re.fullmatch(r"-?(auth|account|password)\s+(\[[^\]]{1,128}\]|required|requisite|sufficient|optional)\s+(pam_[a-z0-9_]+\.so)(?:\s+[^#]{1,256})?", line)
-                if not other or other[3] not in NON_SESSION_MODULES:
-                    raise Refused()
+                other = re.fullmatch(r"-?(auth|account|password)\s+(\[[^\]]{1,128}\]|required|requisite|sufficient|optional)\s+(pam_[a-z0-9_]+\.so)(?:\s+([^#]{1,256}))?", line)
+                if not other:
+                    raise StackRefused(name, 1)
+                if other[3] not in NON_SESSION_MODULES:
+                    raise StackRefused(name, 2, other[3], other[2], bool(other[4]))
                 continue
             match = re.fullmatch(r"-?session\s+(\[[^\]]{1,128}\]|[a-z]+)\s+(pam_[a-z0-9_]+\.so)(?:\s+([^#]{1,256}))?", line)
             if not match:
@@ -183,17 +197,21 @@ def capability(read=None, version=None, module=None):
             versions.append(([0, 0, 0], "0" * 64))
             code |= 2
     modules, systemd_hash = set(), "0" * 64
+    stack = {"stackFile": 0, "stackRule": 0, "stackModule": 0, "stackControl": 0, "stackArguments": 0}
     try:
         _, modules = session_stack(lambda name: cached[name])
-    except Exception:
+    except Exception as error:
         code |= 4
+        if type(error) is StackRefused:
+            stack.update(stackFile=error.file, stackRule=error.rule, stackModule=error.module,
+                         stackControl=error.control, stackArguments=error.arguments)
     try:
         systemd_hash = hashlib.sha256(module("pam_systemd.so")).hexdigest()
         for name in modules - {"pam_systemd.so"}:
             module(name)  # Require each recognized stock module to be installed.
     except Exception:
         code |= 8
-    return {"version": 1, "supported": int(code == 0), "code": code,
+    return {"version": 1, "supported": int(code == 0), "code": code, **stack,
             "fileKnownMask": file_mask, "versionKnownMask": version_mask,
             "pamSourceSha256": [hashlib.sha256(cached[name]).hexdigest() if name in cached else "0" * 64 for name in PAM_FILES],
             "moduleCount": len(modules), "systemdModuleSha256": systemd_hash,

@@ -37,6 +37,7 @@ SWITCH_CONTROLS = frozenset((
     "Enable speech output", "Enable tool calls", "Send images to the model",
     "Include the screen with every request",
 ))
+MODEL_ENTRIES = frozenset(("API base URL", "Model"))
 TRACEBACK_METADATA_LIMIT = 32
 OWNED_SOURCES = {
     str(Path(__file__).resolve()): "app.py",
@@ -359,12 +360,108 @@ class Studio:
         self.action(self.one(name, {self.a.ROLE_PUSH_BUTTON}))
 
     def entry(self, name, value):
+        if name in MODEL_ENTRIES:
+            return self.model_entry(name, value)
         node = self.one(name, {self.a.ROLE_ENTRY, self.a.ROLE_TEXT})
         if not self.enabled(node) or not node.getState().contains(self.a.STATE_EDITABLE):
             raise Refusal("app_entry_not_editable")
         node.queryComponent().grabFocus()
         if not node.queryEditableText().setTextContents(value):
             raise Refusal("app_entry_write_failed")
+
+    def model_entry(self, name, value):
+        """Bounded reveal/write of two fixed native fields, never global input."""
+        if name not in MODEL_ENTRIES:
+            raise Refusal("app_control_missing")
+        deadline = time.monotonic() + 12
+        roles = {self.a.ROLE_ENTRY, self.a.ROLE_TEXT}
+        names = {"Model", "Model Load models"} if name == "Model" else {name}
+        stats = {"version": 1, "control": 1 if name == "API base URL" else 2,
+                 "lookupCount": 0, "examinedNodeCount": 0, "exactNameCount": 0,
+                 "entryRoleCount": 0, "exactEntryCount": 0,
+                 "exactShowingCount": 0, "exactOffscreenCount": 0,
+                 "normalizedNameOnlyCount": 0, "metadataUnavailableCount": 0,
+                 "scrollAttempts": 0, "writeAttempts": 0, "expired": 0}
+
+        def native(call):
+            if time.monotonic() >= deadline:
+                raise Refusal("app_control_missing")
+            result = call()
+            if time.monotonic() >= deadline:
+                raise Refusal("app_control_missing")
+            return result
+
+        def locate():
+            current = native(lambda: self.studio_frame(active=False))
+            stats["lookupCount"] = min(stats["lookupCount"] + 1, 256)
+            for key in ("examinedNodeCount", "exactNameCount", "entryRoleCount",
+                        "exactEntryCount", "exactShowingCount", "exactOffscreenCount",
+                        "normalizedNameOnlyCount", "metadataUnavailableCount"):
+                stats[key] = 0
+            matches = []
+            # The same owned/VISIBLE traversal as find(), but remember only
+            # bounded counts from the live lookup: no post-deadline AX query.
+            for node in self.nodes(include_offscreen=True, frame=current):
+                native(lambda: None)
+                stats["examinedNodeCount"] += 1
+                try:
+                    label, role, state = native(lambda: node.name), native(node.getRole), native(node.getState)
+                    if type(label) is not str:
+                        stats["metadataUnavailableCount"] += 1
+                        continue
+                    expected_role = role in roles
+                    stats["entryRoleCount"] += int(expected_role)
+                    if label not in names:
+                        if len(label) <= 128 and " ".join(label.split()) in names:
+                            stats["normalizedNameOnlyCount"] += 1
+                        continue
+                    stats["exactNameCount"] += 1
+                    if expected_role:
+                        stats["exactEntryCount"] += 1
+                        showing = native(lambda: state.contains(self.a.STATE_SHOWING))
+                        stats["exactShowingCount" if showing else "exactOffscreenCount"] += 1
+                        matches.append((node, showing))
+                except (RuntimeError, AttributeError, NotImplementedError, TypeError, ValueError):
+                    stats["metadataUnavailableCount"] += 1
+            native(lambda: None)
+            if len(matches) > 1:
+                raise Refusal("ambiguous_app_control")
+            if not matches:
+                return None
+            node, showing = matches[0]
+            if showing:
+                return node
+            if stats["scrollAttempts"] >= 2:
+                return None
+            component = native(node.queryComponent)
+            stats["scrollAttempts"] += 1
+            if native(lambda: component.scrollTo(self.a.SCROLL_ANYWHERE)) is not True:
+                raise Refusal("app_action_refused")
+            # Return through a fresh traversal on the next wait poll. Never
+            # write to the offscreen accessible that received scrollTo.
+            return None
+
+        try:
+            self.wait(locate, "app_control_missing", seconds=max(0, deadline - time.monotonic()))
+            node = locate()  # Fresh frame/identity/state immediately before editing.
+            if node is None:
+                raise Refusal("app_control_missing")
+            if not native(lambda: self.enabled(node)) or not native(lambda: node.getState().contains(self.a.STATE_EDITABLE)):
+                raise Refusal("app_entry_not_editable")
+            editor = native(node.queryEditableText)
+            fresh = locate()
+            if fresh is None or native(lambda: node is fresh or node == fresh) is not True:
+                raise Refusal("app_control_missing")
+            if not native(lambda: self.enabled(fresh)) or not native(lambda: fresh.getState().contains(self.a.STATE_EDITABLE)):
+                raise Refusal("app_entry_not_editable")
+            stats["writeAttempts"] = 1
+            if native(lambda: editor.setTextContents(value)) is not True:
+                raise Refusal("app_entry_write_failed")
+            # Existing save() still requires the actual committed SQLite values.
+        except Exception:
+            stats["expired"] = int(time.monotonic() >= deadline)
+            print("app-model-entry: " + json.dumps(stats, sort_keys=True), file=sys.stderr, flush=True)
+            raise
 
     def studio_frame(self, active=True):
         """Fresh owned/executable/unique showing Studio; ACTIVE remains the default."""
