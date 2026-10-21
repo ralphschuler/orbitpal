@@ -87,7 +87,8 @@ impl Document {
     }
 }
 impl Drop for Document { fn drop(&mut self) { self.cancel(); } }
-struct Entry { signals: Arc<WindowSignals>, document: Option<Document> }
+struct Entry { signals: Arc<WindowSignals>, document: Option<Document>, loaded: Option<Arc<readiness::PhysicalLoad>> }
+impl Drop for Entry { fn drop(&mut self) { if let Some(load)=&self.loaded { load.cancel(); } } }
 struct State { entries: BTreeMap<String, Entry>, next: u64, unavailable: bool }
 impl Default for State {
     fn default() -> Self { Self { entries: BTreeMap::new(), next: 1, unavailable: false } }
@@ -97,6 +98,7 @@ impl State {
         self.unavailable = true;
         for entry in self.entries.values() {
             if let Some(document) = &entry.document { document.cancel(); }
+            if let Some(load) = &entry.loaded { load.cancel(); }
         }
     }
     fn epoch(&mut self) -> Result<u64, DocumentError> {
@@ -150,7 +152,7 @@ impl Documents {
         if !state.entries.contains_key(bot) && state.entries.len() >= MAX_DOCUMENTS { return false; }
         // Removal cancels before the new instance is made discoverable.
         state.entries.remove(bot);
-        state.entries.insert(bot.into(), Entry { signals: signals.clone(), document: None });
+        state.entries.insert(bot.into(), Entry { signals: signals.clone(), document: None, loaded: None });
         true
     }
     pub(crate) fn started(&self, bot: &str, signals: &Arc<WindowSignals>) -> bool {
@@ -159,7 +161,10 @@ impl Documents {
         // Revocation precedes allocation/publication of the next page epoch.
         state.entries.get_mut(bot).unwrap().document.take();
         let Ok(epoch) = state.epoch() else { return false; };
-        state.entries.get_mut(bot).unwrap().document = Some(Document {
+        let entry=state.entries.get_mut(bot).unwrap();
+        if let Some(load)=entry.loaded.take(){load.cancel();}
+        entry.loaded=Some(Arc::new(readiness::PhysicalLoad::new(epoch)));
+        entry.document = Some(Document {
             epoch, cancel: Arc::new(AtomicBool::new(false)), phase: Phase::Pending,
         });
         true
@@ -168,6 +173,7 @@ impl Documents {
         if now > MAX_COUNTER { return Err(DocumentError::Invalid); }
         let mut state = self.lock()?;
         let entry = state.entries.get_mut(bot).filter(|entry| Arc::ptr_eq(&entry.signals, signals)).ok_or(DocumentError::Stale)?;
+        entry.loaded.as_ref().ok_or(DocumentError::Pending)?.finished(now)?;
         let document = entry.document.as_mut().ok_or(DocumentError::Pending)?;
         if document.cancel.load(Ordering::SeqCst) { return Err(DocumentError::Stale); }
         if matches!(&document.phase, Phase::Pending) {
@@ -316,3 +322,8 @@ impl Drop for Documents {
 #[cfg(test)]
 #[path = "native_document_tests.rs"]
 mod tests;
+
+#[path = "native_document_readiness.rs"]
+mod readiness;
+pub(crate) use readiness::{LoadedDocumentReceipt, AssetProbeGrant, AssetProbeState,
+    AssetReadinessReport, AssetReadinessStatus, AssetReadyReceipt};

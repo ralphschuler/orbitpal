@@ -1,6 +1,8 @@
 mod storage;
 mod usage_budget;
 mod usage_settings;
+#[cfg(feature="native-world-fixture")]
+pub mod native_world_fixture;
 mod credentials;
 mod credential_policy;
 mod api_connections;
@@ -148,6 +150,7 @@ async fn select_bot(state:State<'_,AppState>,app:tauri::AppHandle,id:String)->Re
 async fn save_profile(state:State<'_,AppState>,app:tauri::AppHandle,profile:Value,bot_id:Option<String>)->Result<Value,String> {
     let scoped=bot_id.as_deref().map(|id|state.store.scoped(id)).transpose()?;
     let store=scoped.as_ref().unwrap_or(&state.store);
+    #[cfg(feature="native-world-fixture")] native_world_fixture::validate_profile_for_fixture(store,&profile)?;
     let old=store.profile()?;
     let _profile_switch=if old["id"]!=profile["id"]{Some(state.generation.try_lock().map_err(|_|"Profilwechsel während einer laufenden Antwort nicht möglich. Bitte zuerst abbrechen.".to_owned())?)}else{None};
     // An identical save (also used before ordinary messages) does not disturb
@@ -228,9 +231,14 @@ async fn send_message(window:tauri::WebviewWindow,app:tauri::AppHandle,text:Stri
 async fn send_automatic_message(window:tauri::WebviewWindow,app:tauri::AppHandle,text:String,source:String,user:String,bot_id:String,request_id:Option<String>,reply_route_id:Option<String>)->Result<Value,String>{usage_settings::main_only(window.label())?;agent::send_automatic(app,text,source,user,bot_id,request_id,reply_route_id).await}
 #[tauri::command]
 fn stop_generation(state:State<'_,AppState>,app:tauri::AppHandle)->Result<(),String>{
+    #[cfg(feature="native-world-fixture")]
+    let fixture_receipts=life_runtime::native_scene::fixture_stop_receipts(&app);
     state.screen_context.portal.close_all();
     if let Some(c)=state.cancel.lock().map_err(|e|e.to_string())?.as_ref(){c.store(true,Ordering::Relaxed);}
-    state.overlay.publish(&app,json!({"kind":"stop"}));Ok(())
+    state.overlay.publish(&app,json!({"kind":"stop"}));
+    #[cfg(feature="native-world-fixture")]
+    life_runtime::native_scene::observe_fixture_stopped(&app,fixture_receipts);
+    Ok(())
 }
 #[tauri::command]
 fn clear_memory(state:State<'_,AppState>)->Result<(),String>{let _idle=state.generation.try_lock().map_err(|_|"Bitte die aktuelle Antwort zuerst beenden".to_owned())?;state.store.clear_history()}
@@ -332,22 +340,32 @@ async fn import_profile(state:State<'_,AppState>,app:tauri::AppHandle,source_pat
 
 #[cfg_attr(mobile,tauri::mobile_entry_point)]
 pub fn run(){
+    #[cfg(feature="native-world-fixture")] native_world_fixture::refuse_shipping_entry();
     tauri::Builder::default().plugin(tauri_plugin_dialog::init()).plugin(tauri_plugin_opener::init()).plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app|{
-            app.manage(ui_locale::UiLocaleState::default());
             let root=app.path().app_data_dir()?;
             let store=storage::Store::new(root).map_err(std::io::Error::other)?;
-            let world=world_hub::WorldHub::new(&store);
-            app.manage(AppState {world,store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),presentation:overlay_presentation::PresentationHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default(),life_runtime:life_runtime::LifeRuntime::default(),screen_context:screen_context::ScreenState::default()});
-            tauri::async_runtime::block_on(overlay::start(app.handle().clone())).map_err(std::io::Error::other)?;
-            app.state::<AppState>().life_runtime.install(app.handle());
-            setup_tray(app)?;
-            Ok(())
+            initialize_application(app,store)
         })
-        .invoke_handler({let handler:fn(tauri::ipc::Invoke)->bool=tauri::generate_handler![start_life_scene,stop_life_session_exact,life_runtime::world_output::register_world_output,life_runtime::world_output::report_world_measurement,life_runtime::world_output::report_world_action,life_runtime::world_output::unregister_world_output,life_runtime::world_output::get_world_output_status,life_runtime::world_output::start_life_move,api_connection_settings::get_api_connections,api_connection_settings::get_api_binding,api_connection_settings::create_api_connection,api_connection_settings::rename_api_connection,api_connection_settings::set_default_api_connection,api_connection_settings::remove_api_connection,api_connection_settings::set_api_connection_secret,life_runtime::actions::get_life_actions,life_runtime::actions::start_life_rest,world_hub::get_world_settings,world_hub::get_world_state,world_hub::save_world_config,world_hub::place_world_actor,life_runtime::get_life_runtime,life_runtime::get_life_bot,life_runtime::set_life_mode,life_runtime::connect_life_ui,life_runtime::disconnect_life_ui,life_runtime::report_life_ui,credential_session_settings::get_credential_session,credential_session_settings::set_credential_session,credential_session_settings::lock_credential_session,usage_settings::get_usage_budget,usage_settings::set_usage_limits,overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,send_automatic_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source];move|invoke:tauri::ipc::Invoke|{life_runtime::operator_invoke(&invoke);handler(invoke)}})
-        .build(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden").run(|app,event|{
-            if matches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit){app.state::<AppState>().life_runtime.shutdown(app);app.state::<AppState>().screen_context.portal.close_all();}
-        });
+        .invoke_handler(production_invoke)
+        .build(tauri::generate_context!()).expect("OrbitPal konnte nicht gestartet werden").run(application_exit);
+}
+fn initialize_application(app:&mut tauri::App,store:storage::Store)->Result<(),Box<dyn std::error::Error>>{
+    app.manage(ui_locale::UiLocaleState::default());
+    let world=world_hub::WorldHub::new(&store);
+    app.manage(AppState {world,store,mcp:mcp::McpHub::default(),chat:chat::ChatHub::default(),cancel:Mutex::new(None),generation:tokio::sync::Mutex::new(()),overlay:overlay::OverlayHub::default(),presentation:overlay_presentation::PresentationHub::default(),control_mcp:control_mcp::ControlMcp::default(),updater:updater::UpdateState::default(),autopilot:autopilot::AutopilotHub::default(),life_runtime:life_runtime::LifeRuntime::default(),screen_context:screen_context::ScreenState::default()});
+    tauri::async_runtime::block_on(overlay::start(app.handle().clone())).map_err(std::io::Error::other)?;
+    app.state::<AppState>().life_runtime.install(app.handle());
+    setup_tray(app)?;
+    Ok(())
+}
+fn production_invoke(invoke:tauri::ipc::Invoke)->bool{
+    life_runtime::operator_invoke(&invoke);
+    let handler:fn(tauri::ipc::Invoke)->bool=tauri::generate_handler![life_runtime::native_scene_ipc::report_native_world_asset,life_runtime::native_scene_ipc::register_native_world_output,life_runtime::native_scene_ipc::report_native_world_measurement,life_runtime::native_scene_ipc::report_native_world_action,life_runtime::native_scene_ipc::unregister_native_world_output,start_life_scene,stop_life_session_exact,life_runtime::world_output::register_world_output,life_runtime::world_output::report_world_measurement,life_runtime::world_output::report_world_action,life_runtime::world_output::unregister_world_output,life_runtime::world_output::get_world_output_status,life_runtime::world_output::start_life_move,api_connection_settings::get_api_connections,api_connection_settings::get_api_binding,api_connection_settings::create_api_connection,api_connection_settings::rename_api_connection,api_connection_settings::set_default_api_connection,api_connection_settings::remove_api_connection,api_connection_settings::set_api_connection_secret,life_runtime::actions::get_life_actions,life_runtime::actions::start_life_rest,world_hub::get_world_settings,world_hub::get_world_state,world_hub::save_world_config,world_hub::place_world_actor,life_runtime::get_life_runtime,life_runtime::get_life_bot,life_runtime::set_life_mode,life_runtime::connect_life_ui,life_runtime::disconnect_life_ui,life_runtime::report_life_ui,credential_session_settings::get_credential_session,credential_session_settings::set_credential_session,credential_session_settings::lock_credential_session,usage_settings::get_usage_budget,usage_settings::set_usage_limits,overlay_presentation::list_output_displays,overlay_presentation::preview_avatar_scale,overlay_presentation::preview_output_monitor,ui_locale::get_ui_locale,ui_locale::set_ui_locale,microphone_permission::get_microphone_permission,microphone_permission::request_microphone_permission,microphone_permission::open_microphone_settings,get_app_state,get_emote_capabilities,get_extension_library,get_library_skill,install_control_extension,get_control_mcp_config,save_library_mcp,delete_library_mcp,list_bots,create_bot,select_bot,save_profile,save_document,save_skill,delete_skill,import_skill,trigger_emote,import_emote_sound,get_emote_sound,import_knowledge,delete_knowledge,set_secret,delete_secret,list_models,check_cli_provider,list_cli_models,send_message,send_automatic_message,stop_generation,autopilot::set_autopilot,autopilot::send_autopilot,screen_context::list_capture_displays,clear_memory,mcp_connect,mcp_disconnect,mcp_tools,connect_platform,disconnect_platform,report_playback,cancel_speech_job,report_emote_playback,get_speech_audio,synthesize_speech,transcribe_audio,open_overlay,close_overlay,configure_overlay,import_avatar,get_avatar_info,import_motion,export_profile,import_profile,updater::get_update_settings,updater::set_update_settings,updater::check_update,updater::install_update,updater::cancel_update,screen_permission::get_screen_capture_permission,screen_permission::request_screen_capture_permission,screen_permission::open_screen_capture_settings,screen_portal::get_screen_session,screen_portal::select_screen_source,screen_portal::disconnect_screen_source];
+    handler(invoke)
+}
+fn application_exit(app:&tauri::AppHandle,event:tauri::RunEvent){
+    if matches!(event,tauri::RunEvent::ExitRequested{..}|tauri::RunEvent::Exit){app.state::<AppState>().life_runtime.shutdown(app);app.state::<AppState>().screen_context.portal.close_all();}
 }
 
 fn setup_tray(app:&mut tauri::App)->Result<(),Box<dyn std::error::Error>>{

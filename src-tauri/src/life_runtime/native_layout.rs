@@ -61,6 +61,7 @@ impl SurfaceCell{
 pub(crate) struct NativeSurfaceProof{owner:Weak<LayoutOwner>,host:Weak<dyn LayoutHost>,route:LayoutRoute,cell:Arc<SurfaceCell>}
 impl std::fmt::Debug for NativeSurfaceProof{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str("NativeSurfaceProof")}}
 impl NativeSurfaceProof{
+    pub(crate) fn owned_by(&self,owner:&Arc<LayoutOwner>)->bool{Weak::ptr_eq(&self.owner,&Arc::downgrade(owner))}
     pub(crate) fn same_surface(&self,other:&Self)->bool{Weak::ptr_eq(&self.owner,&other.owner)&&Arc::ptr_eq(&self.cell,&other.cell)}
     pub(crate) fn preparing_current(&self,now:u64)->bool{self.owner.upgrade().is_some_and(|owner|owner.promotion_current(&self.cell,now))&&self.host.upgrade().is_some_and(|host|host.route_current(&self.route))}
     pub(crate) fn live_current(&self,now:u64)->bool{self.owner.upgrade().is_some_and(|owner|owner.live_current(&self.cell,now))&&self.host.upgrade().is_some_and(|host|host.route_current(&self.route))}

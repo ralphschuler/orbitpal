@@ -1,6 +1,6 @@
 # Native World adapter
 
-This is the private implementation foundation for issue #72. The native IPC handlers are not registered and no automatic scene/action start is exposed yet. The visual Life editor and ordinary session-window startup are already available independently.
+This is the private native renderer implementation for issue #72. Explicit Life start and actual page completion now feed a bounded native reconciliation worker, and its private document/measurement handlers are registered. Native movement and slot actions, mirrors and actual desktop acceptance remain incomplete. The visual Life editor and ordinary session-window startup are available independently.
 
 ## Ownership and lifetime
 
@@ -8,7 +8,11 @@ Tauri owns the actual window constructor, session output lease, document authent
 
 A retained Normal owner becomes Prepared, then Pending calibration, then Live after an accepted measurement and actual promotion. A later genuinely new frame is required before admitting an action. Cancellation is terminal. A revoked owner retains its charge and replacement barrier until actual restoration/retirement finishes. Dropping an asynchronous waiter does not complete cleanup.
 
-Each actual document has one private capability and one cancellation atom. Duplicate Finished callbacks reuse both. Before delivery, native code watches operator/UI/system invalidations and binds the exact original session lease once. Stop followed by Start in the same window cannot reuse that capability. Only deliberate native rotation after old cleanup creates a new capability; no capability appears in URLs, public events or persistent state.
+Physical page completion is distinct from semantic document authentication. A fact-only asset probe pins one mount within its original five seconds and observes a current matching Avatar load for at most sixty seconds from that first pin. Repeated observations do not extend either bound. Same-key Avatar callers join the real pending load, including its eventual failure.
+
+Only a consumed, one-use ready observation can rotate an operational document after exact old cleanup. The original pre-wait operator/UI/system cancellation atom and exact once-bound session lease are transferred unchanged; semantic rotation cannot manufacture a new admission watch. Stop followed by Start in the same window cannot reuse an old capability. Actual reload, replacement and retirement revoke the physical page lineage too. No capability appears in URLs, public events or persistent state.
+
+One lifecycle worker per participant retains its charge until queued Main work really drains and exact physical cleanup completes. Hints and polls do not repeat a failed unchanged context. Genuine session, profile, page, UI/system or dialog transitions may reconcile again after their own clean admission. Preparing, stale and restoring owners block dialog scheduling. An exact healthy Live handoff may allow scheduling, but the generation-owned dialog must still cancel and restore every owner before strict dialog/playback admission succeeds.
 
 Expected layout geometry callbacks are classified independently from semantic operator/profile invalidation. The owner's own move/resize must not cancel its document. Any unclassified/failed geometry observation still invalidates layout evidence.
 
@@ -22,6 +26,6 @@ The frontend pins the full actor/World/stage/config scope from a current parsed 
 
 ## Remaining qualification
 
-Before native World exposure: integrate explicit start/reconciliation, real action and slot admission, exact retained-window command delivery, read-only Studio/OBS mirrors, one shared-object layer owner, and cold-asset readiness. Then exercise two actual Wry actors for sustained new frames, eight-direction movement and distinct reserved arrivals; cancellation/reload/replacement and normal speech handoff must finish through real cleanup.
+Complete real action and slot admission, exact retained-window command delivery, read-only Studio/OBS mirrors and one shared-object layer owner. Exercise two actual Wry actors for sustained new frames, eight-direction movement and distinct reserved arrivals; cancellation/reload/replacement and normal speech handoff must finish through real cleanup.
 
 Controlled owner, Core/Store, transport and renderer tests support the implementation but do not prove desktop visibility, actual window callbacks or compositor output. Native app acceptance, reduced motion, mixed DPI and Windows/Linux/macOS limits must be reported separately.

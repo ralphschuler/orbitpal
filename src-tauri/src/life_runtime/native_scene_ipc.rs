@@ -6,7 +6,7 @@ use super::{
     native_scene::{self, ERROR},
 };
 use crate::world_output::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 #[derive(Deserialize)]
@@ -68,6 +68,8 @@ pub(crate) async fn register_native_world_output(
     app: tauri::AppHandle,
     request: NativeRegistration,
 ) -> Result<RegisteredWorldActor, String> {
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterEntered);
     if request.version != 1 {
         return Err(ERROR.into());
     }
@@ -87,6 +89,8 @@ pub(crate) async fn register_native_world_output(
             state.life_runtime.now(),
         )
         .map_err(|_| ERROR)?;
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterAuthenticated);
     let bot = auth.document().bot();
     let lease = state
         .life_runtime
@@ -98,6 +102,8 @@ pub(crate) async fn register_native_world_output(
         .life_runtime
         .native_scenes
         .begin(constructor, auth.clone())?;
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterMember);
     if fresh {
         native_scene::prepare(app.clone(), member.clone());
     }
@@ -105,6 +111,8 @@ pub(crate) async fn register_native_world_output(
     // releasing it before every await is required by the cleanup handoff.
     let owned = member.owned.lock().map_err(|_| ERROR)?;
     let Some(owned) = owned.as_ref() else {
+        #[cfg(feature="native-world-fixture")]
+        crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterAwaitingLayout);
         return Ok(member.awaiting());
     };
     let mut core = state.life_runtime.core.lock().map_err(|_| ERROR)?;
@@ -116,6 +124,8 @@ pub(crate) async fn register_native_world_output(
         {
             return Err(ERROR.into());
         }
+        #[cfg(feature="native-world-fixture")]
+        crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterAwaitingCalibration);
         return Ok(member.awaiting());
     }
     let source = owned.context.source(
@@ -125,6 +135,8 @@ pub(crate) async fn register_native_world_output(
         owned.framing,
         state.life_runtime.now(),
     )?;
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterSource);
     let context = &source.context;
     let internal = RegisterWorldActor {
         version: 1,
@@ -143,6 +155,15 @@ pub(crate) async fn register_native_world_output(
         .world_outputs
         .register(&internal, source, now)
         .map_err(|_| ERROR)?;
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterRegistryAccepted);
+    #[cfg(feature="native-world-fixture")]
+    match &reply.readiness {
+        Readiness::AwaitingMeasurement { .. } => crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterAwaitingMeasurement),
+        Readiness::Ready { .. } => crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterReady),
+        Readiness::Unavailable { .. } => crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterUnavailable),
+        Readiness::AwaitingLayout => {},
+    }
     let mut binding = member.binding.lock().map_err(|_| ERROR)?;
     let identity = (reply.render_session_id.clone(), reply.binding_sequence);
     if binding.as_ref().is_some_and(|old| old != &identity) {
@@ -150,6 +171,8 @@ pub(crate) async fn register_native_world_output(
         return Err(ERROR.into());
     }
     *binding = Some(identity);
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::RegisterReplyPinned);
     Ok(reply)
 }
 #[tauri::command(async)]
@@ -158,15 +181,23 @@ pub(crate) fn report_native_world_measurement(
     app: tauri::AppHandle,
     request: NativeMeasurement,
 ) -> Result<MeasurementAck, String> {
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::MeasurementEntered);
     let state = app.state::<crate::AppState>();
     let received = state.life_runtime.now();
     let auth = bound(&state, window.label(), request.version, &request.capability)?;
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::MeasurementAuthenticated);
     if !request.report.valid() {
         return Err(ERROR.into());
     }
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::MeasurementValid);
     let member = state.life_runtime.native_scenes.find(&auth).ok_or(ERROR)?;
     let mut lock = member.owned.lock().map_err(|_| ERROR)?;
     let owned = lock.as_mut().ok_or(ERROR)?;
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::MeasurementOwned);
     let mut core = state.life_runtime.core.lock().map_err(|_| ERROR)?;
     if !source_matches(&core, &auth)
         || core
@@ -177,6 +208,8 @@ pub(crate) fn report_native_world_measurement(
     {
         return Err(ERROR.into());
     }
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::MeasurementSourceMatches);
     let source = owned.context.source(
         &core,
         &state,
@@ -184,6 +217,8 @@ pub(crate) fn report_native_world_measurement(
         owned.framing,
         state.life_runtime.now(),
     )?;
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::MeasurementSource);
     let now = state.life_runtime.now();
     if now < received || now - received > FRAME_MS || !member.current() {
         return Err(ERROR.into());
@@ -191,6 +226,8 @@ pub(crate) fn report_native_world_measurement(
     let mut ack = core
         .accept_world_measurement(&request.report, &source, received, now)
         .map_err(|_| ERROR)?;
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::MeasurementRegistryAccepted);
     let admitted = state.life_runtime.now();
     if !member.current() || !owned.route.context_current(&core, admitted) {
         member.cancel();
@@ -199,10 +236,18 @@ pub(crate) fn report_native_world_measurement(
     // No Ready reply can escape while the shared proof remains Pending.
     let _binding_was_previously_ready =
         owned.accepted(request.report.frame_sequence, received, admitted)?;
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::MeasurementPromotionAccepted);
     ack.output = core
         .world_outputs
         .status(auth.document().bot(), state.life_runtime.now())
         .ok_or(ERROR)?;
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_native_ipc_phase(crate::native_world_fixture::FixtureIpcPhase::MeasurementAccepted);
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_frame(&app, member.constructor.bot(),
+        member.constructor.signals(), member.sequence, request.report.frame_sequence,
+        received, admitted, owned.route.live_current(admitted));
     Ok(ack)
 }
 #[tauri::command(async)]
@@ -242,6 +287,10 @@ pub(crate) fn report_native_world_action(
     )?;
     if matches!(ack.outcome, ReportOutcome::Accepted) {
         owned.accepted(frame.frame_sequence, received, state.life_runtime.now())?;
+        #[cfg(feature="native-world-fixture")]
+        crate::native_world_fixture::observe_frame(&app, member.constructor.bot(),
+            member.constructor.signals(), member.sequence, frame.frame_sequence,
+            received, state.life_runtime.now(), owned.route.live_current(state.life_runtime.now()));
     }
     let _ = action_host::poll(
         &mut core,
@@ -317,4 +366,24 @@ pub(crate) fn unregister_native_world_output(
         let _ = native_scene::release_exact(&handle, member).await;
     });
     Ok(removed)
+}
+
+/// Acknowledges an asset fact only. It does not contain World readiness, a
+/// renderer binding or any layout/action capability.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeAssetAck { version: u16, accepted: bool }
+#[tauri::command]
+pub(crate) fn report_native_world_asset(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    request: super::native_document::AssetReadinessReport,
+) -> Result<NativeAssetAck, String> {
+    let state = app.state::<crate::AppState>();
+    state.life_runtime.native_documents.report_probe(window.label(), &request, state.life_runtime.now())
+        .map_err(|_| ERROR)?;
+    // Only the framework label and pinned native probe choose a participant.
+    // This hint cannot authorize a new context or extend the probe deadline.
+    state.life_runtime.native_scene_wake(window.label().strip_prefix("avatar-"));
+    Ok(NativeAssetAck { version: 1, accepted: true })
 }

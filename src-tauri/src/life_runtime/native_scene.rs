@@ -315,6 +315,28 @@ impl NativeScenes {
             })
             .unwrap_or_default()
     }
+    /// The asset receipt is one-use and belongs to the exact physical page,
+    /// original delivery and lease. Holding Scene -> Documents prevents a
+    /// concurrent registration from crossing the last physical cleanup check.
+    pub(super) fn rotate_for_attempt(
+        &self,
+        documents: &super::native_document::Documents,
+        constructor: &ConstructorReceipt,
+        ready: super::native_document::AssetReadyReceipt,
+        now: u64,
+    ) -> Result<super::native_document::DocumentGrant, String> {
+        let state = self.lock()?;
+        if !constructor.lease_current() || !ready.current(now)
+            || ready.loaded().bot() != constructor.bot()
+            || !Arc::ptr_eq(ready.loaded().signals(), constructor.signals())
+            || !Arc::ptr_eq(&ready.lease_cancel(), &constructor.lease_cancel())
+            || state.members.get(constructor.bot()).is_some_and(|m| {
+                !m.cleanup_released() || m.current() || m.preparing.load(Ordering::SeqCst)
+                    || m.owned.lock().map(|owned| owned.is_some()).unwrap_or(true)
+            })
+        { return Err(ERROR.into()); }
+        documents.rotate_for_attempt(ready, now).map_err(|_| ERROR.into())
+    }
     /// Serializes the final idle check with native registration. Documents has
     /// no callback into Scene/Core, so this short Scene -> Documents order is
     /// independent of the Owned -> Core -> World -> Store execution path.
@@ -492,6 +514,9 @@ async fn prepare_inner(app: &tauri::AppHandle, member: &Arc<NativeMember>) -> Re
         live: None,
         observed_ready: false,
     });
+    #[cfg(feature="native-world-fixture")]
+    crate::native_world_fixture::observe_prepared(app, member.constructor.bot(),
+        member.constructor.signals(), member.sequence, member.auth.normal_warm_frame_sequence());
     Ok(())
 }
 
@@ -529,6 +554,14 @@ pub(super) async fn release_exact(
             if let Ok(mut stored) = exact.release_result.lock() {
                 *stored = Some(result);
             }
+            #[cfg(feature="native-world-fixture")]
+            crate::native_world_fixture::observe_cleanup(&handle, exact.constructor.bot(),
+                exact.constructor.signals(), exact.sequence, match result {
+                    NativeLayoutRestoreOutcome::Restored => crate::native_world_fixture::FixtureRestore::Restored,
+                    NativeLayoutRestoreOutcome::Retired => crate::native_world_fixture::FixtureRestore::Retired,
+                    NativeLayoutRestoreOutcome::ReleasedWithoutGeometry => crate::native_world_fixture::FixtureRestore::WithoutGeometry,
+                    NativeLayoutRestoreOutcome::GuardedUnavailable => crate::native_world_fixture::FixtureRestore::Guarded,
+                });
             exact.done.notify_waiters();
         });
     }
@@ -607,5 +640,66 @@ async fn revoke_view(app: &tauri::AppHandle, member: Arc<NativeMember>) {
         .is_ok()
     {
         let _ = tokio::time::timeout(Duration::from_secs(1), rx).await;
+    }
+}
+
+/// A scheduling hint built only from an actually idle, fresh native renderer.
+/// It authorizes no dialog or playback: the generation turn must still cancel
+/// and restore every owner before strict PresentationHub::admit_dialog succeeds.
+pub(crate) struct NativeDialogueHandoff { route: NativeRouteProof }
+impl NativeDialogueHandoff {
+    pub(crate) fn matches_owner(&self, owner: &Arc<crate::overlay_presentation::LayoutOwner>, now: u64) -> bool {
+        self.route.atoms_current() && self.route.surface.owned_by(owner)
+            && self.route.surface.live_current(now) && !owner.in_flight()
+    }
+}
+pub(super) fn blocks_dialog_scheduling(app: &tauri::AppHandle) -> bool {
+    let state = app.state::<crate::AppState>();
+    let mut receipts = Vec::new();
+    for member in state.life_runtime.native_scenes.members(None) {
+        // Never take Owned after Core: the measurement path owns Owned -> Core.
+        let candidate = member.owned.lock().ok().and_then(|owned| owned.as_ref()
+            .filter(|o| o.observed_ready && member.current() && o.route.live_current(state.life_runtime.now()))
+            .map(|o| (o.context.clone(), o.route.clone())));
+        let Some((context, route)) = candidate else { continue; };
+        if !state.life_runtime.session_outputs.constructor_current(&member.constructor) { continue; }
+        let Ok(core) = state.life_runtime.core.lock() else { return true; };
+        if core.local_actions_busy() || !context.current(&core, &state, state.life_runtime.now())
+            || !member.current() || !route.live_current(state.life_runtime.now())
+        { continue; }
+        receipts.push(NativeDialogueHandoff { route });
+    }
+    state.presentation.blocks_dialog_scheduling(&receipts, state.life_runtime.now())
+}
+
+/// Read-only observation pairing for this nonshipping fixture's synchronous
+/// main-window Stop IPC. No receipt may stop, restore or acknowledge anything.
+#[cfg(feature="native-world-fixture")]
+pub(crate) struct FixtureStopReceipt { member: Arc<NativeMember>, session: SessionStamp }
+#[cfg(feature="native-world-fixture")]
+pub(crate) fn fixture_stop_receipts(app: &tauri::AppHandle) -> Vec<FixtureStopReceipt> {
+    let state=app.state::<crate::AppState>();
+    state.life_runtime.native_scenes.members(None).into_iter().filter_map(|member| {
+        if member.cleanup_released() || !state.life_runtime.session_outputs.constructor_current(&member.constructor) { return None; }
+        let owned=member.owned.lock().ok()?;
+        let surface=owned.as_ref()?;
+        let core=state.life_runtime.core.lock().ok()?;
+        let current=core.sessions.get(member.constructor.bot())?;
+        let stamp=SessionStamp::new(crate::life_domain::ActorId::new(member.constructor.bot()).ok()?,
+            &current.session_id, current.revision).ok()?;
+        if surface.route.session != stamp { return None; }
+        Some(FixtureStopReceipt { member: member.clone(), session: stamp })
+    }).collect()
+}
+#[cfg(feature="native-world-fixture")]
+pub(crate) fn observe_fixture_stopped(app: &tauri::AppHandle, receipts: Vec<FixtureStopReceipt>) {
+    let state=app.state::<crate::AppState>();
+    for receipt in receipts {
+        let stopped=state.life_runtime.core.lock().is_ok_and(|core|core.sessions
+            .get(receipt.member.constructor.bot()).is_none_or(|session|
+                SessionStamp::new(receipt.session.actor_id().clone(), &session.session_id, session.revision)
+                    .is_ok_and(|stamp| stamp != receipt.session)));
+        if stopped { crate::native_world_fixture::observe_stop(app,
+            receipt.member.constructor.bot(), receipt.member.constructor.signals(), receipt.member.sequence); }
     }
 }

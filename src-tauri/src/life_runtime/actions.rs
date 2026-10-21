@@ -311,6 +311,7 @@ impl LifeRuntime {
         if origin.autonomous()&&self.core.lock().map_err(|_|action_host::UNAVAILABLE)?.local_actions_busy(){
             return Err("Bitte die lokale Lebensaktion vor der automatischen Antwort beenden.".into());
         }
+        self.native_scene_dialog_started();
         self.outputs.bot(None);
         super::native_scene::quiesce(app,None).await?;
         app.state::<crate::AppState>().presentation.admit_dialog()

@@ -169,6 +169,7 @@ export class AvatarStage {
   private disposed = false;
   private asset = '';
   private assetKey = '';
+  private assetLoad?: Promise<void>;
   private emoteReady = false;
   private loadedEmoteBinding = '';
   private motionAbort?: AbortController;
@@ -296,13 +297,26 @@ export class AvatarStage {
     }
   }
 
-  async loadAsset(url?: string, motions: readonly MotionAsset[] = [], outputUrl = '', botId = ''): Promise<void> {
+  loadAsset(url?: string, motions: readonly MotionAsset[] = [], outputUrl = '', botId = ''): Promise<void> {
+    if (this.disposed) return Promise.reject(presentationAbortError());
     const next = url || '';
     const emoteBinding = JSON.stringify(avatarBinding(this.options.profile));
     const key = JSON.stringify([next,botId,motions,outputUrl,emoteBinding]);
-    if (key === this.assetKey) return;
+    if (key === this.assetKey && this.assetLoad) return this.assetLoad;
     if(this.assetKey&&this.motionSource==='world')this.cancelWorld('asset_unavailable');
     this.assetKey = key;
+    // Install the completion before starting work: a same-key subscriber must
+    // join the real load, including its failure, rather than observe loading as
+    // a completed request. Keep the settled result until the key changes.
+    let resolve!: () => void;
+    let reject!: (error: unknown) => void;
+    const completion = new Promise<void>((done, failed) => { resolve = done; reject = failed; });
+    this.assetLoad = completion;
+    void this.loadAssetRequest(next,motions,outputUrl,botId,emoteBinding).then(resolve,reject);
+    return completion;
+  }
+
+  private async loadAssetRequest(next: string, motions: readonly MotionAsset[], outputUrl: string, botId: string, emoteBinding: string): Promise<void> {
     this.emoteReady = false;
     this.asset = next;
     this.presentation.reset();

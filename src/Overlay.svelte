@@ -6,24 +6,26 @@
   import Avatar from './components/Avatar.svelte';
   import { PresentationVersions, type PresentationSnapshot } from './lib/output-presentation';
   import { captionPlacement } from './lib/desktop-motion';
-  import type { DesktopAnchor } from './lib/avatar';
+  import type { AvatarModelInfo,DesktopAnchor } from './lib/avatar';
   import { AutopilotRuntimeVersions, type AutopilotRuntime } from './lib/autopilot-runtime';
   import { SpeechPlayer } from './lib/audio';
   import { EmoteSequence, emoteDurationMilliseconds, emoteSequenceMilliseconds, type EmotePayload } from './lib/presentation';
   import { PresentationLeases, type PresentationTicket } from './lib/presentation-leases';
-  import { presentAdmittedEmote } from './lib/emote-capabilities';
+  import { avatarBinding,presentAdmittedEmote } from './lib/emote-capabilities';
   import { EmoteAudioPlayer } from './lib/emote-audio';
   import { foregroundSoundPlaying, SoundPlaybackReports, type SoundActivity } from './lib/sound-playback';
   import { SubtitleLifetime } from './lib/subtitles';
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
   import { NativeWorldOutput,type NativeWorldPort,type NativeWorldView } from './lib/native-world-output';
   import {NativeWorldSnapshots} from './lib/native-world-snapshots';
+  import {NativeWorldReadiness} from './lib/native-world-readiness';
   import type {BindingStamp} from './lib/world-output';
 
   type SpeechEvent = { presentationOutput?:'studio'|'overlay'|'obs';presentationRouteId?:string|null;kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
   type PlaybackJob = { event: SpeechEvent; started: boolean; finished: boolean; reporting: Promise<void>; controller: AbortController; presentation?: PresentationTicket; visualEndAt: number; emoteRevision: number };
   let avatar = $state<NativeWorldPort&{preparePresentation:(signal:AbortSignal)=>Promise<()=>void>;canPresent:(event:EmotePayload)=>boolean;present:(event:EmotePayload)=>boolean}>();
   let nativeWorld:NativeWorldOutput|undefined;
+  let nativeReadiness:NativeWorldReadiness|undefined;
   let nativeWorldView=$state<NativeWorldView>({phase:'normal',exposed:false,covered:false});
   let nativeWorldSeen=$state(false);
   let nativeSnapshots:NativeWorldSnapshots|undefined;
@@ -40,12 +42,19 @@
   let profile = $state<any>(cloneDefaults());
   let lifeOutput=$state<LifeOutput>();
   const lifeOutputVersions=new LifeOutputVersions();
-  function acceptLifeOutput(value:unknown){try{const next=lifeOutputVersions.accept(value,botId);if(next){if(lifeOutput?.routeId&&(lifeOutput.routeId!==next.routeId||next.state!=='visible')){nativeWorld?.revoke();cancelCurrent();}if(next.state==='inactive')nativeWorldSeen=false;lifeOutput=next;}}catch{nativeWorld?.revoke();connectionFailure='Die Desktop-Ausgabe konnte nicht bestätigt werden.';}}
+  function acceptLifeOutput(value:unknown){try{const next=lifeOutputVersions.accept(value,botId);if(next){if(lifeOutput?.routeId&&(lifeOutput.routeId!==next.routeId||next.state!=='visible')){nativeReadiness?.revoke();nativeWorld?.revoke();cancelCurrent();}if(next.state==='inactive')nativeWorldSeen=false;lifeOutput=next;}}catch{nativeReadiness?.revoke();nativeWorld?.revoke();connectionFailure='Die Desktop-Ausgabe konnte nicht bestätigt werden.';}}
   const outputEnabled=$derived(lifeOutput&&lifeOutput.state!=='inactive'?native&&lifeOutput.state==='visible':profile.output.mode===(native?'overlay':'obs'));
   let presentation=$state<PresentationSnapshot>();
   const presentationVersions=new PresentationVersions();
   function acceptPresentation(value:unknown){if(presentationVersions.accept(value,botId))presentation=value;}
   const renderProfile=$derived(presentation?{...profile,avatar:{...profile.avatar,scale:presentation.scale}}:profile);
+  // Capture at callback creation, rather than relabel an old callback with a
+  // newer profile. Avatar independently fences assetRequest/dispose and the
+  // ready result carries its actual loaded avatarBinding as a second check.
+  const observedModel=$derived.by(()=>{
+    const binding=avatarBinding(renderProfile);
+    return (info:AvatarModelInfo)=>nativeReadiness?.model(binding,info);
+  });
   const desktop=$derived(native&&presentation?.desktop.active?presentation.desktop:undefined);
   let anchor=$state<DesktopAnchor>();
   let captionWidth=$state(320),captionHeight=$state(80);
@@ -91,7 +100,7 @@
   async function prepareFigure(signal: AbortSignal): Promise<() => void> {
     // Native has already authorized/restored this speech route. The local
     // barrier must not depend on delayed evalRevoke arriving before speech.
-    nativeWorld?.revoke();
+    nativeReadiness?.revoke();nativeWorld?.revoke();
     await tick();
     if (disposed || signal.aborted) throw new DOMException('Die Figurenpräsentation wurde abgebrochen.', 'AbortError');
     if (!avatar) throw new Error('Die Figur ist nicht für die Ausgabe verfügbar.');
@@ -319,6 +328,7 @@
     if(event.kind==='world-state'){acceptNativeWorld(event.world);return;}
     if(event.kind==='presentation'){acceptPresentation(event);return;}
     if (event.kind === 'profile') {
+      nativeReadiness?.profileChanged();
       nativeWorld?.revoke();
       cancelCurrent();
       botId ||= event.profile.id;
@@ -336,7 +346,7 @@
       return;
     }
     if (event.kind === 'cancel-speech') { if (current?.event.id === event.id) cancelCurrent(); return; }
-    if (event.kind === 'stop') { nativeWorld?.revoke();++runtimeRevision; autopilot = undefined; cancelCurrent(); failure = ''; failureDetail = ''; return; }
+    if (event.kind === 'stop') { nativeReadiness?.revoke();nativeWorld?.revoke();++runtimeRevision; autopilot = undefined; cancelCurrent(); failure = ''; failureDetail = ''; return; }
     if (event.kind === 'error') { subtitles.cancel(); connectionFailure = event.text || 'Die Verbindung zur App ist nicht verfügbar.'; return; }
     if (event.kind !== 'speech' || !event.id || receivedIds.has(event.id) || !speechRouteCurrent(event)) return;
     receivedIds.add(event.id);
@@ -371,6 +381,8 @@
     const soundHeartbeat=window.setInterval(()=>{if(soundPlaying&&!disposed)reportCombinedSound();},4000);
     const cleanup: (() => void)[] = [];
     if (native) {
+      nativeReadiness=new NativeWorldReadiness({invoke:call,current:()=>!disposed,
+        binding:()=>profileLoaded&&profile.id===botId?avatarBinding(renderProfile):null});
       nativeSnapshots=new NativeWorldSnapshots({
         read:async actorId=>(await call('get_app_state',{botId:actorId})).world,
         current:(scope,signal)=>!disposed&&!signal.aborted&&profileLoaded&&botId===scope.actorId
@@ -408,17 +420,20 @@
         if (runtimeRevision === initialRuntimeRevision) { const runtime=(state.autopilot || []).find((entry:any) => entry.botId === botId); if(runtime)acceptAutopilot(runtime); }
         const url = new URL(state.overlayUrl); url.searchParams.set('bot', botId); overlayUrl = url.toString();
       }).catch(() => { if (!disposed) connectionFailure = 'Charakterprofil konnte nicht geladen werden.'; });
-      const target=window as Window&{__orbitpalNativeWorldBootstrap?:(auth:unknown)=>void;__orbitpalNativeWorldRevoke?:()=>void};
+      const target=window as Window&{__orbitpalNativeWorldBootstrap?:(auth:unknown)=>void;__orbitpalNativeWorldProbe?:(probe:unknown)=>void;__orbitpalNativeWorldRevoke?:()=>void};
       const bootstrap=(auth:unknown)=>{if(window===window.top&&!disposed)nativeWorld?.bootstrap(auth);};
-      const revoke=()=>nativeWorld?.revoke();
+      const probe=(value:unknown)=>{if(window===window.top&&!disposed)nativeReadiness?.probe(value);};
+      const revoke=()=>{nativeReadiness?.revoke();nativeWorld?.revoke();};
       if(window===window.top){
         Object.defineProperty(target,'__orbitpalNativeWorldBootstrap',{value:bootstrap,configurable:true});
+        Object.defineProperty(target,'__orbitpalNativeWorldProbe',{value:probe,configurable:true});
         Object.defineProperty(target,'__orbitpalNativeWorldRevoke',{value:revoke,configurable:true});
         cleanup.push(()=>{if(target.__orbitpalNativeWorldBootstrap===bootstrap)delete target.__orbitpalNativeWorldBootstrap;
+          if(target.__orbitpalNativeWorldProbe===probe)delete target.__orbitpalNativeWorldProbe;
           if(target.__orbitpalNativeWorldRevoke===revoke)delete target.__orbitpalNativeWorldRevoke;});
       }
       void subscribe('cohost://world-action',event=>nativeWorld?.receive(event));
-      const hidden=()=>{if(document.visibilityState==='hidden')nativeWorld?.revoke();};
+      const hidden=()=>{if(document.visibilityState==='hidden')revoke();};
       document.addEventListener('visibilitychange',hidden);window.addEventListener('pagehide',revoke);
       cleanup.push(()=>{document.removeEventListener('visibilitychange',hidden);window.removeEventListener('pagehide',revoke);});
     } else {
@@ -434,7 +449,7 @@
       cleanup.push(() => events.close());
     }
     return () => {
-      disposed = true;nativeSnapshots?.dispose();nativeWorld?.dispose();window.clearInterval(soundHeartbeat);cancelCurrent(); subtitles.destroy(); cleanup.forEach((close) => close()); player.destroy(); emoteAudio.destroy();
+      disposed = true;nativeReadiness?.dispose();nativeSnapshots?.dispose();nativeWorld?.dispose();window.clearInterval(soundHeartbeat);cancelCurrent(); subtitles.destroy(); cleanup.forEach((close) => close()); player.destroy(); emoteAudio.destroy();
       document.documentElement.classList.remove('overlay-document');
     };
   });
@@ -448,7 +463,7 @@
     worldMirrorPosition={nativeWorldView.position}
     onWorldPrepared={identity=>void nativeWorld?.prepared(identity)} onWorldMeasurement={report=>nativeWorld?.measurement(report)}
     onWorldFrame={frame=>nativeWorld?.frame(frame)} onWorldUnavailable={(identity,reason)=>nativeWorld?.unavailable(identity,reason)}
-    onDesktopAnchor={value=>anchor=value} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+    onModelLoaded={observedModel} onDesktopAnchor={value=>anchor=value} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
   {#if nativeWorldView.covered}<div class="native-world-preparing" aria-hidden="true"></div>{/if}
   {#if native && !worldActive && !desktop?.active && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>

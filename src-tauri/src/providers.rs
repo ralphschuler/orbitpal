@@ -13,6 +13,7 @@ const MAX_AUDIO: usize = 25 * 1024 * 1024;
 pub struct Completion { pub text: String, pub tool_calls: Vec<Value> }
 
 fn client() -> Result<Client, String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     Client::builder().retry(reqwest::retry::never()).redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(180)).build().map_err(|_| "HTTP-Client konnte nicht erstellt werden.".into())
 }
@@ -196,6 +197,7 @@ fn dialog_cost(config:&Value,messages:&[Value])->Result<crate::usage_budget::Cos
     Ok(if matches!(field(config,"provider","compatible"),"codex"|"claude-code"){crate::usage_budget::Cost::cli_dialog(count,bytes)}else{crate::usage_budget::Cost::dialog(count,bytes,token_upper(config))})
 }
 pub async fn complete(config: &Value, messages: Vec<Value>, tools: Vec<Value>, api_key: Option<String>, app: tauri::AppHandle, turn_id: String, cancel: Arc<AtomicBool>, usage:(&crate::storage::Store,&crate::usage_budget::Context),authority:&crate::life_runtime::cloud::CloudAuthority) -> Result<Completion, String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen.".into());}
     let cost=dialog_cost(config,&messages)?;
     let (store,context)=usage;
@@ -342,6 +344,7 @@ pub async fn models(config: &Value, api_key: Option<String>) -> Result<Vec<Strin
 }
 
 pub async fn synthesize(config: &Value, text: &str, api_key: Option<String>) -> Result<Value, String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     if text.trim().is_empty() || text.len() > 20_000 { return Err("Sprachtext ist leer oder zu lang (maximal 20.000 Bytes).".into()); }
     let provider = field(config, "provider", "system");
     if provider == "system" { return Err("Systemstimme wird in der Oberfläche abgespielt.".into()); }
@@ -385,6 +388,7 @@ fn validated_usage(value:&Value)->Option<u64>{
 }
 
 pub async fn transcribe(config: &Value, audio_base64: &str, mime_type: &str, api_key: Option<String>) -> Result<String, String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     crate::transcription::transcribe(config,audio_base64,mime_type,api_key).await
 }
 

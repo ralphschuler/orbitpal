@@ -51,6 +51,7 @@ fn require_current_destination(store:&Store,config:&Value,bot_id:&str,recall:boo
     if current["enabled"].as_bool()!=Some(true)||current[if recall{"autoRecall"}else{"autoRetain"}].as_bool()==Some(false)||!same_destination(config,current,bot_id){return Err("Antwort abgebrochen".into());}Ok(())
 }
 async fn request(store:&Store,config:&Value,bot_id:&str,recall:bool,body:Value,usage:Option<&crate::usage_budget::Context>,cancel:Option<Arc<AtomicBool>>,authority:Option<&crate::life_runtime::cloud::CloudAuthority>)->Result<Value,String>{
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
     validate_config(config)?;
     if cancel.as_ref().is_some_and(|flag|flag.load(Ordering::Relaxed)){return Err("Antwort abgebrochen".into());}
     if let Some(context)=usage{store.preflight_usage_cost(context,crate::usage_budget::Cost::memory(!recall))?;}

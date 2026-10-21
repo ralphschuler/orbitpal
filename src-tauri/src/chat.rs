@@ -34,6 +34,7 @@ async fn sleep(cancel: &AtomicBool, duration: Duration) -> bool {
 
 impl ChatHub {
     pub async fn connect(&self, platform: &str, profile: &Value, secret: Option<String>, write_secret: Option<String>, app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
         if !matches!(platform, "twitch" | "youtube") { return Err("Unbekannte Chatplattform.".into()); }
         let config = profile["chat"][platform].clone();
         let secret = secret.filter(|s| !s.trim().is_empty()).ok_or_else(|| if platform == "twitch" { "Bitte einen Twitch-Benutzertoken mit user:read:chat speichern.".to_string() } else { "Bitte einen YouTube-Data-API-Key speichern.".to_string() })?;
@@ -74,6 +75,7 @@ impl ChatHub {
     /// Called only once, after the admitted speech job actually starts playing.
     /// All destination fields and the token come from its original connection.
     pub async fn send(&self, route:&ChatRoute, store:&crate::storage::Store, message:&str, job_cancel:&AtomicBool)->Result<(),String> {
+    #[cfg(feature="native-world-fixture")] crate::native_world_fixture::deny_outbound()?;
         let (context,cancel)={
             let tasks=self.tasks.lock().await;
             let running=tasks.get(route.platform()).filter(|running|!running.task.is_finished()).ok_or("Chatantwort benötigt ihre ursprüngliche aktive Verbindung.")?;

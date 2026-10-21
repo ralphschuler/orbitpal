@@ -209,6 +209,20 @@ impl SessionOutputs {
             Some(_) => Err(ERROR.into()),
         }
     }
+    /// Native-only snapshot of the exact currently visible session constructors.
+    /// This observes retained identity only; actual GUI visibility is checked on
+    /// Main by delivery and layout, and cannot be inferred from this snapshot.
+    pub(super) fn active_constructors(&self) -> Result<Vec<ConstructorReceipt>, String> {
+        let state = self.lock()?;
+        let mut receipts = state.entries.values().filter(|entry|
+            entry.lease.current() && entry.state == "visible" && !entry.opening && !entry.cleanup_queued)
+            .filter_map(|entry| entry.target.as_ref().map(|target| ConstructorReceipt {
+                lease: entry.lease.clone(), window: target.window.clone(), signals: target.signals.clone(),
+                created_for_session: target.created,
+            })).collect::<Vec<_>>();
+        receipts.sort_by(|a, b| a.bot().cmp(b.bot()));
+        Ok(receipts)
+    }
     pub(super) fn constructor_for(&self, lease: &Lease) -> Result<ConstructorReceipt, String> {
         let state = self.lock()?;
         let entry = state.entries.get(&lease.bot).filter(|entry|

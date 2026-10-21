@@ -20,6 +20,8 @@ mod native_document;
 pub(crate) mod native_scene_document;
 #[path = "life_runtime/native_scene_ipc.rs"]
 pub(crate) mod native_scene_ipc;
+#[path = "life_runtime/native_scene_lifecycle.rs"]
+mod native_scene_lifecycle;
 #[path = "life_runtime/action_state.rs"]
 pub(crate) mod action_state;
 #[path = "life_runtime/actions.rs"]
@@ -178,6 +180,7 @@ pub struct LifeRuntime {
     pub(crate) session_outputs: session_output::SessionOutputs,
     native_scenes: native_scene::NativeScenes,
     native_documents: native_document::Documents,
+    native_lifecycle: native_scene_lifecycle::Lifecycle,
     core: Mutex<Core>,
     monitor: OnceLock<NativeMonitor>,
     started: Instant,
@@ -192,6 +195,7 @@ impl Default for LifeRuntime {
             session_outputs: session_output::SessionOutputs::default(),
             native_scenes: native_scene::NativeScenes::default(),
             native_documents: native_document::Documents::default(),
+            native_lifecycle: native_scene_lifecycle::Lifecycle::default(),
             core: Mutex::new(Core::new(SystemSnapshot {
                 state: Availability::Unknown,
                 reason: SystemReason::Initializing,
@@ -206,6 +210,11 @@ impl Default for LifeRuntime {
     }
 }
 impl LifeRuntime {
+    /// A coalesced native wake hint. It grants neither a session nor a retry.
+    pub(crate) fn native_scene_wake(&self, bot: Option<&str>) { self.native_lifecycle.wake(bot); }
+    /// Only an actual generation-owned dialog calls this before quiescing.
+    pub(crate) fn native_scene_dialog_started(&self) { self.native_lifecycle.dialog_started(); }
+    pub(crate) fn native_scene_status(&self) -> Vec<native_scene_lifecycle::Projection> { self.native_lifecycle.snapshot(self.now()) }
     pub(crate) fn native_document_route_revoked(&self,bot:&str,signals:&Arc<crate::window_signals::WindowSignals>){
         self.native_routes.revoke_document(bot,signals,&self.outputs);
     }
@@ -575,6 +584,7 @@ impl LifeRuntime {
     }
     pub fn shutdown(&self, app: &tauri::AppHandle) {
         self.stopping.store(true, Ordering::SeqCst);
+        self.native_lifecycle.cancel();
         self.stop(app, None);
         if let Ok(mut core) = self.core.lock() {
             core.shutdown(self.now());
@@ -725,6 +735,7 @@ impl LifeRuntime {
         let _ = self.with_world(app, |world, store, sessions, now| {
             world.synchronize(store, &sessions, topology, now)
         });
+        self.native_lifecycle.pulse(app);
         self.poll_actions(app);
         let pending = self.core.lock().ok().and_then(|core| core.pending());
         if let Some((claim, generating)) = pending {
@@ -759,12 +770,13 @@ impl LifeRuntime {
                 || state.overlay.has_any_pending_speech()
                 // Same app-wide presentation/generation barrier as pending
                 // speech: not a new persisted per-bot autonomy mode.
-                || state.presentation.any_native_work()
+                || native_scene::blocks_dialog_scheduling(app)
                 || state.generation.try_lock().is_err();
             let claim = self.core.lock().ok().and_then(|mut core| {
                 core.claim(self.now(), blocked, uuid::Uuid::new_v4().to_string())
             });
             if let Some(claim) = claim {
+                self.native_lifecycle.claim_started();
                 if monitor.gate.watch(&claim.cancel).is_none() {
                     if let Ok(mut core) = self.core.lock() {
                         core.finish(&claim, self.now());
@@ -1157,6 +1169,7 @@ async fn finish_start(
         drop(core);
         state.life_runtime.session_outputs.publish(app,bot);
         publish(app);
+        state.life_runtime.native_scene_wake(Some(bot));
         return state.life_runtime.snapshot_for(&state.autopilot);
     }
     if let Some(previous) = core.take_session(bot, state.life_runtime.now()) {
@@ -1200,6 +1213,7 @@ async fn finish_start(
     state.life_runtime.session_outputs.publish(app,bot);
     crate::autopilot::publish(app, runtime);
     publish(app);
+    state.life_runtime.native_scene_wake(Some(bot));
     state.life_runtime.snapshot_for(&state.autopilot)
 }
 

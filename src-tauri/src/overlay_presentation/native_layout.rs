@@ -126,6 +126,15 @@ impl NativePresentations {
     pub(super) fn handle(&self,bot:&str)->Result<LayoutHandle,LayoutError>{self.lock()?.records.iter().find(|r|r.bot==bot&&r.current.load(Ordering::SeqCst)&&!r.destroyed.load(Ordering::SeqCst)).cloned().map(LayoutHandle).ok_or(LayoutError::Stale)}
     pub(super) fn guarded(&self,bot:&str)->bool{self.lock().map(|state|state.records.iter().any(|r|r.bot==bot&&r.current.load(Ordering::SeqCst)&&r.owner.lock().map(|o|o.is_some()).unwrap_or(true))).unwrap_or(true)}
     pub(super) fn any_work(&self)->bool{self.lock().map(|state|state.records.iter().any(|r|r.owner.lock().map(|o|o.is_some()).unwrap_or(true))).unwrap_or(true)}
+    /// Healthy Live owners may yield to a future dialog scheduling attempt.
+    /// Every physical owner must have its exact native receipt; all preparing,
+    /// restoring, unowned or stale states still block. This never releases work.
+    pub(super) fn blocks_dialog_scheduling(&self,handoffs:&[crate::life_runtime::native_scene::NativeDialogueHandoff],now:u64)->bool{
+        self.lock().map(|state|state.records.iter().any(|record|{
+            record.owner.lock().map(|slot|slot.as_ref().is_some_and(|owner|
+                !handoffs.iter().any(|receipt|receipt.matches_owner(owner,now)))).unwrap_or(true)
+        })).unwrap_or(true)
+    }
     pub(super) fn reserve(&self,handle:&LayoutHandle,sample:&LayoutSample,issued:u64,deadline:u64,cancel:Arc<AtomicBool>)->Result<Arc<LayoutOwner>,LayoutError>{
         let state=self.lock()?;
         if state.serial>=crate::life_domain::MAX_COUNTER{for record in &state.records{Self::cancel_record(record);}return Err(LayoutError::Unavailable);}

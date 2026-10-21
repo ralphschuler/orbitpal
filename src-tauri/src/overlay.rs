@@ -545,6 +545,7 @@ fn open_window(app:&tauri::AppHandle,bot_id:&str,profile:Value,session:Option<&c
     let window=tauri::WebviewWindowBuilder::new(app,&label,tauri::WebviewUrl::App(format!("index.html?overlay=1&bot={bot_id}").into()))
         .on_navigation(move|url|crate::life_runtime::native_scene_document::navigation(&navigation_app,&navigation_policy,&navigation_signals,url))
         .on_page_load(move|window,payload|crate::life_runtime::native_scene_document::page_load(&window,&policy,&load_signals,payload))
+        .incognito(cfg!(feature="native-world-fixture"))
         .title(format!("OrbitPal · {}",profile["name"].as_str().unwrap_or("Charakter"))).inner_size(520.,720.).transparent(true).decorations(false).shadow(false).resizable(true).visible(false)
         .always_on_top(profile["output"]["alwaysOnTop"].as_bool().unwrap_or(false)).build().map_err(|error|error.to_string())?;
     let mut constructor_guard=NewWindowGuard{window:window.clone(),handed:false};
@@ -606,6 +607,8 @@ fn open_window(app:&tauri::AppHandle,bot_id:&str,profile:Value,session:Option<&c
         if let tauri::WindowEvent::Destroyed=event{
             crate::life_runtime::native_scene_document::retired(&handle,&bot_id,&signals);
             handle.state::<crate::AppState>().life_runtime.session_outputs.destroyed(&handle,&bot_id,&signals);
+            #[cfg(feature="native-world-fixture")]
+            crate::native_world_fixture::observe_destroyed(&handle,&bot_id,&signals);
             // Setters can dispatch Destroyed inline on Main. Defer cleanup,
             // never wait for the transition's Hub mutex from that callback.
             let app=handle.clone();let bot=bot_id.clone();let instance=signals.clone();

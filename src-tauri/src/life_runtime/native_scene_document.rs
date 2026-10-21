@@ -1,12 +1,12 @@
 //! Actual native document callbacks and bounded ephemeral bootstrap. This
 //! evaluates only a retained constructor; no capability is persisted or logged.
 use super::{
-    native_document::{DocumentError, DocumentGrant},
-    session_output::{ConstructorReceipt, Lease},
+    native_document::{AssetProbeGrant, AssetProbeState, DocumentGrant},
+    native_scene_lifecycle::SceneAttempt,
 };
 use crate::window_signals::WindowSignals;
 use std::{
-    sync::{atomic::Ordering, Arc},
+    sync::Arc,
     time::Duration,
 };
 use tauri::Manager;
@@ -120,6 +120,7 @@ fn cancel_exact(app: &tauri::AppHandle, bot: &str, signals: &Arc<WindowSignals>)
     state
         .life_runtime
         .native_document_route_revoked(bot, signals);
+    state.life_runtime.native_scene_wake(Some(bot));
 }
 pub(crate) fn navigation(
     app: &tauri::AppHandle,
@@ -161,12 +162,14 @@ pub(crate) fn page_load(
             }
         }
         tauri::webview::PageLoadEvent::Finished => {
-            if let Ok(grant) = state.life_runtime.native_documents.finished(
+            if state.life_runtime.native_documents.finished(
                 &policy.bot,
                 signals,
                 state.life_runtime.now(),
-            ) {
-                bootstrap(app.clone(), policy.clone(), grant, false);
+            ).is_ok() {
+                // Finished is a physical document fact. The lifecycle owns the
+                // cold asset probe and issues operational auth only afterward.
+                state.life_runtime.native_scene_wake(Some(&policy.bot));
             }
         }
     }
@@ -182,249 +185,116 @@ pub(crate) fn retired(app: &tauri::AppHandle, bot: &str, signals: &Arc<WindowSig
     }
 }
 
-fn eligible(
+/// Evaluate only the actual retained constructor. The caller retains this
+/// future until the Main job really drains, even after cancellation/deadline;
+/// a local timeout may not free a worker while its old eval is still queued.
+async fn evaluate(
     app: &tauri::AppHandle,
-    policy: &NavigationPolicy,
-    grant: &DocumentGrant,
-    ticket: u64,
-) -> Option<ConstructorReceipt> {
-    let state = app.state::<crate::AppState>();
-    if !grant.proof().current()
-        || !grant.delivery_current()
-        || grant.proof().bot() != policy.bot
-        || state.updater.ensure_idle().is_err()
-        || state.overlay.has_any_pending_speech()
-    {
-        return None;
-    }
-    let _generation = state.generation.try_lock().ok()?;
-    let lease = state
-        .life_runtime
-        .session_outputs
-        .resolve(&policy.bot)
-        .ok()??;
-    let receipt = state
-        .life_runtime
-        .session_outputs
-        .constructor_for(&lease)
-        .ok()?;
-    if !state
-        .life_runtime
-        .session_outputs
-        .constructor_current(&receipt)
-        || !Arc::ptr_eq(receipt.signals(), grant.proof().signals())
-    {
-        return None;
-    }
-    if state.life_runtime.outputs.ticket() != Some(ticket) {
-        return None;
-    }
-    let core = state.life_runtime.core.lock().ok()?;
-    core.local_fence(&policy.bot, state.life_runtime.now())?;
-    drop(core);
-    if state.life_runtime.outputs.ticket() != Some(ticket)
-        || !grant.proof().current()
-        || !grant.delivery_current()
-        || !receipt.lease_current()
-    {
-        return None;
-    }
-    Some(receipt)
-}
-fn bootstrap(
-    app: tauri::AppHandle,
-    policy: NavigationPolicy,
-    grant: DocumentGrant,
-    revoke_first: bool,
-) {
-    // Capture before spawning/waiting for constructor/Core readiness. Later
-    // clear heartbeats cannot turn a cancelled bootstrap into a fresh intent.
-    let state = app.state::<crate::AppState>();
-    let Some(ticket) = state.life_runtime.outputs.ticket() else {
-        return;
-    };
-    // This same cancellation atom belongs to the original Finished/rotate,
-    // including duplicate callbacks. Attach before Core/constructor waits;
-    // neither a retry nor a later clear UI report may rebind a cancelled cap.
-    let delivery = grant.delivery_cancel();
-    if !state.life_runtime.outputs.watch_delivery(
-        ticket,
-        &policy.bot,
-        &format!("avatar-{}", policy.bot),
-        &delivery,
-    ) || state
-        .life_runtime
-        .monitor
-        .get()
-        .and_then(|monitor| monitor.gate.watch(&delivery))
-        .is_none()
-    {
-        delivery.store(true, Ordering::SeqCst);
-        return;
-    }
-    drop(state);
-    tauri::async_runtime::spawn(async move {
-        let Some(deadline) = grant
-            .issued_at()
-            .checked_add(BOOTSTRAP_MS)
-            .filter(|n| *n <= crate::life_domain::MAX_COUNTER)
-        else {
-            return;
-        };
-        let mut first = revoke_first;
-        let mut admitted: Option<ConstructorReceipt> = None;
-        // A finite attempt count also bounds this worker if the monotonic host
-        // clock is unavailable/exhausted. No grant time is refreshed on retry.
-        for _ in 0..100 {
-            let state = app.state::<crate::AppState>();
-            let now = state.life_runtime.now();
-            if now >= deadline
-                || !grant.proof().current()
-                || !grant.delivery_current()
-                || state.life_runtime.outputs.ticket() != Some(ticket)
-            {
-                return;
-            }
-            if state
-                .life_runtime
-                .native_documents
-                .authenticate_bound(&format!("avatar-{}", policy.bot), grant.capability(), now)
-                .is_ok()
-            {
-                return;
-            }
-            if admitted.is_none() {
-                if let Some(receipt) = eligible(&app, &policy, &grant, ticket) {
-                    if state
-                        .life_runtime
-                        .native_documents
-                        .bind_delivery(&grant, delivery.clone(), receipt.lease_cancel())
-                        .is_err()
-                    {
-                        return;
-                    }
-                    admitted = Some(receipt);
-                }
-            }
-            if let Some(receipt) = &admitted {
-                if !receipt.lease_current()
-                    || !state
-                        .life_runtime
-                        .session_outputs
-                        .constructor_current(receipt)
-                    || state.life_runtime.outputs.ticket() != Some(ticket)
-                {
-                    return;
-                }
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                let main = app.clone();
-                let receipt = receipt.clone();
-                let proof = grant.proof();
-                let delivery = delivery.clone();
-                let policy = policy.clone();
-                let revoke = first;
-                let payload =
-                    serde_json::json!({"version":1,"capability":grant.capability()}).to_string();
-                if app
-                    .run_on_main_thread(move || {
-                        let state = main.state::<crate::AppState>();
-                        // These native-only latches/short state observations do not
-                        // acquire Core/World/Store or run caller code under a lock.
-                        let current = state.life_runtime.now() < deadline
-                            && proof.current()
-                            && !delivery.load(Ordering::SeqCst)
-                            && receipt.lease_current()
-                            && state.life_runtime.outputs.ticket() == Some(ticket)
-                            && state
-                                .life_runtime
-                                .session_outputs
-                                .constructor_current(&receipt)
-                            && !state.overlay.has_any_pending_speech()
-                            && state.updater.ensure_idle().is_ok();
-                        let result = if current
-                            && receipt.window().url().is_ok_and(|url| policy.permits(&url))
-                            && receipt.window().is_visible().ok() == Some(true)
-                        {
-                            let revoke = if revoke {
-                                "window.__orbitpalNativeWorldRevoke?.();"
-                            } else {
-                                ""
-                            };
-                            receipt
-                                .window()
-                                .eval(&format!(
-                                    "{revoke}window.__orbitpalNativeWorldBootstrap?.({payload});"
-                                ))
-                                .is_ok()
-                        } else {
-                            false
-                        };
-                        let _ = tx.send(result);
-                    })
-                    .is_err()
-                {
-                    return;
-                }
-                // One queued Main job at a time. A timed-out job still checks
-                // the same original deadline and exact cancellation identities.
-                match tokio::time::timeout(Duration::from_millis((deadline - now).min(250)), rx)
-                    .await
-                {
-                    // Queueing is not delivery. Keep the old-document revoke
-                    // prefix until the retained constructor accepted eval;
-                    // a temporarily unavailable view must retry both steps.
-                    Ok(Ok(true)) => first = false,
-                    Ok(Ok(false)) => (),
-                    _ => return,
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    });
+    attempt: &SceneAttempt,
+    deadline: u64,
+    script: String,
+    document: Option<super::native_document::DocumentProof>,
+) -> Result<bool, String> {
+    if !attempt.current(app) { return Err(ERROR.into()); }
+    let policy = NavigationPolicy::for_app(app, attempt.constructor().bot())?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let main = app.clone();
+    let attempt = attempt.clone();
+    app.run_on_main_thread(move || {
+        let state = main.state::<crate::AppState>();
+        // No Core/World/Store locks or native blocking getter under those locks.
+        // Once the original delivery watch is attached, other actors' owned
+        // geometry must not invalidate it through a global ticket comparison.
+        let receipt = attempt.constructor();
+        let current = state.life_runtime.now() < deadline
+            && attempt.atoms_current()
+            && document.as_ref().is_none_or(|proof| proof.current())
+            && state.life_runtime.session_outputs.constructor_current(receipt)
+            && !state.overlay.has_any_pending_speech()
+            && state.updater.ensure_idle().is_ok()
+            && state.generation.try_lock().is_ok();
+        let result = current
+            && receipt.window().url().is_ok_and(|url| policy.permits(&url))
+            && receipt.window().is_visible().ok() == Some(true)
+            && receipt.window().eval(&script).is_ok();
+        let _ = tx.send(result);
+    }).map_err(|_| ERROR)?;
+    // Deliberately no timeout which would detach this one queued Main job.
+    // The closure itself checks the immutable deadline and original atoms.
+    rx.await.map_err(|_| ERROR.into())
 }
 
-/// Explicit native post-start/post-dialog reconciliation only. Root calls this
-/// after old physical cleanup; it is not an app-start or model-invoked trigger.
-pub(crate) fn kick_for_lease(app: &tauri::AppHandle, lease: &Lease) -> Result<(), String> {
-    let state = app.state::<crate::AppState>();
-    let receipt = state.life_runtime.session_outputs.constructor_for(lease)?;
-    if !state
-        .life_runtime
-        .session_outputs
-        .constructor_current(&receipt)
-    {
-        return Err(ERROR.into());
+/// Cold assets have their own bounded observation phase, before operational
+/// first-auth/D5. The probe is a fact-only token and cannot prepare a layout.
+pub(super) async fn deliver_probe(
+    app: &tauri::AppHandle,
+    attempt: &SceneAttempt,
+    grant: &AssetProbeGrant,
+) -> Result<(), String> {
+    if !grant.loaded().same_loaded(attempt.loaded())
+        || grant.avatar_binding() != attempt.avatar_binding()
+        || !Arc::ptr_eq(&grant.delivery_cancel(), &attempt.cancel())
+    { return Err(ERROR.into()); }
+    let deadline = grant.issued_at().checked_add(BOOTSTRAP_MS)
+        .filter(|n| *n <= crate::life_domain::MAX_COUNTER).ok_or(ERROR)?;
+    let payload = serde_json::json!({"version":1,"probe":grant.probe(),
+        "avatarBinding":grant.avatar_binding()}).to_string();
+    let mut first = true;
+    for _ in 0..100 {
+        let state = app.state::<crate::AppState>();
+        let now = state.life_runtime.now();
+        if !attempt.current(app) { return Err(ERROR.into()); }
+        match state.life_runtime.native_documents.probe_status(grant, now).map_err(|_| ERROR)? {
+            AssetProbeState::Loading | AssetProbeState::Ready => return Ok(()),
+            AssetProbeState::Failed => return Err(ERROR.into()),
+            AssetProbeState::AwaitingMount => (),
+        }
+        if now >= deadline || !grant.current(now) { return Err(ERROR.into()); }
+        let revoke = if first { "window.__orbitpalNativeWorldRevoke?.();" } else { "" };
+        if evaluate(app, attempt, deadline,
+            format!("{revoke}window.__orbitpalNativeWorldProbe?.({payload});"), None).await?
+        { first = false; }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let now = state.life_runtime.now();
-    match state
-        .life_runtime
-        .native_documents
-        .current_grant(receipt.bot(), receipt.signals(), now)
-    {
-        Err(DocumentError::Pending) => return Ok(()), // the actual Finished callback will retry
-        Err(_) => return Err(ERROR.into()),
-        Ok(_) => (),
+    Err(ERROR.into())
+}
+
+/// A genuinely ready asset observation is rotated into this operational grant
+/// by the same worker. Its exact original cancel/lease watches remain attached.
+pub(super) async fn bootstrap_attempt(
+    app: &tauri::AppHandle,
+    attempt: &SceneAttempt,
+    grant: DocumentGrant,
+) -> Result<(), String> {
+    let receipt = attempt.constructor();
+    if grant.proof().bot() != receipt.bot()
+        || !Arc::ptr_eq(grant.proof().signals(), receipt.signals())
+        || !Arc::ptr_eq(&grant.delivery_cancel(), &attempt.cancel())
+    { return Err(ERROR.into()); }
+    let deadline = grant.issued_at().checked_add(BOOTSTRAP_MS)
+        .filter(|n| *n <= crate::life_domain::MAX_COUNTER).ok_or(ERROR)?;
+    let label = receipt.window().label();
+    let payload = serde_json::json!({"version":1,"capability":grant.capability()}).to_string();
+    let mut first = true;
+    for _ in 0..100 {
+        let state = app.state::<crate::AppState>();
+        let now = state.life_runtime.now();
+        if !attempt.current(app) || !grant.proof().current() || !grant.delivery_current() {
+            return Err(ERROR.into());
+        }
+        // Authentication of this exact document, rather than successful queueing
+        // or eval, acknowledges delivery. Own layout generation changes are inert.
+        if state.life_runtime.native_documents.authenticate_bound(label, grant.capability(), now).is_ok() {
+            return Ok(());
+        }
+        if now >= deadline { return Err(ERROR.into()); }
+        let revoke = if first { "window.__orbitpalNativeWorldRevoke?.();" } else { "" };
+        if evaluate(app, attempt, deadline,
+            format!("{revoke}window.__orbitpalNativeWorldBootstrap?.({payload});"), Some(grant.proof())).await?
+        { first = false; }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    if state
-        .life_runtime
-        .native_scenes
-        .members(Some(receipt.bot()))
-        .iter()
-        .any(|member| member.current() && member.constructor.same_constructor(&receipt))
-    {
-        return Ok(());
-    }
-    if state.presentation.native_guarded(receipt.bot()) {
-        return Err(ERROR.into());
-    }
-    let grant = state.life_runtime.native_scenes.rotate_document_if_idle(
-        &state.life_runtime.native_documents,
-        &receipt,
-        now,
-    )?;
-    let policy = NavigationPolicy::for_app(app, receipt.bot())?;
-    bootstrap(app.clone(), policy, grant, true);
-    Ok(())
+    Err(ERROR.into())
 }
 
 #[cfg(test)]

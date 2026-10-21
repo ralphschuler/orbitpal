@@ -89,18 +89,19 @@
     const endpoint = outputUrl;
     if (!renderer) return;
     const request = ++assetRequest;
+    const current = () => !disposed && renderer === stage && request === assetRequest;
     failure = '';
     loading = Boolean(url);
     untrack(() => onModelLoaded?.({ status: 'loading', animations: [], proceduralGestures: [] }));
     renderer.loadAsset(url,JSON.parse(motionKey),endpoint,botId).then(() => {
-      if (request === assetRequest) onModelLoaded?.(renderer.getModelInfo());
+      if (current()) onModelLoaded?.(renderer.getModelInfo());
     }).catch((error) => {
-      if (request === assetRequest) {
+      if (current()) {
         failure = error instanceof Error ? error.message : String(error);
         onModelLoaded?.({ status: 'error', animations: [], proceduralGestures: [], error: failure });
       }
     }).finally(() => {
-      if (request === assetRequest) loading = false;
+      if (current()) loading = false;
     });
   });
 </script>
