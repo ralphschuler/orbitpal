@@ -1050,3 +1050,21 @@ fn maximum_saved_care_duration_has_matching_bounded_policy_and_capabilities() {
     assert!(PreparedPlan::care_visual_minimum(Activity::Play,&goal(Activity::Play),&invalid).is_err());
     assert_eq!(before,initial("nova"));
 }
+
+#[test]
+fn admitted_execution_deadline_reads_the_frozen_care_job_without_refreshing_it() {
+    for minimum in [60_000,600_000] {
+        let config=crate::life_self_care::CareConfig{minimum_duration_ms:minimum,..Default::default()};
+        let mut rig=Rig::configured(Activity::Play,Presentation::Visual,Some(&config));
+        let maximum=minimum+15_000;
+        assert_eq!(rig.executor.execution_deadline(&rig.authority,&rig.key).unwrap(),maximum+RECEIPT_TIMEOUT_MS);
+        assert_eq!(rig.executor.execution_deadline(&authority("blue"),&rig.key),Err(ActionError::WrongAuthority));
+        rig.start();
+        assert_eq!(rig.executor.execution_deadline(&rig.authority,&rig.key).unwrap(),maximum+2);
+        assert_eq!(rig.executor.execution_deadline(&rig.authority,&rig.key).unwrap(),maximum+2,"readback is not a new clock/deadline");
+        rig.executor.fail(&rig.authority,&rig.key,Failure::Interrupted,3).unwrap();
+        assert!(rig.executor.execution_deadline(&rig.authority,&rig.key).is_err());
+    }
+    let rig=Rig::new(Activity::Play,Presentation::Visual);
+    assert_eq!(rig.executor.execution_deadline(&rig.authority,&rig.key).unwrap(),15_000+RECEIPT_TIMEOUT_MS);
+}

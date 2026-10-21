@@ -1460,6 +1460,19 @@ impl Executor {
             Ok(())
         })
     }
+    /// Read-only bound of this exact admitted job in the native monotonic clock.
+    /// Before Start, even the latest allowed delivery cannot run past this
+    /// installed bound. Later reads never allocate or refresh a deadline.
+    pub(crate) fn execution_deadline(&self, authority: &NativeAuthority, key: &JobKey) -> Result<u64, ActionError> {
+        let job = self.job(authority, key)?;
+        match job.status {
+            Status::AwaitingDelivery | Status::Delivered => job.delivery_deadline
+                .checked_add(job.policy.maximum_run_ms).filter(|deadline| *deadline <= MAX_COUNTER)
+                .ok_or(ActionError::Exhausted),
+            Status::Started | Status::Paused => Ok(job.run_deadline),
+            _ => Err(ActionError::InvalidTransition),
+        }
+    }
     pub fn status(&self, key: &JobKey) -> Option<Status> {
         self.jobs
             .get(key.actor.as_str())

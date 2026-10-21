@@ -804,6 +804,20 @@ fn retry_facts(app: &tauri::AppHandle) -> Result<(), String> {
         .retry(|bot, event| state.store.record_experience_social_event(bot, event));
     project_fact_report(app, report)
 }
+/// Copy only the actual installed job's immutable time bound, before taking
+/// Social memory. Both clocks share this process's fixed epoch/monotonic origin.
+fn admitted_execution_deadline(app: &tauri::AppHandle, bot: &str, life: &LifeState) -> Result<u64, String> {
+    let state = app.state::<AppState>();
+    let runtime = &state.life_runtime;
+    let action = life.current_action().ok_or(ERROR)?.intent().id();
+    let core = runtime.core.lock().map_err(|_| ERROR)?;
+    let actions = core.actions.as_ref().ok_or(ERROR)?;
+    let job = actions.jobs.get(bot).filter(|job| job.key.action_id() == action
+        && !job.cancel.load(Ordering::SeqCst)).ok_or(ERROR)?;
+    let deadline = actions.executor.execution_deadline(&job.authority, &job.key).map_err(|_| ERROR)?;
+    runtime.social_epoch_ms.checked_add(deadline)
+        .filter(|deadline| *deadline <= crate::life_domain::MAX_COUNTER).ok_or_else(||ERROR.into())
+}
 pub(super) fn pulse(runtime: &LifeRuntime, app: &tauri::AppHandle) {
     if runtime.stopping.load(Ordering::SeqCst)
         || runtime.social.in_flight.swap(true, Ordering::SeqCst)
@@ -1039,6 +1053,9 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                         if planned.is_err() {
                             release(app, &[old])?;
                         }
+                        let execution_deadline = if activity != Activity::MoveTo {
+                            planned.as_ref().ok().map(|life|admitted_execution_deadline(app,bot,life)).transpose()
+                        } else { Ok(None) };
                         let mut m = runtime.social.memory.lock().map_err(|_| ERROR)?;
                         if let Some(leases) = m.leases.get_mut(&scene.id) {
                             leases.retain(|r| r.bot != *bot);
@@ -1051,10 +1068,12 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                                         .or_default()
                                         .push(action.intent().id().clone());
                                 }
-                                if m.coordinator
-                                    .bind_action(&scene.id, &life, runtime.social_now())
-                                    .is_err()
-                                {
+                                let binding = match execution_deadline {
+                                    Ok(Some(deadline)) => m.coordinator.bind_execution_action(&scene.id, &life, deadline, runtime.social_now()),
+                                    Ok(None) => m.coordinator.bind_action(&scene.id, &life, runtime.social_now()),
+                                    Err(error) => Err(error),
+                                };
+                                if binding.is_err() {
                                     m.cancel_scene(
                                         &scene.id,
                                         Reason::Unavailable,
@@ -1178,11 +1197,14 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
             // Persist each real protocol boundary so restart never resumes it.
             if let Some(scene) = match &directive {
                 Directive::Reserve { scene, .. }
-                | Directive::Approach { scene, .. }
-                | Directive::Perform { scene, .. } => Some(scene),
+                | Directive::Approach { scene, .. } => Some(scene.clone()),
+                // Persist the actual one-shot bounds just read from both
+                // admitted jobs, not the earlier Perform directive's clone.
+                Directive::Perform { scene, .. } => runtime.social.memory.lock().map_err(|_| ERROR)?
+                    .coordinator.views(&scene.participants[0]).into_iter().find(|current|current.id==scene.id),
                 _ => None,
             } {
-                state.store.social_save_scene(scene)?;
+                state.store.social_save_scene(&scene)?;
                 publish(app, &scene.participants);
             }
         }

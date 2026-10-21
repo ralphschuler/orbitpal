@@ -291,3 +291,70 @@ fn reserved_trace_is_emitted_only_after_both_host_reservations_succeed() {
         );
     }
 }
+
+fn execution_ready(sequence:u64,kind:SceneKind)->(Coordinator,SceneView,[LifeState;2],u64) {
+    let mut states=states(["nova","blue"]);let mut coordinator=Coordinator::default();let start=sequence*1_000_000;
+    let scene=coordinator.invite(sequence,kind,states.clone().map(|state|actor(&state)),[SlotId::new("left").unwrap(),SlotId::new("right").unwrap()],start).unwrap();
+    coordinator.respond(&scene.id,true,start).unwrap();coordinator.reserved(&scene.id,true,start).unwrap();
+    for state in &mut states {
+        *state=plan(state,Activity::MoveTo);coordinator.bind_action(&scene.id,state,start+1).unwrap();
+        *state=finish(state,1);coordinator.observe(&scene.id,state,start+1).unwrap();
+    }
+    for state in &mut states { *state=plan(state,if kind==SceneKind::Rest{Activity::Rest}else{Activity::Play}); }
+    let scene=coordinator.views("nova").into_iter().find(|view|view.id==scene.id).unwrap();
+    (coordinator,scene,states,start+1)
+}
+fn finish_with_bounded_ticks(state:&LifeState,elapsed:u64)->LifeState {
+    let action=state.current_action().unwrap().intent().id().clone();
+    let mut transition=reduce(state,0,RandomState::seeded(1),LifeEvent::Start{action_id:action.clone()}).unwrap();
+    let mut remaining=elapsed;
+    while remaining>0 {
+        let chunk=remaining.min(crate::life_domain::MAX_ELAPSED_MS);
+        transition=reduce(&transition.state,chunk as i64,transition.random,LifeEvent::Tick{}).unwrap();remaining-=chunk;
+    }
+    reduce(&transition.state,0,transition.random,LifeEvent::Complete{action_id:action}).unwrap().state
+}
+
+#[test]
+fn both_exact_execution_actions_can_bind_long_native_bounds_without_inventing_completion() {
+    for (sequence,kind,budgets) in [(10,SceneKind::Play,[80_000,620_000]),(11,SceneKind::Rest,[620_000,80_000])] {
+        let (mut coordinator,scene,mut states,start)=execution_ready(sequence,kind);
+        for (index,state) in states.iter().enumerate() {
+            coordinator.bind_execution_action(&scene.id,state,start+budgets[index],start+1).unwrap();
+        }
+        let deadline=coordinator.views("nova")[0].deadline_ms;
+        assert_eq!(deadline,start+620_000);
+        coordinator.reconcile(&states.clone().map(|state|actor(&state)),start+60_000).unwrap();
+        assert_eq!(coordinator.views("nova")[0].phase,Phase::Execution);
+        assert!(!coordinator.drain().iter().any(|directive|matches!(directive,Directive::Terminal{event,..}if event.outcome()==Outcome::Completed)));
+        for minimum in [60_000,600_000] {
+            for (index,_) in budgets.iter().enumerate().filter(|(_,budget)|**budget==minimum+20_000) {
+                states[index]=finish_with_bounded_ticks(&states[index],minimum);
+                coordinator.observe(&scene.id,&states[index],start+minimum).unwrap();
+            }
+        }
+        assert_eq!(coordinator.views("nova")[0].phase,Phase::Completed);
+        assert!(coordinator.busy("nova"));coordinator.released(&scene.id).unwrap();assert!(!coordinator.busy("nova"));
+    }
+}
+
+#[test]
+fn execution_deadline_is_one_shot_per_exact_action_and_cannot_revive_a_timeout() {
+    let (mut coordinator,scene,states,start)=execution_ready(12,SceneKind::Play);
+    coordinator.bind_execution_action(&scene.id,&states[0],start+80_000,start+1).unwrap();
+    let deadline=coordinator.views("nova")[0].deadline_ms;
+    coordinator.bind_execution_action(&scene.id,&states[0],start+80_000,start+2).unwrap();
+    assert!(coordinator.bind_execution_action(&scene.id,&states[0],start+90_000,start+2).is_err());
+    assert_eq!(coordinator.views("nova")[0].deadline_ms,deadline);
+    let replacement=plan(&finish(&states[0],1),Activity::Play);
+    assert!(coordinator.bind_execution_action(&scene.id,&replacement,start+80_000,start+3).is_err());
+    assert!(coordinator.bind_execution_action(&scene.id,&states[1],start+700_000,start+3).is_err());
+    assert_eq!(coordinator.views("nova")[0].deadline_ms,deadline);
+    let (mut expired,scene,states,start)=execution_ready(13,SceneKind::Play);
+    let old_deadline=scene.deadline_ms;
+    assert!(expired.bind_execution_action(&scene.id,&states[0],old_deadline+80_000,old_deadline).is_err());
+    expired.reconcile(&states.map(|state|actor(&state)),old_deadline).unwrap();
+    let view=&expired.views("nova")[0];assert_eq!(view.phase,Phase::Cancelled);assert_eq!(view.reason,Some(Reason::Timeout));
+    assert!(expired.busy("nova"));expired.released(&scene.id).unwrap();assert!(!expired.busy("nova"));
+    assert!(start<old_deadline);
+}

@@ -49,13 +49,22 @@ impl Memory {
     fn allowed(&self, proposal:&Proposal,now:u64)->bool {
         self.attempts.get(&proposal.key).is_none_or(|attempt|now>=attempt.retry_after)
             && [&proposal.bot,&proposal.target].iter().all(|id|self.served.get(*id).is_none_or(|served|now>=served.next))
+            && (self.attempts.contains_key(&proposal.key)||self.attempts.len()<MAX_HISTORY)
+            && self.served.len()+[&proposal.bot,&proposal.target].iter().filter(|id|!self.served.contains_key(id.as_str())).count()<=MAX_HISTORY
     }
     pub(super) fn current(&self,proposal:&Proposal,now:u64)->bool {now<=MAX_COUNTER&&self.allowed(proposal,now)}
     pub(super) fn proposals(&mut self,actors:&[Actor],minute:u16,now:u64)->Vec<Proposal> {
         if actors.len()>crate::world_output::MAX_LAYERS || minute>=1440 || now>MAX_COUNTER {return Vec::new();}
         let present=|id:&str|actors.iter().any(|actor|actor.participant.actor.as_str()==id);
-        self.served.retain(|id,_|present(id));
-        self.attempts.retain(|(a,b,_),_|present(a)&&present(b));
+        // A transient UI/system/output observation gap is not a session end.
+        // Retain every unexpired operator limit even while both actors vanish.
+        self.served.retain(|id,served|present(id)||now<served.next);
+        self.attempts.retain(|(a,b,_),attempt|(present(a)&&present(b))||now<attempt.retry_after);
+        if self.attempts.len()>=MAX_HISTORY {
+            if let Some(key)=self.attempts.iter().filter(|(_,attempt)|now>=attempt.retry_after).min_by_key(|(_,attempt)|attempt.sequence).map(|(key,_)|key.clone()) {
+                self.attempts.remove(&key);
+            }
+        }
         let mut proposals=Vec::new();
         for (index,a) in actors.iter().enumerate() {
             for b in actors.iter().skip(index+1) {
@@ -87,14 +96,15 @@ impl Memory {
         proposals
     }
     pub(super) fn record(&mut self,proposal:&Proposal,now:u64,accepted:bool) {
+        if !self.current(proposal,now) {return;}
         self.sequence=self.sequence.saturating_add(1).min(MAX_COUNTER);
         self.attempts.insert(proposal.key.clone(),Attempt{sequence:self.sequence,retry_after:now.saturating_add(proposal.cooldown).min(MAX_COUNTER)});
         for id in [&proposal.bot,&proposal.target] {
             let served=self.served.entry(id.clone()).or_default();served.sequence=self.sequence;
             if accepted {served.next=now.saturating_add(proposal.cooldown).min(MAX_COUNTER);}
         }
-        while self.attempts.len()>MAX_HISTORY {let key=self.attempts.iter().min_by_key(|(_,a)|a.sequence).map(|(key,_)|key.clone()).unwrap();self.attempts.remove(&key);}
-        while self.served.len()>crate::world_output::MAX_LAYERS {let id=self.served.iter().min_by_key(|(_,s)|s.sequence).map(|(id,_)|id.clone()).unwrap();self.served.remove(&id);}
+        // Capacity refuses new proposals instead of evicting a live cooldown.
+        debug_assert!(self.attempts.len()<=MAX_HISTORY&&self.served.len()<=MAX_HISTORY);
     }
 }
 
@@ -160,5 +170,34 @@ mod tests {
         let mut memory=Memory::default();let proposal=memory.proposals(&actors,0,0)[0].clone();memory.record(&proposal,0,true);
         assert!(memory.proposals(&actors,0,299_999).is_empty());assert!(!memory.proposals(&actors,0,300_000).is_empty());
         assert!(memory.proposals(&actors[..1],0,300_000).is_empty());assert!(memory.attempts.is_empty());
+    }
+    #[test]
+    fn temporary_absence_cannot_reset_an_operator_cooldown_or_failed_pair_backoff() {
+        let mut actors=vec![actor("a",9000,4000,9000),actor("b",9000,4000,9000)];
+        actors[0].initiative_cooldown_ms=300_000;
+        let mut memory=Memory::default();let proposal=memory.proposals(&actors,0,0)[0].clone();
+        memory.record(&proposal,0,true);
+        assert!(memory.proposals(&[],0,60_000).is_empty());
+        assert_eq!(memory.served.len(),2);assert_eq!(memory.attempts.len(),1);
+        assert!(memory.proposals(&actors,0,120_000).is_empty());
+        assert!(!memory.proposals(&actors,0,300_000).is_empty());
+        let mut failed=Memory::default();let proposal=failed.proposals(&actors,0,0)[0].clone();
+        failed.record(&proposal,0,false);
+        failed.proposals(&[],0,60_000);
+        assert!(!failed.current(&proposal,299_999));
+        assert!(failed.current(&proposal,300_000));
+    }
+    #[test]
+    fn live_limits_are_never_evicted_to_admit_replacement_actors() {
+        let mut memory=Memory::default();
+        for index in 0..MAX_HISTORY/2 {
+            let actors=vec![actor(&format!("a{index}"),9000,4000,9000),actor(&format!("b{index}"),9000,4000,9000)];
+            let proposal=memory.proposals(&actors,0,0)[0].clone();memory.record(&proposal,0,true);
+        }
+        let actors=vec![actor("replacement_a",9000,4000,9000),actor("replacement_b",9000,4000,9000)];
+        assert_eq!(memory.served.len(),MAX_HISTORY);
+        assert!(memory.proposals(&actors,0,59_999).is_empty());
+        assert!(!memory.proposals(&actors,0,60_000).is_empty());
+        assert!(memory.attempts.len()<=MAX_HISTORY&&memory.served.len()<=MAX_HISTORY);
     }
 }

@@ -13,6 +13,9 @@ const MAX_SCENES: usize = 32;
 const MAX_DIRECTIVES: usize = 256;
 const WAIT_MS: u64 = 30_000;
 const COOLDOWN_MS: u64 = 60_000;
+// The largest supported care run plus its fixed 15s run margin and 5s
+// delivery allowance. This only validates a real native job's frozen bound.
+const MAX_EXECUTION_REMAINING_MS: u64 = crate::life_self_care::MAX_CARE_DURATION_MS + 20_000;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SceneKind {
@@ -200,6 +203,7 @@ struct Running {
     source_events: [Option<EventId>; 2],
     done: [bool; 2],
     execute_at: u64,
+    execution_deadlines: [Option<u64>; 2],
     cleanup_pending: bool,
 }
 #[derive(Clone, Default)]
@@ -346,6 +350,7 @@ impl Coordinator {
                     source_events: [None, None],
                     done: [false; 2],
                     execute_at: 0,
+                    execution_deadlines: [None, None],
                     cleanup_pending: false,
                 },
             );
@@ -464,6 +469,35 @@ impl Coordinator {
             Ok(())
         })
     }
+    /// Host-only binding after actual native admission. Each exact execution
+    /// ActionId receives one immutable deadline; replay cannot extend it.
+    pub(crate) fn bind_execution_action(
+        &mut self,
+        id: &str,
+        confirmed: &LifeState,
+        deadline: u64,
+        now: u64,
+    ) -> Result<(), String> {
+        if deadline <= now || deadline > MAX_COUNTER
+            || deadline - now > MAX_EXECUTION_REMAINING_MS {
+            return Err("invalid social native deadline".into());
+        }
+        let mut next = self.clone();
+        next.bind_action(id, confirmed, now)?;
+        let scene = next.scenes.get_mut(id).ok_or("unknown social scene")?;
+        if scene.view.phase != Phase::Execution || now >= scene.view.deadline_ms {
+            return Err("social phase changed or expired".into());
+        }
+        let index = scene.actors.iter().position(|actor| actor.actor == *confirmed.actor_id()
+            && actor.world == *confirmed.world_id()).ok_or("social actor changed")?;
+        if scene.execution_deadlines[index].is_some_and(|bound| bound != deadline) {
+            return Err("social native deadline already bound".into());
+        }
+        scene.execution_deadlines[index] = Some(deadline);
+        scene.view.deadline_ms = scene.view.deadline_ms.max(deadline);
+        *self = next;
+        Ok(())
+    }
     pub(crate) fn observe(
         &mut self,
         id: &str,
@@ -480,6 +514,7 @@ impl Coordinator {
         if scene.view.phase == Phase::Approach {
             scene.view.phase = Phase::Execution;
             scene.execute_at = now;
+            scene.execution_deadlines = [None, None];
             scene.actions = [None, None];
             scene.source_events = [None, None];
             scene.done = [false; 2];
