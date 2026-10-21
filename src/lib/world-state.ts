@@ -10,7 +10,7 @@ export const worldReasons = {
   invalid_binding:'Die Monitorauswahl der Bühne ist ungültig.',
   capacity:'Die Bühnenkonfiguration überschreitet die zulässige Größe.',
 } as const;
-export const anchorKinds={rest:'Ruhe- oder Ladeplatz',meeting:'Treffpunkt',play:'Spielobjekt'} as const;
+export const anchorKinds={rest:'Ruhe- oder Ladeplatz',meeting:'Treffpunkt',play:'Spielobjekt',snack:'Snackplatz'} as const;
 export type AnchorKind=keyof typeof anchorKinds;
 export interface WorldPoint {x:number;y:number}
 export interface WorldRegion {min:WorldPoint;max:WorldPoint}

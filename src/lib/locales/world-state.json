@@ -85,7 +85,8 @@
     "Anker {anchor}, Platz {slot}, Y in Prozent": "Anchor {anchor}, slot {slot}, Y percentage",
     "Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die Anbindung an sichtbare Figuren mit Monitorursprung, Skalierung und Figurengröße folgt separat.": "Percentages refer to the shared stage: top left is 0% / 0%, bottom right is 100% / 100%. Connecting visible characters with display origin, scaling and character size follows separately.",
     "Die 2D-Vorschau zeigt deinen Entwurf. Eine bestätigte Konfiguration kannst du unten als gemeinsame 3D-Bühne öffnen. Automatische Folgeaktivitäten sind noch nicht angebunden.": "The 2D preview shows your draft. Open a confirmed configuration below as a shared 3D stage. Automatic follow-up activities are not connected yet.",
-    "Prozentangaben beziehen sich auf die gesamte Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die sichtbare Figur muss mit ihrer gemessenen Größe vollständig in den bestätigten Bereich passen.": "Percentages refer to the entire stage: top left is 0% / 0%, bottom right is 100% / 100%. The visible character at its measured size must fit entirely within the confirmed area."
+    "Prozentangaben beziehen sich auf die gesamte Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die sichtbare Figur muss mit ihrer gemessenen Größe vollständig in den bestätigten Bereich passen.": "Percentages refer to the entire stage: top left is 0% / 0%, bottom right is 100% / 100%. The visible character at its measured size must fit entirely within the confirmed area.",
+    "Snackplatz": "Snack spot"
   },
   "fr": {
     "Gemeinsame Bühne": "Scène commune",
@@ -173,7 +174,8 @@
     "Anker {anchor}, Platz {slot}, Y in Prozent": "Ancrage {anchor}, place {slot}, Y en pourcentage",
     "Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die Anbindung an sichtbare Figuren mit Monitorursprung, Skalierung und Figurengröße folgt separat.": "Les pourcentages se rapportent à la scène commune : en haut à gauche 0 % / 0 %, en bas à droite 100 % / 100 %. L’intégration des personnages visibles avec l’origine de l’écran, l’échelle et leur taille viendra séparément.",
     "Die 2D-Vorschau zeigt deinen Entwurf. Eine bestätigte Konfiguration kannst du unten als gemeinsame 3D-Bühne öffnen. Automatische Folgeaktivitäten sind noch nicht angebunden.": "L’aperçu 2D montre votre brouillon. Ouvrez ci-dessous une configuration confirmée comme scène 3D commune. Les activités suivantes automatiques ne sont pas encore connectées.",
-    "Prozentangaben beziehen sich auf die gesamte Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die sichtbare Figur muss mit ihrer gemessenen Größe vollständig in den bestätigten Bereich passen.": "Les pourcentages concernent toute la scène : en haut à gauche, 0 % / 0 % ; en bas à droite, 100 % / 100 %. Le personnage visible, à sa taille mesurée, doit tenir entièrement dans la zone confirmée."
+    "Prozentangaben beziehen sich auf die gesamte Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die sichtbare Figur muss mit ihrer gemessenen Größe vollständig in den bestätigten Bereich passen.": "Les pourcentages concernent toute la scène : en haut à gauche, 0 % / 0 % ; en bas à droite, 100 % / 100 %. Le personnage visible, à sa taille mesurée, doit tenir entièrement dans la zone confirmée.",
+    "Snackplatz": "Lieu de collation"
   },
   "es": {
     "Gemeinsame Bühne": "Escenario compartido",
@@ -261,6 +263,7 @@
     "Anker {anchor}, Platz {slot}, Y in Prozent": "Anclaje {anchor}, lugar {slot}, Y en porcentaje",
     "Prozentangaben beziehen sich auf die gemeinsame Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die Anbindung an sichtbare Figuren mit Monitorursprung, Skalierung und Figurengröße folgt separat.": "Los porcentajes se refieren al escenario: arriba a la izquierda es 0 % / 0 % y abajo a la derecha 100 % / 100 %. La integración de personajes visibles con el origen del monitor, la escala y su tamaño llegará por separado.",
     "Die 2D-Vorschau zeigt deinen Entwurf. Eine bestätigte Konfiguration kannst du unten als gemeinsame 3D-Bühne öffnen. Automatische Folgeaktivitäten sind noch nicht angebunden.": "La vista previa 2D muestra tu borrador. Abajo puedes abrir una configuración confirmada como escenario 3D compartido. Las actividades automáticas posteriores aún no están conectadas.",
-    "Prozentangaben beziehen sich auf die gesamte Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die sichtbare Figur muss mit ihrer gemessenen Größe vollständig in den bestätigten Bereich passen.": "Los porcentajes se refieren a todo el escenario: arriba a la izquierda es 0 % / 0 % y abajo a la derecha, 100 % / 100 %. El personaje visible con su tamaño medido debe caber completamente dentro de la zona confirmada."
+    "Prozentangaben beziehen sich auf die gesamte Bühne: links oben ist 0 % / 0 %, rechts unten 100 % / 100 %. Die sichtbare Figur muss mit ihrer gemessenen Größe vollständig in den bestätigten Bereich passen.": "Los porcentajes se refieren a todo el escenario: arriba a la izquierda es 0 % / 0 % y abajo a la derecha, 100 % / 100 %. El personaje visible con su tamaño medido debe caber completamente dentro de la zona confirmada.",
+    "Snackplatz": "Lugar de refrigerio"
   }
 }

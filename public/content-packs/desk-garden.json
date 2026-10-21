@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1, "id": "desk-garden", "version": 1,
+  "name": "Desk Garden", "author": "OrbitPal contributors", "license": "MIT", "runtimeVersion": 1,
+  "dependencies": [],
+  "characters": [{"id":"desk-garden:sprout","name":"Sprout","avatar":"builtin:robot-expressive","restPreference":600,"sociability":450}],
+  "objects": [{"id":"desk-garden:seed","name":"Seed toy","kind":"play","offers":["desk-garden:tend"]}],
+  "motions": [{"id":"desk-garden:gentle-play","capability":"play","fallback":"idle"}],
+  "activities": [{"id":"desk-garden:tend","objectId":"desk-garden:seed","action":"play","condition":"low_engagement","weight":400,"durationMs":4000,"motionId":"desk-garden:gentle-play"}]
+}

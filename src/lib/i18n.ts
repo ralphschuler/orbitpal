@@ -27,6 +27,7 @@ import worldOutput from './locales/world-output.json';
 import credentials from './locales/credentials.json';
 import credentialSession from './locales/credential-session.json';
 import apiAccess from './locales/api-access.json';
+import experience from './locales/experience.json';
 import type { Locale, Parameters, TranslationCatalogue } from './i18n-types';
 export type { Locale, Parameters } from './i18n-types';
 
@@ -48,7 +49,7 @@ function initialLocale():Locale {
 }
 const current=writable<Locale>(initialLocale());
 export const locale={subscribe:current.subscribe};
-export const catalogues = [lifeEditor,worldOutput, apiAccess, lifeActions, worldState, lifeRuntime, usageBudget, credentialSession, credentials, presentation, autopilotStatus, outputPresentation, system, microphone, gltf, transports, avatarAudio, motions, emotes, screenPermission, systemPermission, panels, extensions, app, screen] as TranslationCatalogue[];
+export const catalogues = [experience,lifeEditor,worldOutput, apiAccess, lifeActions, worldState, lifeRuntime, usageBudget, credentialSession, credentials, presentation, autopilotStatus, outputPresentation, system, microphone, gltf, transports, avatarAudio, motions, emotes, screenPermission, systemPermission, panels, extensions, app, screen] as TranslationCatalogue[];
 const messages:TranslationCatalogue={en:{},fr:{},es:{}};
 for(const catalogue of catalogues)for(const language of ['en','fr','es'] as const)Object.assign(messages[language],catalogue[language]);
 const own=(language:Exclude<Locale,'de'>,key:string)=>Object.hasOwn(messages[language],key)?messages[language][key]:undefined;
