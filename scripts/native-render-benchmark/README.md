@@ -194,6 +194,25 @@ metrics. They do not prove GPU completion, display-present timing, native window
 visibility or OBS exposure. GPU/present metrics and instrumentation overhead
 remain unqualified; no performance claim is inferred from this source.
 
+After verifying each GitHub artifact digest and extracting only the six allowed
+metadata files, `python3 scripts/native-render-benchmark/analyze.py /absolute/artifact-directory`
+produces a numeric report from those files alone. It opens no app, network,
+process metadata, device or credentials. Native and collector relative clocks
+have different origins; the new explicit shared Linux `CLOCK_MONOTONIC`
+microsecond stamps are required for phase/process correlation. Older records
+without that coordinate report process cost unavailable, never an inferred
+alignment or zero CPU. Summed RSS and charged memory remain separate.
+
+The analyzer differences each figure's cumulative histograms within its own
+current epoch/phase. It reports observed spans, sample gaps, per-figure submission
+rates and percentile upper bounds. The >=256ms overflow bin has no finite
+percentile upper bound. Missing owners, short or sparse windows and failed
+cleanup cannot become a successful invisible-render suppression result. It
+also checks every expected orderly window epoch once. These statistics do not
+set a hardware budget, qualify GPU timing, measure instrumentation overhead or
+close issue#66. Both manual workflows run the synthetic collector and analysis
+tests before entering the native fixture; no measured result is asserted here.
+
 Limits include55minutes from before provisioning, per-step timeouts,256 concurrent
 PIDs,16 cgroups at depth≤4,4096 observed identities and32MiB per numeric log.
 No cap silently drops processes or converts an empty interval into a pass. Stock

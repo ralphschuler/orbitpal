@@ -457,7 +457,7 @@ def collect(root, uid, files):
             if len(observed) > 4096:
                 refuse("process_identity_limit")
             previous_pids, previous = identities, (now, cpu)
-            row = {"monotonicSeconds": now - start, "cpuUsecCumulative": cpu,
+            row = {"monotonicSeconds": now - start, "monotonicUsec": int(now * 1_000_000), "cpuUsecCumulative": cpu,
                    "cpuPercentOneCore": cpu_percent, "sampleGapSeconds": gap,
                    "summedRssBytesMayDoubleCountSharedPages": sum(value["rssPages"] * page_size for value in samples),
                    "cgroupChargedMemoryBytesNotRss": charged, "processes": samples,
@@ -484,7 +484,7 @@ def collect(root, uid, files):
             time.sleep(max(0.0, 1.0 - (time.monotonic() - now)))
     if files.read_metadata("completed.marker", uid) != b"native-renderer-lane-only\n":
         refuse("native_completion_not_proven")
-    summary = {"version": 1, "scope": "one_native_stage_plus_control_and_dedicated_app_bus_helpers",
+    summary = {"version": 1, "scope": "native_figure_bank_plus_control_and_dedicated_app_bus_helpers",
                "samples": rows, "observedProcessIdentities": len(observed), "observedExits": process_exits,
                "durationSeconds": time.monotonic() - start, "cpuDefinition": "100_percent_is_one_logical_cpu",
                "rssDefinition": "sum_may_double_count_shared_pages", "gpuDuration": None,

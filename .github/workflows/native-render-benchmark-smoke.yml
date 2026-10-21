@@ -73,6 +73,8 @@ jobs:
         run: |
           set -euo pipefail
           unset TAURI_CONFIG DISPLAY
+          python3 -B scripts/native-render-benchmark/test-collector.py
+          python3 -B scripts/native-render-benchmark/test-analysis.py
           pnpm install --frozen-lockfile
           node scripts/native-render-benchmark/build.mjs
           # Own generate_context!(benchmark/tauri.conf.json), distinct identifier,

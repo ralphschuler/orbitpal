@@ -51,7 +51,7 @@ struct Shared {
 }
 impl Shared {
     fn log(&self, event: serde_json::Value) -> Result<(), Error> {
-        self.log.lock().map_err(|_| "numeric_log_unavailable")?.write(json!({"nativeMs":self.start.elapsed().as_millis() as u64,"event":event}))
+        self.log.lock().map_err(|_| "numeric_log_unavailable")?.write(json!({"nativeMs":self.start.elapsed().as_millis() as u64,"monotonicUsec":monotonic_usec()?,"event":event}))
     }
     fn ensure_live(&self) -> Result<(), Error> {
         if self.failed.load(Ordering::SeqCst) || self.finished.load(Ordering::SeqCst) || self.start.elapsed() > Duration::from_secs(55 * 60) {
@@ -59,6 +59,21 @@ impl Shared {
         } else { Ok(()) }
     }
 }
+
+/// Shared Linux CLOCK_MONOTONIC coordinate for phase/process correlation.
+/// Relative Instant/Python collector origins must never be guessed equal.
+#[cfg(target_os = "linux")]
+fn monotonic_usec() -> Result<u64, Error> {
+    let mut value: libc::timespec = unsafe { std::mem::zeroed() };
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut value) } != 0
+        || value.tv_sec < 0 || !(0..1_000_000_000).contains(&value.tv_nsec) {
+        return Err("monotonic_clock_unavailable");
+    }
+    (value.tv_sec as u64).checked_mul(1_000_000).and_then(|seconds|seconds.checked_add(value.tv_nsec as u64 / 1000))
+        .filter(|value|*value <= protocol::SAFE_INTEGER).ok_or("monotonic_clock_unavailable")
+}
+#[cfg(not(target_os = "linux"))]
+fn monotonic_usec() -> Result<u64, Error> { Err("linux_disposable_session_required") }
 
 /// No environment values, paths, exception strings or external content enter logs.
 #[cfg(target_os = "linux")]
