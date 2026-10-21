@@ -984,7 +984,7 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
         # Actual execute/export/result path; all accounts, commands, children,
         # /proc and cgroups are synthetic. This is no native/OS qualification.
         required = ("native.ndjson", "process.ndjson", "collector-summary.json")
-        for missing in (*required, None):
+        for missing in (*required, None, "collector_exit", "compositor_exit", "collector_exit_empty"):
             with tempfile.TemporaryDirectory() as temporary:
                 base = Path(temporary).resolve()
                 roots, groups, namespaces, output = (base / name for name in ("roots", "groups", "netns", "output"))
@@ -1005,10 +1005,16 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                     def verify(self):
                         pass
                 class Child:
+                    def __init__(self, domain):
+                        self.status = 0
+                        if missing in ("collector_exit", "collector_exit_empty", "compositor_exit"):
+                            self.status = (1 if domain == "collector" else None) if missing.startswith("collector") else (-6 if domain == "compositor" else None)
                     def poll(self):
-                        return 0
+                        return self.status
                     def wait(self, **_kwargs):
-                        return 0
+                        return self.status
+                    def terminate(self):
+                        self.status = -15
                 def path(value, *parts):
                     if value == "/tmp":
                         return roots.joinpath(*parts)
@@ -1037,9 +1043,9 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                     if argv[1].endswith("launch.py") and argv[3] == "app":
                         for name in required:
                             if name != missing:
-                                (fixture / name).write_bytes(b'{"count":1}\n')
+                                (fixture / name).write_bytes(b'' if missing == "collector_exit_empty" and name == "native.ndjson" else b'{"count":1}\n')
                         (fixture / "completed.marker").write_bytes(b"native-renderer-lane-only\n")
-                    return Child()
+                    return Child(argv[3] if argv[1].endswith("launch.py") else "collector")
                 def bounded(file, limit):
                     if file == groups / "cgroup.subtree_control":
                         return b"cpu memory"
@@ -1050,7 +1056,7 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                     self.assertEqual(files.read_metadata("fixture.marker", uid), nonce.encode("ascii"))
                     return files.path  # Only literal/tmp prefix is synthetic here.
                 def export(files, destination, **kwargs):
-                    self.assertTrue(kwargs["require_complete"])
+                    self.assertEqual(kwargs["require_complete"], missing not in ("collector_exit", "collector_exit_empty", "compositor_exit"))
                     # Current test UID stands in for the real root collector.
                     return real_export(files, destination, collector_uid=uid, **kwargs)
                 with ExitStack() as stack:
@@ -1073,8 +1079,44 @@ class FixedMetadataBoundaryTests(unittest.TestCase):
                 self.assertTrue(record["cleanupConfirmed"])
                 self.assertEqual(record["passed"], missing is None)
                 self.assertEqual(result, 0 if missing is None else 1)
-                self.assertEqual(record["reason"], None if missing is None else "numeric_artifact_invalid")
+                scope_failed = missing in ("collector_exit", "collector_exit_empty", "compositor_exit")
+                self.assertEqual(record["reason"], "fixture_scope_or_compositor_failed" if scope_failed else None if missing is None else "numeric_artifact_invalid")
+                self.assertEqual(record["bootstrap"]["phase"], 5 if scope_failed else 8)
+                self.assertEqual(record["bootstrap"]["artifactExportRejected"], missing in required or missing == "collector_exit_empty")
+                if scope_failed:
+                    # These are the original statuses, not the later -15 from
+                    # our controlled cleanup. Primary refusal is never masked.
+                    self.assertIsNone(record["bootstrap"]["appExit"])
+                    self.assertEqual(record["bootstrap"]["collectorExit"], 1 if missing.startswith("collector") else None)
+                    self.assertEqual(record["bootstrap"]["compositorExit"], -6 if missing == "compositor_exit" else None)
+                if missing == "collector_exit_empty":
+                    self.assertFalse((output / "fixture-manifest.json").exists())
                 self.assertTrue(any(argv[:3] == ["/usr/sbin/ip", "netns", "delete"] for argv in calls))
+
+
+class BootstrapDiagnosticTests(unittest.TestCase):
+    def test_owned_child_exit_status_is_closed_without_reading_any_child_payload(self):
+        class Child:
+            def __init__(self, code): self.code = code
+            def poll(self): return self.code
+        value = runner.bootstrap_diagnostic(5, Child(None), Child(1), Child(None))
+        self.assertEqual(value, {"phase": 5, "compositorExit": None, "collectorExit": 1,
+                                 "appExit": None, "artifactExportRejected": False})
+        self.assertEqual(runner.bootstrap_diagnostic(5, Child(-6))["compositorExit"], -6)
+        for code in (True, 999, "PRIVATE", {"raw": "PRIVATE"}):
+            value = runner.bootstrap_diagnostic(5, Child(code))
+            self.assertEqual(value["compositorExit"], 256)
+            self.assertNotIn("PRIVATE", json.dumps(value))
+
+    def test_unknown_child_probe_is_not_fabricated_as_success_and_cannot_change_phase(self):
+        class Child:
+            def poll(self): raise OSError("PRIVATE")
+        self.assertEqual(runner.bootstrap_diagnostic(2, Child())["compositorExit"], 256)
+        for phase in (True, -1, 9, "5"):
+            with self.assertRaisesRegex(collect.Refusal, "^invalid_bootstrap_phase$"):
+                runner.bootstrap_diagnostic(phase)
+        self.assertEqual(runner.bootstrap_diagnostic(0), {"phase": 0, "compositorExit": None,
+            "collectorExit": None, "appExit": None, "artifactExportRejected": False})
 
 
 class DconfActivatorTests(unittest.TestCase):

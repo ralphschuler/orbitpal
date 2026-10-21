@@ -1,8 +1,9 @@
 # Nonshipping native Linux renderer lane
 
 Three-OS CI builds the standalone example and runs its non-GUI protocol tests.
-The actual hosted smoke attempts have reached guard refusals before launching
-the renderer. No qualified measurements or hardware baseline exist; issue #66
+The third actual hosted smoke passed the activator check and standalone build,
+then failed during runtime bootstrap without qualifying the renderer or scope.
+No qualified measurements or hardware baseline exist; issue #66
 stays open. The first executable acceptance remains a **short smoke run** on an
 explicitly disposable GitHub-hosted Linux VM. A successful smoke would
 qualify this fixture's lifecycle and numeric scope, not hardware performance,
@@ -386,3 +387,40 @@ bus receives the declared template, under the existing isolated UID/socket and
 closed child environment. This source change is not a passed smoke or a native
 performance measurement; all lifecycle/collector checks still have to pass in
 an actual reviewed-source run.
+
+
+## Third actual smoke and bounded bootstrap diagnostics
+
+Run `39591285949`, exact source `1fc6b579bf864fce784b225e9fa780a4878f4849`,
+passed the activator preflight and standalone cold build. Its digest-verified
+single-file artifact records `fixture_scope_or_compositor_failed`, duration
+2.42 seconds and `cleanupConfirmed:true`. That exact refusal occurs after an
+owned Wayland socket was observed and collector/app launchers were created. It
+folds collector and compositor exits together. Neither the failing child nor a
+host capability defect, renderer initialization or a native accepted frame is
+proved by this result. It is not a successful smoke.
+
+A subsequent source-only diagnostic adds the fixed `bootstrap` record to the
+existing result. No process output, arguments, paths or additional files are
+read. The phases record only these host milestones:
+
+| Phase | Observed milestone |
+| --- | --- |
+| 0 | Setup entered |
+| 1 | Pre-workload scope and UID checks complete |
+| 2 | Compositor launcher created |
+| 3 | Owned Wayland socket observed |
+| 4 | Collector launcher created |
+| 5 | App launcher created |
+| 6 | App launcher exited zero |
+| 7 | Collector exited zero |
+| 8 | Existing completion-marker and app-cgroup drain checks passed |
+
+Owned child exit codes are sampled before the runner sends TERM/KILL. A null
+means no exit observed (including not started);256 means status unavailable,
+never success. `artifactExportRejected` marks an exception in the existing
+numeric-export/manifest-write block; the original primary refusal remains
+unchanged. All producer files still require the original pinned-directory,
+owner, stopped-writer and all-source validation. A rejected early/empty numeric
+file gains no fallback read, partial export or authority to pass. These fields
+only narrow a later actual failure; synthetic tests do not qualify native work.
