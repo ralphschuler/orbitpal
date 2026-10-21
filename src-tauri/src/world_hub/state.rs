@@ -713,6 +713,23 @@ impl WorldHub {
         let (kind, position) = hub.world.as_ref().and_then(|world| world.slot_geometry(slot)).ok_or(UNAVAILABLE)?;
         Ok(ActionSlotTarget { id: slot.clone(), kind, position })
     }
+    /// Offers are current observations; admission still reserves the exact slot
+    /// in the existing World transaction and may lose a race to another actor.
+    pub(crate) fn action_slots(&self, store: &Store, expected: &ActionContext) -> Result<Vec<ActionSlotTarget>, String> {
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        Self::refresh_record(&mut hub, store)?;
+        if !Self::action_context_matches(&hub, expected) { return Err(UNAVAILABLE.into()); }
+        let snapshot = hub.world.as_ref().ok_or(UNAVAILABLE)?.snapshot();
+        let mut result = Vec::new();
+        for anchor in &snapshot.anchors {
+            for slot in anchor.slots() {
+                if snapshot.occupied.iter().any(|occupied| occupied.slot_id == *slot.id()) { continue; }
+                result.push(ActionSlotTarget { id: slot.id().clone(), kind: anchor.kind(), position: slot.position() });
+            }
+        }
+        result.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(result)
+    }
     /// Current selected display observation, never a window/layout proof. The
     /// host must compare this with its fresh actual Prepared geometry.
     pub(crate) fn native_output_geometry(&self, store: &Store, expected: &ActionContext) -> Result<OutputGeometry, String> {
@@ -909,6 +926,23 @@ impl WorldHub {
         world
             .release(lease, &member, now)
             .map_err(|_| UNAVAILABLE.into())
+    }
+    /// Validates an opaque scene reservation against its current actual actor.
+    /// The caller holds Core through validation, release and action admission.
+    pub(crate) fn validate_current_lease(
+        &self, core: &crate::life_runtime::core::Core, store: &Store, bot: &str,
+        lease: &SlotLease, slot: &SlotId, now: u64,
+    ) -> Result<SessionStamp, String> {
+        if lease.slot_id() != slot { return Err(UNAVAILABLE.into()); }
+        let sessions = current_actors(core);
+        self.synchronize(store, &sessions, None, now)?;
+        let session = sessions.iter().find(|actor| actor.stamp.actor_id().as_str() == bot).ok_or(UNAVAILABLE)?;
+        let mut hub = self.inner.lock().map_err(|_| UNAVAILABLE)?;
+        if hub.bound.get(bot) != Some(&session.stamp) { return Err(UNAVAILABLE.into()); }
+        let world = hub.world.as_mut().ok_or(UNAVAILABLE)?;
+        let member = world.member_handle(session.stamp.actor_id()).ok_or(UNAVAILABLE)?;
+        world.validate_reservation(lease, &member, now).map_err(|_| UNAVAILABLE)?;
+        Ok(session.stamp.clone())
     }
     pub(super) fn output_targets(&self) -> Vec<String> {
         let Ok(mut hub) = self.inner.lock() else {

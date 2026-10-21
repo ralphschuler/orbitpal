@@ -679,6 +679,27 @@ pub(crate) fn admit_native_move(
 ) -> Result<(), String> {
     admit_visual_move(core, store, world, bot, profile, fence, context, output, Goal::Point(target), Some(permit), None, cancel, now, wall)
 }
+/// Autonomous admission uses the same factory-owned native surface proof and
+/// exact Store/World transaction as operator actions, with no synthetic UI click.
+pub(crate) fn admit_native_care(
+    core: &mut Core, store: &Store, world: &WorldHub, bot: &str, profile: &Value,
+    fence: LocalFence, context: ActionContext, output: crate::world_output::OutputProof,
+    permit: super::native_scene::NativeActionPermit, activity: Activity,
+    slot: Option<crate::world_state::SlotId>, cancel: Arc<AtomicBool>,
+    now: impl Fn() -> u64, wall: impl Fn() -> u64,
+) -> Result<(), String> {
+    if !matches!(activity, Activity::Rest | Activity::Recharge | Activity::Snack | Activity::Play | Activity::Socialize)
+        || !permit.current(core, now()) || !permit.matches_output(&output)
+        || !core.local_current(bot, &fence, now()) || cancel.load(Ordering::SeqCst) {
+        return Err(UNAVAILABLE.into());
+    }
+    let target = slot.as_ref().map(|id| world.slot_target(store, &context, id)).transpose()?;
+    let goal = match &target {
+        Some(target) => Goal::Slot { id: target.id.clone(), kind: target.kind, position: target.position },
+        None => Goal::Here(context.position),
+    };
+    admit_visual_activity(core, store, world, bot, profile, fence, context, output, goal, Some(permit), target, cancel, now, wall, activity)
+}
 /// Exercises the shared slot transaction using an actual selected-Studio
 /// registration. This exposes no product Slot route or native surface grant.
 #[cfg(test)]
@@ -699,7 +720,16 @@ fn admit_visual_move(
     slot_target: Option<crate::world_hub::ActionSlotTarget>, cancel: Arc<AtomicBool>,
     now: impl Fn() -> u64, wall: impl Fn() -> u64,
 ) -> Result<(), String> {
-    let target = match &goal { Goal::Point(point) | Goal::Slot { position: point, .. } => *point, _ => return Err(UNAVAILABLE.into()) };
+    admit_visual_activity(core, store, world, bot, profile, fence, context, output, goal, native_permit, slot_target, cancel, now, wall, Activity::MoveTo)
+}
+fn admit_visual_activity(
+    core: &mut Core, store: &Store, world: &WorldHub, bot: &str, profile: &Value,
+    fence: LocalFence, context: ActionContext, output: crate::world_output::OutputProof,
+    goal: Goal, native_permit: Option<super::native_scene::NativeActionPermit>,
+    slot_target: Option<crate::world_hub::ActionSlotTarget>, cancel: Arc<AtomicBool>,
+    now: impl Fn() -> u64, wall: impl Fn() -> u64, activity: Activity,
+) -> Result<(), String> {
+    let target = match &goal { Goal::Point(point) | Goal::Here(point) | Goal::Slot { position: point, .. } => *point, _ => return Err(UNAVAILABLE.into()) };
     with_actions(core, |actions, core| {
         let actor = ActorId::new(bot).map_err(invalid)?;
         actions.forget(bot);
@@ -716,7 +746,7 @@ fn admit_visual_move(
             return Err(UNAVAILABLE.into());
         }
         let visual =
-            crate::world_output::VisualExecution::new(output, target, now()).map_err(invalid)?;
+            crate::world_output::VisualExecution::for_activity(output, target, activity, PreparedPlan::visual_minimum(activity, &goal).map_err(invalid)?, now()).map_err(invalid)?;
         let authority = NativeAuthority::new(
             context.session.clone(),
             context.source_world.clone(),
@@ -727,12 +757,13 @@ fn admit_visual_move(
             visual.output.binding.asset_revision,
         )
         .map_err(invalid)?;
-        let caps = Capabilities::new(authority.clone(), vec![(Activity::MoveTo, 0)], false)
+        let caps = Capabilities::new(authority.clone(), vec![(activity, PreparedPlan::visual_minimum(activity, &goal).map_err(invalid)?)], false)
             .map_err(invalid)?;
         let persisted_profile = store.action_profile_token(bot, profile).map_err(invalid)?;
         if persisted_profile != visual.output.profile_token {
             return Err(UNAVAILABLE.into());
         }
+        let care_config = if activity == Activity::MoveTo { None } else { Some(store.life_care_preferences(bot)?) };
         let (commit, prepared) = world.with_action_context(store, &context, || {
             store
                 .apply_life_action_checked(bot, wall(), |actual, tx| {
@@ -750,16 +781,12 @@ fn admit_visual_move(
                     {
                         return Err(LifeStoreError::InvalidInput);
                     }
-                    let plan = PreparedPlan::new(
-                        authority.clone(),
-                        actual.state(),
-                        actual.random(),
-                        Activity::MoveTo,
-                        goal.clone(),
-                        Presentation::Visual,
-                        &caps,
-                    )
-                    .map_err(|_| LifeStoreError::InvalidInput)?;
+                    let plan = if activity == Activity::MoveTo {
+                        PreparedPlan::new(authority.clone(), actual.state(), actual.random(), activity, goal.clone(), Presentation::Visual, &caps)
+                    } else {
+                        let config = care_config.as_ref().ok_or(LifeStoreError::InvalidInput)?;
+                        PreparedPlan::care(authority.clone(), actual.state(), actual.random(), activity, goal.clone(), Presentation::Visual, &caps, &config.config)
+                    }.map_err(|_| LifeStoreError::InvalidInput)?;
                     Ok((plan.event().clone(), plan.expected_revision(), plan))
                 })
                 .map_err(invalid)
@@ -890,30 +917,31 @@ fn flush_visual_dispatch(actions: &mut NativeActions, core: &mut Core, now: u64)
         visual.fence = Some(fence.clone());
         let command = match dispatch.message {
             ex::Message::Offer {
-                activity: Activity::MoveTo,
+                activity,
                 presentation: Presentation::Visual,
                 ..
             } => crate::world_output::MotionCommand::Offer {
                 version: 1,
                 sequence: dispatch.sequence,
                 fence,
-                activity: "move_to",
+                activity: activity.as_str(),
+                minimum_active_ms: visual.minimum_active_ms,
                 from: visual.from,
                 target: visual.destination,
                 maximum_speed: visual.maximum_speed,
                 acceleration: visual.acceleration,
-                valid_for_ms: 30_000,
+                valid_for_ms: if activity == Activity::Recharge { 40_000 } else { 30_000 },
             },
-            ex::Message::Pause { .. } => crate::world_output::MotionCommand::Pause {
+            ex::Message::Pause { .. } => { visual.stable.clear(); crate::world_output::MotionCommand::Pause {
                 version: 1,
                 sequence: dispatch.sequence,
                 fence,
-            },
-            ex::Message::Resume { .. } => crate::world_output::MotionCommand::Resume {
+            } },
+            ex::Message::Resume { .. } => { visual.stable.clear(); crate::world_output::MotionCommand::Resume {
                 version: 1,
                 sequence: dispatch.sequence,
                 fence,
-            },
+            } },
             ex::Message::Terminal { status, .. } => {
                 core.world_outputs.record_terminal(
                     fence.clone(),
@@ -1066,7 +1094,7 @@ pub(crate) fn visual_report(
                 ReportKind::Delivered => ex::Receipt::Delivered,
                 ReportKind::Started => ex::Receipt::Started,
                 ReportKind::Progress => ex::Receipt::Progress,
-                ReportKind::Completed => ex::Receipt::Completed(ex::Evidence::Arrived(position)),
+                ReportKind::Completed => ex::Receipt::Completed(if visual.activity == Activity::MoveTo { ex::Evidence::Arrived(position) } else { ex::Evidence::VisualFinished }),
             };
             let decision = actions
                 .executor

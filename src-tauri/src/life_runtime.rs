@@ -1,4 +1,9 @@
 //! One application-owned native autonomy loop. Restart never restores activation.
+#[path = "life_runtime/self_care.rs"]
+mod self_care;
+#[path = "life_runtime/experience_host.rs"]
+mod experience_host;
+pub(crate) use experience_host::{experience_allows_output, experience_preferences_changed, experience_pause_changed, content_pack_deactivating, request_character_interaction, start_slot_activity, cancel_actor_action, cancel_actor_action_exact};
 #[path = "life_runtime/action_host.rs"]
 mod action_host;
 #[path = "life_runtime/action_output.rs"]
@@ -117,7 +122,20 @@ fn main_only(label: &str) -> Result<(), String> {
 pub fn operator_command(command: &str) -> bool {
     !matches!(
         command,
-        "get_app_state"
+        "get_life_care_preferences"
+            | "get_experience_snapshot"
+            | "set_experience_preferences"
+            | "set_experience_pause"
+            | "request_character_interaction"
+            | "delete_experience_fact"
+            | "set_experience_fact_shared"
+            | "list_content_packs"
+            | "preview_content_pack"
+            | "install_content_pack"
+            | "set_content_pack_active"
+            | "delete_content_pack"
+
+            | "get_app_state"
             | "prepare_native_life_action"
             | "get_api_connections"
             | "get_api_binding"
@@ -187,6 +205,7 @@ pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
 }
 
 pub struct LifeRuntime {
+    care: self_care::CareMemory,
     outputs: action_output::OutputGate,
     native_routes: native_output_route::NativeOutputRoutes,
     pub(crate) session_outputs: session_output::SessionOutputs,
@@ -196,12 +215,14 @@ pub struct LifeRuntime {
     core: Mutex<Core>,
     monitor: OnceLock<NativeMonitor>,
     started: Instant,
+    social_epoch_ms: u64,
     running: AtomicBool,
     stopping: AtomicBool,
 }
 impl Default for LifeRuntime {
     fn default() -> Self {
         Self {
+            care: self_care::CareMemory::default(),
             outputs: action_output::OutputGate::default(),
             native_routes: native_output_route::NativeOutputRoutes::default(),
             session_outputs: session_output::SessionOutputs::default(),
@@ -216,12 +237,16 @@ impl Default for LifeRuntime {
             })),
             monitor: OnceLock::new(),
             started: Instant::now(),
+            social_epoch_ms: wall_ms(),
             running: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
         }
     }
 }
 impl LifeRuntime {
+    /// Persisted social events use one wall anchor plus this process's monotonic
+    /// elapsed time. Later wall-clock changes cannot reorder a running scene.
+    pub(crate) fn social_now(&self) -> u64 { self.social_epoch_ms.saturating_add(self.now()).min(crate::life_domain::MAX_COUNTER) }
     /// A coalesced native wake hint. It grants neither a session nor a retry.
     pub(crate) fn native_scene_wake(&self, bot: Option<&str>) { self.native_lifecycle.wake(bot); }
     /// Only an actual generation-owned dialog calls this before quiescing.
@@ -704,11 +729,18 @@ impl LifeRuntime {
                 {
                     continue;
                 }
+                let event = if !app.state::<crate::experience::ExperienceRuntime>().paused(&bot).unwrap_or(true)
+                    && core.local_fence(&bot, now).is_some() && core.world_outputs.ready(&bot, now).is_ok() {
+                    match state.store.life_care_preferences(&bot).and_then(|saved| saved.config.decay(elapsed).map_err(|_| "Ungültige Life-Produktdaten".to_owned())) {
+                        Ok(effect) => LifeEvent::ApplyNeedEffect { effect },
+                        Err(_) => { core.mark_storage_failure(&bot, now); continue; }
+                    }
+                } else { LifeEvent::Tick {} };
                 match state.store.apply_life_event(
                     &bot,
                     expected,
                     elapsed as i64,
-                    LifeEvent::Tick {},
+                    event,
                     wall_ms(),
                 ) {
                     Ok(commit) => {
@@ -749,6 +781,7 @@ impl LifeRuntime {
         });
         self.native_lifecycle.pulse(app);
         self.poll_actions(app);
+        self_care::pulse(self, app);
         let pending = self.core.lock().ok().and_then(|core| core.pending());
         if let Some((claim, generating)) = pending {
             if !self.current(&claim) {
@@ -785,7 +818,7 @@ impl LifeRuntime {
                 || native_scene::blocks_dialog_scheduling(app)
                 || state.generation.try_lock().is_err();
             let claim = self.core.lock().ok().and_then(|mut core| {
-                core.claim(self.now(), blocked, uuid::Uuid::new_v4().to_string())
+                core.claim_where(self.now(), blocked, uuid::Uuid::new_v4().to_string(), |bot| experience_allows_output(app, bot))
             });
             if let Some(claim) = claim {
                 self.native_lifecycle.claim_started();

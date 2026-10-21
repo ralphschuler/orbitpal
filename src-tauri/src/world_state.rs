@@ -146,6 +146,7 @@ impl WorkIdentity {
 #[serde(rename_all = "snake_case")]
 pub enum AnchorKind {
     Rest,
+    Snack,
     Meeting,
     Play,
 }
@@ -176,6 +177,8 @@ pub struct Anchor {
     slots: Vec<Slot>,
 }
 impl Anchor {
+    pub fn kind(&self) -> AnchorKind { self.kind }
+    pub fn slots(&self) -> &[Slot] { &self.slots }
     pub fn new(
         id: AnchorId,
         kind: AnchorKind,
@@ -270,6 +273,7 @@ impl WorldConfig {
     pub fn members(&self) -> &[ActorId] {
         &self.0.members
     }
+    pub fn anchors(&self) -> &[Anchor] { &self.0.anchors }
     pub fn safe_region(&self) -> Rect {
         self.0.safe_region
     }
@@ -342,6 +346,9 @@ pub struct SlotLease {
     resource_generation: u64,
     member: MemberHandle,
     work: WorkIdentity,
+}
+impl SlotLease {
+    pub(crate) fn slot_id(&self) -> &SlotId { &self.slot }
 }
 #[derive(Clone)]
 struct Participant {

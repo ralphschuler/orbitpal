@@ -44,6 +44,8 @@ fn goal(kind: Activity) -> Goal {
             kind: AnchorKind::Play,
             position: point(),
         },
+        Activity::Snack => Goal::Slot { id: SlotId::new("snack-1").unwrap(), kind: AnchorKind::Snack, position: point() },
+        Activity::Socialize => Goal::Slot { id: SlotId::new("meeting-1").unwrap(), kind: AnchorKind::Meeting, position: point() },
     }
 }
 fn apply(state: &mut LifeState, random: &mut RandomState, event: LifeEvent) {

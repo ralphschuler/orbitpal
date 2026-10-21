@@ -148,11 +148,19 @@ impl OverlayHub {
             if !route.current()||current.as_ref().is_none_or(|current|current.id!=route.id){return Err("Sprachausgabe wurde abgebrochen oder bereits beendet".into());}
         }
         let mut speech=self.speech.lock().map_err(|_|"Sprachausgabewarteschlange nicht verfügbar")?;
+        let mut voice=profile["voice"].clone();
+        if usage_origin.autonomous(){
+            let settings=app.state::<crate::AppState>().store.experience_settings(bot_id)?;
+            let paused=app.state::<crate::experience::ExperienceRuntime>().paused(bot_id)?;
+            if !settings.preferences.unsolicited_output(paused){return Err("experience_output_suppressed".into());}
+            let cap=f64::from(settings.preferences.effective_volume(paused))/100.0;
+            voice["volume"]=json!(voice["volume"].as_f64().unwrap_or(0.85).clamp(0.0,1.0).min(cap));
+        }
         if cancel.load(Ordering::Relaxed){return Err("Antwort abgebrochen".into());}
         if speech.len()>=64{return Err("Zu viele ausstehende Sprachausgaben. Bitte Wiedergaben beenden oder stoppen.".into());}
         let output=if session_output.is_some(){"overlay"}else{profile["output"]["mode"].as_str().unwrap_or("studio")}.to_owned();
         let route_id=session_output.as_ref().map(|route|route.id.clone());
-        let entry=SpeechEntry{id:id.into(),bot_id:bot_id.into(),text:text.into(),speech_text:speech_text.into(),voice:profile["voice"].clone(),emotion:emotion.into(),source:source.into(),user:user.into(),user_text:user_text.into(),hindsight:profile["hindsight"].clone(),assistant_name:profile["name"].as_str().unwrap_or("Cohost").into(),emotes:emotes.to_vec(),output:output.clone(),started:false,finished:false,cancel,chat_route,runtime_claim,usage_origin,session_output};
+        let entry=SpeechEntry{id:id.into(),bot_id:bot_id.into(),text:text.into(),speech_text:speech_text.into(),voice,emotion:emotion.into(),source:source.into(),user:user.into(),user_text:user_text.into(),hindsight:profile["hindsight"].clone(),assistant_name:profile["name"].as_str().unwrap_or("Cohost").into(),emotes:emotes.to_vec(),output:output.clone(),started:false,finished:false,cancel,chat_route,runtime_claim,usage_origin,session_output};
         if entry.cancelled(){return Err("Antwort abgebrochen".into());}
         let event=entry.speech_event();let timer_cancel=entry.cancel.clone();let watchdog=entry.requires_playback_watchdog();speech.push_back(entry);
         drop(speech);

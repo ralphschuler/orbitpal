@@ -1012,6 +1012,9 @@ impl Core {
         Reason::Ready
     }
     pub fn claim(&mut self, raw: u64, blocked: bool, turn_id: String) -> Option<Claim> {
+        self.claim_where(raw, blocked, turn_id, |_| true)
+    }
+    pub(crate) fn claim_where(&mut self, raw: u64, blocked: bool, turn_id: String, allowed: impl Fn(&str)->bool) -> Option<Claim> {
         let now = self.clock(raw);
         if self.shutdown
             || blocked
@@ -1031,7 +1034,7 @@ impl Core {
         let bot = self
             .sessions
             .iter()
-            .filter(|(_, session)| session.due <= now && self.reason(session, now) == Reason::Ready)
+            .filter(|(bot, session)| allowed(bot) && session.due <= now && self.reason(session, now) == Reason::Ready)
             .min_by_key(|(bot, session)| (session.last_served, session.due, *bot))
             .map(|(bot, _)| bot.clone())?;
         if self.claim_order == MAX_COUNTER {

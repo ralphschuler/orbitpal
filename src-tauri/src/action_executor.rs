@@ -183,6 +183,9 @@ pub(crate) struct PreparedPlan {
     intent: ActionIntent,
 }
 impl PreparedPlan {
+    pub(crate) fn visual_minimum(activity: Activity, goal: &Goal) -> Result<u64, ActionError> {
+        Ok(Policy::for_request(activity, goal, Presentation::Visual)?.minimum_active_ms)
+    }
     pub fn new(
         authority: NativeAuthority,
         before: &LifeState,
@@ -192,6 +195,30 @@ impl PreparedPlan {
         presentation: Presentation,
         capabilities: &Capabilities,
     ) -> Result<Self, ActionError> {
+        Self::configured(authority, before, random, activity, goal, presentation, capabilities, None)
+    }
+    pub(crate) fn care(
+        authority: NativeAuthority,
+        before: &LifeState,
+        random: RandomState,
+        activity: Activity,
+        goal: Goal,
+        presentation: Presentation,
+        capabilities: &Capabilities,
+        config: &crate::life_self_care::CareConfig,
+    ) -> Result<Self, ActionError> {
+        Self::configured(authority, before, random, activity, goal, presentation, capabilities, Some(config))
+    }
+    fn configured(
+        authority: NativeAuthority,
+        before: &LifeState,
+        random: RandomState,
+        activity: Activity,
+        goal: Goal,
+        presentation: Presentation,
+        capabilities: &Capabilities,
+        care: Option<&crate::life_self_care::CareConfig>,
+    ) -> Result<Self, ActionError> {
         before.validate().map_err(|_| ActionError::InvalidState)?;
         if before.actor_id() != authority.actor()
             || before.world_id() != &authority.source_world
@@ -200,6 +227,10 @@ impl PreparedPlan {
             return Err(ActionError::WrongAuthority);
         }
         let mut policy = Policy::for_request(activity, &goal, presentation)?;
+        if let Some(config) = care {
+            if presentation != Presentation::Visual { return Err(ActionError::UnsupportedCapability); }
+            policy.effect = catalog::Effect::care(activity, &goal, config)?;
+        }
         match presentation {
             Presentation::Visual => {
                 let minimum = capabilities
@@ -915,7 +946,7 @@ impl Executor {
                         }
                         (Activity::LookAt, Evidence::OrientationSettled) => true,
                         (
-                            Activity::Rest | Activity::Recharge | Activity::Play | Activity::Wave,
+                            Activity::Rest | Activity::Recharge | Activity::Snack | Activity::Play | Activity::Socialize | Activity::Wave,
                             Evidence::VisualFinished,
                         ) => true,
                         _ => false,

@@ -13,6 +13,12 @@ pub const DEFAULT_SKILL: &str = "---\nname: stream-begruessung\ndescription: Beg
 mod usage_store;
 #[path="life_store.rs"]
 pub(crate) mod life_store;
+#[path="life_care_store.rs"]
+pub(crate) mod life_care_store;
+#[path="social_store.rs"]
+pub(crate) mod social_store;
+#[path="experience_store.rs"]
+mod experience_store;
 #[path="world_store.rs"]
 pub(crate) mod world_store;
 #[path="action_store.rs"]
