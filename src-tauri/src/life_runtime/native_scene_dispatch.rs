@@ -58,14 +58,22 @@ struct ActionWatch {
     action: Arc<AtomicBool>,
     output: Arc<AtomicBool>,
     stream_source: Option<crate::platform_impulses::StreamActionFence>,
+    window_rest: Option<WindowRestWatch>,
+}
+struct WindowRestWatch {
+    guard: super::desktop_places::WindowRestGuard,
+    bot: String,
+    output: crate::world_output::OutputProof,
 }
 impl ActionWatch {
-    /// Main may check retained atoms and the original monotonic deadline only.
+    /// Main checks retained cancellation/deadline/geometry evidence only. The
+    /// rest guard's short freshness lock is released before any native getter.
     /// Terminals retire exact existing work even after its source was revoked.
-    fn current(&self, terminal: bool) -> bool {
+    fn current(&self, terminal: bool, now: u64) -> bool {
         terminal || (!self.action.load(Ordering::SeqCst)
             && !self.output.load(Ordering::SeqCst)
-            && self.stream_source.as_ref().is_none_or(|source| source.current()))
+            && self.stream_source.as_ref().is_none_or(|source| source.current())
+            && self.window_rest.as_ref().is_none_or(|rest| rest.guard.current(&rest.bot, &rest.output, now)))
     }
 }
 fn validate(app:&tauri::AppHandle, member:&NativeMember, work:&Work) -> Option<ActionWatch> {
@@ -91,8 +99,9 @@ fn validate(app:&tauri::AppHandle, member:&NativeMember, work:&Work) -> Option<A
     if job.key.action_id()!=&fence.action_id || visual.fence.as_ref()!=Some(fence)
         || !job.native_permit.as_ref().is_some_and(|permit|permit.current(&core,now)&&permit.matches_output(&visual.output))
         || !matches!(&visual.output.route, crate::world_output::SourceRoute::Native(route) if route.same_route(&work.route)) { return None; }
-    let watch=ActionWatch { action:job.cancel.clone(),output:visual.output.cancel.clone(),stream_source:job.stream_source.clone() };
-    watch.current(work.command.terminal()).then_some(watch)
+    let watch=ActionWatch { action:job.cancel.clone(),output:visual.output.cancel.clone(),stream_source:job.stream_source.clone(),
+        window_rest:job.window_rest.as_ref().map(|guard|WindowRestWatch {guard:guard.clone(),bot:fence.actor_id.clone(),output:visual.output.clone()}) };
+    watch.current(work.command.terminal(),state.life_runtime.now()).then_some(watch)
 }
 
 async fn run(app:&tauri::AppHandle, member:Arc<NativeMember>) {
@@ -116,23 +125,23 @@ async fn deliver(app:&tauri::AppHandle, member:&Arc<NativeMember>, work:&Work, w
     let (tx,rx)=tokio::sync::oneshot::channel();let main=app.clone();
     if app.run_on_main_thread(move||{
         let state=main.state::<crate::AppState>();let now=state.life_runtime.now();
-        // Main inspects retained identities and cancellation only. No Owned,
+        // Main inspects retained identities, cancellation and freshness only. No Owned,
         // Core, World or Store lock is taken while calling native GUI getters.
         let current=now<deadline&&exact.current()&&route.live_current(now)&&route.matches_auth(&exact.auth)
             &&exact.constructor.same_constructor(route.constructor())
-            &&watch.current(terminal)
+            &&watch.current(terminal,state.life_runtime.now())
             &&state.life_runtime.session_outputs.constructor_current(&exact.constructor)
             &&state.presentation.current_window(exact.constructor.bot(),exact.constructor.signals())
             &&!state.overlay.has_any_pending_speech()&&state.updater.ensure_idle().is_ok()
             &&state.generation.try_lock().is_ok();
-        let observed=current&&watch.current(terminal)
+        let observed=current&&watch.current(terminal,state.life_runtime.now())
             &&exact.constructor.window().url().is_ok_and(|url|policy.permits(&url))
-            &&watch.current(terminal)
+            &&watch.current(terminal,state.life_runtime.now())
             &&exact.constructor.window().is_visible().ok()==Some(true);
         // Native getters are observations, not a lease on their earlier time.
         let evaluated=observed&&state.life_runtime.now()<deadline&&exact.current()
             &&route.live_current(state.life_runtime.now())
-            &&watch.current(terminal)
+            &&watch.current(terminal,state.life_runtime.now())
             &&exact.constructor.window().eval(&script).is_ok();
         let _=tx.send(evaluated);
     }).is_err(){return false;}
@@ -186,37 +195,47 @@ mod tests {
         }
     }
     fn watch(stream_source: Option<StreamActionFence>) -> ActionWatch {
-        ActionWatch {action:Arc::new(AtomicBool::new(false)),output:Arc::new(AtomicBool::new(false)),stream_source}
+        ActionWatch {action:Arc::new(AtomicBool::new(false)),output:Arc::new(AtomicBool::new(false)),stream_source,window_rest:None}
     }
     #[test]
     fn queued_delivery_rechecks_original_source_deadline_without_waiting_for_poll_cancellation() {
         let fixture=Fixture::new();let clock=Arc::new(AtomicU64::new(0));
         let (source,_context)=StreamActionFence::controlled_for_test(fixture.store(),clock.clone(),100).unwrap();
         let watch=watch(Some(source));
-        assert!(watch.current(false),"validation before the Main queue is still current");
+        assert!(watch.current(false,0),"validation before the Main queue is still current");
         clock.store(99,Ordering::SeqCst);
-        assert!(watch.current(false),"the pre-getter boundary still has time");
+        assert!(watch.current(false,99),"the pre-getter boundary still has time");
         clock.store(100,Ordering::SeqCst);
         assert!(!watch.action.load(Ordering::SeqCst));assert!(!watch.output.load(Ordering::SeqCst));
-        assert!(!watch.current(false),"post-getter/eval must refuse even before the next native poll");
-        assert!(watch.current(true),"an exact terminal still retires expired work");
+        assert!(!watch.current(false,100),"post-getter/eval must refuse even before the next native poll");
+        assert!(watch.current(true,100),"an exact terminal still retires expired work");
     }
     #[test]
     fn disconnected_source_is_rechecked_even_when_delivery_tokens_have_not_changed() {
         let fixture=Fixture::new();let clock=Arc::new(AtomicU64::new(0));
         let (source,mut context)=StreamActionFence::controlled_for_test(fixture.store(),clock,100).unwrap();
-        let watch=watch(Some(source));assert!(watch.current(false));
+        let watch=watch(Some(source));assert!(watch.current(false,0));
         context.disconnected();
         assert!(!watch.action.load(Ordering::SeqCst));assert!(!watch.output.load(Ordering::SeqCst));
-        assert!(!watch.current(false));assert!(watch.current(true));
+        assert!(!watch.current(false,0));assert!(watch.current(true,0));
     }
     #[test]
     fn ordinary_source_absence_preserves_existing_cancel_and_terminal_semantics() {
-        let watch=watch(None);assert!(watch.current(false));
+        let watch=watch(None);assert!(watch.current(false,0));
         watch.action.store(true,Ordering::SeqCst);
-        assert!(!watch.current(false));assert!(watch.current(true));
+        assert!(!watch.current(false,0));assert!(watch.current(true,0));
         watch.action.store(false,Ordering::SeqCst);watch.output.store(true,Ordering::SeqCst);
-        assert!(!watch.current(false));assert!(watch.current(true));
+        assert!(!watch.current(false,0));assert!(watch.current(true,0));
+    }
+    #[test]
+    fn ordinary_actions_have_no_synthetic_window_sample_deadline() {
+        let watch=watch(None);
+        for now in [0,1500,1501,crate::life_domain::MAX_COUNTER] {
+            assert!(watch.current(false,now));
+        }
+        watch.action.store(true,Ordering::SeqCst);
+        assert!(!watch.current(false,1501));
+        assert!(watch.current(true,1501),"terminal cleanup keeps its existing exception");
     }
 
     #[test]
