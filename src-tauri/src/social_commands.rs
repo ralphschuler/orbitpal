@@ -18,11 +18,12 @@ fn mutate(window: &tauri::WebviewWindow, state: &AppState) -> Result<(), String>
 #[tauri::command]
 pub(crate) fn get_social_snapshot(
     window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     bot_id: String,
 ) -> Result<SocialSnapshot, String> {
     main_only(&window)?;
-    state.store.social_snapshot(&bot_id)
+    crate::life_runtime::social_host::snapshot(&app, &bot_id)
 }
 #[tauri::command]
 pub(crate) fn invite_social_scene(

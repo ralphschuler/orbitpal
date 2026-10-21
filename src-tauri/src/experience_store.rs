@@ -241,7 +241,7 @@ impl Store {
         use super::life_store::EventOrigin;
         use crate::{
             experience::{FactKind, FactPhase},
-            life_domain::{ActionPhase, CommittedEvent},
+            life_domain::CommittedEvent,
             social::{Outcome, SceneKind},
         };
         self.experience_owner(bot)?;
@@ -272,8 +272,7 @@ impl Store {
                 .map_err(storage)?
                 .ok_or("experience_missing_source")?;
             let state = actual.state();
-            let action = state.current_action().ok_or("experience_stale_source")?;
-            if state.actor_id().as_str()!=id||action.phase()!=ActionPhase::Completed||action.intent().id()!=&actions[index]||sources[index].actor_id().as_str()!=id||!actual.events().iter().any(|stored|stored.origin()==EventOrigin::Live&&stored.record().id()==&sources[index]&&matches!(stored.record().event(),CommittedEvent::Completed{action_id}if action_id==&actions[index])&&state.recent_events().any(|r|r==stored.record())){return Err("experience_stale_source".into())}
+            if state.actor_id().as_str()!=id||actions[index].actor_id().as_str()!=id||actions[index].world_id()!=state.world_id()||sources[index].actor_id().as_str()!=id||!actual.events().iter().any(|stored|stored.origin()==EventOrigin::Live&&stored.record().id()==&sources[index]&&matches!(stored.record().event(),CommittedEvent::Completed{action_id}if action_id==&actions[index])&&state.recent_events().any(|r|r==stored.record())){return Err("experience_stale_source".into())}
         }
         let kind = match event.kind() {
             SceneKind::Greeting => FactKind::Greeting,
