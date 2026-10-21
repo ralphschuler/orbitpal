@@ -101,6 +101,19 @@ orderly cycle disposes every Stage and observes every exact native window's
 Destroyed event before creating a new bank with fresh epochs. CPU/RSS continue
 to cover the entire app cgroup and cannot be attributed to only one figure.
 
+The separate manual `native-render-benchmark-pilot.yml` workflow accepts exactly
+one closed pilot mode, its reviewed immutable SHA and a successful manual smoke
+run ID. Before privileged setup and again immediately before launch, it reads
+only that public run's metadata from the fixed GitHub repository and requires
+the exact smoke workflow path, matching source/repositories and completed
+success. A smoke from another head, a fork, a running rerun or the ordinary CI
+workflow cannot qualify it. Its read-only job token is not forwarded through
+the privileged runner's empty environment. There is no automatic dispatch or
+three-job matrix. This prerequisite confirms only that the same-source smoke
+workflow succeeded; it does not turn the pilot into hardware, production Studio
+or full issue#66 acceptance. First registration on the default branch and
+maintainer source review follow the same requirements as the smoke workflow.
+
 Each pilot requests ten
 minutes of warmup followed by four 7.5-minute measurement phases, plus control
 baselines and close cycles. Neither the elapsed duration nor the software-GPU
