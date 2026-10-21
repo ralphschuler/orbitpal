@@ -21,6 +21,9 @@ jobs:
   validate:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
@@ -35,10 +38,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-      - name: Require the updater signing key
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-        run: node -e "if (!process.env.TAURI_SIGNING_PRIVATE_KEY?.trim()) throw new Error('TAURI_SIGNING_PRIVATE_KEY must be configured before publishing signed updater packages')"
       - name: Require matching manifests and an existing version tag
         id: version
         shell: bash
@@ -51,6 +50,12 @@ jobs:
           node scripts/release-provenance.mjs --context
       - name: Require the reviewed persistent macOS certificate policy
         run: node scripts/macos-signing-policy.mjs
+      - name: Require an existing tag-restricted signing environment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.version.outputs.commit }}
+        run: node scripts/release-environment.mjs
 
   verify:
     needs: validate
@@ -63,10 +68,12 @@ jobs:
   build:
     needs: [validate, verify]
     name: Package ${{ matrix.platform }}
+    environment: release-signing
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     permissions:
       contents: read
+      actions: read
       id-token: write
       attestations: write
     strategy:
@@ -102,6 +109,16 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - name: Recheck signing environment before private inputs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: node scripts/release-environment.mjs
+      - name: Require the updater signing key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: node -e "if (!process.env.TAURI_SIGNING_PRIVATE_KEY?.trim()) throw new Error('TAURI_SIGNING_PRIVATE_KEY must be configured before publishing signed updater packages')"
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable action
         with:
           toolchain: stable

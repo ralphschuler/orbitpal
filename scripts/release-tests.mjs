@@ -1,5 +1,6 @@
 import test from 'node:test';
 import './release-security-tests.mjs';
+import './release-environment-tests.mjs';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, symlinkSync, truncateSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
