@@ -97,7 +97,7 @@ smoke additionally checks the fixed one-Stage/two-WebView scope, three additiona
 cycles, zero live figure/Stage at completion and confirmed cleanup. Missing
 artifacts or an incomplete teardown cannot become success. Software-compositor
 qualification is separate from GPU/present timing, hardware performance and
-full issue#66 acceptance. No actual smoke has run at this documentation point.
+full issue#66 acceptance. No actual smoke has qualified this fixture.
 
 The explicit `pilot`, `pilot3` and `pilot5` modes are separate. Do not run them before the real short smoke
 and isolation checks pass. The existing native driver owns phase times, three
@@ -424,3 +424,73 @@ unchanged. All producer files still require the original pinned-directory,
 owner, stopped-writer and all-source validation. A rejected early/empty numeric
 file gains no fallback read, partial export or authority to pass. These fields
 only narrow a later actual failure; synthetic tests do not qualify native work.
+
+## Fourth actual smoke and closed collector exit diagnostics
+
+Run `39594587871`, exact source `ea0ec1349fea5411803fd642a9ff1d5b982aa6bb`,
+also passed the activator preflight and standalone cold build. Its digest-verified
+single-file result records phase 5, `collectorExit:1`, no observed app/compositor
+exit, `artifactExportRejected:true` and `cleanupConfirmed:true`. The collector
+exited before the runner's cleanup, but the former generic status 1 does not
+identify its exact refusal or prove whether it preceded a native startup error.
+No renderer initialization, frame, host-capability defect or smoke qualification
+is established by that result.
+
+The collector now uses this fixed source-authored exit manifest for the same 39
+reasons already accepted by `failure_summary`. It classifies only an exact
+`Refusal` with one known string argument. Other exceptions, unknown/private
+refusals, subclasses and malformed arguments remain status 1; their payloads are
+never formatted. Existing JSON classification, the fixed stderr message and all
+failure/cleanup/export checks remain unchanged. An OS signal is not a refusal:
+the owned child's negative `Popen` signal status remains distinct. A success
+still requires the original checks and status 0, never any diagnostic status.
+
+| Collector exit | Closed refusal reason |
+| --- | --- |
+| 64 | `unexpected_metadata_type` |
+| 65 | `metadata_limit` |
+| 66 | `invalid_fixture_root` |
+| 67 | `foreign_fixture_root` |
+| 68 | `invalid_fixture_marker` |
+| 69 | `process_metadata_limit` |
+| 70 | `invalid_process_metadata` |
+| 71 | `process_count_limit` |
+| 72 | `invalid_process_list` |
+| 73 | `invalid_process_scope` |
+| 74 | `unexpected_helper_uid` |
+| 75 | `process_scope_changed` |
+| 76 | `helper_network_scope_changed` |
+| 77 | `process_identity_changed` |
+| 78 | `invalid_group_cpu` |
+| 79 | `group_cpu_unavailable` |
+| 80 | `group_memory_unavailable` |
+| 81 | `group_metadata_limit` |
+| 82 | `group_clock_regressed` |
+| 83 | `cgroup_tree_limit` |
+| 84 | `process_scope_sample_raced` |
+| 85 | `invalid_cgroup_child` |
+| 86 | `collector_privilege_missing` |
+| 87 | `dedicated_group_missing` |
+| 88 | `compositor_scope_missing` |
+| 89 | `app_pid_not_observed` |
+| 90 | `invalid_app_pid` |
+| 91 | `foreign_app_pid` |
+| 92 | `network_scope_not_isolated` |
+| 93 | `collector_deadline` |
+| 94 | `unattributed_fresh_account_process` |
+| 95 | `process_identity_limit` |
+| 96 | `numeric_log_limit` |
+| 97 | `app_not_live_at_ready` |
+| 98 | `app_helpers_did_not_drain` |
+| 99 | `native_completion_not_proven` |
+| 100 | `not_disposable_collector` |
+| 101 | `invalid_collector_arguments` |
+| 102 | `invalid_fixture_uid` |
+
+These codes are retained by the existing pre-cleanup `bootstrap.collectorExit`
+field even when numeric export is rejected. They add no process/file/log read,
+raw payload, partial export or permission fallback. They describe an observed
+collector refusal, not necessarily the first cause of a wider startup failure.
+All nonzero statuses still fail. Controlled tests bind the documented table to
+the source literals, exercise the real `__main__` boundary and deliver actual
+SIGINT/SIGTERM only to an owned synthetic Python child; no app is launched.
