@@ -301,3 +301,145 @@ fn sqlite_counter_boundary_refuses_negative_oversized_and_exhausted_values() {
     assert!(s.social_next_scene_sequence(&actors).is_err());
     assert!(sql_counter(MAX_COUNTER + 1).is_err());
 }
+
+#[test]
+fn terminal_pair_and_scene_commit_atomically_and_accept_retained_actual_completion() {
+    use crate::life_domain::{Activity, LifeEvent, NeedEffect};
+    let f = Fixture::new();
+    let s = f.store();
+    let blue = bot_id(s.create_bot("Blue", false).unwrap());
+    let ids = ["nova", blue.as_str()];
+    let seq = s
+        .social_next_scene_sequence(&ids.map(str::to_owned))
+        .unwrap();
+    let (_, scene, events) = completed_live(&s, seq, ids);
+    let event = events.last().unwrap();
+    // A later genuine Plan does not erase the immutable actual Completed witness.
+    for id in ids {
+        let old = s.load_life(id).unwrap().unwrap();
+        s.apply_life_event(
+            id,
+            old.state().revision(),
+            0,
+            LifeEvent::Plan {
+                activity: Activity::Idle,
+                completion_effect: NeedEffect::default(),
+            },
+            event.at_ms() + 1,
+        )
+        .unwrap();
+    }
+    s.db.lock().unwrap().execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON social_scenes BEGIN SELECT RAISE(ABORT,'controlled failure'); END;").unwrap();
+    assert!(s.social_commit_terminal(&scene, event).is_err());
+    assert_eq!(s.social_snapshot("nova").unwrap().summary.completed, 0);
+    assert!(s.social_snapshot(&blue).unwrap().relationships.is_empty());
+    s.db.lock()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_terminal;")
+        .unwrap();
+    assert!(s.social_commit_terminal(&scene, event).unwrap());
+    assert!(!s.social_commit_terminal(&scene, event).unwrap());
+    for id in ids {
+        let snap = s.social_snapshot(id).unwrap();
+        assert_eq!(snap.summary.completed, 1);
+        assert_eq!(snap.scenes[0].phase, Phase::Completed);
+    }
+}
+#[test]
+fn dialogue_policy_and_daily_conservative_estimate_survive_reopen_and_reject_clock_rollback() {
+    use crate::social_dialogue::{Policy, Quote};
+    let f = Fixture::new();
+    let s = f.store();
+    let mut policy = Policy::default();
+    policy.model_enabled = true;
+    policy.estimated_micros_per_million = Some(1000);
+    policy.token_limit = 100;
+    policy.daily_token_limit = 100;
+    policy.cost_limit_micros = 10;
+    policy.daily_cost_limit_micros = 10;
+    let settings = s.social_set_dialogue_policy("nova", 0, policy).unwrap();
+    assert_eq!(settings.revision, 1);
+    assert!(s.social_set_dialogue_policy("nova", 0, policy).is_err());
+    let day = 86400000 * 100;
+    assert!(s
+        .social_reserve_dialogue_estimate(
+            "nova",
+            day,
+            Quote {
+                tokens: 60,
+                cost_micros: Some(6)
+            },
+            &policy
+        )
+        .unwrap());
+    drop(s);
+    let s = f.store();
+    assert_eq!(s.social_dialogue_settings("nova").unwrap().policy, policy);
+    assert!(!s
+        .social_reserve_dialogue_estimate(
+            "nova",
+            day,
+            Quote {
+                tokens: 60,
+                cost_micros: Some(6)
+            },
+            &policy
+        )
+        .unwrap());
+    assert!(s
+        .social_reserve_dialogue_estimate(
+            "nova",
+            day - 86400000,
+            Quote {
+                tokens: 1,
+                cost_micros: Some(1)
+            },
+            &policy
+        )
+        .is_err());
+    assert!(s
+        .social_reserve_dialogue_estimate(
+            "nova",
+            day + 86400000,
+            Quote {
+                tokens: 60,
+                cost_micros: Some(6)
+            },
+            &policy
+        )
+        .unwrap());
+    assert!(!s
+        .social_reserve_dialogue_estimate(
+            "nova",
+            day + 86400000,
+            Quote {
+                tokens: 1,
+                cost_micros: None
+            },
+            &policy
+        )
+        .unwrap());
+    let scoped = s.scoped("nova").unwrap();
+    let blue = bot_id(s.create_bot("Blue", false).unwrap());
+    assert!(scoped.social_dialogue_settings(&blue).is_err());
+}
+#[test]
+fn paired_experience_fact_comes_only_from_retained_committed_social_event() {
+    let f = Fixture::new();
+    let s = f.store();
+    let blue = bot_id(s.create_bot("Blue", false).unwrap());
+    let ids = ["nova", blue.as_str()];
+    let seq = s
+        .social_next_scene_sequence(&ids.map(str::to_owned))
+        .unwrap();
+    let (_, scene, events) = completed_live(&s, seq, ids);
+    let event = events.last().unwrap();
+    assert!(s.record_experience_social_event("nova", event).is_err());
+    s.social_commit_terminal(&scene, event).unwrap();
+    for id in ids {
+        assert!(s.record_experience_social_event(id, event).unwrap());
+        assert!(!s.record_experience_social_event(id, event).unwrap());
+    }
+    let third = bot_id(s.create_bot("Third", false).unwrap());
+    assert!(s.record_experience_social_event(&third, event).is_err());
+}

@@ -448,3 +448,169 @@ mod tests {
         assert!(p.validate().is_err());
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    fn event() -> SocialEvent {
+        let ids = ["nova", "blue"];
+        let (_, _, events, _) =
+            crate::social::tests::completed(1, ids, crate::social::tests::states(ids));
+        events.last().unwrap().clone()
+    }
+    fn admission() -> Admission {
+        Admission {
+            text: true,
+            voice: false,
+            model: true,
+            preset_generation: 7,
+        }
+    }
+    #[test]
+    fn only_real_completed_scene_starts_and_each_turn_needs_presentation() {
+        let event = event();
+        let mut hub = DialogueHub::default();
+        let now = 200000;
+        let id = hub
+            .start(&event, Policy::default(), admission(), now)
+            .unwrap();
+        assert_eq!(hub.next_speaker(&id), Some("nova"));
+        let turn = hub
+            .next(
+                &id,
+                admission(),
+                Quote {
+                    tokens: 100,
+                    cost_micros: Some(1),
+                },
+                now,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!turn.model);
+        assert_eq!(turn.fallback_reason, Some(FallbackReason::Disabled));
+        assert!(hub
+            .next(
+                &id,
+                admission(),
+                Quote {
+                    tokens: 1,
+                    cost_micros: Some(1)
+                },
+                now
+            )
+            .unwrap()
+            .is_none());
+        for locale in ["de", "en", "fr", "es"] {
+            assert!(turn.local(locale).text.chars().count() <= 240);
+        }
+        hub.presented(&turn, now + 1, 7).unwrap();
+        assert_eq!(hub.next_speaker(&id), Some("blue"));
+        assert!(hub.presented(&turn, now + 1, 7).is_err());
+        let next = hub
+            .next(
+                &id,
+                admission(),
+                Quote {
+                    tokens: 100,
+                    cost_micros: Some(1),
+                },
+                now + 2,
+            )
+            .unwrap()
+            .unwrap();
+        hub.presented(&next, now + 3, 7).unwrap();
+        assert!(hub.next_speaker(&id).is_none());
+        hub.finish(&id);
+        assert!(hub
+            .start(&event, Policy::default(), admission(), now + 4)
+            .is_err());
+    }
+    #[test]
+    fn unknown_or_exhausted_quote_uses_local_and_native_cancel_stops_bound_output() {
+        let event = event();
+        let mut hub = DialogueHub::default();
+        let mut policy = Policy::default();
+        policy.model_enabled = true;
+        policy.token_limit = 100;
+        policy.daily_token_limit = 100;
+        let id = hub.start(&event, policy, admission(), 200000).unwrap();
+        let turn = hub
+            .next(
+                &id,
+                admission(),
+                Quote {
+                    tokens: 100,
+                    cost_micros: None,
+                },
+                200000,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!turn.model);
+        assert_eq!(turn.fallback_reason, Some(FallbackReason::Budget));
+        let bound = Arc::new(AtomicBool::new(false));
+        turn.bind(bound.clone()).unwrap();
+        hub.cancel_actor("blue");
+        assert!(bound.load(Ordering::SeqCst));
+        assert!(!turn.current(200001, 7));
+        assert!(hub.presented(&turn, 200001, 7).is_err());
+    }
+    #[test]
+    fn model_turns_reserve_before_dispatch_and_preset_or_deadline_invalidates_pending() {
+        let event = event();
+        let mut hub = DialogueHub::default();
+        let mut policy = Policy::default();
+        policy.model_enabled = true;
+        policy.token_limit = 100;
+        policy.daily_token_limit = 100;
+        let id = hub.start(&event, policy, admission(), 200000).unwrap();
+        let turn = hub
+            .next(
+                &id,
+                admission(),
+                Quote {
+                    tokens: 100,
+                    cost_micros: Some(1),
+                },
+                200000,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(turn.model);
+        hub.presented(&turn, 200001, 7).unwrap();
+        let second = hub
+            .next(
+                &id,
+                admission(),
+                Quote {
+                    tokens: 1,
+                    cost_micros: Some(1),
+                },
+                200002,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(!second.model);
+        assert_eq!(second.fallback_reason, Some(FallbackReason::Budget));
+        assert!(hub.presented(&second, 200003, 8).is_err());
+        assert!(!second.current(second.deadline_ms + 1, 7));
+        let muted = Admission {
+            text: false,
+            ..admission()
+        };
+        assert!(hub
+            .next(
+                &id,
+                muted,
+                Quote {
+                    tokens: 0,
+                    cost_micros: None
+                },
+                200003
+            )
+            .unwrap()
+            .is_none());
+        assert!(second.cancelled());
+    }
+}
