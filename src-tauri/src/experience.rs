@@ -205,6 +205,15 @@ pub struct ImpulseStatus {
     pub queued: u8,
     pub accepted: u64,
     pub dropped: u64,
+    pub vote_windows: Vec<VoteWindowStatus>,
+}
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoteWindowStatus {
+    pub platform: String,
+    pub rest: u16,
+    pub play: u16,
+    pub closes_in_ms: u32,
 }
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -274,6 +283,7 @@ impl ExperienceRuntime {
                 queued: q.pending.len() as u8,
                 accepted: q.accepted,
                 dropped: q.dropped,
+                vote_windows: vec![],
             })
             .unwrap_or_default())
     }

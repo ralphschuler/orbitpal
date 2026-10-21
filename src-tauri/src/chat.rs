@@ -362,7 +362,7 @@ async fn emit_twitch(app: &tauri::AppHandle, event: &Value, seen: &mut Seen, own
         if content.is_empty() { system.to_string() } else if system.is_empty() { content.to_string() } else { format!("{system} {content}") }
     } else { details["message"]["text"].as_str().unwrap_or("").to_string() };
     if message.is_empty() { return; }
-    crate::platform_impulses::observe_message(app,context,"twitch",&reply_route_id,id,if kind=="channel.chat.message"{"message"}else{"notification"},&message,event["metadata"]["message_timestamp"].as_str().unwrap_or("")).await;
+    crate::platform_impulses::observe_message(app,context,"twitch",&reply_route_id,id,if kind=="channel.chat.message"{"message"}else{"notification"},&message,event["metadata"]["message_timestamp"].as_str().unwrap_or(""),details["chatter_user_id"].as_str().unwrap_or("")).await;
     let user = details["chatter_user_name"].as_str().filter(|s| !s.is_empty()).unwrap_or("Twitch");
     let _ = app.emit("cohost://chat", json!({"id":id,"platform":"twitch","replyRouteId":reply_route_id,"user":user,"userId":details["chatter_user_id"].as_str().unwrap_or(""),"text":message,"createdAt":event["metadata"]["message_timestamp"],"eventType":if kind == "channel.chat.notification" { details["notice_type"].as_str().unwrap_or("notification") } else { "message" }}));
 }
@@ -448,7 +448,7 @@ async fn youtube(config: Value, key: String, app: tauri::AppHandle, cancel: Arc<
                 let message = snippet["displayMessage"].as_str().or_else(|| snippet["textMessageDetails"]["messageText"].as_str()).unwrap_or("");
                 if message.is_empty() { continue; }
                 let Some(reply_route_id)=context.lock().await.incoming_route(snippet["liveChatId"].as_str().unwrap_or(&live_chat_id)) else {continue;};
-                crate::platform_impulses::observe_message(&app,&context,"youtube",&reply_route_id,id,kind,message,snippet["publishedAt"].as_str().unwrap_or("")).await;
+                crate::platform_impulses::observe_message(&app,&context,"youtube",&reply_route_id,id,kind,message,snippet["publishedAt"].as_str().unwrap_or(""),item["authorDetails"]["channelId"].as_str().unwrap_or("")).await;
                 let _ = app.emit("cohost://chat",json!({"id":id,"platform":"youtube","replyRouteId":reply_route_id,"user":item["authorDetails"]["displayName"].as_str().unwrap_or("YouTube"),"userId":item["authorDetails"]["channelId"].as_str().unwrap_or(""),"text":message,"createdAt":snippet["publishedAt"],"eventType":kind}));
             }
         }

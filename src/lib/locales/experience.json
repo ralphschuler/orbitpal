@@ -224,7 +224,10 @@
     "Beende zuerst die laufende Antwort.": "Finish the current response first.",
     "Auf Paketversion {version} umstellen": "Switch to pack version {version}",
     "Bestätigter Szenenverlauf": "Confirmed scene history",
-    "Die Reihenfolge zeigt gespeicherte native Phasen. Die Zeit bezeichnet die Einladung, nicht den Zeitpunkt jeder Phase.": "The order shows stored native phases. The time is the invitation time, not a timestamp for each phase."
+    "Die Reihenfolge zeigt gespeicherte native Phasen. Die Zeit bezeichnet die Einladung, nicht den Zeitpunkt jeder Phase.": "The order shows stored native phases. The time is the invitation time, not a timestamp for each phase.",
+    "Eine Abstimmung läuft je Verbindung 15 Sekunden: eine Stimme pro nativer Absenderkennung, höchstens 256 Stimmen. Bei Gleichstand passiert nichts. Nur der Gewinner wird als Vorschlag geprüft; die Ausführung ist damit nicht bestätigt.": "Each connection has a 15-second poll: one vote per native sender identity, up to 256 votes. Ties do nothing. Only the winner is checked as a proposal; this does not confirm execution.",
+    "Abstimmung offen": "Poll open",
+    "Restzeit bei Abfrage: {seconds} s": "Time left when checked: {seconds} s"
   },
   "fr": {
     "Alltag deiner Figuren": "Le quotidien de vos personnages",
@@ -451,7 +454,10 @@
     "Beende zuerst die laufende Antwort.": "Terminez d’abord la réponse en cours.",
     "Auf Paketversion {version} umstellen": "Passer à la version {version} du pack",
     "Bestätigter Szenenverlauf": "Historique des scènes confirmées",
-    "Die Reihenfolge zeigt gespeicherte native Phasen. Die Zeit bezeichnet die Einladung, nicht den Zeitpunkt jeder Phase.": "L’ordre montre les phases natives enregistrées. L’heure est celle de l’invitation, pas de chaque phase."
+    "Die Reihenfolge zeigt gespeicherte native Phasen. Die Zeit bezeichnet die Einladung, nicht den Zeitpunkt jeder Phase.": "L’ordre montre les phases natives enregistrées. L’heure est celle de l’invitation, pas de chaque phase.",
+    "Eine Abstimmung läuft je Verbindung 15 Sekunden: eine Stimme pro nativer Absenderkennung, höchstens 256 Stimmen. Bei Gleichstand passiert nichts. Nur der Gewinner wird als Vorschlag geprüft; die Ausführung ist damit nicht bestätigt.": "Chaque connexion a un vote de 15 secondes : une voix par identité native, jusqu’à 256 voix. Aucune action en cas d’égalité. Seul le gagnant est vérifié comme proposition ; son exécution reste à confirmer.",
+    "Abstimmung offen": "Vote en cours",
+    "Restzeit bei Abfrage: {seconds} s": "Temps restant lors de la lecture : {seconds} s"
   },
   "es": {
     "Alltag deiner Figuren": "La vida diaria de tus personajes",
@@ -678,6 +684,9 @@
     "Beende zuerst die laufende Antwort.": "Termina primero la respuesta actual.",
     "Auf Paketversion {version} umstellen": "Cambiar a la versión {version} del paquete",
     "Bestätigter Szenenverlauf": "Historial de escenas confirmadas",
-    "Die Reihenfolge zeigt gespeicherte native Phasen. Die Zeit bezeichnet die Einladung, nicht den Zeitpunkt jeder Phase.": "El orden muestra las fases nativas guardadas. La hora corresponde a la invitación, no a cada fase."
+    "Die Reihenfolge zeigt gespeicherte native Phasen. Die Zeit bezeichnet die Einladung, nicht den Zeitpunkt jeder Phase.": "El orden muestra las fases nativas guardadas. La hora corresponde a la invitación, no a cada fase.",
+    "Eine Abstimmung läuft je Verbindung 15 Sekunden: eine Stimme pro nativer Absenderkennung, höchstens 256 Stimmen. Bei Gleichstand passiert nichts. Nur der Gewinner wird als Vorschlag geprüft; die Ausführung ist damit nicht bestätigt.": "Cada conexión tiene una votación de 15 segundos: un voto por identidad nativa, hasta 256 votos. Los empates no hacen nada. Solo se comprueba al ganador como propuesta; su ejecución no está confirmada.",
+    "Abstimmung offen": "Votación abierta",
+    "Restzeit bei Abfrage: {seconds} s": "Tiempo restante al consultar: {seconds} s"
   }
 }

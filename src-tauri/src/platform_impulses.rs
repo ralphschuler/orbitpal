@@ -1,7 +1,10 @@
 //! Sealed native receive -> bounded proposal. Never an operator, reply or start route.
 use crate::{
     chat_route::{ConnectionContext, ImpulseSource},
-    experience::{ExperienceRuntime, ImpulseKind, NativeImpulse, Platform, MAX_TIME},
+    experience::{
+        ExperienceRuntime, ImpulseKind, NativeImpulse, Platform, Preferences, VoteWindowStatus,
+        MAX_TIME,
+    },
     AppState,
 };
 use std::{
@@ -12,6 +15,8 @@ use std::{
     },
 };
 use tauri::Manager;
+#[path = "platform_votes.rs"]
+mod vote;
 #[derive(Default)]
 pub struct PlatformImpulses {
     routes: Mutex<Routes>,
@@ -27,6 +32,65 @@ struct Owner {
     epoch: u64,
     session_id: String,
     sources: BTreeMap<String, ImpulseSource>,
+    votes: BTreeMap<String, VoteWindow>,
+}
+#[derive(Clone)]
+struct VoteWindow {
+    tally: vote::Window,
+    source: ImpulseSource,
+    session_id: String,
+    preferences: Preferences,
+}
+fn voter_id(platform: &str, id: &str) -> Option<String> {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return None;
+    }
+    event_id(&format!("{platform}-voter"), id)
+}
+impl PlatformImpulses {
+    pub(crate) fn vote_status(
+        &self,
+        owner: &str,
+        prefs: &Preferences,
+        store: &crate::storage::Store,
+    ) -> Vec<VoteWindowStatus> {
+        let Some(now) = now() else { return vec![] };
+        let Ok(profile) = store.bot_profile(owner) else {
+            return vec![];
+        };
+        let Ok(routes) = self.routes.lock() else {
+            return vec![];
+        };
+        let Some(entry) = routes.owners.get(owner) else {
+            return vec![];
+        };
+        entry
+            .votes
+            .iter()
+            .filter_map(|(platform, window)| {
+                if &window.preferences != prefs
+                    || !prefs.unsolicited_output(false)
+                    || !prefs.stream_impulses
+                    || !window.source.current_profile(&profile)
+                {
+                    return None;
+                }
+                let (rest, play, closes_in_ms) = window.tally.counts(now)?;
+                Some(VoteWindowStatus {
+                    platform: platform.clone(),
+                    rest,
+                    play,
+                    closes_in_ms,
+                })
+            })
+            .take(2)
+            .collect()
+    }
 }
 /// Sealed receive authority. Bind the executor's OWN cancellation token before
 /// its first await; never use connection cancellation as a job completion flag.
@@ -117,7 +181,13 @@ impl Routes {
                 epoch: self.sequence,
                 session_id: session_id.into(),
                 sources: BTreeMap::new(),
+                votes: BTreeMap::new(),
             });
+            if entry.session_id != session_id {
+                entry.votes.clear();
+            } else {
+                entry.votes.remove(source.platform());
+            }
             entry.epoch = self.sequence;
             entry.session_id = session_id.into();
             entry.sources.insert(source.platform().into(), source);
@@ -134,6 +204,7 @@ pub(crate) async fn observe_message(
     event_type: &str,
     text: &str,
     published_at: &str,
+    sender_id: &str,
 ) {
     let Some(kind) = command(event_type, text) else {
         return;
@@ -185,12 +256,64 @@ pub(crate) async fn observe_message(
         .routes
         .lock()
         .ok()
-        .and_then(|mut routes| routes.scope(source, &session_id))
+        .and_then(|mut routes| routes.scope(source.clone(), &session_id))
     else {
         return;
     };
     if changed {
         let _ = runtime.cancel_impulses(&owner);
+    }
+    if let Some(choice) = match kind {
+        ImpulseKind::VoteRest => Some(vote::Choice::Rest),
+        ImpulseKind::VotePlay => Some(vote::Choice::Play),
+        _ => None,
+    } {
+        let Some(voter) = voter_id(platform, sender_id) else {
+            return;
+        };
+        if settings.preferences.validate().is_err()
+            || settings.preferences.impulse_participants.is_empty()
+            || !settings.preferences.unsolicited_output(false)
+            || runtime.paused(&owner).unwrap_or(true)
+        {
+            return;
+        }
+        let Ok(mut routes) = registry.routes.lock() else {
+            return;
+        };
+        let Some(entry) = routes
+            .owners
+            .get_mut(&owner)
+            .filter(|o| o.epoch == epoch && o.session_id == session_id)
+        else {
+            return;
+        };
+        if entry
+            .votes
+            .get(platform)
+            .is_some_and(|w| w.preferences != settings.preferences || !w.source.same_route(&source))
+        {
+            entry.votes.remove(platform);
+        }
+        if !entry.votes.contains_key(platform) {
+            let Some(tally) = vote::Window::new(now, expiry, &event_id) else {
+                return;
+            };
+            entry.votes.insert(
+                platform.into(),
+                VoteWindow {
+                    tally,
+                    source,
+                    session_id,
+                    preferences: settings.preferences.clone(),
+                },
+            );
+        }
+        let Some(window) = entry.votes.get_mut(platform) else {
+            return;
+        };
+        let _ = window.tally.cast(&voter, &event_id, choice, now, expiry);
+        return;
     }
     let platform = match platform {
         "twitch" => Platform::Twitch,
@@ -228,7 +351,6 @@ pub(crate) fn pulse(app: &tauri::AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let _guard = guard;
-        let Some(now) = now() else { return };
         let state = app.state::<AppState>();
         let registry = app.state::<PlatformImpulses>();
         let owners = registry
@@ -274,13 +396,83 @@ pub(crate) fn pulse(app: &tauri::AppHandle) {
                             && s.session_id == scope.session_id
                     })
                 });
-            if !active {
+            if !active || runtime.paused(&owner).unwrap_or(true) {
                 let _ = runtime.cancel_impulses(&owner);
+                if let Ok(mut routes) = registry.routes.lock() {
+                    if let Some(entry) = routes
+                        .owners
+                        .get_mut(&owner)
+                        .filter(|o| o.epoch == scope.epoch)
+                    {
+                        entry.votes.clear();
+                    }
+                }
                 continue;
             }
             let Ok(settings) = state.store.experience_settings(&owner) else {
                 continue;
             };
+            let Some(now) = now() else { continue };
+            if let Ok(mut routes) = registry.routes.lock() {
+                if let Some(entry) = routes
+                    .owners
+                    .get_mut(&owner)
+                    .filter(|o| o.epoch == scope.epoch && o.session_id == scope.session_id)
+                {
+                    let due: Vec<_> = entry
+                        .votes
+                        .iter_mut()
+                        .filter_map(|(platform, w)| {
+                            (w.preferences != settings.preferences
+                                || w.session_id != scope.session_id
+                                || w.tally.due(now))
+                            .then(|| platform.clone())
+                        })
+                        .collect();
+                    for platform in due {
+                        let Some(window) = entry.votes.remove(&platform) else {
+                            continue;
+                        };
+                        if window.preferences != settings.preferences
+                            || window.session_id != scope.session_id
+                            || !entry
+                                .sources
+                                .get(&platform)
+                                .is_some_and(|source| source.same_route(&window.source))
+                        {
+                            continue;
+                        }
+                        let Some(winner) = window.tally.finish(now) else {
+                            continue;
+                        };
+                        let Some(id) = event_id(&format!("{platform}-vote"), &winner.first_event)
+                        else {
+                            continue;
+                        };
+                        let platform = if platform == "twitch" {
+                            Platform::Twitch
+                        } else {
+                            Platform::Youtube
+                        };
+                        let event = NativeImpulse {
+                            platform,
+                            event_id: id,
+                            connection_generation: entry.epoch,
+                            received_ms: winner.opened,
+                            expires_ms: winner.expires,
+                            kind: winner.kind,
+                            actor_ids: window.preferences.impulse_participants,
+                        };
+                        let _ = runtime.admit_native_impulse(
+                            &owner,
+                            event,
+                            entry.epoch,
+                            now,
+                            &settings.preferences,
+                        );
+                    }
+                }
+            }
             let Ok(Some(event)) =
                 runtime.take_native_impulse(&owner, scope.epoch, now, &settings.preferences)
             else {
@@ -390,6 +582,50 @@ mod tests {
         let (both, changed) = routes.scope(youtube, "session").unwrap();
         assert!(changed && both > new);
         assert_eq!(routes.owners["owner"].sources.len(), 2);
+    }
+    #[test]
+    fn native_sender_identity_is_platform_scoped_and_never_a_chat_selected_actor() {
+        let twitch = voter_id("twitch", "123456").unwrap();
+        assert_eq!(Some(twitch.clone()), voter_id("twitch", "123456"));
+        assert_ne!(Some(twitch.clone()), voter_id("youtube", "123456"));
+        assert!(!twitch.contains("123456"));
+        assert!(voter_id("twitch", "").is_none());
+        assert!(voter_id("twitch", "!orbit play").is_none());
+        assert!(voter_id("youtube", &"a".repeat(129)).is_none());
+    }
+    #[test]
+    fn vote_window_is_lost_on_exact_route_or_life_session_replacement() {
+        let mut routes = Routes::default();
+        let native = source("owner", "twitch", "channel");
+        routes.scope(native.clone(), "session").unwrap();
+        let prefs = Preferences::default();
+        routes.owners.get_mut("owner").unwrap().votes.insert(
+            "twitch".into(),
+            VoteWindow {
+                tally: vote::Window::new(100, 30_100, "event").unwrap(),
+                source: native.clone(),
+                session_id: "session".into(),
+                preferences: prefs.clone(),
+            },
+        );
+        routes.scope(native.clone(), "session").unwrap();
+        assert_eq!(routes.owners["owner"].votes.len(), 1);
+        routes.scope(native, "new-session").unwrap();
+        assert!(routes.owners["owner"].votes.is_empty());
+        let retained = routes.owners["owner"].sources["twitch"].clone();
+        routes.owners.get_mut("owner").unwrap().votes.insert(
+            "twitch".into(),
+            VoteWindow {
+                tally: vote::Window::new(100, 30_100, "event_next").unwrap(),
+                source: retained,
+                session_id: "new-session".into(),
+                preferences: prefs,
+            },
+        );
+        assert_eq!(routes.owners["owner"].votes.len(), 1);
+        let replacement = source("owner", "twitch", "channel");
+        routes.scope(replacement, "new-session").unwrap();
+        assert!(routes.owners["owner"].votes.is_empty());
     }
     #[test]
     fn native_ids_are_stable_platform_scoped_and_not_raw_payloads() {

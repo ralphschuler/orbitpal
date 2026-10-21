@@ -4,7 +4,7 @@ use crate::{
     experience::{self, ExperienceRuntime, InteractionRequest, Preferences, Snapshot},
     AppState,
 };
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.label() != "main" {
         return Err("experience_main_only".into());
@@ -15,15 +15,23 @@ fn snapshot(
     state: &AppState,
     runtime: &ExperienceRuntime,
     bot_id: &str,
+    app: &tauri::AppHandle,
 ) -> Result<Snapshot, String> {
+    let settings = state.store.experience_settings(bot_id)?;
+    let mut impulses = runtime.impulse_status(bot_id)?;
+    if !runtime.paused(bot_id)? {
+        impulses.vote_windows = app
+            .state::<crate::platform_impulses::PlatformImpulses>()
+            .vote_status(bot_id, &settings.preferences, &state.store);
+    }
     Ok(Snapshot {
         version: 1,
         bot_id: bot_id.into(),
-        settings: state.store.experience_settings(bot_id)?,
+        settings,
         paused: runtime.paused(bot_id)?,
         facts: state.store.experience_facts(bot_id)?,
         desktop_capabilities: Default::default(),
-        impulses: runtime.impulse_status(bot_id)?,
+        impulses,
     })
 }
 pub(crate) fn native_snapshot(app: &tauri::AppHandle, bot: &str) -> Result<Snapshot,String> {
@@ -33,12 +41,13 @@ pub(crate) fn native_snapshot(app: &tauri::AppHandle, bot: &str) -> Result<Snaps
 #[tauri::command]
 pub fn get_experience_snapshot(
     window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     runtime: State<'_, ExperienceRuntime>,
     bot_id: String,
 ) -> Result<Snapshot, String> {
     main_only(&window)?;
-    snapshot(&state, &runtime, &bot_id)
+    snapshot(&state, &runtime, &bot_id, &app)
 }
 #[tauri::command]
 pub async fn set_experience_preferences(
@@ -56,7 +65,7 @@ pub async fn set_experience_preferences(
         .store
         .set_experience_preferences(&bot_id, expected_revision, preferences)?;
     crate::life_runtime::experience_preferences_changed(&app, &bot_id, &next.preferences).await?;
-    let result = snapshot(&state, &runtime, &bot_id)?;
+    let result = snapshot(&state, &runtime, &bot_id, &app)?;
     let _ = app.emit_to("main", "experience-state", &result);
     Ok(result)
 }
@@ -79,7 +88,7 @@ pub async fn set_experience_pause(
     if !paused {
         runtime.set_paused(&bot_id, false)?;
     }
-    let result = snapshot(&state, &runtime, &bot_id)?;
+    let result = snapshot(&state, &runtime, &bot_id, &app)?;
     let _ = app.emit_to("main", "experience-state", &result);
     Ok(result)
 }

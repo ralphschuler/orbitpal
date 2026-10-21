@@ -10,4 +10,11 @@ describe('experience native projections',()=>{
  it('never turns admission into completion or accepts a stale interaction result',()=>{const result={version:1,botId:'nova',kind:'play',status:'accepted',reason:null};expect(parseInteraction(result,'nova','play').status).toBe('accepted');expect(()=>parseInteraction(result,'other','play')).toThrow();expect(()=>parseInteraction({...result,status:'completed'},'nova','play')).toThrow();expect(()=>parseInteraction(result,'nova','home')).toThrow();});
  it('aggregates only unique completed facts, never offline empty days or running actions',()=>{const groups=factualRecap([fact('one'),fact('one'),fact('two'),fact('running','started'),fact('cancel','cancelled')]);expect(groups).toEqual([{day:1,kind:'rest',actorIds:['nova'],count:2,eventIds:['one','two']}]);expect(factualRecap([])).toEqual([]);});
  it('public preview uses explicit sharing only and does not mutate stored facts',()=>{const facts=[fact('private'),fact('shared','completed',true)];expect(factualRecap(facts,true)[0].eventIds).toEqual(['shared']);expect(facts[0].shared).toBe(false);expect(factualRecap(facts)[0].count).toBe(2);});
+ it('validates closed numeric vote windows without accepting voters, chat text or extra platforms',()=>{
+   const vote={platform:'twitch',rest:2,play:3,closesInMs:12000};const s=snapshot();
+   const parsed=parseExperience({...s,impulses:{...s.impulses,voteWindows:[{...vote,voters:['PRIVATE'],text:'PRIVATE'}]}},'nova');
+   expect(parsed.impulses.voteWindows).toEqual([vote]);expect(JSON.stringify(parsed)).not.toContain('PRIVATE');
+   for(const voteWindows of [[{...vote,platform:'chat'}],[{...vote,rest:257}],[{...vote,rest:200,play:200}],[{...vote,closesInMs:0}],[vote,vote]])expect(()=>parseExperience({...s,impulses:{...s.impulses,voteWindows}},'nova')).toThrow();
+ });
+
 });
