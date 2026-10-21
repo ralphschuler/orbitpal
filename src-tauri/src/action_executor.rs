@@ -154,7 +154,9 @@ impl Capabilities {
         native_rest_dwell_opt_in: bool,
     ) -> Result<Self, ActionError> {
         if visual.len() > 6
-            || visual.iter().any(|(_, ms)| *ms > 60_000)
+            || visual.iter().any(|(kind, ms)| *ms > if matches!(kind,
+                Activity::Rest | Activity::Recharge | Activity::Snack | Activity::Play | Activity::Socialize
+            ) { crate::life_self_care::MAX_CARE_DURATION_MS } else { 60_000 })
             || visual.iter().enumerate().any(|(index, (kind, _))| {
                 visual[..index].iter().any(|(previous, _)| previous == kind)
             })
@@ -185,6 +187,13 @@ pub(crate) struct PreparedPlan {
 impl PreparedPlan {
     pub(crate) fn visual_minimum(activity: Activity, goal: &Goal) -> Result<u64, ActionError> {
         Ok(Policy::for_request(activity, goal, Presentation::Visual)?.minimum_active_ms)
+    }
+    pub(crate) fn care_visual_minimum(activity: Activity, goal: &Goal, config: &crate::life_self_care::CareConfig) -> Result<u64, ActionError> {
+        config.validate().map_err(|_|ActionError::UnsupportedCapability)?;
+        if !matches!(activity, Activity::Rest | Activity::Recharge | Activity::Snack | Activity::Play | Activity::Socialize) {
+            return Err(ActionError::UnsupportedCapability);
+        }
+        Ok(Self::visual_minimum(activity, goal)?.max(config.minimum_duration_ms))
     }
     pub fn new(
         authority: NativeAuthority,
@@ -230,6 +239,7 @@ impl PreparedPlan {
         if let Some(config) = care {
             if presentation != Presentation::Visual { return Err(ActionError::UnsupportedCapability); }
             policy.effect = catalog::Effect::care(activity, &goal, config)?;
+            policy.minimum_active_ms = Self::care_visual_minimum(activity, &goal, config)?;
         }
         match presentation {
             Presentation::Visual => {

@@ -75,7 +75,7 @@ impl StreamActionFence {
             "twitch", &profile, None, Arc::new(AtomicBool::new(false)),
         )?;
         context.mark_connected("controlled-native-channel");
-        let source = context.impulse_source("twitch", context.route_id().ok_or(ERROR)?, &profile)?;
+        let source = context.impulse_source("twitch", context.route_id().ok_or(ERROR)?, &profile).ok_or(ERROR)?;
         let lease = DispatchLease {
             source,
             deadline: NativeDeadline { until: Instant::now(), controlled: Some((clock, until)) },

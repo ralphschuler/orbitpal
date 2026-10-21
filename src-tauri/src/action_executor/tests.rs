@@ -70,6 +70,9 @@ struct Rig {
 }
 impl Rig {
     fn new(kind: Activity, presentation: Presentation) -> Self {
+        Self::configured(kind, presentation, None)
+    }
+    fn configured(kind: Activity, presentation: Presentation, care: Option<&crate::life_self_care::CareConfig>) -> Self {
         let authority = authority("nova");
         let mut state = initial("nova");
         let mut random = RandomState::seeded(17);
@@ -79,12 +82,14 @@ impl Rig {
             presentation == Presentation::NativeRestDwell,
         )
         .unwrap();
-        let goal = if presentation == Presentation::NativeRestDwell {
+        let goal = if presentation == Presentation::NativeRestDwell || care.is_some() {
             Goal::Here(point())
         } else {
             goal(kind)
         };
-        let plan = PreparedPlan::new(
+        let plan = if let Some(config) = care {
+            PreparedPlan::care(authority.clone(), &state, random, kind, goal.clone(), presentation, &capabilities, config)
+        } else { PreparedPlan::new(
             authority.clone(),
             &state,
             random,
@@ -92,7 +97,7 @@ impl Rig {
             goal.clone(),
             presentation,
             &capabilities,
-        )
+        ) }
         .unwrap();
         apply(&mut state, &mut random, plan.event().clone());
         let mut world = None;
@@ -1009,4 +1014,39 @@ fn declared_long_station_duration_is_bounded_and_never_a_completion_receipt() {
     let prepared=PreparedPlan::care(authority,&before,RandomState::seeded(7),Activity::Rest,goal(Activity::Rest),Presentation::Visual,&caps,&Default::default()).unwrap();
     assert_eq!(prepared.policy.minimum_active_ms,60_000);assert_eq!(prepared.policy.maximum_run_ms,75_000);
     assert!(matches!(prepared.event(),LifeEvent::Plan{..}));assert!(before.current_action().is_none());
+}
+
+#[test]
+fn saved_care_minimum_blocks_real_executor_completion_until_confirmed_active_time() {
+    let config=crate::life_self_care::CareConfig{minimum_duration_ms:60_000,..Default::default()};
+    let mut rig=Rig::configured(Activity::Play,Presentation::Visual,Some(&config));
+    let needs=rig.state.needs();rig.start();
+    assert_eq!(rig.receipt(Receipt::Completed(Evidence::VisualFinished),1002),Err(ActionError::InvalidTransition));
+    for now in (1002..60_002).step_by(1000) {
+        assert_eq!(rig.receipt(Receipt::Progress,now).unwrap(),Decision::Accepted);
+    }
+    assert_eq!(rig.receipt(Receipt::Completed(Evidence::VisualFinished),60_001),Err(ActionError::InvalidTransition));
+    assert_eq!(rig.state.needs(),needs);
+    let Decision::Commit(request)=rig.receipt(Receipt::Completed(Evidence::VisualFinished),60_002).unwrap() else {panic!("expected real Complete proposal");};
+    assert_eq!(rig.executor.status(&rig.key),Some(Status::Started));
+    assert_eq!(rig.state.needs(),needs,"elapsed time alone is not a Store receipt");
+    rig.commit(request,60_002);
+    assert_eq!(rig.executor.status(&rig.key),Some(Status::Completed));
+    assert!(rig.state.needs().engagement().units()>needs.engagement().units());
+}
+
+#[test]
+fn maximum_saved_care_duration_has_matching_bounded_policy_and_capabilities() {
+    let before=initial("nova");let authority=authority("nova");
+    let config=crate::life_self_care::CareConfig{minimum_duration_ms:600_000,..Default::default()};
+    let caps=Capabilities::new(authority.clone(),vec![(Activity::Play,600_000)],false).unwrap();
+    let prepared=PreparedPlan::care(authority.clone(),&before,RandomState::seeded(7),Activity::Play,goal(Activity::Play),Presentation::Visual,&caps,&config).unwrap();
+    assert_eq!(prepared.policy.minimum_active_ms,600_000);
+    assert_eq!(prepared.policy.maximum_run_ms,615_000);
+    assert!(Capabilities::new(authority.clone(),vec![(Activity::Play,600_001)],false).is_err());
+    assert!(Capabilities::new(authority.clone(),vec![(Activity::MoveTo,60_001)],false).is_err());
+    assert!(PreparedPlan::new(authority.clone(),&before,RandomState::seeded(7),Activity::Play,goal(Activity::Play),Presentation::Visual,&caps).is_err(),"ordinary non-care policies keep their fixed run bounds");
+    let invalid=crate::life_self_care::CareConfig{minimum_duration_ms:600_001,..config};
+    assert!(PreparedPlan::care_visual_minimum(Activity::Play,&goal(Activity::Play),&invalid).is_err());
+    assert_eq!(before,initial("nova"));
 }

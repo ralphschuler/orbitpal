@@ -573,7 +573,8 @@ fn station_execution_requires_explicit_capability_and_a_full_accepted_idle_span(
     proof.binding.station_supported = true; // Controlled Studio observation only.
     assert!(VisualExecution::for_activity(proof.clone(), target, Activity::Wave, 1000, 0).is_err());
     assert!(VisualExecution::for_activity(proof.clone(), target, Activity::Play, 0, 0).is_err());
-    assert!(VisualExecution::for_activity(proof.clone(), target, Activity::Play, 60_001, 0).is_err());
+    assert!(VisualExecution::for_activity(proof.clone(), target, Activity::Play, 600_001, 0).is_err());
+    assert_eq!(VisualExecution::for_activity(proof.clone(), target, Activity::Play, 600_000, 0).unwrap().minimum_active_ms, 600_000);
     let mut visual = VisualExecution::for_activity(proof, target, Activity::Play, 1000, 0).unwrap();
     visual.observe(&frame(2, 400.0, false), ReportKind::Started, 0, 0).unwrap();
     for (index, now) in (100..=900).step_by(100).enumerate() {

@@ -13,26 +13,38 @@ visible pose, animation, arrival or recharge. It neither invokes providers nor
 requires a dialogue model, voice or usage-budget reservation. It does not start
 Life, enqueue a successor or implement the later self-care planner.
 
-The optional [Studio World adapter](WORLD-OUTPUT.md) supports a one-use operator
-MoveTo for the selected Studio character in an already active Life session.
-Registration, current measured geometry and native route authority are required
-before Plan allocation. Arena metadata alone is not visual capability. Other
-participants remain mirrors; native overlay/OBS and other visual activities stay
-unavailable. Visual Offers never go to the legacy speech/character renderer.
+The [Studio World adapter](WORLD-OUTPUT.md) and private
+[native World adapter](NATIVE-WORLD-ADAPTER.md) use measured current output and
+the existing executor. Registration, geometry and exact native route authority
+are required before Plan allocation. Arena metadata alone is not visual
+capability. Studio/OBS mirrors cannot acknowledge a native owner's work. The
+native care and social paths are implemented; actual multi-platform rendering
+and lifecycle qualification remain separate from controlled tests. Visual
+Offers never go to the legacy speech/character renderer.
 
 ## Fixed policy and persistent identity
 
-The catalogue accepts only the existing MoveTo, Rest, Recharge, Play, LookAt and
-Wave activities. Typed goals are a canonical point, explicit slot/kind, selected
-actor, or current point. Rest/recharge require a Rest slot; play requires a Play
-slot. A slot goal also requires an opaque native SlotLease. The host must validate
+The catalogue accepts only MoveTo, Rest, Recharge, Snack, Play, Socialize, LookAt
+and Wave. Typed goals are a canonical point, explicit slot/kind, selected actor,
+or current point. Station actions require the matching typed slot or their
+explicit weaker Here fallback. A slot goal requires an opaque native SlotLease. The host must validate
 that exact lease and canonical target through WorldHub before dispatch and
 completion; this pure executor cannot inspect current native topology.
 
-Visual rest currently proposes +500 energy, recharge +1000 energy and play +500
-engagement; move/look/wave propose zero effects. These are explicit native policy
-constants, bounded by the existing fixed-point needs scale. They are not supplied
-by a model or output, and new priority/self-care routines remain separate work.
+The fixed catalogue proposes +500 energy for rest, +1000 for recharge and +500
+engagement for play; move/look/wave propose zero effects. Care plans use the
+operator's validated bounded restore values, with half effects for Here
+fallbacks. Models and outputs cannot supply these effects.
+
+Care's saved minimum duration is enforced by both the actual visual contract
+and executor policy. The minimum is the largest of the fixed activity minimum,
+the operator setting and any active package duration. The already supported
+operator range of 1–600,000ms is retained; stationary offers and care run
+deadlines remain bounded at 600,000ms and at least that minimum plus 15 seconds,
+respectively. MoveTo retains its existing limits. Fresh frames/progress and a
+real Complete transaction are still required; a long duration supplies no
+completion receipt or permission. Stop and source loss remain immediately
+cancellable. The quiet nonvisual ten-second rest path remains separate.
 
 `PreparedPlan` takes an actual current Life state/random snapshot, creates the
 fixed Plan event and uses the pure domain reducer **only for Plan** to determine

@@ -44,6 +44,15 @@ function commit(follower: WorldMotionFollower, value: MotionBinding, now: number
 }
 
 describe('strict local motion protocol', () => {
+  it('retains the full saved care duration only for bounded stationary offers', () => {
+    const value=binding({stationSupported:true});
+    const command={...offer(value),activity:'play',minimumActiveMs:600_000,validForMs:615_000};
+    expect(parseWorldMotionCommand(command)).not.toBeNull();
+    expect(parseWorldMotionCommand({...command,minimumActiveMs:600_001})).toBeNull();
+    expect(parseWorldMotionCommand({...command,validForMs:615_001})).toBeNull();
+    expect(parseWorldMotionCommand({...command,activity:'move_to',minimumActiveMs:0})).toBeNull();
+    expect(parseWorldMotionCommand({...command,activity:'move_to',minimumActiveMs:1,validForMs:30_000})).toBeNull();
+  });
   it('accepts an actual asymmetric 700/100 envelope in 1080px while keeping symmetric metadata consistent',()=>{
     const value=binding({viewport:{width:1000,height:1080},position:{x:500,y:864},
       envelopeExtents:{left:40,top:700,right:60,bottom:100},maximumFootprint:{width:120,height:1400},

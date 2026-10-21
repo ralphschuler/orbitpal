@@ -98,7 +98,10 @@ impl CareConfig {
 }
 
 pub(crate) const MAX_OFFERS: usize = 32;
-const MAX_DELAY_MS: u64 = 600_000;
+/// Saved care durations already allow ten minutes. Native visual contracts
+/// retain this bound rather than silently shortening an operator's setting.
+pub(crate) const MAX_CARE_DURATION_MS: u64 = 600_000;
+const MAX_DELAY_MS: u64 = MAX_CARE_DURATION_MS;
 const MAX_SCORE: u64 = 10_000_000_000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

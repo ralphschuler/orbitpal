@@ -839,7 +839,10 @@ fn admit_visual_activity_guarded(
                 let config=care_config.as_ref().ok_or_else(||UNAVAILABLE.to_owned())?;
                 super::content_host::resolve_for_state(&packs,reference,kind,activity,actual.state(),&config.config).ok_or_else(||UNAVAILABLE.to_owned())
             }).transpose()?;
-        let minimum=PreparedPlan::visual_minimum(activity,&goal).map_err(invalid)?.max(content.as_ref().and_then(|usage|usage.behavior.as_ref()).map_or(0,|behavior|behavior.duration_ms));
+        let minimum=match &care_config {
+            Some(config)=>PreparedPlan::care_visual_minimum(activity,&goal,&config.config),
+            None=>PreparedPlan::visual_minimum(activity,&goal),
+        }.map_err(invalid)?.max(content.as_ref().and_then(|usage|usage.behavior.as_ref()).map_or(0,|behavior|behavior.duration_ms));
         let visual = crate::world_output::VisualExecution::for_activity(output,target,activity,minimum,now()).map_err(invalid)?;
         let authority = NativeAuthority::new(
             context.session.clone(),

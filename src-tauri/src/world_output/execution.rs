@@ -37,7 +37,7 @@ impl VisualExecution {
         use crate::life_domain::Activity;
         let station = matches!(activity, Activity::Rest | Activity::Recharge | Activity::Snack
             | Activity::Play | Activity::Socialize);
-        if minimum_active_ms > 60_000
+        if minimum_active_ms > crate::life_self_care::MAX_CARE_DURATION_MS
             || activity == Activity::MoveTo && minimum_active_ms != 0
             || station && (!output.binding.station_supported || minimum_active_ms == 0)
             || activity != Activity::MoveTo && !station
