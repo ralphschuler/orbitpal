@@ -1394,7 +1394,12 @@ async fn send_dialogue_mode(
         .autopilot
         .admit(&claim.bot_id, &crate::autopilot::config(&profile)?)?;
     runtime.bind(claim, ticket.cancel.clone())?;
-    *state.cancel.lock().map_err(|_| ERROR)? = Some(ticket.cancel.clone());
+    // Only the model path owns the app-wide generation turn. Local text is
+    // cancelled through its Core binding and must not replace a concurrent
+    // manual generation's global cancellation token.
+    if !local_only {
+        *state.cancel.lock().map_err(|_| ERROR)? = Some(ticket.cancel.clone());
+    }
     let mut model = profile["model"].clone();
     model["maxTokens"] = serde_json::json!(128);
     let mut quote = dialogue_quote(&model, &context.policy);
