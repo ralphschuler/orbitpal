@@ -206,6 +206,33 @@ fn save_bot(tx: &Transaction, id: &str, bot: &Bot) -> Result<(), String> {
     tx.execute("INSERT INTO social_bots VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(owner) DO UPDATE SET revision=excluded.revision,sequence=excluded.sequence,mask=excluded.mask,context_sequence=excluded.context_sequence,context_mask=excluded.context_mask,action_world=excluded.action_world,action_ordinal=excluded.action_ordinal,character=excluded.character,summary=excluded.summary,context_goal=excluded.context_goal",params![id,sql_counter(bot.revision)?,sql_counter(bot.sequence)?,bot.mask,sql_counter(bot.context_sequence)?,bot.context_mask,bot.action_world,sql_counter(bot.action_ordinal)?,encode(&bot.character)?,encode(&bot.summary)?,bot.context_goal]).map_err(err)?;
     Ok(())
 }
+/// Creation-only template seed. Existing bot preferences are never overwritten.
+pub(super) fn seed_template_character(
+    tx: &Transaction,
+    id: &str,
+    sociability: u16,
+    rest_preference: u16,
+) -> Result<(), String> {
+    if sociability > 1000 || rest_preference > 1000 {
+        return Err(FAIL.into());
+    }
+    owner(tx, None, id)?;
+    if tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM social_bots WHERE owner=?1)",
+            [id],
+            |r| r.get::<_, bool>(0),
+        )
+        .map_err(err)?
+    {
+        return Err("social template owner already initialized".into());
+    }
+    let mut state = bot(tx, id)?;
+    state.character.traits.sociability = sociability;
+    state.character.traits.rest_preference = rest_preference;
+    state.character.validate()?;
+    save_bot(tx, id, &state)
+}
 fn bump(tx: &Transaction) -> Result<(), String> {
     if tx
         .execute(

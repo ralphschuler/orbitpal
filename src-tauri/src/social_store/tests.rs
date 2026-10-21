@@ -512,3 +512,41 @@ fn shared_dialogue_day_estimate_is_aggregated_across_speakers_after_restart() {
         )
         .unwrap());
 }
+#[test]
+fn content_template_seed_is_creation_only_and_atomic() {
+    let f = Fixture::new();
+    let s = f.store();
+    let blue = bot_id(s.create_bot("Blue", false).unwrap());
+    s.social_ready().unwrap();
+    {
+        let mut db = s.db.lock().unwrap();
+        let tx = db.transaction().unwrap();
+        seed_template_character(&tx, &blue, 200, 800).unwrap();
+        tx.commit().unwrap();
+    }
+    let profile = s.social_snapshot(&blue).unwrap();
+    assert_eq!(profile.development.traits.sociability, 200);
+    assert_eq!(profile.development.traits.rest_preference, 800);
+    assert_eq!(profile.revision, 0);
+    assert!(profile.memories.is_empty());
+    assert!(profile
+        .development
+        .hobbies
+        .iter()
+        .all(|h| h.experience == 0));
+    {
+        let mut db = s.db.lock().unwrap();
+        let tx = db.transaction().unwrap();
+        assert!(seed_template_character(&tx, &blue, 999, 999).is_err());
+        assert!(seed_template_character(&tx, "missing", 200, 800).is_err());
+        assert!(seed_template_character(&tx, "nova", 1001, 0).is_err());
+    }
+    assert_eq!(
+        s.social_snapshot(&blue)
+            .unwrap()
+            .development
+            .traits
+            .sociability,
+        200
+    );
+}

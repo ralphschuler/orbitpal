@@ -17,7 +17,7 @@ use std::{
         Arc, Mutex, Weak,
     },
 };
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 const ERROR: &str = "social_native_unavailable";
 const LEASE_MS: u64 = 120_000;
 #[derive(Default)]
@@ -966,7 +966,15 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                         state.store.social_commit_terminal(scene, event)?;
                         if event.outcome() == Outcome::Completed {
                             for bot in &scene.participants {
-                                let _ = state.store.record_experience_social_event(bot, event);
+                                if state.store.record_experience_social_event(bot, event)
+                                    == Ok(true)
+                                {
+                                    if let Ok(snapshot) =
+                                        crate::experience_commands::native_snapshot(app, bot)
+                                    {
+                                        let _ = app.emit_to("main", "experience-state", snapshot);
+                                    }
+                                }
                             }
                         }
                         Ok::<_, String>(())
@@ -1184,11 +1192,39 @@ pub(crate) fn has_local_opportunity(app: &tauri::AppHandle, bot: &str) -> bool {
         state.life_runtime.social_now() < context.deadline && context.policy_current(app)
     })
 }
+pub(crate) fn prefers_local_opportunity(app: &tauri::AppHandle, bot: &str) -> bool {
+    if !has_local_opportunity(app, bot) {
+        return false;
+    }
+    let state = app.state::<AppState>();
+    let policy = {
+        let Ok(m) = state.life_runtime.social.memory.lock() else {
+            return false;
+        };
+        m.conversations
+            .iter()
+            .find(|(id, _)| m.dialogues.next_speaker(id) == Some(bot))
+            .map(|(_, c)| c.policy)
+    };
+    let Some(policy) = policy else {
+        return false;
+    };
+    if !policy.model_enabled {
+        return true;
+    }
+    let Ok(profile) = state.store.bot_profile(bot) else {
+        return true;
+    };
+    let quote = dialogue_quote(&profile["model"], &policy);
+    !crate::providers::dialog_model_ready(&profile["model"])
+        || quote.tokens == 0
+        || quote.cost_micros.is_none()
+}
 pub(crate) async fn send_dialogue(
     app: &tauri::AppHandle,
     claim: &super::core::Claim,
 ) -> Result<Option<serde_json::Value>, String> {
-    send_dialogue_mode(app, claim, false).await
+    send_dialogue_mode(app, claim, claim.local_text_only()).await
 }
 pub(crate) async fn send_dialogue_local(
     app: &tauri::AppHandle,
@@ -1213,6 +1249,11 @@ async fn send_dialogue_mode(
     let Some((id, context)) = selected else {
         return Ok(None);
     };
+    if !local_only {
+        runtime
+            .quiesce_native_for_dialog(app, crate::usage_budget::Origin::Autopilot)
+            .await?;
+    }
     if !context.current(app) {
         runtime
             .social
