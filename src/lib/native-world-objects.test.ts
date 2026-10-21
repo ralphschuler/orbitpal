@@ -18,7 +18,7 @@ function binding(actorId='blue'):NativeMotionBinding{
     safeCenters:{left:180,top:160,right:1400,bottom:760},maximumFootprint:{width:100,height:160},
     envelopeExtents:{left:50,top:80,right:50,bottom:80},referenceLocal:{x:0,y:1.45,z:0},position:{x:800,y:450},
     groundBasis:{right:{x:verticalSpan/900,z:0},down:{x:0,z:verticalSpan/450}},modelForwardYaw:0,
-    profileScale:1,effectiveScale:1,scale:1,reducedMotion:false,walkSupported:true};
+    profileScale:1,effectiveScale:1,scale:1,reducedMotion:false,walkSupported:true, stationSupported: false};
 }
 function data(actorId='blue',members=['nova','blue']):NativeObjectConfig{
   const world=parseWorldState({version:1,instanceId:instance,availability:'ready',reason:null,snapshot:{schemaVersion:1,stageId:'stage',configRevision:1,sequence:1,

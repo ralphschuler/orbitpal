@@ -17,7 +17,7 @@ const challenge=():MeasurementChallenge=>({id:'challenge',expiresInMs:5000,expec
 const binding=():NativeMotionBinding=>({...expected,enclosureKind:'conservative_submitted_geometry_v1',cameraPolicy:'native_physical_iso_v1',nativeFraming:{...framing},
   viewport:{width:400,height:400},safeCenters:{left:20,top:30,right:380,bottom:370},maximumFootprint:{width:40,height:60},envelopeExtents:{left:20,top:30,right:20,bottom:30},
   referenceLocal:{x:0,y:1.45,z:0},position:{x:200,y:200},groundBasis:{right:{x:span/400,z:0},down:{x:0,z:span/200}},modelForwardYaw:0,
-  profileScale:1,effectiveScale:1,scale:1,reducedMotion:false,walkSupported:true});
+  profileScale:1,effectiveScale:1,scale:1,reducedMotion:false,walkSupported:true, stationSupported: false});
 const output=(readiness:RegisteredWorldActor['readiness']={state:'awaiting_measurement',challenge:challenge()}):RegisteredWorldActor=>({
   version:1,renderSessionId:'render',bindingSequence:1,surfaceId:'surface',role:'owner_candidate',readiness});
 const deferred=<T>()=>{let resolve!:(value:T)=>void;const promise=new Promise<T>(done=>resolve=done);return{promise,resolve};};
@@ -140,12 +140,12 @@ describe('private native document transport, synthetic host',()=>{
     const measurement:RenderMeasurement={version:1,challengeId:'challenge',frameSequence:1,enclosureKind:'conservative_submitted_geometry_v1',
       viewport:ready.viewport,clip:{left:0,top:0,right:400,bottom:400},anchor:ready.position,
       posedBounds:{left:180,top:170,right:220,bottom:230},referenceLocal:ready.referenceLocal,envelopeExtents:ready.envelopeExtents,
-      groundBasis:ready.groundBasis,modelForwardYaw:0,appliedModelScale:1,reducedMotion:false,walkSupported:true};
+      groundBasis:ready.groundBasis,modelForwardYaw:0,appliedModelScale:1,reducedMotion:false,walkSupported:true, stationSupported: false};
     f.bridge.measurement(measurement);await flush();
     expect(f.views.at(-1)?.binding?.referenceLocal).toEqual({x:0,y:1.45,z:0});
     const {sourceWorldId,...stamp}=expected;
     const fence={...stamp,actionId:{actorId:'nova',worldId:sourceWorldId,ordinal:1},deliveryId:'delivery'};
-    f.bridge.receive({version:1,type:'offer',sequence:1,fence,activity:'move_to',from:ready.position,target:{x:220,y:200},maximumSpeed:100,acceleration:500,validForMs:5000});
+    f.bridge.receive({version:1,type:'offer',sequence:1,fence,activity:'move_to', minimumActiveMs: 0,from:ready.position,target:{x:220,y:200},maximumSpeed:100,acceleration:500,validForMs:5000});
     f.bridge.frame({...measurement,fence,frameSequence:2,walking:false,targetIdleFrames:0,purpose:'delivery'});
     await flush();expect(f.invoke.mock.calls.some(([command])=>command==='report_native_world_action')).toBe(true);
     f.bridge.revoke();held.resolve({version:1,receiptSequence:1,outcome:'accepted',runtimeStatus:'delivered',confirmedPhase:'planned',reason:null});await flush();

@@ -450,6 +450,7 @@ impl Registry {
                 || !near(binding.model_forward_yaw, report.model_forward_yaw)
                 || binding.reduced_motion != report.reduced_motion
                 || binding.walk_supported != (report.walk_supported && source.native_walk)
+                || binding.station_supported != report.station_supported
             {
                 entry.cancel.store(true, Ordering::SeqCst);
                 return Err(RenderReason::StaleBinding);
@@ -500,6 +501,7 @@ impl Registry {
             scale,
             reduced_motion: report.reduced_motion,
             walk_supported: report.walk_supported && source.native_walk,
+            station_supported: report.station_supported,
         });
         entry.clip = Some(report.clip);
         entry.frame = report.frame_sequence;

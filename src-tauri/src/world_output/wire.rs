@@ -261,6 +261,9 @@ pub(crate) struct MotionBinding {
     pub scale: f64,
     pub reduced_motion: bool,
     pub walk_supported: bool,
+    /// Explicit adapter implementation capability; legacy reports default off.
+    #[serde(default)]
+    pub station_supported: bool,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -337,6 +340,8 @@ pub(crate) struct RenderMeasurement {
     pub applied_model_scale: f64,
     pub reduced_motion: bool,
     pub walk_supported: bool,
+    #[serde(default)]
+    pub station_supported: bool,
 }
 impl RenderMeasurement {
     pub fn valid(&self) -> bool {
@@ -574,6 +579,7 @@ pub(crate) enum MotionCommand {
         maximum_speed: f64,
         acceleration: f64,
         valid_for_ms: u64,
+        minimum_active_ms: u64,
     },
     Pause {
         version: u16,

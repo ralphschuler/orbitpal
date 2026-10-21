@@ -109,6 +109,7 @@ impl VisualFixture {
             applied_model_scale: 1.0,
             reduced_motion: false,
             walk_supported: true,
+            station_supported: false,
         };
         f.core
             .world_outputs

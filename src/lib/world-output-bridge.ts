@@ -27,6 +27,7 @@ export interface WorldBridgeOptions {
 }
 type Work = { command: Extract<WorldMotionCommand, { type: 'offer' }>; epoch: number;
   delivered: boolean; started: boolean; receipt: number; lastFrame: number;
+  paused: boolean; control: number;
   observedFrame: number;
   stable: { first: number; last: number; count: number } | null };
 const stampKeys = ['actorId', 'renderSessionId', 'bindingSequence',
@@ -154,18 +155,23 @@ export class WorldOutputBridge {
     if (result !== 'accepted') return result;
     if (command.type === 'offer') {
       this.work = { command, epoch: this.epoch, delivered: false, started: false,
+        paused: false, control: 0,
         receipt: 0, lastFrame: 0, observedFrame: 0, stable: null };
       this.pending = null; this.lastSubmitted = -Infinity;
     } else if (command.type === 'terminal') {
       if (this.work && command.fence.actionId.ordinal >= this.work.command.fence.actionId.ordinal) {
         this.work = null; this.pending = null;
       }
-    } else if (this.work) this.work.stable = null;
+    } else if (this.work) {
+      this.work.stable = null; this.pending = null;
+      this.work.paused = command.type === 'pause'; ++this.work.control;
+      if (!Number.isSafeInteger(this.work.control)) this.fail('capacity');
+    }
     return result;
   }
   frame(value: LocalWorldFrame): void {
     const work = this.work;
-    if (!work || !this.live(work.epoch) || !sameFence(value.fence, work.command.fence)
+    if (!work || work.paused || !this.live(work.epoch) || !sameFence(value.fence, work.command.fence)
       || !Number.isSafeInteger(value.frameSequence) || value.frameSequence <= work.observedFrame) return;
     if (!this.binding || value.enclosureKind !== this.binding.enclosureKind) { this.fail('protocol_error'); return; }
     const now = this.now();
@@ -184,7 +190,7 @@ export class WorldOutputBridge {
   }
   private flush(): void {
     const work = this.work, pending = this.pending;
-    if (!work || !pending || !this.live(work.epoch) || this.reporting || this.measuring) return;
+    if (!work || work.paused || !pending || !this.live(work.epoch) || this.reporting || this.measuring) return;
     const now = this.now(), age = now - pending.observed;
     if (!Number.isFinite(now) || age < 0 || age > 250) { this.pending = null; work.stable = null; return; }
     const value = pending.value;
@@ -200,17 +206,19 @@ export class WorldOutputBridge {
       // A completion request remains only an observation. Host derives arrival
       // from its own distinct accepted frames, elapsed time and current Store.
       const stable = work.stable;
-      kind = atTarget && stable && stable.count >= 3 && pending.observed - stable.first >= 100
+      kind = atTarget && stable && stable.count >= 3
+        && pending.observed - stable.first >= Math.max(100, work.command.minimumActiveMs)
         && pending.observed - stable.last <= 250 ? 'completed' : 'progress';
       if (!atTarget) work.stable = null;
     }
     this.pending = null; this.reporting = true; this.lastSubmitted = now;
     const sequence = ++work.receipt;
+    const control = work.control;
     if (!Number.isSafeInteger(sequence)) { this.reporting = false; this.fail('capacity'); return; }
     const report: ActionReport = { version: 1, fence: work.command.fence,
       receiptSequence: sequence, frame: copyFrame(value), kind };
     void timed(this.options.invoke('report_world_action', { report }), this.options.timeoutMs ?? 2000).then(raw => {
-      if (!this.live(work.epoch) || this.work !== work) return;
+      if (!this.live(work.epoch) || this.work !== work || work.control !== control) return;
       const ack = parseActionReportAck(raw, sequence);
       if (!['accepted', 'duplicate'].includes(ack.outcome) || ['cancelled', 'failed'].includes(ack.runtimeStatus ?? '')) {
         this.fail(ack.reason ?? 'cancelled'); return;

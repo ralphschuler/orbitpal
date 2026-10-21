@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
 <script lang="ts">
   import {t} from '../lib/i18n';
-  import type {WorldAnchor} from '../lib/world-state';
+  import {anchorKinds,type WorldAnchor} from '../lib/world-state';
   let {anchors}: {anchors:readonly WorldAnchor[]}=$props();
+  const icons:Record<string,string>={rest:'◒',meeting:'◎',play:'◇',snack:'◔'};
 </script>
 
 <!-- Exactly one caller-owned layer per output surface. This renders public
@@ -10,8 +11,8 @@
 <div class="world-object-layer" aria-hidden="true">
   {#each anchors as anchor (anchor.id)}
     <span class="world-object" style:left={`${anchor.position.x/10000}%`} style:top={`${anchor.position.y/10000}%`}
-      title={$t(anchor.kind==='rest'?'Ruhe- oder Ladeplatz':anchor.kind==='meeting'?'Treffpunkt':'Spielobjekt')}>
-      {anchor.kind==='rest'?'◒':anchor.kind==='meeting'?'◎':'◇'}
+      title={$t(anchorKinds[anchor.kind])}>
+      {icons[anchor.kind] ?? '○'}
     </span>
   {/each}
 </div>

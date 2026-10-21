@@ -49,7 +49,7 @@ export type MotionBinding = BindingStamp & {
   envelopeExtents: EnvelopeExtents; referenceLocal: LocalReference;
   position: CssPoint; groundBasis: GroundBasis; modelForwardYaw: number;
   profileScale: number; effectiveScale: number; scale: number;
-  reducedMotion: boolean; walkSupported: boolean;
+  reducedMotion: boolean; walkSupported: boolean; stationSupported: boolean;
 };
 /** Native policy wrapper; the reusable pure motion contract stays separate. */
 export type NativeMotionBinding = MotionBinding & { enclosureKind: EnclosureKind } & WorldCameraPolicy;
@@ -73,7 +73,7 @@ export type RenderMeasurement = {
   viewport: CssSize; clip: CssRect; anchor: CssPoint; posedBounds: CssRect;
   envelopeExtents: EnvelopeExtents; referenceLocal: LocalReference;
   groundBasis: GroundBasis; modelForwardYaw: number; appliedModelScale: number;
-  reducedMotion: boolean; walkSupported: boolean;
+  reducedMotion: boolean; walkSupported: boolean; stationSupported?: boolean;
 };
 export type MeasurementAck = {
   version: 1; frameSequence: Counter; output: RegisteredWorldActor;
@@ -98,7 +98,7 @@ export type ActionReport = {
   | { kind: 'delivered' }
   | { kind: 'started' }
   | { kind: 'progress' }
-  | { kind: 'completed' } // MoveTo only; native derives Evidence::Arrived
+  | { kind: 'completed' } // Native derives arrival/visual finish from its stored activity.
 );
 export type ActionReportAck = {
   version: 1; receiptSequence: Counter;
@@ -189,6 +189,7 @@ export function parseWorldMotionBinding(value: unknown): NativeMotionBinding | n
     const data = fields(value, [...stampKeys, 'enclosureKind', 'viewport', 'safeCenters', 'maximumFootprint',
       'envelopeExtents', 'referenceLocal', 'position', 'groundBasis', 'modelForwardYaw',
       'profileScale', 'effectiveScale', 'scale', 'reducedMotion', 'walkSupported',
+      ...(ownValue(value, 'stationSupported') !== undefined ? ['stationSupported'] : []),
       ...(native ? ['cameraPolicy','nativeFraming'] : [])]);
     if (data.enclosureKind !== WORLD_ENCLOSURE_KIND) return null;
     if (policy !== undefined && !native) return null;

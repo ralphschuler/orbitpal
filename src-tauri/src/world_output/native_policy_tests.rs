@@ -31,7 +31,7 @@ fn measurement(c:&MeasurementChallenge)->RenderMeasurement {
         anchor:CssPoint{x:500.0,y:864.0},posed_bounds:CssRect{left:480.0,top:830.0,right:530.0,bottom:870.0},
         envelope_extents:EnvelopeExtents{left:30.0,top:40.0,right:40.0,bottom:20.0},
         reference_local:LocalReference{x:0.0,y:1.45,z:0.0},ground_basis:GroundBasis{right:GroundVector{x:8.0/1080.0,z:0.0},down:GroundVector{x:0.0,z:16.0/1080.0}},
-        model_forward_yaw:0.0,applied_model_scale:1.0,reduced_motion:false,walk_supported:true}
+        model_forward_yaw:0.0,applied_model_scale:1.0,reduced_motion:false,walk_supported:true,station_supported:false}
 }
 
 #[test]

@@ -21,11 +21,11 @@ function fixture(geometry:THREE.BufferGeometry=new THREE.BoxGeometry(.6,1,.4)){
   const mesh=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial());mesh.position.y=.5;
   offset.add(mesh);heading.add(offset);root.add(heading);scene.add(root);
   const controller=new WorldAvatarController(root,heading,offset);
-  const frames:LocalWorldFrame[]=[],measurements:RenderMeasurement[]=[],reasons:WorldAdapterReason[]=[];
+  const frames:LocalWorldFrame[]=[],measurements:RenderMeasurement[]=[],reasons:WorldAdapterReason[]=[],activities:(import('./world-avatar').WorldStationFrame|undefined)[]=[];
   let prepared=0,now=0;
   let options:WorldAvatarOptions={worldOwner:true,worldChallenge:challenge(),worldExposed:false,
     worldMirrorPosition:{x:500_000,y:500_000},onWorldPrepared:()=>prepared++,onWorldFrame:f=>frames.push(f),
-    onWorldMeasurement:m=>measurements.push(m),onWorldUnavailable:(_identity,reason)=>reasons.push(reason)};
+    onWorldActivity:value=>activities.push(value),onWorldMeasurement:m=>measurements.push(m),onWorldUnavailable:(_identity,reason)=>reasons.push(reason)};
   controller.update(options,now);
   const state={renders:0,lost:false,throwAfter:false,afterDraw:()=>{}};
   const port:RenderPort={getSize:v=>v.set(400,400),getViewport:v=>v.set(0,0,400,400),getScissorTest:()=>false,
@@ -48,16 +48,16 @@ function fixture(geometry:THREE.BufferGeometry=new THREE.BoxGeometry(.6,1,.4)){
     const size={width:2*Math.max(m.envelopeExtents.left,m.envelopeExtents.right),height:2*Math.max(m.envelopeExtents.top,m.envelopeExtents.bottom)};
     const binding:MotionBinding={...expected,enclosureKind:'conservative_submitted_geometry_v1',viewport:m.viewport,safeCenters:{left:size.width/2+1,top:size.height/2+1,right:400-size.width/2-1,bottom:400-size.height/2-1},
       maximumFootprint:size,envelopeExtents:m.envelopeExtents,referenceLocal:m.referenceLocal,position:m.anchor,groundBasis:m.groundBasis,
-      modelForwardYaw:m.modelForwardYaw,profileScale:1,effectiveScale:1,scale:m.appliedModelScale,reducedMotion:false,walkSupported:true};
+      modelForwardYaw:m.modelForwardYaw,profileScale:1,effectiveScale:1,scale:m.appliedModelScale,reducedMotion:false,walkSupported:true, stationSupported:m.stationSupported??false};
     update({worldBinding:binding});return binding;
   };
-  return {scene,root,heading,offset,mesh,controller,port,state,frames,measurements,reasons,render,update,ready,
+  return {scene,root,heading,offset,mesh,controller,port,state,frames,measurements,reasons,activities,render,update,ready,
     now:()=>now,options:()=>options,prepared:()=>prepared};
 }
 function move(binding:MotionBinding,ordinal=1,sequence=1):MotionOffer{
   const {sourceWorldId,...fenceStamp}=expected;
   const fence:MotionFence={...fenceStamp,actionId:{actorId:'nova',worldId:sourceWorldId,ordinal},deliveryId:`delivery-${ordinal}`};
-  return {version:1,type:'offer',sequence,fence,activity:'move_to',from:binding.position,
+  return {version:1,type:'offer',sequence,fence,activity:'move_to', minimumActiveMs: 0,from:binding.position,
     target:{x:binding.position.x+30,y:binding.position.y+20},maximumSpeed:100,acceleration:500,validForMs:10_000};
 }
 
@@ -241,4 +241,24 @@ describe('explicit conservative geometry policy fencing',()=>{
     // Reintroducing the previous valid tag cannot revive this failed mount.
     f.update({worldBinding:binding});expect(f.controller.prepare(f.now()+34,400,400,true,.5,true,0,false)).toBeNull();
   });
+});
+
+
+it('station progress follows only committed target frames after Start and clears on pause/exposure loss',()=>{
+  const f=fixture(),binding=f.ready();
+  expect(f.measurements[0].stationSupported).toBe(true);
+  const offer:MotionOffer={...move(binding),activity:'play',minimumActiveMs:1000,target:binding.position};
+  expect(f.controller.command(offer,f.now())).toBe('accepted');f.render();
+  expect(f.controller.begin(offer.fence,offer.sequence,f.now())).toBe(true);f.render();
+  const first=f.frames.at(-1)!;expect(first.purpose).toBe('first_behavior');expect(first.walking).toBe(false);
+  expect(f.controller.confirmStarted(offer.fence,first.frameSequence)).toBe(true);f.render();
+  expect(f.activities.at(-1)?.activeMs).toBe(0);
+  for(let index=0;index<3;index++)f.render(200);
+  expect(f.activities.at(-1)?.activeMs).toBe(600);
+  expect(f.controller.command({version:1,type:'pause',sequence:2,fence:offer.fence},f.now())).toBe('accepted');
+  expect(f.activities.at(-1)).toBeUndefined();f.render();expect(f.activities.at(-1)).toBeUndefined();
+  expect(f.controller.command({version:1,type:'resume',sequence:3,fence:offer.fence},f.now())).toBe('accepted');
+  f.render();expect(f.activities.at(-1)?.activeMs).toBe(0);
+  f.update({worldExposed:false});expect(f.activities.at(-1)).toBeUndefined();
+  f.controller.dispose();expect(f.activities.at(-1)).toBeUndefined();
 });

@@ -5,6 +5,8 @@ use std::collections::VecDeque;
 #[derive(Clone)]
 pub(crate) struct VisualExecution {
     pub output: OutputProof,
+    pub activity: crate::life_domain::Activity,
+    pub minimum_active_ms: u64,
     pub target: Point,
     pub from: CssPoint,
     pub destination: CssPoint,
@@ -23,6 +25,25 @@ pub(crate) struct VisualExecution {
 }
 impl VisualExecution {
     pub(crate) fn new(output: OutputProof, target: Point, now: u64) -> Result<Self, RenderReason> {
+        Self::for_activity(output, target, crate::life_domain::Activity::MoveTo, 0, now)
+    }
+    pub(crate) fn for_activity(
+        output: OutputProof,
+        target: Point,
+        activity: crate::life_domain::Activity,
+        minimum_active_ms: u64,
+        now: u64,
+    ) -> Result<Self, RenderReason> {
+        use crate::life_domain::Activity;
+        let station = matches!(activity, Activity::Rest | Activity::Recharge | Activity::Snack
+            | Activity::Play | Activity::Socialize);
+        if minimum_active_ms > 60_000
+            || activity == Activity::MoveTo && minimum_active_ms != 0
+            || station && (!output.binding.station_supported || minimum_active_ms == 0)
+            || activity != Activity::MoveTo && !station
+        {
+            return Err(RenderReason::UnsupportedCapability);
+        }
         let from = output.binding.position;
         let destination = css(target, output.binding.viewport);
         if !output.binding.safe_centers.contains(from)
@@ -32,6 +53,8 @@ impl VisualExecution {
         }
         Ok(Self {
             output,
+            activity,
+            minimum_active_ms,
             target,
             from,
             destination,
@@ -162,7 +185,8 @@ impl VisualExecution {
         self.proof_received = Some(received);
         if kind == ReportKind::Completed
             && (self.stable.len() < 3
-                || self.stable.front().is_none_or(|(_, t)| received - t < 100))
+                || self.stable.front().is_none_or(|(_, t)|
+                    received - t < self.minimum_active_ms.max(100)))
         {
             return Err(RenderReason::MeasurementUnavailable);
         }

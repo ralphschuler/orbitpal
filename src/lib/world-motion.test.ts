@@ -12,7 +12,7 @@ function binding(overrides: Partial<MotionBinding> = {}): MotionBinding {
     safeCenters: { left: 20, top: 40, right: 980, bottom: 760 }, maximumFootprint: { width: 40, height: 80 },
     position: { x: 500, y: 400 }, groundBasis: { right: { x: .01, z: 0 }, down: { x: 0, z: .02 } },
     referenceLocal: { x: 0, y: 1.45, z: 0 }, envelopeExtents: { left: 20, top: 40, right: 20, bottom: 40 },
-    profileScale: 1, effectiveScale: 1, modelForwardYaw: 0, scale: 1, reducedMotion: false, walkSupported: true, ...overrides };
+    profileScale: 1, effectiveScale: 1, modelForwardYaw: 0, scale: 1, reducedMotion: false, walkSupported: true, stationSupported: false, ...overrides };
 }
 function fence(value: MotionBinding, ordinal = 1): MotionFence {
   return { actorId: value.actorId, renderSessionId: value.renderSessionId, bindingSequence: value.bindingSequence,
@@ -21,7 +21,7 @@ function fence(value: MotionBinding, ordinal = 1): MotionFence {
     measurementRevision: value.measurementRevision, referenceRevision: value.referenceRevision, actionId: { actorId: value.actorId, worldId: value.sourceWorldId, ordinal }, deliveryId: `delivery-${ordinal}` };
 }
 function offer(value: MotionBinding, target: CssPoint = { x: 600, y: 400 }, sequence = 1, ordinal = 1): MotionOffer {
-  return { version: 1, type: 'offer', sequence, fence: fence(value, ordinal), activity: 'move_to', from: value.position,
+  return { version: 1, type: 'offer', sequence, fence: fence(value, ordinal), activity: 'move_to', minimumActiveMs: 0, from: value.position,
     target, maximumSpeed: 100, acceleration: 500, validForMs: 10_000 };
 }
 function evidence(value: MotionBinding, proposal: MotionProposal, now: number, frameSequence = 1): RenderEvidence {
@@ -382,7 +382,7 @@ describe('pause and render-binding invalidation', () => {
     expect(follower.bind({ ...next, bindingSequence: 3 }, 1000)).toBe(false);
   });
   it('reduced motion or unavailable walk support never selects teleportation or invented gait', () => {
-    for (const value of [binding({ reducedMotion: true }), binding({ walkSupported: false })]) {
+    for (const value of [binding({ reducedMotion: true }), binding({ walkSupported: false, stationSupported: false })]) {
       const follower = new WorldMotionFollower(); follower.bind(value, 0);
       expect(follower.receive(offer(value), 0)).toBe('rejected');
       expect(follower.sample(16, .016)).toBeNull();

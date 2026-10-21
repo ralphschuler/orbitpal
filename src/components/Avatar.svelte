@@ -7,7 +7,8 @@
   import type { AutopilotVisualConfig } from '../lib/autopilot-motion';
   import { presentationAbortError, type PresentationRelease } from '../lib/avatar-presentation';
   import type { DesktopLayout } from '../lib/output-presentation';
-  import type { WorldAvatarOptions } from '../lib/world-avatar';
+  import type { WorldAvatarOptions, WorldStationFrame } from '../lib/world-avatar';
+  import { activityLabels } from '../lib/life-runtime';
   import type { MotionFence, WorldMotionCommand, ReceiveResult } from '../lib/world-motion';
   import type { WorldAdapterReason } from '../lib/world-output';
 
@@ -31,7 +32,11 @@
 
   let { profile, speaking = false, level = 0, emotion = 'neutral', transparent = false, assetUrl, outputUrl = '', onModelLoaded, autopilot, desktop, onDesktopAnchor, audioEnabled = false, audioStop = 0, onAudioPlaying,
     motionSource,worldOwner=false,worldChallenge,worldBinding,worldExposed=false,worldMirrorPosition,
-    onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable }: Props = $props();
+    onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable,onWorldActivity }: Props = $props();
+  let stationActivity = $state<WorldStationFrame>();
+  function observeWorldActivity(value: WorldStationFrame | undefined) {
+    stationActivity = value; onWorldActivity?.(value);
+  }
   let host: HTMLDivElement;
   let stage = $state<AvatarStage>();
   let failure = $state('');
@@ -66,7 +71,7 @@
   onMount(() => {
     try {
       const renderer = new AvatarStage(host, { profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying,
-        motionSource,worldOwner,worldChallenge,worldBinding,worldExposed,worldMirrorPosition,onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable }, (message) => { emoteFailure = message; }, assetUrl);
+        motionSource,worldOwner,worldChallenge,worldBinding,worldExposed,worldMirrorPosition,onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable,onWorldActivity:observeWorldActivity }, (message) => { emoteFailure = message; }, assetUrl);
       stage = renderer;
       return () => { disposed = true; ++assetRequest; renderer.dispose(); };
     } catch (error) {
@@ -78,7 +83,7 @@
 
   $effect(() => {
     stage?.update({ profile, speaking, level, emotion, transparent, autopilot, desktop, onDesktopAnchor, audioEnabled, audioStop, onAudioPlaying,
-      motionSource,worldOwner,worldChallenge,worldBinding,worldExposed,worldMirrorPosition,onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable });
+      motionSource,worldOwner,worldChallenge,worldBinding,worldExposed,worldMirrorPosition,onWorldPrepared,onWorldMeasurement,onWorldFrame,onWorldUnavailable,onWorldActivity:observeWorldActivity });
   });
 
   $effect(() => {
@@ -123,6 +128,12 @@
   {:else if emoteFailure}
     <div class="asset-badge error" role="status" title={$t(emoteFailure)}>{$t("Emote nicht verfügbar")}<span>{$t(emoteFailure)}</span></div>
   {/if}
+  {#if worldOwner && worldExposed && stationActivity && !unavailable && !loading && !failure}
+    <div class="world-activity" aria-hidden="true" style:left={`${stationActivity.position.x}px`} style:top={`${stationActivity.position.y}px`}>
+      <span>{$t((activityLabels as Record<string,string>)[stationActivity.activity] ?? 'Aktuelle Aktivität')}</span>
+      <span class="world-activity-track"><span style:width={`${Math.min(100, stationActivity.activeMs / stationActivity.minimumActiveMs * 100)}%`}></span></span>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -136,6 +147,9 @@
   .render-fallback > span:last-child { max-width: 300px; line-height: 1.6; }
   .fallback-mark { display: grid; place-items: center; width: 68px; height: 68px; background: #e0e7fc; color: #7b87c1; border-radius: 22px; font-size: 28px; font-weight: 600; }
   .transparent .asset-badge { bottom: 4px; }
+  .world-activity { position:absolute; transform:translate(-50%,-100%); display:grid; gap:4px; width:112px; padding:6px 9px; border-radius:9px; pointer-events:none; color:#eef2ff; background:#20283be8; font-size:11px; text-align:center; }
+  .world-activity-track { height:3px; overflow:hidden; border-radius:2px; background:#ffffff30; }
+  .world-activity-track > span { display:block; height:100%; background:var(--accent,#a6b7ef); }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
 </style>
