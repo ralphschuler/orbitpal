@@ -289,8 +289,10 @@ fn apply(tx: &Transaction, event: &SocialEvent) -> Result<bool, String> {
                 .ok_or("missing confirmed actor")?;
             if actual.state().actor_id().as_str()!=id || actual.state().world_id()!=actions[index].world_id()
                 || actions[index].actor_id().as_str()!=id
-                || !actual.state().recent_events().any(|record|record.id()==&sources[index]
-                    && matches!(record.event(),crate::life_domain::CommittedEvent::Completed{action_id} if action_id==&actions[index])) {
+                || !actual.events().iter().any(|stored|stored.origin()==super::life_store::EventOrigin::Live
+                    && stored.record().id()==&sources[index]
+                    && actual.state().recent_events().any(|record|record==stored.record())
+                    && matches!(stored.record().event(),crate::life_domain::CommittedEvent::Completed{action_id} if action_id==&actions[index])) {
                 return Err("social completion not confirmed in Store".into());
             }
         }
