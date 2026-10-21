@@ -619,6 +619,10 @@ class PrivatePamSession(unittest.TestCase):
     def test_unknown_password_module_is_still_refused_with_closed_rule_metadata(self):
         files = self.stack()
         files["common-password"] = b"password optional pam_gnome_keyring.so\n"
+        with self.assertRaises(self.pam.StackRefused) as failed:
+            self.pam.session_stack(files.__getitem__)
+        self.assertEqual(failed.exception.args, ())
+        self.assertEqual(str(failed.exception), "")
         value = self.pam.capability(files.__getitem__, lambda _: b"259.9-1", lambda _: b"public-module")
         self.assertEqual((value["supported"], value["code"]), (0, 4))
         self.assertEqual([value[key] for key in ("stackFile", "stackRule", "stackModule", "stackControl", "stackArguments")], [5, 2, 1, 4, 0])

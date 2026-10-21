@@ -50,6 +50,7 @@ class StackRefused(Refused):
         self.control = {"required": 1, "requisite": 2, "sufficient": 3,
                         "optional": 4}.get(control, 5 if control and control.startswith("[") else 0)
         self.arguments = int(arguments)
+        super().__init__()  # Drop BaseException's original raw constructor args.
 
 
 class Absent(Exception):
