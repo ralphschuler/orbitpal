@@ -23,6 +23,7 @@ import { ambientGestureActions, discoverWalkingLegs, followAmbientPosition, moti
 import { WorldAvatarController, placementForwardYaw, type WorldAvatarOptions, type WorldTrial } from './world-avatar';
 import type { MotionFence, WorldMotionCommand, ReceiveResult } from './world-motion';
 import type { WorldAdapterReason } from './world-output';
+import type { StageDiagnostics, StageObservation } from './stage-diagnostics';
 
 export interface AvatarOptions extends WorldAvatarOptions {
   motionSource?: 'fixed'|'ambient'|'world';
@@ -166,6 +167,8 @@ export class AvatarStage {
   private frame = 0;
   private lastRenderTime = 0;
   private disposed = false;
+  private diagnosticsFailed = false;
+  private diagnosticsDisposed = false;
   private asset = '';
   private assetKey = '';
   private emoteReady = false;
@@ -182,7 +185,7 @@ export class AvatarStage {
   private modelAudioStop = 0;
   private walkingAudioIndex = -1;
 
-  constructor(private host: HTMLElement, options: AvatarOptions, private onEmoteError?: (message: string) => void, initialAssetUrl?: string) {
+  constructor(private host: HTMLElement, options: AvatarOptions, private onEmoteError?: (message: string) => void, initialAssetUrl?: string, private diagnostics?: StageDiagnostics) {
     this.options = options;
     this.assetState = initialAssetUrl ? 'loading' : 'ready';
     this.modelAudio = new ModelAudioController(message => this.onEmoteError?.(message), (playing, activity) => this.options.onAudioPlaying?.(playing, activity));
@@ -239,8 +242,16 @@ export class AvatarStage {
     this.observer.observe(host);
     this.update(options);
     this.resize();
+    if (this.diagnostics) this.observeDiagnostic({ kind: 'created' });
     this.animate();
   }
+
+  /** Observer errors invalidate telemetry only, never rendering or scheduling. */
+  private observeDiagnostic(observation: StageObservation): void {
+    try { this.diagnostics?.(observation); }
+    catch { this.diagnosticsFailed = true; }
+  }
+  get telemetryInvalid(): boolean { return this.diagnosticsFailed === true; }
 
   update(options: AvatarOptions) {
     const context = JSON.stringify([options.profile?.id, options.profile?.avatar?.assetPath, options.profile?.motions ?? [],options.profile?.avatar?.scale,options.profile?.avatar?.camera,options.profile?.output?.mode,options.motionSource, options.autopilot?.active === true, options.autopilot?.seed, options.autopilot?.startedAt, options.desktop?.active === true]);
@@ -472,6 +483,7 @@ export class AvatarStage {
       this.emoteReady = false;
       this.robot.root.visible = true;
       this.assetState = 'error';
+      if (this.diagnostics) this.observeDiagnostic({ kind: 'failure' });
       this.presentation.fail(error);
       throw error;
     }
@@ -1093,7 +1105,7 @@ export class AvatarStage {
     this.ground.add(contact, shadow, halo);
   }
 
-  private worldContextLost = (event:Event) => {event.preventDefault();this.cancelWorld('context_lost');if(this.motionSource==='world')this.recoverWorldPose();};
+  private worldContextLost = (event:Event) => {if(this.diagnostics)this.observeDiagnostic({kind:'context_lost'});event.preventDefault();this.cancelWorld('context_lost');if(this.motionSource==='world')this.recoverWorldPose();};
   private worldContextRestored = () => {this.cancelWorld('context_lost');};
   acceptWorldCommand(command:WorldMotionCommand):ReceiveResult {return this.motionSource==='world'?this.world.command(command,performance.now()):'stale';}
   beginWorldAfterDelivered(fence:MotionFence,offerSequence:number):boolean {return this.motionSource==='world'&&this.world.begin(fence,offerSequence,performance.now());}
@@ -1152,13 +1164,17 @@ export class AvatarStage {
     // Also withhold presentation/audio readiness for a suppressed World mount.
     return !this.worldRecovery;
   }
-  private animate = (now = performance.now()) => {
+  private animate = (rafNow?: number) => {
+    const now = rafNow ?? performance.now();
+    // Constructor's initial direct call is not an actual RAF callback.
+    if (this.diagnostics && rafNow !== undefined) this.observeDiagnostic({ kind: 'raf', at: now });
     if (this.disposed) return;
     this.frame = requestAnimationFrame(this.animate);
     const interval = 1000 / (Number(this.options.profile?.output?.fps) === 30 ? 30 : 60);
     const sinceRender = now - this.lastRenderTime;
     if (sinceRender < interval - 0.5) return;
     this.lastRenderTime = now - (sinceRender % interval);
+    const diagnosticStart = this.diagnostics ? performance.now() : 0;
     const dt = Math.min(this.clock.getDelta(), 0.06);
     this.time += dt;
     const reduced = this.motion.matches;
@@ -1254,6 +1270,10 @@ export class AvatarStage {
     }
     try {
       if(!this.renderOutput(worldTrial))return;
+      if (this.diagnostics) {
+        const submittedAt = performance.now();
+        this.observeDiagnostic({ kind: 'submitted', at: submittedAt, cpuMs: submittedAt - diagnosticStart });
+      }
       const loaded = this.emoteReady && JSON.stringify(avatarBinding(this.options.profile)) === this.loadedEmoteBinding;
       if (this.presentation.requested) {
         const hostVisible = this.host.isConnected && this.host.clientWidth > 0 && this.host.clientHeight > 0 && getComputedStyle(this.host).visibility !== 'hidden';
@@ -1272,7 +1292,7 @@ export class AvatarStage {
         time: action.time, loop: !emote,
         rate: emote && this.emote ? action.getClip().duration / this.emote.duration : this.walkingAudioRate,
       } : undefined, Number(this.options.profile?.voice?.volume ?? 1));
-    } catch (error) { if(worldActive){worldTrial?.snapshot.restore();this.cancelWorld('render_failed');this.recoverWorldPose();}this.modelAudio?.stop(); this.presentation.fail(error); }
+    } catch (error) { if(this.diagnostics)this.observeDiagnostic({kind:'failure'});if(worldActive){worldTrial?.snapshot.restore();this.cancelWorld('render_failed');this.recoverWorldPose();}this.modelAudio?.stop(); this.presentation.fail(error); }
   };
 
   private clearImported() {
@@ -1338,6 +1358,7 @@ export class AvatarStage {
   }
 
   dispose() {
+    try {
     this.disposed = true;this.world.dispose();
     this.renderer.domElement.removeEventListener('webglcontextlost',this.worldContextLost);this.renderer.domElement.removeEventListener('webglcontextrestored',this.worldContextRestored);
     this.presentation.dispose();
@@ -1352,6 +1373,14 @@ export class AvatarStage {
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
+    } catch (error) {
+      if (this.diagnostics) this.observeDiagnostic({ kind: 'failure' });
+      throw error;
+    }
+    if (this.diagnostics && !this.diagnosticsDisposed) {
+      this.diagnosticsDisposed = true;
+      this.observeDiagnostic({ kind: 'disposed' });
+    }
   }
 }
 
