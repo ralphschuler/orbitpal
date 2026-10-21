@@ -1,5 +1,7 @@
 node_modules/
+__pycache__/
 dist/
+dist-benchmark/
 src-tauri/target/
 src-tauri/gen/
 .DS_Store

@@ -34,6 +34,23 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+      - name: Validate workflow syntax and context availability
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          lint_root=$(mktemp -d "$RUNNER_TEMP/actionlint.XXXXXX")
+          trap 'rm -rf "$lint_root"' EXIT
+          archive="$lint_root/actionlint.tar.gz"
+          curl --fail --location --silent --show-error --retry 3 --max-time 60 \
+            --output "$archive" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "$archive" \
+            | sha256sum --check --status
+          tar -xzf "$archive" -C "$lint_root" actionlint
+          # v1.7.12's label table predates the available ubuntu-26.04 runner.
+          # Only that label diagnostic is ignored; context errors remain fatal.
+          "$lint_root/actionlint" -shellcheck= -ignore '^label "ubuntu-26.04" is unknown'
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.25.0
@@ -74,6 +91,13 @@ jobs:
         run: node scripts/third-party-notices.mjs --strict
       - name: Build frontend assets
         run: pnpm build
+      - name: Build isolated renderer benchmark assets (no app start)
+        run: node scripts/native-render-benchmark/build.mjs
+      - name: Renderer measurement collector and analysis fixtures (no process sampling)
+        if: runner.os == 'Linux'
+        run: |
+          python3 -B scripts/native-render-benchmark/test-collector.py
+          python3 -B scripts/native-render-benchmark/test-analysis.py
       - name: Linux GLib iterator regression (optimized)
         if: runner.os == 'Linux'
         run: |
@@ -83,6 +107,8 @@ jobs:
         env:
           ORBITPAL_NATIVE_FIXTURE_DIR: ${{ runner.temp }}/orbitpal-avatar-fixtures
         run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Renderer benchmark example compile and protocol tests (no GUI)
+        run: cargo test --manifest-path src-tauri/Cargo.toml --example native_render_bench --features native-render-benchmark --locked
       - name: Linux disposable credential fixture dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get install -y gnome-keyring libglib2.0-bin
