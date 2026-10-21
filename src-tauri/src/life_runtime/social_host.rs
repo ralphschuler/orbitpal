@@ -1563,7 +1563,9 @@ async fn send_dialogue_mode(
         .resolve(&claim.bot_id)?
         .ok_or(ERROR)?;
     runtime.session_outputs.bind_job(&route, &ticket.cancel)?;
-    let speech_id = format!("social_{}_{}", turn.conversation_id, turn.index);
+    // Overlay cancellation and native-parent lookup are bound to this actual
+    // Core ticket. Conversation/index identity remains internal to the Hub.
+    let speech_id = claim.turn_id.clone();
     {
         runtime
             .social
