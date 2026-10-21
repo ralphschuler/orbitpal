@@ -18,8 +18,10 @@
   import ScreenContextPanel from './components/ScreenContextPanel.svelte';
   import { prepareScreenSession } from './lib/screen-session';
   import {LifeOutputVersions,type LifeOutput} from './lib/life-output';
+  import {applyOverlayVisibility} from './lib/overlay-visibility';
   import { LifeUI } from './lib/life-ui';
   import { actionChanged, requestQuietRest, requestLifeMove } from './lib/life-actions';
+  import {lifeStartContext} from './lib/life-start-context';
   import {parseWorldSettings} from './lib/world-state';
   import type { CanonicalPoint, RegisterWorldActor } from './lib/world-output';
   import { LifeTurnAdmissions, LifeSnapshots, parseLifeBot, parseLifeTurn, parseLifeSnapshot, nativeSchedule, currentLifeTurn, sameLifeTurn, type LifeSnapshot, type LifeMode, type LifeBot, type LifeTurn } from './lib/life-runtime';
@@ -186,7 +188,7 @@
     const before=lifeRuntime?.sessions??[];
     unlockEmoteAudio();const target=profile.id;const revision=++autopilotStartRevision;autopilotPending=active;
     const epoch=turnEpoch;
-    const startContext=()=>{const value=profileSnapshot();if(['claude-code','codex'].includes(value.model?.provider)&&!value.model.model?.trim())value.model.model='default';return JSON.stringify([value,$state.snapshot(documents)]);};
+    const startContext=()=>lifeStartContext(profileSnapshot(),$state.snapshot(documents));
     const context=startContext();const current=()=>appAlive&&context===startContext()&&revision===autopilotStartRevision&&epoch===turnEpoch&&target===profile.id&&!updateInstalling;
     try{
       if(!active)invalidateNativePlayback(target);
@@ -210,8 +212,9 @@
     if(!native||autopilotPending||updateInstalling||busy||speaking||speechPreparing||microphone||microphoneStarting||transcribing)throw actionChanged();
     const before=lifeRuntime?.sessions??[];
     const target=profile.id,epoch=turnEpoch,revision=++autopilotStartRevision;
-    const context=JSON.stringify([profileSnapshot(),$state.snapshot(documents)]);
-    const current=()=>appAlive&&profile.id===target&&epoch===turnEpoch&&revision===autopilotStartRevision&&!updateInstalling&&context===JSON.stringify([profileSnapshot(),$state.snapshot(documents)]);
+    const startContext=()=>lifeStartContext(profileSnapshot(),$state.snapshot(documents));
+    const context=startContext();
+    const current=()=>appAlive&&profile.id===target&&epoch===turnEpoch&&revision===autopilotStartRevision&&!updateInstalling&&context===startContext();
     autopilotPending=true;unlockEmoteAudio();
     try{
       await tick();if(!current())throw actionChanged();
@@ -1082,7 +1085,12 @@
         }
       }
     });
-    subscribe('cohost://overlay-state',e=>{bots=bots.map(bot=>bot.id===e.botId?{...bot,live:!!e.active}:bot);if(e.botId&&e.botId!==profile.id)return;if(e.active){player?.stop();acceptOutputUpdate({mode:'overlay',streamingEnabled:true});}else{if(!busy)finishPlayback();speaking=false;}});
+    subscribe('cohost://overlay-state',event=>applyOverlayVisibility(event,{
+      botId:profile.id,
+      setLive:(botId,active)=>{bots=bots.map(bot=>bot.id===botId?{...bot,live:active}:bot);},
+      stopPlayer:()=>player?.stop(),
+      playbackIdle:()=>{if(!busy)finishPlayback();speaking=false;},
+    }));
     subscribe('cohost://overlay',e=>{
       if(e.kind==='cancel-speech'){
         if(typeof e.id!=='string'||!e.id)return;
