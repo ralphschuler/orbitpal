@@ -5,7 +5,7 @@ const TITLE = 'OrbitPal Native World Fixture';
 const SYSTEM_EVENTS_PATH = '/System/Library/CoreServices/System Events.app';
 const OPERATIONS = ['probe', 'inspect', 'autopilot', 'setup', 'nova', 'blue', 'start', 'hide', 'show', 'stop', 'quit'];
 function closed(code, extra) {
-  return Object.assign({version: 1, code, ax: 0, appleEvents: 0, gui: 0, probePhase: 0, aeFunction: 0, aeStatusKind: 4, targetRunning: 0, matched: 0, acted: 0, mainVisible: 0, windows: 0}, extra || {});
+  return Object.assign({version: 1, code, ax: 0, appleEvents: 0, gui: 0, probePhase: 0, aeFunction: 0, aeStatusKind: 4, targetRunning: 0, screenPresent: 0, sessionPresent: 0, uidMatch: 0, onConsole: 0, loginDone: 0, lockKnown: 0, lockState: 0, matched: 0, acted: 0, mainVisible: 0, windows: 0}, extra || {});
 }
 function aeStatusKind(status) {
   // Public AppleEvents.h / MacErrors.h constants; never export a raw OSStatus.
@@ -82,10 +82,27 @@ function run(argv) {
     ObjC.bindFunction('getuid', ['unsigned int', []]);
     const session = ObjC.deepUnwrap($.CGSessionCopyCurrentDictionary());
     const lockKnown = session && Object.prototype.hasOwnProperty.call(session, 'CGSSessionScreenIsLocked');
-    out.gui = Number($.NSScreen.screens.count) > 0 && session
-      && session.kCGSSessionUserIDKey === Number($.getuid())
+    const screenCount = Number($.NSScreen.screens.count);
+    // Preserve the original native call's short circuit: getuid runs only when
+    // the screen/session prerequisites were already positive. No extra sample.
+    const processUid = screenCount > 0 && session ? Number($.getuid()) : undefined;
+    out.gui = screenCount > 0 && session
+      && session.kCGSSessionUserIDKey === processUid
       && session.kCGSSessionOnConsoleKey === true && session.kCGSessionLoginDoneKey === true
       && (!lockKnown || session.CGSSessionScreenIsLocked === false) ? 1 : 0;
+    // Diagnostics only: 0 unknown/unread/wrong type, 1 false, 2 true. Never
+    // normalize a bridged number/string to satisfy the unchanged strict gate.
+    const booleanState = value => typeof value === 'boolean' ? value ? 2 : 1 : 0;
+    out.screenPresent = Number.isFinite(screenCount) ? screenCount > 0 ? 2 : 1 : 0;
+    out.sessionPresent = session == null ? 1 : typeof session === 'object' && !Array.isArray(session) ? 2 : 0;
+    if (session) {
+      out.uidMatch = Number.isSafeInteger(session.kCGSSessionUserIDKey) && Number.isSafeInteger(processUid)
+        ? session.kCGSSessionUserIDKey === processUid ? 2 : 1 : 0;
+      out.onConsole = booleanState(session.kCGSSessionOnConsoleKey);
+      out.loginDone = booleanState(session.kCGSessionLoginDoneKey);
+      out.lockKnown = lockKnown ? 2 : 1;
+      out.lockState = lockKnown ? booleanState(session.CGSSessionScreenIsLocked) : 0;
+    }
     if (!out.gui) throw 4;
     out.probePhase = 6; // Every native prerequisite above completed positively.
     if (argv[0] === 'probe') return JSON.stringify(Object.assign(out, {code: 0}));

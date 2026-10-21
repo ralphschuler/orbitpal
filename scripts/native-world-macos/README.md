@@ -53,6 +53,28 @@ Before a completed query, 4 means unobserved; code/phase still determine which
 operations actually completed. Raw OSStatus and exception/session data remain
 unexported. All nonzero results still fail without asking the user.
 
+The third [actual VM probe, run 39596881584](https://github.com/ralphschuler/orbitpal/actions/runs/39596881584)
+on `02217c145a962234af96fdc92edf25094944740f` positively observed the fixed
+running target, AX trust and a zero permission-query result (`aeStatusKind:0`,
+`appleEvents:1`). It refused at phase 5 (`code:4`, `gui:0`), before the fixture
+build or any UI action. Its compound result does not identify which session or
+display prerequisite failed. Apple's public `CGSession.h` confirms the exact
+string keys used here: a CFNumber UID and CFBoolean console/login indicators.
+Neither those types nor controlled JavaScript booleans prove how the actual
+osascript bridge represented this VM's values.
+
+Seven diagnostic-only fields now describe the already-read phase-5 values:
+`screenPresent`, `sessionPresent`, `uidMatch`, `onConsole`, `loginDone`,
+`lockKnown` and `lockState`. All use 0 for unknown/unread/wrong type, 1 for false
+and 2 for true. `lockKnown:1` means the optional key is absent; `lockState` then
+remains unknown. Missing/incorrect boolean types remain unknown, never truthy
+success. The unchanged strict `gui` predicate remains the authority. Native
+screen/session reads still occur once, and `getuid` retains its original
+screen/session short circuit. No UID, dictionary, session key/value, raw native
+exception or additional native sample is exported. The public [session API](https://developer.apple.com/documentation/coregraphics/cgsessioncopycurrentdictionary())
+and [session property example](https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPMultipleUsers/Concepts/FastUserSwitching.html)
+provide source semantics, not evidence of the disposable VM's actual state.
+
 Apple's public SDK `AppleEvents.h` documents that the address must identify an
 already running target, and returns `procNotFound` otherwise. The same header
 defines the two consent constants; `CarbonCore/MacErrors.h` defines

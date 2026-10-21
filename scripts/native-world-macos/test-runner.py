@@ -23,7 +23,7 @@ class Guards(unittest.TestCase):
                 'GITHUB_REF': 'refs/heads/main', 'REVIEWED_SHA': 'a' * 40, 'DISPATCH_SHA': 'a' * 40}
 
     def record(self):
-        return {key: 6 if key == 'probePhase' else 1 if key in ('version', 'ax', 'appleEvents', 'gui', 'aeFunction', 'targetRunning') else 0 for key in runner.FIELDS}
+        return {key: 6 if key == 'probePhase' else 1 if key == 'lockState' else 2 if key in runner.SESSION_FIELDS else 1 if key in ('version', 'ax', 'appleEvents', 'gui', 'aeFunction', 'targetRunning') else 0 for key in runner.FIELDS}
 
     def test_only_reviewed_explicit_hosted_mac_source_can_reach_probe(self):
         runner.environment('darwin', self.environment())
@@ -67,6 +67,17 @@ class Guards(unittest.TestCase):
             value = {**self.record(), 'code': 3, 'probePhase': 4, 'aeStatusKind': kind, 'appleEvents': 0, 'gui': 0}
             self.assertEqual(runner.ui_record(json.dumps(value).encode()), value)
             self.assertNotIn('status', value)
+
+    def test_session_diagnostics_are_closed_tristates_not_raw_values(self):
+        for field in runner.SESSION_FIELDS:
+            for state in (0, 1, 2):
+                record = {**self.record(), 'code': 4, 'probePhase': 5, 'gui': 0, field: state}
+                self.assertEqual(runner.ui_record(json.dumps(record).encode()), record)
+            for invalid in (-1, 3, True, 'PRIVATE_SESSION_VALUE', None):
+                with self.subTest(field=field, invalid=invalid), self.assertRaises(runner.Refused):
+                    runner.ui_record(json.dumps({**self.record(), field: invalid}).encode())
+        with self.assertRaises(runner.Refused):
+            runner.ui_record(json.dumps({**self.record(), 'rawSession': {'PRIVATE': 1}}).encode())
 
     def system_source(self, identifier='com.apple.systemevents'):
         """All paths/stat/FDs/processes below are doubles, never system access."""
