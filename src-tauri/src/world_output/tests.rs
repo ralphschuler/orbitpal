@@ -528,3 +528,23 @@ fn studio_unregister_keeps_exact_scope_revokes_and_removes_before_fresh_successo
     assert_eq!(status.binding_sequence, next.binding_sequence);
     assert!(matches!(status.readiness, Readiness::Unavailable { reason: RenderReason::Expired }));
 }
+
+#[test]
+fn studio_owner_candidate_never_becomes_a_native_semantic_owner() {
+    // Exercise the real Registry admission with the existing synthetic Studio
+    // source; even owner=true and measured Studio data supply no Native route.
+    let mut registry = Registry::default();
+    let (reply, _, _) = registry.register(&request(), source(), 0).unwrap();
+    assert!(matches!(reply.role, RenderRole::OwnerCandidate));
+    let system = crate::life_availability::Snapshot {
+        state: crate::life_availability::Availability::Unknown,
+        reason: crate::life_availability::Reason::Initializing,
+        generation: 1, source: crate::life_availability::Source::Unsupported,
+    };
+    let core = crate::life_runtime::core::Core::new(system);
+    assert!(registry.semantic_mirrors(&core, 0).is_empty());
+    let challenge = challenge(&reply);
+    registry.measurement(&measurement(&challenge, 1), &source(), 0, 0).unwrap();
+    assert!(registry.semantic_mirrors(&core, 0).is_empty());
+    assert!(core.sessions.is_empty());
+}

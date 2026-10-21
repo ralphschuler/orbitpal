@@ -41,7 +41,7 @@ fn current(core: &Core, job: &NativeJob, now: u64) -> bool {
         && core.local_current(job.key.actor().as_str(), &job.fence, now)
         && job.slot.as_ref().is_none_or(|slot| slot.fresh(now))
         && job.native_permit.as_ref().is_none_or(|permit|
-            permit.current(core, now) && job.visual.as_ref().is_some_and(|visual| permit.matches_output(&visual.output)))
+            permit.current(core, now) && job.visual.as_ref().map(|visual|&visual.output).or(job.native_rest_output.as_ref()).is_some_and(|output|permit.matches_output(output)&&core.world_outputs.check_proof(output,now)))
         && job
             .visual
             .as_ref()
@@ -56,7 +56,7 @@ fn replace(core: &mut Core, job: &NativeJob, snapshot: &LifeSnapshot) {
         None,
     );
 }
-/// Visual dispatch remains explicitly unsupported until #72's registered output.
+/// Activities without a concrete native rendering protocol remain unsupported.
 /// No Plan/ordinal or visual Offer is fabricated on this error path.
 pub(crate) fn visual_request() -> Result<(), String> {
     Err(UNSUPPORTED.into())
@@ -74,6 +74,40 @@ pub(crate) fn admit_rest(
     now: impl Fn() -> u64,
     wall: impl Fn() -> u64,
 ) -> Result<(), String> {
+    admit_rest_bound(core,store,world,bot,profile,fence,context,None,cancel,now,wall)
+}
+
+/// Zero-effect Here rest under the actual owner. This supplies no station
+/// animation or renderer ACK; the existing native dwell clock remains truthful.
+pub(crate) fn admit_native_rest(
+    core: &mut Core,
+    store: &Store,
+    world: &WorldHub,
+    bot: &str,
+    profile: &Value,
+    fence: LocalFence,
+    context: ActionContext,
+    output: crate::world_output::OutputProof,
+    permit: super::native_scene::NativeActionPermit,
+    cancel: Arc<AtomicBool>,
+    now: impl Fn() -> u64,
+    wall: impl Fn() -> u64,
+) -> Result<(), String> {
+    admit_rest_bound(core,store,world,bot,profile,fence,context,Some((output,permit)),cancel,now,wall)
+}
+fn admit_rest_bound(
+    core: &mut Core,
+    store: &Store,
+    world: &WorldHub,
+    bot: &str,
+    profile: &Value,
+    fence: LocalFence,
+    context: ActionContext,
+    native: Option<(crate::world_output::OutputProof,super::native_scene::NativeActionPermit)>,
+    cancel: Arc<AtomicBool>,
+    now: impl Fn() -> u64,
+    wall: impl Fn() -> u64,
+) -> Result<(), String> {
     with_actions(core, |actions, core| {
         let actor = ActorId::new(bot).map_err(invalid)?;
         actions.forget(bot);
@@ -84,19 +118,24 @@ pub(crate) fn admit_rest(
         {
             return Err(UNAVAILABLE.into());
         }
+        if native.as_ref().is_some_and(|(output,permit)| !permit.current(core,now())||!permit.matches_output(output)||!core.world_outputs.check_proof(output,now())) {return Err(UNAVAILABLE.into());}
+        let output_stamp=match &native {
+            Some((output,_))=>output.stamp.clone(),
+            None=>OutputStamp::new(format!("native-rest-{}",fence.session),fence.revision).map_err(invalid)?,
+        };
         let authority = NativeAuthority::new(
             context.session.clone(),
             context.source_world.clone(),
             context.stage.clone(),
             context.config_revision,
             context.topology_revision,
-            OutputStamp::new(format!("native-rest-{}", fence.session), fence.revision)
-                .map_err(invalid)?,
-            fence.revision,
+            output_stamp,
+            native.as_ref().map_or(fence.revision,|(output,_)|output.binding.asset_revision),
         )
         .map_err(invalid)?;
         let caps = Capabilities::new(authority.clone(), vec![], true).map_err(invalid)?;
         let persisted_profile = store.action_profile_token(bot, profile).map_err(invalid)?;
+        if native.as_ref().is_some_and(|(output,_)|output.profile_token!=persisted_profile){return Err(UNAVAILABLE.into());}
         let (commit, prepared) = world.with_action_context(store, &context, || {
             if store.bot_profile(bot).map_err(invalid)? != *profile {
                 return Err(UNAVAILABLE.into());
@@ -104,13 +143,14 @@ pub(crate) fn admit_rest(
             store
                 .apply_life_action_checked(bot, wall(), |actual, tx| {
                     if cancel.load(Ordering::SeqCst)
+                        || native.as_ref().is_some_and(|(output,permit)|!permit.current(core,now())||!permit.matches_output(output)||!core.world_outputs.check_proof(output,now()))
                         || !core.local_current(bot, &fence, now())
                         || !crate::storage::action_store::matches(
                             tx,
                             bot,
                             &persisted_profile,
                             &context.record,
-                            profile["output"]["mode"] != "overlay",
+                            native.is_none() && profile["output"]["mode"] != "overlay",
                         )
                     {
                         return Err(LifeStoreError::InvalidInput);
@@ -190,7 +230,8 @@ pub(crate) fn admit_rest(
         };
         let job = NativeJob {
             visual: None,
-            native_permit: None,
+            native_rest_output: native.as_ref().map(|(output,_)|output.clone()),
+            native_permit: native.map(|(_,permit)|permit),
             slot: None,
             authority,
             key,
@@ -589,7 +630,7 @@ pub(crate) fn status(
     let actions = core.actions.as_ref().ok_or(UNAVAILABLE)?;
     let runtime=actions.jobs.get(bot).and_then(|job|actions.executor.snapshot(&job.key)).or_else(||actions.retired.iter().rev().find(|s|s.action_id.actor_id().as_str()==bot).cloned()).map(|s|json!({"actionId":s.action_id,"presentation":s.presentation,"status":s.status,"failure":s.failure,"activeMilliseconds":s.active_ms}));
     Ok(
-        json!({"version":1,"instanceId":actions.instance_id,"sequence":actions.sequence,"botId":bot,"availability":availability,"reason":reason,"visualAvailable":core.world_output_current(bot,now) && profile["output"]["mode"].as_str().unwrap_or("studio")=="studio" && store.profile().ok().is_some_and(|p|p["id"]==bot),"confirmed":confirmed,"runtime":runtime}),
+        json!({"version":1,"instanceId":actions.instance_id,"sequence":actions.sequence,"botId":bot,"availability":availability,"reason":reason,"visualAvailable":core.world_output_current(bot,now) && (core.world_outputs.source(bot).is_some_and(|source|matches!(source.route,crate::world_output::SourceRoute::Native(_))) || profile["output"]["mode"].as_str().unwrap_or("studio")=="studio" && store.profile().ok().is_some_and(|p|p["id"]==bot)),"confirmed":confirmed,"runtime":runtime}),
     )
 }
 
@@ -597,8 +638,8 @@ pub(crate) fn status(
 #[path = "action_tests.rs"]
 mod tests;
 
-/// Real checked Plan for selected Studio MoveTo only. No model/voice/provider
-/// readiness is involved; an actual registered exposed frame is required.
+/// Real checked Plan for selected Studio MoveTo. The separate actual-native
+/// entry below additionally requires its factory-owned NativeActionPermit.
 pub(crate) fn admit_move(
     core: &mut Core,
     store: &Store,
@@ -768,6 +809,7 @@ fn admit_visual_move(
             bot.into(),
             NativeJob {
                 visual: Some(visual),
+                native_rest_output: None,
                 native_permit,
                 slot,
                 authority,

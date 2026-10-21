@@ -37,6 +37,12 @@ export function parseNativeAuth(value:unknown):NativeAuth|null{
     ||descriptors.version.value!==1||typeof descriptors.capability.value!=='string'||!/^[a-f0-9]{64}$/.test(descriptors.capability.value))return null;
   return Object.freeze({version:1,capability:descriptors.capability.value});
 }
+// Preserve the existing three-second idle renewal within the native Live
+// owner's five-second accepted-frame lease. Every new measurement/action
+// receipt still has its separate <=250ms host-admission bound. Read-only
+// mirrors follow the Live lease; they do not require calibration at 10Hz.
+// Only an actual rendered measurement, never this timer, renews frame evidence.
+export const NATIVE_IDLE_MEASUREMENT_MS=3000;
 const cancelled=()=>new DOMException('Die Figurenpräsentation wurde abgebrochen.','AbortError');
 /** One document, one active capability/mount. No permanent nonce, URL, event
  * payload or caller-selected actor can supply authority. */
@@ -143,7 +149,7 @@ export class NativeWorldOutput {
         this.bridge=bridge;
         await bridge.refresh();
         if(!this.live(generation,auth))throw cancelled();
-        this.timer=setInterval(()=>{if(this.live(generation,auth))void bridge.refresh();else this.revoke();},3000);
+        this.timer=setInterval(()=>{if(this.live(generation,auth))void bridge.refresh();else this.revoke();},NATIVE_IDLE_MEASUREMENT_MS);
         return;
       }
       throw cancelled();

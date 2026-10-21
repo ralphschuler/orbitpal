@@ -223,6 +223,35 @@ impl SessionOutputs {
         receipts.sort_by(|a, b| a.bot().cmp(b.bot()));
         Ok(receipts)
     }
+    /// Exact retained targets, including cancelled/loading/restoring ones.
+    /// This is negative evidence only: it cannot imply visibility or Ready.
+    pub(super) fn retained_constructors(&self) -> Result<Vec<ConstructorReceipt>, String> {
+        let state = self.lock()?;
+        let mut receipts = state.entries.values().filter_map(|entry| entry.target.as_ref().map(|target| ConstructorReceipt {
+            lease: entry.lease.clone(), window: target.window.clone(), signals: target.signals.clone(),
+            created_for_session: target.created,
+        })).collect::<Vec<_>>();
+        receipts.sort_by(|a, b| a.bot().cmp(b.bot()));
+        Ok(receipts)
+    }
+    pub(super) fn has_retained_constructor(&self, bot: &str) -> bool {
+        self.lock().map(|state| state.entries.get(bot).is_some_and(|entry| entry.target.is_some())).unwrap_or(true)
+    }
+    /// Core is already held. Keep this short SessionOutputs guard until the
+    /// Studio Registry mutation returns, so a target cannot attach between the
+    /// negative constructor check and Studio admission. No GUI/await/callback
+    /// into SessionOutputs is permitted in create; it only mutates Registry.
+    pub(super) fn admit_studio_world_registration<T>(
+        &self, bot: &str,
+        create: impl FnOnce() -> Result<T, crate::world_output::RenderReason>,
+    ) -> Result<T, crate::world_output::RenderReason> {
+        use crate::world_output::RenderReason;
+        let state = self.lock().map_err(|_| RenderReason::Cancelled)?;
+        if state.entries.get(bot).is_some_and(|entry| entry.target.is_some()) {
+            return Err(RenderReason::ScopeMismatch);
+        }
+        create()
+    }
     pub(super) fn constructor_for(&self, lease: &Lease) -> Result<ConstructorReceipt, String> {
         let state = self.lock()?;
         let entry = state.entries.get(&lease.bot).filter(|entry|

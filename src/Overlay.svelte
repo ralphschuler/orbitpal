@@ -4,6 +4,10 @@
   import { onMount, tick } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import Avatar from './components/Avatar.svelte';
+  import WorldObjects from './components/WorldObjects.svelte';
+  import {WorldSemanticMirrors} from './lib/world-semantic-mirrors';
+  import {parseWorldState,type WorldState} from './lib/world-state';
+  import {activityLabels,phaseLabels} from './lib/life-runtime';
   import { PresentationVersions, type PresentationSnapshot } from './lib/output-presentation';
   import { captionPlacement } from './lib/desktop-motion';
   import type { AvatarModelInfo,DesktopAnchor } from './lib/avatar';
@@ -18,7 +22,9 @@
   import { call, native, cloneDefaults, onEvent, assetUrl } from './lib/api';
   import { NativeWorldOutput,type NativeWorldPort,type NativeWorldView } from './lib/native-world-output';
   import {NativeWorldSnapshots} from './lib/native-world-snapshots';
+  import {nativeWorldObjectAnchors} from './lib/native-world-objects';
   import {NativeWorldReadiness} from './lib/native-world-readiness';
+  import {worldObjectAnchorsForActor} from './lib/world-object-owner';
   import type {BindingStamp} from './lib/world-output';
 
   type SpeechEvent = { presentationOutput?:'studio'|'overlay'|'obs';presentationRouteId?:string|null;kind: 'speech'; botId?: string; id: string; text: string; speechText?: string; voice: any; emotion?: string; emotes?: EmotePayload[] };
@@ -29,6 +35,32 @@
   let nativeWorldView=$state<NativeWorldView>({phase:'normal',exposed:false,covered:false});
   let nativeWorldSeen=$state(false);
   let nativeSnapshots:NativeWorldSnapshots|undefined;
+  let nativeObjectRevision=$state(0),nativeViewportWidth=$state(0),nativeViewportHeight=$state(0),nativeObjectVisible=$state(false);
+  const nativeObjectAnchors=$derived.by(()=>{
+    nativeObjectRevision;
+    const binding=nativeWorldView.binding;
+    return native?nativeWorldObjectAnchors(nativeWorldView,binding?nativeSnapshots?.objectConfig(binding)??null:null,
+      {width:nativeViewportWidth,height:nativeViewportHeight},nativeObjectVisible):[];
+  });
+  const semanticMirrors=new WorldSemanticMirrors();
+  let semanticWorld=$state<WorldState>();
+  let semanticRevision=$state(0),semanticConfirmed=$state(native);
+  let semanticConnection=0;
+  const semanticMirror=$derived.by(()=>{semanticRevision;return !native?semanticMirrors.view(botId,semanticWorld):null;});
+  const semanticObjectAnchors=$derived.by(()=>semanticMirror&&semanticWorld?.snapshot?worldObjectAnchorsForActor(semanticWorld.snapshot,botId,semanticMirror.anchors):[]);
+  const semanticControlled=$derived.by(()=>{semanticRevision;return !native&&(!semanticConfirmed||semanticMirrors.controlled(botId));});
+  function acceptSemanticMirror(event:any){
+    if(native||!event.semanticMirror)return;
+    try{
+      const next=event.world===null?undefined:parseWorldState(event.world);
+      if(next&&semanticWorld?.instanceId===next.instanceId&&semanticWorld.snapshot?.stageId===next.snapshot?.stageId
+        &&semanticWorld.snapshot?.configRevision===next.snapshot?.configRevision
+        &&(next.snapshot?.sequence??0)<(semanticWorld.snapshot?.sequence??0))return;
+      const accepted=semanticMirrors.seeded?semanticMirrors.accept(event.semanticMirror):semanticMirrors.seed(event.semanticMirror);
+      if(accepted){semanticWorld=next;semanticConfirmed=true;semanticRevision++;}
+    }catch{/* A malformed/foreign packet cannot retire another owner. */}
+  }
+  function retireSemanticMirror(){semanticMirrors.retire();semanticWorld=undefined;semanticRevision++;}
   function acceptNativeWorld(value:unknown){
     if(native)nativeSnapshots?.hint(value);
   }
@@ -325,9 +357,10 @@
     const globalStop = event.kind === 'stop' && !targetBot;
     if (!globalStop && (!targetBot || (botId && targetBot !== botId))) return;
     if(event.kind==='life-output'){acceptLifeOutput(event.lifeOutput??event);return;}
-    if(event.kind==='world-state'){acceptNativeWorld(event.world);return;}
+    if(event.kind==='world-state'){if(native)acceptNativeWorld(event.world);else acceptSemanticMirror(event);return;}
     if(event.kind==='presentation'){acceptPresentation(event);return;}
     if (event.kind === 'profile') {
+      retireSemanticMirror();
       nativeReadiness?.profileChanged();
       nativeWorld?.revoke();
       cancelCurrent();
@@ -346,7 +379,7 @@
       return;
     }
     if (event.kind === 'cancel-speech') { if (current?.event.id === event.id) cancelCurrent(); return; }
-    if (event.kind === 'stop') { nativeReadiness?.revoke();nativeWorld?.revoke();++runtimeRevision; autopilot = undefined; cancelCurrent(); failure = ''; failureDetail = ''; return; }
+    if (event.kind === 'stop') { retireSemanticMirror();nativeReadiness?.revoke();nativeWorld?.revoke();++runtimeRevision; autopilot = undefined; cancelCurrent(); failure = ''; failureDetail = ''; return; }
     if (event.kind === 'error') { subtitles.cancel(); connectionFailure = event.text || 'Die Verbindung zur App ist nicht verfügbar.'; return; }
     if (event.kind !== 'speech' || !event.id || receivedIds.has(event.id) || !speechRouteCurrent(event)) return;
     receivedIds.add(event.id);
@@ -389,9 +422,10 @@
           &&profile.id===scope.actorId&&outputEnabled&&document.visibilityState!=='hidden',
         revision:()=>`${profileRevision}:${lifeOutput?.routeId??''}:${lifeOutput?.state??''}`,
         mismatch:()=>nativeWorld?.revoke(),
+        changed:()=>{nativeObjectRevision++;},
       });
       nativeWorld=new NativeWorldOutput({invoke:call,adapter:()=>avatar,actorId:()=>botId,
-        scope:(expected,signal)=>nativeSnapshots?.expect(expected,signal),
+        scope:(expected,signal)=>nativeSnapshots?.expect(expected,signal,expected),
         position:nativePosition,
         current:()=>!disposed&&profileLoaded&&!!botId&&profile.id===botId&&outputEnabled&&document.visibilityState!=='hidden',
         normal:async(signal)=>{
@@ -420,33 +454,43 @@
         if (runtimeRevision === initialRuntimeRevision) { const runtime=(state.autopilot || []).find((entry:any) => entry.botId === botId); if(runtime)acceptAutopilot(runtime); }
         const url = new URL(state.overlayUrl); url.searchParams.set('bot', botId); overlayUrl = url.toString();
       }).catch(() => { if (!disposed) connectionFailure = 'Charakterprofil konnte nicht geladen werden.'; });
-      const target=window as Window&{__orbitpalNativeWorldBootstrap?:(auth:unknown)=>void;__orbitpalNativeWorldProbe?:(probe:unknown)=>void;__orbitpalNativeWorldRevoke?:()=>void};
+      const target=window as Window&{__orbitpalNativeWorldBootstrap?:(auth:unknown)=>void;__orbitpalNativeWorldProbe?:(probe:unknown)=>void;__orbitpalNativeWorldRevoke?:()=>void;__orbitpalNativeWorldCommand?:(command:unknown)=>void};
       const bootstrap=(auth:unknown)=>{if(window===window.top&&!disposed)nativeWorld?.bootstrap(auth);};
       const probe=(value:unknown)=>{if(window===window.top&&!disposed)nativeReadiness?.probe(value);};
       const revoke=()=>{nativeReadiness?.revoke();nativeWorld?.revoke();};
+      // Public command data only. Exact constructor/authentication and the
+      // retained native fence are rechecked by the host before this callback;
+      // NativeWorldOutput still rejects foreign/stale binding/action identity.
+      const command=(value:unknown)=>{if(window===window.top&&!disposed)nativeWorld?.receive(value);};
       if(window===window.top){
         Object.defineProperty(target,'__orbitpalNativeWorldBootstrap',{value:bootstrap,configurable:true});
         Object.defineProperty(target,'__orbitpalNativeWorldProbe',{value:probe,configurable:true});
+        Object.defineProperty(target,'__orbitpalNativeWorldCommand',{value:command,configurable:true});
         Object.defineProperty(target,'__orbitpalNativeWorldRevoke',{value:revoke,configurable:true});
         cleanup.push(()=>{if(target.__orbitpalNativeWorldBootstrap===bootstrap)delete target.__orbitpalNativeWorldBootstrap;
           if(target.__orbitpalNativeWorldProbe===probe)delete target.__orbitpalNativeWorldProbe;
-          if(target.__orbitpalNativeWorldRevoke===revoke)delete target.__orbitpalNativeWorldRevoke;});
+          if(target.__orbitpalNativeWorldRevoke===revoke)delete target.__orbitpalNativeWorldRevoke;
+          if(target.__orbitpalNativeWorldCommand===command)delete target.__orbitpalNativeWorldCommand;});
       }
       void subscribe('cohost://world-action',event=>nativeWorld?.receive(event));
-      const hidden=()=>{if(document.visibilityState==='hidden')revoke();};
+      nativeObjectVisible=document.visibilityState!=='hidden';
+      const hidden=()=>{nativeObjectVisible=document.visibilityState!=='hidden';if(!nativeObjectVisible)revoke();};
       document.addEventListener('visibilitychange',hidden);window.addEventListener('pagehide',revoke);
       cleanup.push(()=>{document.removeEventListener('visibilitychange',hidden);window.removeEventListener('pagehide',revoke);});
     } else {
       const url = new URL('/events', overlayUrl);
       url.search = new URL(overlayUrl).search;
       const events = new EventSource(url);
+      const connection=++semanticConnection;
       events.onmessage = (event) => {
+        if(disposed||connection!==semanticConnection)return;
         try { receive(JSON.parse(event.data)); }
         catch { connectionFailure = 'Eine Nachricht der App konnte nicht gelesen werden.'; }
       };
-      events.onerror = () => { if (!disposed) connectionFailure = 'Verbindung zur App wird wiederhergestellt …'; };
-      events.onopen = () => { if (!disposed) connectionFailure = ''; };
-      cleanup.push(() => events.close());
+      events.onerror = () => { if (!disposed&&connection===semanticConnection){semanticConfirmed=false;retireSemanticMirror();connectionFailure = 'Verbindung zur App wird wiederhergestellt …';} };
+      events.onopen = () => { if (!disposed&&connection===semanticConnection){semanticConfirmed=false;semanticMirrors.reset();semanticWorld=undefined;semanticRevision++;connectionFailure = '';} };
+      const freshness=window.setInterval(()=>{if(!disposed)semanticRevision++;},250);
+      cleanup.push(() => {++semanticConnection;events.close();window.clearInterval(freshness);semanticMirrors.reset();});
     }
     return () => {
       disposed = true;nativeReadiness?.dispose();nativeSnapshots?.dispose();nativeWorld?.dispose();window.clearInterval(soundHeartbeat);cancelCurrent(); subtitles.destroy(); cleanup.forEach((close) => close()); player.destroy(); emoteAudio.destroy();
@@ -455,15 +499,21 @@
   });
 </script>
 
-<div class="overlay-scene">
-  <Avatar bind:this={avatar} audioEnabled={outputEnabled&&!worldActive&&nativeWorldView.phase!=='warming'} audioStop={modelAudioStop} onAudioPlaying={modelAudioPlaying} profile={renderProfile} {speaking} {level} {emotion}
-    autopilot={nativeFixed?undefined:autopilot} desktop={worldActive||nativeWorldView.phase==='warming'?undefined:desktop}
-    motionSource={worldActive?'world':nativeFixed?'fixed':undefined}
+<div class="overlay-scene" bind:clientWidth={nativeViewportWidth} bind:clientHeight={nativeViewportHeight}>
+  {#if !semanticControlled||semanticMirror}
+  <Avatar bind:this={avatar} audioEnabled={outputEnabled&&!semanticControlled&&!worldActive&&nativeWorldView.phase!=='warming'} audioStop={modelAudioStop} onAudioPlaying={modelAudioPlaying} profile={renderProfile} {speaking} {level} {emotion}
+    autopilot={nativeFixed||semanticControlled?undefined:autopilot} desktop={worldActive||semanticMirror||nativeWorldView.phase==='warming'?undefined:desktop}
+    motionSource={worldActive||semanticMirror?'world':nativeFixed?'fixed':undefined}
     worldOwner={worldActive} worldChallenge={nativeWorldView.challenge} worldBinding={nativeWorldView.binding} worldExposed={nativeWorldView.exposed}
-    worldMirrorPosition={nativeWorldView.position}
+    worldMirrorPosition={semanticMirror?.position??nativeWorldView.position}
     onWorldPrepared={identity=>void nativeWorld?.prepared(identity)} onWorldMeasurement={report=>nativeWorld?.measurement(report)}
     onWorldFrame={frame=>nativeWorld?.frame(frame)} onWorldUnavailable={(identity,reason)=>nativeWorld?.unavailable(identity,reason)}
     onModelLoaded={observedModel} onDesktopAnchor={value=>anchor=value} transparent={true} outputUrl={overlayUrl} assetUrl={assetUrl(profile.avatar.assetPath, overlayUrl)} />
+  {/if}
+  {#if nativeObjectAnchors.length}<WorldObjects anchors={nativeObjectAnchors}/>{/if}
+  {#if semanticMirror}<WorldObjects anchors={semanticObjectAnchors}/>
+    {#if semanticMirror.action}<div class="world-semantic-activity" role="status">{$t('Spiegelansicht')} · {$t(activityLabels[semanticMirror.action.activity])} · {$t(phaseLabels[semanticMirror.action.phase])}</div>{/if}
+  {/if}
   {#if nativeWorldView.covered}<div class="native-world-preparing" aria-hidden="true"></div>{/if}
   {#if native && !worldActive && !desktop?.active && !profile.output?.clickThrough}
     <button class="overlay-drag" aria-label={$t("Figurenfenster verschieben")} title={$t("Figurenfenster verschieben")} onpointerdown={drag}>
@@ -483,6 +533,7 @@
 </div>
 
 <style>
+  .world-semantic-activity{position:absolute;left:12px;top:12px;max-width:calc(100% - 24px);padding:5px 8px;color:#d1dff6;background:#1d2c45c9;font-size:11px;pointer-events:none;z-index:21}
   .native-world-preparing{position:absolute;inset:0;background:#141923;pointer-events:none;z-index:20;}
   .overlay-subtitle.desktop-caption {bottom:auto;right:auto;align-items:center;width:max-content;overflow:hidden;transform:none;overflow-wrap:anywhere;}
   .desktop-caption>span{max-width:min(360px,calc(100vw - 32px));}

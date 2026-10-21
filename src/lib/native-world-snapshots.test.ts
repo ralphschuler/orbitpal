@@ -1,5 +1,6 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {NativeWorldSnapshots,type NativeSnapshotScope} from './native-world-snapshots';
+import type {BindingStamp} from './world-output';
 
 // Synthetic host reads/events prove ordering only: no Tauri, real native epoch,
 // GUI, provider, Store, frame/Ready/action or playback acknowledgement here.
@@ -111,5 +112,54 @@ describe('native World snapshot epoch and asynchronous fences, synthetic host',(
     const f=fixture();f.controller.abort();f.snapshots.expect(scope(),f.controller.signal);await tick();expect(f.read).not.toHaveBeenCalled();
     f.snapshots.dispose();const next=new AbortController();f.snapshots.expect(scope(),next.signal);f.snapshots.hint(world());await tick(5000);
     expect(f.read).not.toHaveBeenCalled();expect(f.mismatch).not.toHaveBeenCalled();
+  });
+});
+
+// Static object display is separate from pose/authority. These synthetic
+// binding IDs select no native session; actual Overlay supplies a parsed stamp.
+const objectStamp=(renderSessionId='render'):BindingStamp=>({...scope(),sourceWorldId:'lineage',renderSessionId,bindingSequence:1,
+  topologyRevision:1,layoutRevision:1,assetRevision:1,measurementRevision:1,referenceRevision:1});
+const objectWorld=()=>({...world(),snapshot:{...world().snapshot,
+  anchors:[{id:'play',kind:'play',position:{x:300_000,y:500_000},slots:[{id:'slot',position:{x:300_000,y:500_000}}]}],
+  actors:[...world().snapshot.actors,{actorId:'blue',position:{x:500_000,y:500_000},life:null}]}});
+describe('confirmed static native object config and lifetime',()=>{
+  beforeEach(()=>{vi.useFakeTimers();vi.setSystemTime(1000);});afterEach(()=>vi.useRealTimers());
+  it('requires a first real scoped read and exact binding; an initial event never seeds objects',async()=>{
+    const f=fixture(),held=deferred<unknown>();f.read.mockReturnValueOnce(held.promise);
+    f.snapshots.hint(objectWorld());expect(f.snapshots.objectConfig(objectStamp())).toBeNull();
+    f.snapshots.expect(scope(),f.controller.signal,objectStamp());await tick();f.snapshots.hint(objectWorld());
+    expect(f.snapshots.objectConfig(objectStamp())).toBeNull();held.resolve(objectWorld());await tick();
+    expect(f.snapshots.objectConfig(objectStamp())?.actors).toEqual([{actorId:'nova'},{actorId:'blue'}]);
+    for(const [key,value] of Object.entries({sourceWorldId:'other',renderSessionId:'new',bindingSequence:2,topologyRevision:2,
+      layoutRevision:2,assetRevision:2,measurementRevision:2,referenceRevision:2}))
+      expect(f.snapshots.objectConfig({...objectStamp(),[key]:value})).toBeNull();
+    f.snapshots.dispose();
+  });
+  it('keeps copied static config through idle>35s with one read, no actor pose/life and no renewal',async()=>{
+    const f=fixture();f.read.mockResolvedValueOnce(objectWorld());f.snapshots.expect(scope(),f.controller.signal,objectStamp());await tick();
+    const copy=f.snapshots.objectConfig(objectStamp())!;copy.anchors[0].position.x=100_000;
+    expect(f.snapshots.objectConfig(objectStamp())?.anchors[0].position.x).toBe(300_000);
+    expect(Object.keys(copy.actors[0])).toEqual(['actorId']);
+    await tick(36_000);expect(f.snapshots.objectConfig(objectStamp())?.anchors[0].position.x).toBe(300_000);
+    expect(f.snapshots.position(scope())).toEqual({x:500_000,y:500_000});expect(f.read).toHaveBeenCalledTimes(1);
+    expect(f.mismatch).not.toHaveBeenCalled();f.snapshots.dispose();
+  });
+  it('matching hints cannot replace immutable membership/anchors or make them a cached dynamic pose',async()=>{
+    const f=fixture();f.read.mockResolvedValueOnce(objectWorld());f.snapshots.expect(scope(),f.controller.signal,objectStamp());await tick();
+    f.snapshots.hint({...world(B,20,600_000),snapshot:{...world(B,20,600_000).snapshot,anchors:[]}});
+    expect(f.snapshots.position(scope())).toEqual({x:600_000,y:500_000});
+    expect(f.snapshots.objectConfig(objectStamp())?.actors).toEqual([{actorId:'nova'},{actorId:'blue'}]);
+    expect(f.snapshots.objectConfig(objectStamp())?.anchors).toHaveLength(1);expect(f.read).toHaveBeenCalledTimes(1);f.snapshots.dispose();
+  });
+  it('a successor binding needs its own fresh scoped read; abort/profile/route retirement removes config',async()=>{
+    for(const barrier of ['abort','revision','route'] as const){
+      const f=fixture();f.read.mockResolvedValueOnce(objectWorld());f.snapshots.expect(scope(),f.controller.signal,objectStamp());await tick();
+      const held=deferred<unknown>();f.read.mockReturnValueOnce(held.promise);
+      f.snapshots.expect(scope(),f.controller.signal,objectStamp('successor'));await tick(250);
+      expect(f.snapshots.objectConfig(objectStamp('successor'))).toBeNull();expect(f.snapshots.objectConfig(objectStamp())).toBeNull();
+      held.resolve(objectWorld());await tick();expect(f.snapshots.objectConfig(objectStamp('successor'))).not.toBeNull();
+      if(barrier==='abort')f.controller.abort();else if(barrier==='revision')f.changeRevision();else f.unavailable();
+      expect(f.snapshots.objectConfig(objectStamp('successor'))).toBeNull();f.snapshots.dispose();
+    }
   });
 });

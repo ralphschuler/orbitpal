@@ -1,5 +1,5 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
-import {NativeWorldOutput,parseNativeAuth,type NativeWorldPort,type NativeWorldView} from './native-world-output';
+import {NativeWorldOutput,parseNativeAuth,NATIVE_IDLE_MEASUREMENT_MS,type NativeWorldPort,type NativeWorldView} from './native-world-output';
 import {AvatarStage} from './avatar';
 import {AvatarPresentationGate} from './avatar-presentation';
 import {parseMeasurementChallenge,parseNativePhysicalPolicy,parseWorldMotionBinding,type MeasurementChallenge,type NativePhysicalPolicy,type NativeMotionBinding,type RegisteredWorldActor,type RenderMeasurement} from './world-output';
@@ -67,6 +67,36 @@ describe('private native document transport, synthetic host',()=>{
     expect(f.invoke.mock.calls[1]).toEqual(['register_native_world_output',{request:{version:1,capability:cap,mountId:'mount'}}]);
     expect(f.views.at(-1)).toMatchObject({phase:'world',covered:true,exposed:false});
     expect(f.invoke.mock.calls.every(([name])=>name==='register_native_world_output')).toBe(true);f.bridge.dispose();
+  });
+  it('keeps the three-second idle cadence and never invents a measurement from the timer',async()=>{
+    const f=fixture();f.bridge.bootstrap({version:1,capability:cap});await flush();
+    const before=f.invoke.mock.calls.length;
+    expect(NATIVE_IDLE_MEASUREMENT_MS).toBe(3000);
+    // Fast mirror display or action UI reads cannot turn idle renewal into
+    // per-frame or100ms calibration. The original period has not elapsed.
+    await vi.advanceTimersByTimeAsync(2999);await flush();
+    expect(f.invoke.mock.calls.length).toBe(before);
+    await vi.advanceTimersByTimeAsync(1);await flush();
+    expect(f.invoke.mock.calls.length).toBe(before+1);
+    expect(f.invoke.mock.calls.every(([name])=>name==='register_native_world_output')).toBe(true);
+    expect(f.views.at(-1)?.binding).toBeUndefined();
+    f.bridge.revoke();const retired=f.invoke.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(NATIVE_IDLE_MEASUREMENT_MS*4);await flush();
+    expect(f.invoke.mock.calls.length).toBe(retired);f.bridge.dispose();
+  });
+  it('an unacknowledged renewal fails closed before another period instead of overlapping IPC',async()=>{
+    const f=fixture();f.bridge.bootstrap({version:1,capability:cap});await flush();
+    const pending=deferred<unknown>();f.invoke.mockImplementationOnce(()=>pending.promise);
+    await vi.advanceTimersByTimeAsync(3000);await flush();
+    expect(f.invoke.mock.calls.filter(([name])=>name==='register_native_world_output')).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(2001);await flush();
+    expect(f.bridge.active).toBe(false);
+    await vi.advanceTimersByTimeAsync(6000);await flush();
+    expect(f.invoke.mock.calls.filter(([name])=>name==='register_native_world_output')).toHaveLength(2);
+    expect(f.invoke.mock.calls.some(([name])=>name==='report_native_world_measurement')).toBe(false);
+    pending.resolve(output());await flush();
+    expect(f.bridge.active).toBe(false);expect(f.views.at(-1)?.phase).toBe('normal');
+    f.bridge.dispose();
   });
   it('removes its own cover before the DOM barrier and exposes only afterward; stale prepared callbacks cannot expose',async()=>{
     const f=fixture(),dom=deferred<void>();f.afterDOM.mockReturnValue(dom.promise);

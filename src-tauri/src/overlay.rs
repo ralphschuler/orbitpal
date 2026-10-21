@@ -351,7 +351,10 @@ async fn events(State(app):State<tauri::AppHandle>,Query(q):Query<Access>)->Resp
         Ok(profile)=>json!({"kind":"profile","botId":bot_id,"profile":public_profile(&profile),"presentation":state.presentation.snapshot(&profile),"autopilotRuntime":state.life_runtime.present(state.autopilot.runtime(&bot_id,&crate::autopilot::config(&profile).unwrap_or_default())),"lifeOutput":state.life_runtime.session_output(&bot_id).ok()}),
         Err(_)=>return StatusCode::NOT_FOUND.into_response(),
     };
-    let world=state.store.bot_profile(&bot_id).ok().and_then(|profile|state.world.output_event(&bot_id,&profile)).unwrap_or_else(||json!({"kind":"world-state","botId":bot_id,"world":null,"arena":null}));
+    let mut world=state.store.bot_profile(&bot_id).ok().and_then(|profile|state.world.output_event(&bot_id,&profile)).unwrap_or_else(||json!({"kind":"world-state","botId":bot_id,"world":null,"arena":null}));
+    // A fresh projection seeds only this SSE connection and its fixed bot scope.
+    // No profile-selected output route supplies native mirror authority.
+    world["semanticMirror"]=serde_json::to_value(state.life_runtime.semantic_mirrors().ok().map(|packet|packet.for_actor(&bot_id))).unwrap_or(Value::Null);
     let first=stream::iter([initial,world].into_iter().map(|event|Ok::<Event,Infallible>(Event::default().data(event.to_string()))));
     let next=tokio_stream::wrappers::BroadcastStream::new(receiver).filter_map(move|result|{
         let bot_id=bot_id.clone();async move{result.ok().filter(|event|belongs(event,&bot_id)).map(|event|Ok::<Event,Infallible>(Event::default().data(event.to_string())))}

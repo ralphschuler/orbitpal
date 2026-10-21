@@ -32,6 +32,12 @@ pub(crate) mod cloud;
 pub(crate) mod core;
 #[path = "life_runtime/world_output.rs"]
 pub(crate) mod world_output;
+#[path = "life_runtime/semantic_mirrors.rs"]
+pub(crate) mod semantic_mirrors;
+#[path = "life_runtime/native_scene_actions.rs"]
+pub(crate) mod native_scene_actions;
+#[path = "life_runtime/native_scene_dispatch.rs"]
+pub(crate) mod native_scene_dispatch;
 use self::core::{Claim, Core, Mode, RuntimeSnapshot, SpeechConfig};
 use crate::{
     life_availability::{
@@ -112,6 +118,7 @@ pub fn operator_command(command: &str) -> bool {
     !matches!(
         command,
         "get_app_state"
+            | "prepare_native_life_action"
             | "get_api_connections"
             | "get_api_binding"
             | "get_world_output_status"
@@ -120,6 +127,7 @@ pub fn operator_command(command: &str) -> bool {
             | "report_world_action"
             | "unregister_world_output"
             | "get_world_state"
+            | "get_world_semantic_mirrors"
             | "get_world_settings"
             | "get_life_runtime"
             | "get_life_bot"
@@ -166,7 +174,11 @@ pub fn operator_invoke<R: tauri::Runtime>(invoke: &tauri::ipc::Invoke<R>) {
                 invoke.message.command(),
                 "start_life_rest" | "start_life_move"
             ) {
-                actions::prepare_operator(&state, invoke);
+                // A host-issued native intent is validated by the main handler
+                // against its exact retained permit. It must not run the Studio
+                // prehandler that revokes the very owner it needs to move.
+                let native_intent=matches!(invoke.message.payload(),tauri::ipc::InvokeBody::Json(value) if value["nativeIntentId"].as_str().is_some());
+                if !native_intent {actions::prepare_operator(&state, invoke);}
             } else {
                 state.life_runtime.operator_activity();
             }

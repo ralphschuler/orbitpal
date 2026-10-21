@@ -137,6 +137,9 @@ impl Default for Operator {
     }
 }
 pub struct Core {
+    // Public correlation only, scoped to this one native Core lifetime.
+    pub(super) semantic_mirror_epoch: String,
+    pub(super) semantic_mirror_sequence: u64,
     pub(crate) world_outputs: crate::world_output::Registry,
     pub(crate) actions: Option<super::action_state::NativeActions>,
     rest_intents: BTreeMap<String, super::action_state::RestIntent>,
@@ -173,6 +176,8 @@ fn due(session: &mut Session, now: u64) -> u64 {
 impl Core {
     pub fn new(system: SystemSnapshot) -> Self {
         Self {
+            semantic_mirror_epoch: uuid::Uuid::new_v4().to_string(),
+            semantic_mirror_sequence: 0,
             world_outputs: crate::world_output::Registry::default(),
             actions: Some(super::action_state::NativeActions::new()),
             rest_intents: BTreeMap::new(),
@@ -202,6 +207,8 @@ impl Core {
             self.postpone(now);
         }
         self.last_time = now;
+        self.rest_intents.retain(|_,intent|intent.native.is_none()
+            || super::native_scene_actions::intent_fresh(intent.issued_at,now));
         now
     }
     fn postpone(&mut self, now: u64) {
@@ -388,6 +395,7 @@ impl Core {
         self.rest_intents.insert(
             bot.into(),
             super::action_state::RestIntent {
+                native: None,
                 move_target: None,
                 serial,
                 bot: bot.into(),
@@ -416,6 +424,27 @@ impl Core {
         if let Some(intent) = self.rest_intents.get_mut(bot) {
             intent.move_target = Some(target);
         }
+    }
+    /// Actual NativeActionPermit is retained by the caller's Owned -> Core
+    /// path. This records one operator intent and never creates a native grant.
+    pub(super) fn prepare_native_action_intent(
+        &mut self, bot:&str, profile:serde_json::Value,
+        native:super::native_scene_actions::NativeIntent, output_generation:u64, raw:u64,
+    )->Option<super::action_state::RestIntent>{
+        let now=self.clock(raw);
+        if self.ui.hidden||self.local_actions_busy()||!native.permit.current(self,now)
+            ||self.local_fence(bot,now).as_ref()!=Some(&native.fence)
+            ||self.next_rest_intent>=MAX_COUNTER||self.rest_intents.len()>=MAX_SESSIONS{return None;}
+        let connection=self.world_ui_connection(now)?.to_owned();
+        let serial=self.next_rest_intent;self.next_rest_intent+=1;
+        let intent=super::action_state::RestIntent{native:Some(native.clone()),move_target:None,
+            serial,bot:bot.into(),session:native.fence.session.clone(),revision:native.fence.revision,
+            profile,connection,report_sequence:self.ui.sequence,reported_at:self.ui.reported_at?,
+            issued_at:now,own_ui_generation:self.ui.generation,output_generation};
+        self.rest_intents.insert(bot.into(),intent.clone());self.changed();Some(intent)
+    }
+    pub(super) fn native_action_intent(&self,bot:&str,id:&str)->Option<super::action_state::RestIntent>{
+        self.rest_intents.get(bot).filter(|intent|intent.native.as_ref().is_some_and(|native|native.id==id)).cloned()
     }
     pub(crate) fn rest_intent(
         &self,
@@ -458,6 +487,15 @@ impl Core {
                 .is_none_or(|s| s.session_id != intent.session || s.revision != intent.revision)
         {
             return None;
+        }
+        if let Some(native)=&intent.native {
+            // Native intents preserve the original truthful UI generation. They
+            // never clear a synthetic blocked report or retime the old owner.
+            if !super::native_scene_actions::intent_fresh(intent.issued_at,now)
+                ||self.ui.generation!=intent.own_ui_generation
+                ||self.local_fence(&intent.bot,now).as_ref()!=Some(&native.fence)
+                ||!native.permit.current(self,now){return None;}
+            self.rest_intents.remove(&intent.bot);return Some(native.fence.clone());
         }
         if self.ui.generation == intent.own_ui_generation
             && self.ui.reported_at.is_none()

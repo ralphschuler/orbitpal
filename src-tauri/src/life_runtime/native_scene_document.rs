@@ -41,7 +41,7 @@ impl NavigationPolicy {
             bot: bot.into(),
         })
     }
-    fn permits(&self, url: &url::Url) -> bool {
+    pub(super) fn permits(&self, url: &url::Url) -> bool {
         if url.as_str().len() > 2048
             || url.scheme() != self.expected.scheme()
             || url.host_str() != self.expected.host_str()

@@ -81,14 +81,21 @@ impl WorldHub {
 }
 pub fn publish(app: &tauri::AppHandle) {
     let state = app.state::<crate::AppState>();
+    // This read acquires Core only after its constructor/Scene observations and
+    // releases it before WorldHub, Store and every event emission below.
+    let semantic = state.life_runtime.semantic_mirrors().ok();
+    if let Some(packet) = &semantic {
+        let _ = app.emit_to("main", "cohost://world-semantic-mirrors", packet);
+    }
     if let Ok(snapshot) = state.world.snapshot() {
         let _ = app.emit_to("main", "cohost://world-state", snapshot);
     }
     for id in state.world.output_targets() {
         if let Ok(profile) = state.store.bot_profile(&id) {
-            let event = state.world.output_event(&id, &profile).unwrap_or_else(
+            let mut event = state.world.output_event(&id, &profile).unwrap_or_else(
                 || json!({"kind":"world-state","botId":id,"world":null,"arena":null}),
             );
+            event["semanticMirror"] = serde_json::to_value(semantic.as_ref().map(|packet| packet.for_actor(&id))).unwrap_or(serde_json::Value::Null);
             state.overlay.publish(app, event);
         }
     }

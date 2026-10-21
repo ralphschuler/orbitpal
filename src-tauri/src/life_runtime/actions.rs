@@ -155,9 +155,12 @@ pub async fn start_life_rest(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     bot_id: String,
-    ui: UiProof,
+    ui: Option<UiProof>,
+    native_intent_id: Option<String>,
 ) -> Result<Value, String> {
     main_only(window.label())?;
+    if let Some(id)=native_intent_id{return super::native_scene_actions::start_rest(app,bot_id,id).await;}
+    let ui=ui.ok_or(action_host::UNAVAILABLE)?;
     let state = app.state::<crate::AppState>();
     state.updater.ensure_idle()?;
     let intent = state
@@ -328,15 +331,15 @@ impl LifeRuntime {
                     actions
                         .jobs
                         .iter()
-                        .map(|(id, job)| (id.clone(), job.key.clone()))
+                        .map(|(id, job)| (id.clone(), job.key.clone(),job.native_permit.is_some()))
                         .collect::<Vec<_>>()
                 })
             })
             .unwrap_or_default();
         let unavailable = bots
             .into_iter()
-            .filter(|(bot, _)| {
-                state
+            .filter(|(bot, _,native)| {
+                !*native && state
                     .store
                     .bot_profile(bot)
                     .ok()
@@ -344,7 +347,7 @@ impl LifeRuntime {
             })
             .collect::<Vec<_>>();
         if let Ok(mut core) = self.core.lock() {
-            for (bot, key) in unavailable {
+            for (bot, key,_) in unavailable {
                 if core
                     .actions
                     .as_ref()

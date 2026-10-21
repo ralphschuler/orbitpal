@@ -15,12 +15,13 @@
     onDirtyChange: (dirty: boolean) => void; onBusyChange: (busy: boolean) => void; confirmDiscard: (action: () => void) => void;
     selectedBotId?: string; outputUrl?: string; executionBlocked?: boolean;
     registerWorld?: (request: Omit<RegisterWorldActor, 'studioProof'>) => Promise<unknown>;
-    onMove?: (target: CanonicalPoint) => Promise<LifeActionsSnapshot | undefined>;
+    onMove?: (target: CanonicalPoint,nativeOwner?:boolean) => Promise<LifeActionsSnapshot | undefined>;
+    onSlotMove?: (slotId:string) => Promise<LifeActionsSnapshot|undefined>;
     onStart?: () => Promise<void>; onStop?: () => Promise<void>; active?: boolean; starting?: boolean;
   }
   const unavailable = () => Promise.reject(new Error('Die Verbindung zur sichtbaren Bühne ist nicht bestätigt.'));
   let { bots, displays = [], visible, disabled = false, onDirtyChange, onBusyChange, confirmDiscard,
-    selectedBotId = '', outputUrl = '', executionBlocked = true, registerWorld = unavailable, onMove = unavailable,
+    selectedBotId = '', outputUrl = '', executionBlocked = true, registerWorld = unavailable, onMove = unavailable,onSlotMove=unavailable,
     onStart, onStop, active = false, starting = false }: Props = $props();
   const uid = $props.id();
   let settings = $state<WorldSettings>();
@@ -191,7 +192,7 @@
   {#if onStop && (active || starting || localStarting)}<div class="world-stop"><button class="button secondary stop-button" type="button" onclick={stop} disabled={stopPending}><Square size={14}/>{$t(stopPending ? 'Stopp wird angefordert …' : 'Life stoppen')}</button><span>{$t('Stoppen bleibt auch während des Starts möglich.')}</span></div>{/if}
   {#if message}<p class="world-message" role="status">{$t(message)}</p>{/if}
   {#if snapshot && !unconfirmed}<details class="world-confirmed"><summary>{$t('Bestätigter Bühnenstand')}</summary><p>{$t('Konfiguration {revision} · Stand {sequence}', { revision: number(snapshot.configRevision), sequence: number(snapshot.sequence) })}</p><p>{$t('{count} Plätze sind derzeit nativ belegt.', { count: number(snapshot.occupied.length) })}</p></details>{/if}
-  {#if confirmedState?.availability === 'ready' && !unconfirmed}<details class="world-confirmed" bind:open={previewOpen}><summary>{$t('3D-Vorschau und Laufziel')}</summary><WorldViewport world={confirmedState} {bots} {selectedBotId} {outputUrl} visible={visible&&previewOpen} blocked={executionBlocked || disabled || dirty || writing} register={registerWorld} {onMove}/></details>{/if}
+  {#if confirmedState?.availability === 'ready' && !unconfirmed}<details class="world-confirmed" bind:open={previewOpen}><summary>{$t('3D-Vorschau und Laufziel')}</summary><WorldViewport world={confirmedState} {bots} {selectedBotId} {outputUrl} visible={visible&&previewOpen} blocked={executionBlocked || disabled || dirty || writing} register={registerWorld} {onMove} {onSlotMove}/></details>{/if}
 </section>
 
 <style>

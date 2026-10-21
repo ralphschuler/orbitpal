@@ -153,6 +153,12 @@ pub(super) fn measured_safe_centers(safe:Rect,clip:CssRect,viewport:CssSize,enve
         bottom:(f64::from(safe.max().y())/f64::from(SCALE)*viewport.height).min(clip.bottom)-envelope.bottom,
     }
 }
+#[path = "semantic.rs"]
+mod semantic;
+#[path = "dispatch.rs"]
+mod dispatch;
+pub(crate) use dispatch::RoutedWorldCommand;
+
 impl Registry {
     fn revision(&mut self) -> Result<u64, RenderReason> {
         self.next_revision = self

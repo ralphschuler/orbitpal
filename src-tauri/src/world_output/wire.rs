@@ -592,3 +592,10 @@ pub(crate) enum MotionCommand {
         status: crate::action_executor::Status,
     },
 }
+
+impl MotionCommand {
+    pub(crate) fn fence(&self) -> &MotionFence {
+        match self { Self::Offer {fence,..}|Self::Pause {fence,..}|Self::Resume {fence,..}|Self::Terminal {fence,..}=>fence }
+    }
+    pub(crate) fn terminal(&self) -> bool { matches!(self,Self::Terminal {..}) }
+}
