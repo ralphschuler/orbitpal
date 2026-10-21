@@ -252,11 +252,8 @@ int main(int argc, char **argv)
             goto cleanup;
         /* All key events are ordered on this one device/connection. The final
          * round trip is not a value ACK; only real AT-SPI Text readback is. */
-        const uint32_t control = 0xffe3;
-        org_kde_kwin_fake_input_keyboard_keysym(input, control, WL_KEYBOARD_KEY_STATE_PRESSED);
-        org_kde_kwin_fake_input_keyboard_keysym(input, 'a', WL_KEYBOARD_KEY_STATE_PRESSED);
-        org_kde_kwin_fake_input_keyboard_keysym(input, 'a', WL_KEYBOARD_KEY_STATE_RELEASED);
-        org_kde_kwin_fake_input_keyboard_keysym(input, control, WL_KEYBOARD_KEY_STATE_RELEASED);
+        /* Controller already observed the real native full Text selection.
+         * No modifier chord and no guessed keycodes are sent here. */
         for (const unsigned char *c = (const unsigned char *)value; *c; ++c) {
             org_kde_kwin_fake_input_keyboard_keysym(input, *c, WL_KEYBOARD_KEY_STATE_PRESSED);
             org_kde_kwin_fake_input_keyboard_keysym(input, *c, WL_KEYBOARD_KEY_STATE_RELEASED);
@@ -295,10 +292,9 @@ connection_failed:
 cleanup:
     if (input) {
         if (text_mode) {
-            /* Release even an uncertain press, then destroy only this device.
-             * KWin also releases its retained pressedKeys on disconnect. */
-            org_kde_kwin_fake_input_keyboard_keysym(input, 'a', WL_KEYBOARD_KEY_STATE_RELEASED);
-            org_kde_kwin_fake_input_keyboard_keysym(input, 0xffe3, WL_KEYBOARD_KEY_STATE_RELEASED);
+            /* Destroy only this device: KWin releases all its retained
+             * pressedKeys, including an uncertain character press. A forced
+             * disconnect performs that same per-device cleanup. */
             org_kde_kwin_fake_input_destroy(input);
             if (wl_display_roundtrip(display) < 0)
                 result = 1;

@@ -53,10 +53,18 @@ Only three fixed fields may receive input: its exact endpoint, the fixed fixture
 model, and the exact closed current armed case/nonce message. This is an explicit
 native guest input mode, never a catch-and-fallback or arbitrary text endpoint.
 Each field keeps one original 12-second deadline and at most two reveal scrolls.
-Before and after one Ctrl+A/text sequence, the controller requires fresh owned
+Before and after one text sequence, the controller requires fresh owned
 PID/executable, unique SHOWING Main ACTIVE, same exact enabled editable entry
 FOCUSED, and actual read-only Text. A genuine entry `grabFocus` may request focus;
-its return alone does not pass. Actual Text must equal the expected value, and
+its return alone does not pass. After transport preparation, the same Text and
+unchanged field value are rejoined. For nonempty text, one real Text
+`addSelection` (zero selections) or `setSelection` (one selection) selects the
+whole field. Fresh native reads must confirm exactly one `[0, characterCount]`
+range on that same Text object, with unchanged contents and focus, before keys.
+Empty fields require no selection mutation or out-of-range `getSelection` call.
+WebKitGTK's [Text selection methods](https://github.com/WebKit/WebKit/blob/webkitgtk-2.52.6/Source/WebCore/accessibility/atspi/AccessibilityObjectTextAtspi.cpp#L160-L184)
+implement this native selection; it is neither a text-write nor grant ACK.
+Actual Text must equal the expected value afterward, and
 the existing SQLite Save proof remains mandatory. No key attempt is retried after
 uncertain delivery. Capture/chooser grants and their evidence are unchanged.
 
@@ -68,19 +76,27 @@ actually advertised v6 `keyboard_keysym` interface, the exact private socket pee
 and the existing executable/interface authorization. The actual earlier KDE job
 installed `plasma-wayland-protocols 1.20.0-2`; its
 [upstream protocol](https://github.com/KDE/plasma-wayland-protocols/blob/v1.20.0/src/protocols/fake-input.xml)
-includes keysym v6. No US keycode mapping or v4 text fallback exists. Existing
+includes keysym v6. The text burst contains only paired character Keysyms,
+without a modifier chord. KWin 6.6.4 resets modifiers per Keysym;
+[6.6.6 preserves them differently](https://github.com/KDE/kwin/blob/v6.6.6/src/backends/fakeinput/fakeinputbackend.cpp#L277-L307).
+This source-version difference is not a proven Ctrl+A failure in the actual
+6.6.6 job; confirmed native selection avoids depending on either behavior.
+No US keycode mapping or v4 text fallback exists. Existing
 pointer/Escape modes still bind at most v4. The KDE helper emits only fixed
 `ready`/`done` tokens; the controller rechecks focus after `ready` before sending
 one bounded validated stdin line. Neither token establishes delivery or consent.
-Pressed keys/modifiers are released in cleanup and only the own device/session
-is destroyed; disconnect is also required on error/deadline. No timeout is extended.
+Every character press has a release. Cleanup attempts all retained releases,
+then independently attempts the own session Stop even after a release error,
+then closes the own connection. KDE destroys only the own device, which also
+releases retained keys on disconnect. Cleanup errors remain failures, and no
+timeout is extended.
 The backend protocols are private/version-specific and actual input/focus/text
 delivery on either desktop remains unproved until a new actual run passes.
 
 Terminal `app-model-entry` diagnostics contain bounded counts, fixed field codes
 (1 endpoint, 2 model, 3 message) and expiry. In explicit native mode operation
 3 means Text interface, 4 focus request, 5 focus readback, 6 transport preparation,
-7 one key sequence, 8 fresh value readback. Legacy EditableText fixtures retain
+7 native selection/one character sequence, 8 fresh value readback. Legacy EditableText fixtures retain
 their original operation meanings. No text/value/tree or raw native error is
 logged, and diagnostics do not query AX after the deadline.
 

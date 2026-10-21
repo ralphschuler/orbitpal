@@ -2623,9 +2623,10 @@ class NativeFixtureInputTests(unittest.TestCase):
             with one, two, patch.object(native_input, function, return_value=value), self.assertRaises(provider.Refusal):
                 policy.validate("Model", native_input.MODEL)
 
-    def test_key_sequence_balances_control_and_every_printable_fixture_character(self):
+    def test_key_sequence_has_only_paired_printable_characters_without_modifier_chord(self):
         sequence = native_input.key_sequence("http://127.0.0.1:32123/v1")
-        self.assertEqual(sequence[:4], [(0xffe3, True), (97, True), (97, False), (0xffe3, False)])
+        self.assertEqual(sequence[:4], [(104, True), (104, False), (116, True), (116, False)])
+        self.assertTrue(all(33 <= symbol <= 126 for symbol, _ in sequence))
         held = set()
         for symbol, down in sequence:
             if down: held.add(symbol)
@@ -2637,8 +2638,27 @@ class NativeFixtureInputTests(unittest.TestCase):
 
     def field(self, name="API base URL"):
         node = ModelEntryRevealTests().entry_node(name)
-        node.value = "old"
-        node.queryText = Mock(side_effect=lambda: SimpleNamespace(characterCount=len(node.value), getText=Mock(return_value=node.value)))
+        node.value, node.selection = "old", None
+        def select(start, end):
+            node.selection = (start, end)
+            return True
+        node.add_selection = Mock(side_effect=select)
+        node.set_selection = Mock(side_effect=lambda number, start, end: select(start, end))
+        node.selection_count = Mock(side_effect=lambda: int(node.selection is not None))
+        node.selection_bounds = Mock(side_effect=lambda _number: node.selection)
+        class Text:
+            # Same contract as pyatspi.interface: fresh wrapper, same underlying
+            # obj identity, with genuinely changing value and selection reads.
+            def __init__(self, obj): self.obj = obj
+            def __eq__(self, other): return type(self) is type(other) and self.obj is other.obj
+            @property
+            def characterCount(self): return len(self.obj.value)
+            def getText(self, start, end): return self.obj.value[start:end]
+            def getNSelections(self): return self.obj.selection_count()
+            def getSelection(self, number): return self.obj.selection_bounds(number)
+            def addSelection(self, start, end): return self.obj.add_selection(start, end)
+            def setSelection(self, number, start, end): return self.obj.set_selection(number, start, end)
+        node.queryText = Mock(side_effect=lambda: Text(node))
         focus = Mock(side_effect=lambda: (node.states.add("focused") or True))
         node.queryComponent = Mock(return_value=SimpleNamespace(grabFocus=focus))
         studio, frame, _ = ModelEntryRevealTests().fixture([node])
@@ -2695,12 +2715,13 @@ class NativeFixtureInputTests(unittest.TestCase):
             self.assertNotIn("http", output)
 
     def test_focus_or_identity_loss_during_transport_preparation_prevents_keys(self):
-        for case in ("focus", "identity", "active"):
+        for case in ("focus", "identity", "active", "content"):
             studio, node, frame, _, transport = self.field()
             def prepare():
                 if case == "focus": node.states.discard("focused")
                 if case == "identity": frame.children = [ModelEntryRevealTests().entry_node()]
                 if case == "active": frame.states.discard("active")
+                if case == "content": node.value = "new"
                 return transport
             transport.__enter__.side_effect = prepare
             error, _ = self.invoke(studio, "http://127.0.0.1:32123/v1")
@@ -2734,6 +2755,84 @@ class NativeFixtureInputTests(unittest.TestCase):
             self.assertIsNotNone(error)
             studio.native_input.open.assert_not_called()
             transport.replace.assert_not_called()
+
+    def test_nonempty_field_selects_once_using_actual_zero_or_one_existing_selection(self):
+        for previous in (None, (1, 2)):
+            studio, node, _, _, transport = self.field()
+            node.selection = previous
+            error, output = self.invoke(studio, "http://127.0.0.1:32123/v1")
+            self.assertIsNone(error, output)
+            if previous is None:
+                node.add_selection.assert_called_once_with(0, 3)
+                node.set_selection.assert_not_called()
+            else:
+                node.set_selection.assert_called_once_with(0, 0, 3)
+                node.add_selection.assert_not_called()
+            transport.replace.assert_called_once()
+            self.assertGreaterEqual(node.selection_bounds.call_count, 2)
+
+    def test_empty_field_has_no_selection_mutation_or_undefined_selection_read(self):
+        studio, node, _, _, transport = self.field()
+        node.value = ""
+        error, output = self.invoke(studio, "http://127.0.0.1:32123/v1")
+        self.assertIsNone(error, output)
+        node.add_selection.assert_not_called()
+        node.set_selection.assert_not_called()
+        node.selection_bounds.assert_not_called()
+        transport.replace.assert_called_once()
+
+    def test_bad_selection_count_return_or_unconfirmed_range_prevents_all_keys(self):
+        for case in ("many", "bool", "refused", "unobserved", "wrong_bounds", "bool_bounds", "list_bounds", "unsupported"):
+            studio, node, _, _, transport = self.field()
+            if case == "many": node.selection_count.side_effect, node.selection_count.return_value = None, 2
+            if case == "bool": node.selection_count.side_effect, node.selection_count.return_value = None, True
+            if case == "refused": node.add_selection.side_effect, node.add_selection.return_value = None, False
+            if case == "unobserved": node.add_selection.side_effect, node.add_selection.return_value = None, True
+            if case == "wrong_bounds": node.selection_bounds.side_effect, node.selection_bounds.return_value = None, (1, 3)
+            if case == "bool_bounds": node.selection_bounds.side_effect, node.selection_bounds.return_value = None, (False, 3)
+            if case == "list_bounds": node.selection_bounds.side_effect, node.selection_bounds.return_value = None, [0, 3]
+            if case == "unsupported": node.add_selection.side_effect = NotImplementedError("PRIVATE_SELECTION_ERROR")
+            error, output = self.invoke(studio, "http://127.0.0.1:32123/v1")
+            self.assertIsNotNone(error)
+            transport.replace.assert_not_called()
+            transport.__exit__.assert_called_once()
+            self.assertLessEqual(node.add_selection.call_count, 1)
+            self.assertNotIn("PRIVATE", output)
+
+    def test_content_focus_text_or_selection_change_after_native_selection_prevents_keys(self):
+        for case in ("value", "focus", "text", "selection"):
+            studio, node, _, _, transport = self.field()
+            def select(start, end):
+                node.selection = (start, end)
+                if case == "value": node.value = "new"
+                if case == "focus": node.states.discard("focused")
+                if case == "text": node.queryText.side_effect = lambda: object()
+                if case == "selection":
+                    def changed(_):
+                        node.selection = None
+                        return (0, 3)
+                    node.selection_bounds.side_effect = changed
+                return True
+            node.add_selection.side_effect = select
+            error, _ = self.invoke(studio, "http://127.0.0.1:32123/v1")
+            self.assertIsNotNone(error)
+            transport.replace.assert_not_called()
+            node.add_selection.assert_called_once_with(0, 3)
+            transport.__exit__.assert_called_once()
+
+    def test_late_selection_cannot_start_keys_or_query_after_original_deadline(self):
+        studio, node, _, _, transport = self.field()
+        clock = [0.0]
+        def late(start, end):
+            node.selection, clock[0] = (start, end), 12.0
+            return True
+        node.add_selection.side_effect = late
+        error, _ = self.invoke(studio, "http://127.0.0.1:32123/v1", clock=clock)
+        self.assertIsNotNone(error)
+        transport.replace.assert_not_called()
+        node.selection_bounds.assert_not_called()
+        node.add_selection.assert_called_once_with(0, 3)
+        transport.__exit__.assert_called_once()
 
 
 class PrivateInputTransportTests(unittest.TestCase):
@@ -2810,17 +2909,17 @@ class PrivateInputTransportTests(unittest.TestCase):
         connection.close.assert_not_called()
         timer.cancel.assert_called_once_with()
 
-    def test_uncertain_gnome_press_releases_control_and_key_before_session_cleanup(self):
+    def test_uncertain_gnome_character_press_is_released_before_session_cleanup(self):
         once = [False]
         def fail(method, arguments):
-            if method == "NotifyKeyboardKeysym" and arguments.value == (97, True) and not once[0]:
+            if method == "NotifyKeyboardKeysym" and arguments.value == (111, True) and not once[0]:
                 once[0] = True
                 return True
             return False
         error, _, connection, events, _ = self.invoke_gnome(fail)
         self.assertIs(type(error), RuntimeError)
         keys = [event[4].value for event in events if event[3] == "NotifyKeyboardKeysym"]
-        self.assertEqual(keys, [(0xffe3, True), (97, True), (97, False), (0xffe3, False)])
+        self.assertEqual(keys, [(111, True), (111, False)])
         self.assertEqual([e[3] for e in events].count("Stop"), 1)
         connection.close_sync.assert_called_once()
         self.assertNotIn("PRIVATE", json.dumps(app.failure_diagnostic(error)))
@@ -2840,12 +2939,30 @@ class PrivateInputTransportTests(unittest.TestCase):
 
     def test_all_uncertain_held_symbols_get_release_attempts_even_if_one_release_errors(self):
         transport = native_input.GnomeInput(SimpleNamespace(), 12)
-        transport.peer, transport.path, transport.held = ":1.45", "/own/session", [0xffe3, 97]
+        transport.peer, transport.path, transport.held = ":1.45", "/own/session", [98, 97]
         transport.call = Mock(side_effect=[RuntimeError("PRIVATE_RELEASE_ERROR"), None])
         with self.assertRaisesRegex(provider.Refusal, "^private_input_unavailable$"):
             transport.release()
-        self.assertEqual([item.args[5] for item in transport.call.call_args_list], [(97, False), (0xffe3, False)])
+        self.assertEqual([item.args[5] for item in transport.call.call_args_list], [(97, False), (98, False)])
         self.assertEqual(transport.held, [97])
+
+    def test_release_error_still_attempts_every_release_stop_and_close_without_passing(self):
+        for stop_fails in (False, True):
+            transport = native_input.GnomeInput(SimpleNamespace(), 12)
+            transport.peer, transport.path, transport.held = ":1.45", "/own/session", [98, 97]
+            transport.cancel, transport.connection = Mock(), Mock(close_sync=Mock(return_value=True))
+            calls = []
+            def call(*args):
+                calls.append(args)
+                if (args[3] == "NotifyKeyboardKeysym" and args[5] == (97, False)
+                        or stop_fails and args[3] == "Stop"):
+                    raise RuntimeError("PRIVATE_CLEANUP_ERROR")
+            transport.call = Mock(side_effect=call)
+            with self.subTest(stop_fails=stop_fails), patch.object(native_input.time, "monotonic", return_value=0), self.assertRaisesRegex(provider.Refusal, "^private_input_unavailable$"):
+                transport.__exit__(None, None, None)
+            self.assertEqual([(args[3], args[5]) for args in calls], [
+                ("NotifyKeyboardKeysym", (97, False)), ("NotifyKeyboardKeysym", (98, False)), ("Stop", ())])
+            transport.connection.close_sync.assert_called_once_with(transport.cancel)
 
     def test_gnome_reply_types_deadline_and_cancelled_close_remain_fail_closed(self):
         policy, gio, glib, connection, _ = self.gnome()

@@ -84,6 +84,7 @@ REFUSAL_CODES = frozenset((
     'unsolicited_inference', 'wrong_model_or_stream', 'wrong_release', 'wrong_turn_or_image_count',
     'private_input_deadline', 'private_input_scope', 'private_input_owner',
     'private_input_value', 'private_input_focus', 'private_input_readback', 'private_input_unavailable',
+    'private_input_selection',
 ))
 _current_phase = "controller_entry"
 _emitted_phases = set()

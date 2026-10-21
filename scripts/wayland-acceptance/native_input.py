@@ -17,7 +17,6 @@ from provider import CASES, Receiver, Refusal, State
 
 MODEL = "orbitpal-wayland-fixture"
 MESSAGE = "Message to your cohost"
-CONTROL_L = 0xffe3
 
 
 def remaining(deadline):
@@ -87,8 +86,7 @@ def compositor_identity():
 def key_sequence(value):
     if type(value) is not str or not 1 <= len(value) <= 128 or any(not 33 <= ord(c) <= 126 for c in value):
         raise Refusal("private_input_value")
-    return [(CONTROL_L, True), (ord("a"), True), (ord("a"), False), (CONTROL_L, False)] + [
-        event for char in value for event in ((ord(char), True), (ord(char), False))]
+    return [event for char in value for event in ((ord(char), True), (ord(char), False))]
 
 
 class FixtureInput:
@@ -150,17 +148,32 @@ class FixtureInput:
                     return None
                 raise Refusal("private_input_focus")
             text = native(fresh.queryText)
+            if not same(initial_text, text):
+                raise Refusal("private_input_readback")
             count = native(lambda: text.characterCount)
             if type(count) is not int or not 0 <= count <= 256:
                 raise Refusal("private_input_readback")
             content = native(lambda: text.getText(0, count))
             if type(content) is not str or len(content) != count:
                 raise Refusal("private_input_readback")
-            return content
+            return content, text, count
+
+        def selected(text, count):
+            number = native(text.getNSelections)
+            if type(number) is not int or number != (1 if count else 0):
+                raise Refusal("private_input_selection")
+            if count:
+                # pyatspi 2.58.1 Text.getSelection calls rangeToList(), which
+                # returns the two offsets, not a raw GI TextRange object.
+                bounds = native(lambda: text.getSelection(0))
+                if (type(bounds) is not tuple or len(bounds) != 2
+                        or any(type(offset) is not int for offset in bounds)
+                        or bounds != (0, count)):
+                    raise Refusal("private_input_selection")
 
         # Read-only Text must actually exist; do not type into an unobservable field.
         stats["nativeOperation"] = 3
-        native(node.queryText)
+        initial_text = native(node.queryText)
         stats["nativeOperation"] = 4
         if not native(lambda: node.getState().contains(studio.a.STATE_FOCUSED)):
             component = native(node.queryComponent)
@@ -169,17 +182,39 @@ class FixtureInput:
         # Focus request return is not success. Require fresh actual Main ACTIVE
         # and the same owned editor FOCUSED before preparing and sending keys.
         stats["nativeOperation"] = 5
-        studio.wait(lambda: read(waiting=True) is not None, "private_input_focus",
-                    seconds=remaining(deadline), retry_inactive=True)
+        before = studio.wait(lambda: read(waiting=True), "private_input_focus",
+                             seconds=remaining(deadline), retry_inactive=True)
         stats["nativeOperation"] = 6
         with self.open(deadline) as transport:
-            read()  # Recheck after potentially blocking transport preparation.
-            stats["writeAttempts"] = 1
+            content, text, count = read()  # Fresh after transport preparation.
+            if content != before[0] or count != before[2] or not same(text, before[1]):
+                raise Refusal("private_input_selection")
             stats["nativeOperation"] = 7
+            if count:
+                number = native(text.getNSelections)
+                if type(number) is not int or number not in (0, 1):
+                    raise Refusal("private_input_selection")
+                # Select on the real Text interface, not with a version-specific
+                # Ctrl+A keysym chord. At most one selection mutation; no retry.
+                if native(lambda: text.addSelection(0, count) if number == 0
+                          else text.setSelection(0, 0, count)) is not True:
+                    raise Refusal("private_input_selection")
+            fresh_content, fresh_text, fresh_count = read()
+            if fresh_content != content or fresh_count != count or not same(text, fresh_text):
+                raise Refusal("private_input_selection")
+            selected(fresh_text, fresh_count)
+            # A native getter is not an atomic UI transaction. Rejoin the exact
+            # scope and unchanged value after the selection read, then require
+            # the same full selection immediately before the bounded key burst.
+            fresh_content, fresh_text, fresh_count = read()
+            if fresh_content != content or fresh_count != count or not same(text, fresh_text):
+                raise Refusal("private_input_selection")
+            selected(fresh_text, fresh_count)
+            stats["writeAttempts"] = 1
             transport.replace(value)
             stats["nativeOperation"] = 8
             read()  # Ownership/focus loss never permits another input attempt.
-            studio.wait(lambda: read() == value, "private_input_readback", seconds=remaining(deadline))
+            studio.wait(lambda: read()[0] == value, "private_input_readback", seconds=remaining(deadline))
         native(lambda: None)  # Cleanup cannot turn a late result into acceptance.
 
 
@@ -321,6 +356,9 @@ class GnomeInput:
             if self.connection is not None and self.path is not None:
                 try:
                     self.release()
+                except Exception:
+                    failed = True
+                try:
                     self.call(self.peer, self.path, self.SESSION, "Stop", None, (), "()")
                 except Exception:
                     failed = True
