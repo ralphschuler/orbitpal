@@ -270,6 +270,50 @@ class HarnessSafetyTests(unittest.TestCase):
             with self.assertRaises(collect.Refusal):
                 runner.service_entry(service, value)
 
+    def test_bus_refusal_classifies_only_the_exact_service_metadata_without_reading_it(self):
+        cases = [(stat.S_IFLNK | 0o777, 0), (stat.S_IFREG | 0o666, 0), (stat.S_IFREG | 0o644, 1001)]
+        for service in runner.SERVICES:
+            for mode, uid in cases:
+                with patch.object(runner.Path, "lstat", return_value=SimpleNamespace(st_mode=mode, st_uid=uid)), patch.object(runner, "bounded") as read:
+                    with self.assertRaises(runner.BusServiceRefusal) as caught:
+                        runner.checked_service(service)
+                    read.assert_not_called()
+                report = caught.exception.diagnostic
+                self.assertEqual(set(report), {"serviceCode", "regularFile", "symbolicLink", "rootOwned", "writeBits"})
+                self.assertEqual(report["serviceCode"], list(runner.SERVICES).index(service) + 1)
+                self.assertEqual(report["writeBits"], mode & 0o022)
+                self.assertEqual(str(caught.exception), "untrusted_bus_service")
+
+    def test_bus_check_retains_exact_exec_and_native_file_trust_guards(self):
+        service = "org.a11y.Bus"
+        raw = b"[D-BUS Service]\nName=org.a11y.Bus\nExec=/usr/libexec/at-spi-bus-launcher\n"
+        regular = SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0)
+        with patch.object(runner.Path, "lstat", return_value=regular), patch.object(runner, "bounded", return_value=raw), patch.object(runner.Path, "stat", return_value=regular):
+            self.assertEqual(runner.checked_service(service), raw.decode("ascii"))
+        with patch.object(runner.Path, "lstat") as lookup:
+            with self.assertRaises(collect.Refusal):
+                runner.checked_service("unknown.PRIVATE")
+            lookup.assert_not_called()
+
+    def test_service_preflight_is_read_only_and_refuses_before_any_workload(self):
+        info = SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_uid=0)
+        failure = runner.BusServiceRefusal("ca.desrt.dconf", info)
+        with patch.object(runner.sys, "argv", ["runner.py", "--check-services"]), patch.object(runner, "hosted_root") as hosted, patch.object(runner.os, "umask"), patch.object(runner, "trusted_sources") as trusted, patch.object(runner, "checked_service", side_effect=failure), patch.object(runner, "execute") as execute, patch.object(runner.subprocess, "run") as process, patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(runner.main(), 1)
+            hosted.assert_called_once(); trusted.assert_called_once()
+            execute.assert_not_called(); process.assert_not_called()
+        value = json.loads(out.getvalue())
+        self.assertFalse(value["passed"])
+        self.assertEqual(value["busService"], failure.diagnostic)
+        self.assertNotIn("ca.desrt", out.getvalue())
+
+    def test_service_preflight_checks_both_fixed_services_without_creating_an_app(self):
+        with patch.object(runner.sys, "argv", ["runner.py", "--check-services"]), patch.object(runner, "hosted_root"), patch.object(runner.os, "umask"), patch.object(runner, "trusted_sources"), patch.object(runner, "checked_service", return_value="fixed") as check, patch.object(runner, "execute") as execute, patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(runner.main(), 0)
+            self.assertEqual([call.args[0] for call in check.call_args_list], list(runner.SERVICES))
+            execute.assert_not_called()
+        self.assertEqual(json.loads(out.getvalue()), {"passed": True, "servicesChecked": 2})
+
     def test_numeric_export_accepts_only_metadata_and_keeps_all_numeric_rows(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "fixture"

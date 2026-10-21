@@ -92,6 +92,16 @@ jobs:
             librsvg2-dev libayatana-appindicator3-dev libdbus-1-dev libpipewire-0.3-dev \
             libclang-dev patchelf gnome-shell dbus at-spi2-core dconf-service \
             libgl1-mesa-dri libegl1 libgles2 gsettings-desktop-schemas iproute2 procps passwd
+      - name: Check exact packaged bus services before the cold build
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$REVIEWED_SHA" ]]
+          git diff --exit-code
+          # Read-only trust check; no account, bus, compositor or app is started.
+          sudo /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin \
+            GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted RUNNER_OS=Linux \
+            /usr/bin/python3 -B "$GITHUB_WORKSPACE/scripts/native-render-benchmark/runner.py" --check-services
       - name: Build only standalone benchmark assets and the opt-in example (do not launch)
         shell: bash
         run: |

@@ -334,3 +334,20 @@ methods, both shell syntax checks and Python AST checks passed with source hashe
 unchanged. This does not execute the privileged Linux harness or qualify a native
 renderer. The new workflow is source-only and still awaits independent review
 and executable qualification; no workflow dispatch or benchmark result is claimed.
+
+## First actual hosted smoke
+
+Run `39587659424` at merged source `000cfe3c96a8f32db6efa21968da2897db831b8b`
+built the standalone Linux example but refused before starting the renderer:
+`untrusted_bus_service`, `cleanupConfirmed=true`, `passed=false`. It does not
+qualify the smoke, any pilot, or issue #66. The unchanged trust policy rejects
+nonregular, non-root-owned or group/world-writable packaged service files.
+
+Both manual workflows now run the same read-only packaged-service check before
+the cold build. A refusal reports only service code 1 (accessibility) or 2
+(dconf), regular-file/symlink/root-owner booleans and the masked write bits. No
+raw file, executable command, symlink target, path, process or home is exported.
+The ordinary runtime repeats the same check and includes those closed fields in
+its existing `fixture-result.json` if that exact refusal occurs. Diagnostics do
+not allow another service, follow a new link, change permissions or qualify a
+runtime. The preflight creates no fixture account, bus or application.
