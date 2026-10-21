@@ -2,13 +2,16 @@
 # release-signing ID 24870421379 was created/read back 2026-10-21 with
 # custom_branch_policies:true, protected_branches:false and sole {type:tag,name:"v*"}.
 # Do not recreate it or add a per-version rule; preserve/re-inspect its policy.
-# Workflow source binds/checks this environment; actual tagged execution is
-# unobserved. Key-scope migration is pending; keys still use repository scope.
-# No environment-only key custody is claimed.
+# All four platform signing builds bind/check this environment; hosted tagged
+# execution through this route remains unobserved. Existing identities were
+# migrated on 2026-10-21: all4 environment names present, all4 repository
+# fallbacks absent (three retired, optional updater password already absent).
+# Known writes, public identity checks and scoped metadata establish configuration;
+# name metadata alone does not prove stored bytes or a hosted signing run.
 # No reviewer, timer, service or PAT is selected by this source. Preserve any
 # stronger protections deliberately configured by a maintainer.
-# Migrate existing identities from legitimate protected backups; do not claim
-# repository secret duplicates are gone until scope migration is verified.
+# Preserve the existing identities/protected backups and verified scope.
+# See ../RELEASE-TRUST.md for the acceptance threshold and remaining observations.
 # Actual release.yml additionally performs public API preflight in validate,
 # then rechecks inside build before mapping any signing values.
 jobs:
