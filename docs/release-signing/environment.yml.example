@@ -1,13 +1,25 @@
-# INACTIVE integration fragment, not a deployable workflow.
-# First create/inspect the protected environment and migrate secret scopes.
-# Then merge the environment field into the existing matrix build job,
-# move the repository-secret check out of validate, and retain all existing steps.
+# INACTIVE explanatory fragment, not a deployable workflow or GitHub settings.
+# release-signing ID 24870421379 was created/read back 2026-10-21 with
+# custom_branch_policies:true, protected_branches:false and sole {type:tag,name:"v*"}.
+# Do not recreate it or add a per-version rule; preserve/re-inspect its policy.
+# Workflow source binds/checks this environment; actual tagged execution is
+# unobserved. Key-scope migration is pending; keys still use repository scope.
+# No environment-only key custody is claimed.
+# No reviewer, timer, service or PAT is selected by this source. Preserve any
+# stronger protections deliberately configured by a maintainer.
+# Migrate existing identities from legitimate protected backups; do not claim
+# repository secret duplicates are gone until scope migration is verified.
+# Actual release.yml additionally performs public API preflight in validate,
+# then rechecks inside build before mapping any signing values.
 jobs:
   build:
+    needs: [validate, verify]
     environment: release-signing
     permissions:
       contents: read
+      actions: read
       id-token: write
       attestations: write
-    # Configure OS identity secrets only on the relevant build step.
-    # Do not add environment/signing secrets to verify or publish.
+    # Keep existing exact-tag/SHA verification; v* is not SemVer validation and
+    # intentionally preserves existing stable/prerelease behavior.
+    # OS/updater inputs stay step-scoped. Do not add them to verify/publish.
