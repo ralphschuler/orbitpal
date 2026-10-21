@@ -2,7 +2,7 @@
 //! Geometry is a short-lived proposal, never a display/capture/session grant.
 use super::LifeRuntime;
 use crate::{
-    desktop_affordances::{self, GeometryLease, GeometrySample, ReadContext, Rect},
+    desktop_affordances::{self, GeometryLease, GeometrySample, ReadContext, Rect, WindowIdentity},
     experience::{ExperienceRuntime, Preferences},
     life_domain::{ActionId, ActionPhase, Activity, LifeState},
     world_output::OutputProof,
@@ -13,13 +13,14 @@ use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, Weak,
     },
     time::{Duration, Instant},
 };
 use tauri::Manager;
 const ERROR: &str = "desktop_geometry_unavailable";
 const SAMPLE_MS: u64 = 750;
+const GEOMETRY_MS: u64 = 1500;
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Key {
     session: String,
@@ -44,11 +45,13 @@ struct Target {
     kind: Kind,
     point: Point,
     window: Option<Rect>,
+    identity: Option<WindowIdentity>,
 }
 #[derive(Clone)]
 struct Pending {
     action: ActionId,
     target: Target,
+    activity: Activity,
 }
 struct Entry {
     key: Key,
@@ -62,6 +65,161 @@ struct Entry {
     sample_after: u64,
     sampled: u64,
     proposed: Option<Point>,
+    rest: Option<WindowRestGuard>,
+}
+/// Retained evidence only: this guard cannot read the OS, lock Core/Store or
+/// create a renderer receipt. A genuine native job supplies its own cancel atom.
+#[derive(Clone)]
+pub(crate) struct WindowRestGuard {
+    bot: String,
+    key: Key,
+    preferences: u64,
+    generation: u64,
+    target: Target,
+    proof: OutputProof,
+    state: Arc<Mutex<RestFreshness>>,
+}
+struct RestFreshness {
+    valid: bool,
+    sampled: u64,
+    job: Option<Weak<AtomicBool>>,
+}
+impl RestFreshness {
+    fn invalidate(&mut self) {
+        self.valid = false;
+        if let Some(cancel) = self.job.as_ref().and_then(Weak::upgrade) {
+            cancel.store(true, Ordering::SeqCst);
+        }
+    }
+    fn current(&mut self, now: u64) -> bool {
+        if !self.valid || now < self.sampled || now - self.sampled > GEOMETRY_MS {
+            self.invalidate();
+        }
+        self.valid
+    }
+    fn observe(&mut self, sampled: u64, now: u64, matching: bool) -> bool {
+        if !self.current(now)
+            || !matching
+            || sampled < self.sampled
+            || sampled > now
+            || now - sampled > GEOMETRY_MS
+        {
+            self.invalidate();
+            return false;
+        }
+        // An unchanged timestamp never extends the lease.
+        self.sampled = sampled;
+        true
+    }
+}
+impl WindowRestGuard {
+    fn new(
+        capture: &Capture,
+        target: &Target,
+        sample: &GeometrySample,
+        now: u64,
+    ) -> Result<Self, String> {
+        if target.kind != Kind::Window
+            || target.identity.is_none()
+            || !rest_allowed(capture)
+            || sample.window_identity != target.identity
+            || sample.window_top != target.window
+            || target.window.is_none()
+            || capture.position != target.point
+            || sample.source_generation != capture.context.generation
+            || sample.display_id != capture.context.display_id
+            || sample.work_area != capture.context.physical_scene
+            || sample.at_ms > now
+            || now - sample.at_ms > GEOMETRY_MS
+        {
+            return Err(ERROR.into());
+        }
+        Ok(Self {
+            bot: capture.bot.clone(),
+            key: capture.key.clone(),
+            preferences: capture.preferences,
+            generation: capture.context.generation,
+            target: target.clone(),
+            proof: capture.proof.clone(),
+            state: Arc::new(Mutex::new(RestFreshness {
+                valid: true,
+                sampled: sample.at_ms,
+                job: None,
+            })),
+        })
+    }
+    pub(crate) fn current(&self, bot: &str, output: &OutputProof, now: u64) -> bool {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(error) => {
+                error.into_inner().invalidate();
+                return false;
+            }
+        };
+        if bot != self.bot
+            || output.binding != self.proof.binding
+            || output.stamp != self.proof.stamp
+            || output.profile_token != self.proof.profile_token
+            || !Arc::ptr_eq(&output.cancel, &self.proof.cancel)
+            || !matches!((&output.route,&self.proof.route),(crate::world_output::SourceRoute::Native(a),crate::world_output::SourceRoute::Native(b)) if a.same_route(b))
+            || output.cancel.load(Ordering::SeqCst)
+            || output.binding.reduced_motion
+            || !output.binding.station_supported
+        {
+            state.invalidate();
+            return false;
+        }
+        state.current(now)
+    }
+    pub(crate) fn bind(&self, cancel: &Arc<AtomicBool>) -> Result<(), String> {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(error) => {
+                error.into_inner().invalidate();
+                cancel.store(true, Ordering::SeqCst);
+                return Err(ERROR.into());
+            }
+        };
+        if !state.valid
+            || cancel.load(Ordering::SeqCst)
+            || state
+                .job
+                .as_ref()
+                .and_then(Weak::upgrade)
+                .is_some_and(|old| !Arc::ptr_eq(&old, cancel))
+        {
+            cancel.store(true, Ordering::SeqCst);
+            return Err(ERROR.into());
+        }
+        state.job = Some(Arc::downgrade(cancel));
+        Ok(())
+    }
+    fn invalidate(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.invalidate();
+    }
+    fn observe(&self, capture: &Capture, sample: &GeometrySample, now: u64) {
+        let matching = capture.key == self.key
+            && capture.preferences == self.preferences
+            && rest_allowed(capture)
+            && capture.context.generation == self.generation
+            && sample.source_generation == self.generation
+            && sample.display_id == self.key.display
+            && sample.work_area == capture.context.physical_scene
+            && sample.window_identity == self.target.identity
+            && sample.window_top == self.target.window
+            && capture.position == self.target.point
+            && capture.proof.binding == self.proof.binding
+            && Arc::ptr_eq(&capture.proof.cancel, &self.proof.cancel);
+        match self.state.lock() {
+            Ok(mut state) => {
+                state.observe(sample.at_ms, now, matching);
+            }
+            Err(error) => {
+                error.into_inner().invalidate();
+            }
+        }
+    }
 }
 #[derive(Default)]
 pub(super) struct DesktopPlaces {
@@ -96,6 +254,9 @@ impl DesktopPlaces {
             if let Some(entry) = entries.get_mut(bot) {
                 entry.cancel.store(true, Ordering::SeqCst);
                 entry.geometry.invalidate();
+                if let Some(guard) = &entry.rest {
+                    guard.invalidate();
+                }
             }
         }
     }
@@ -112,6 +273,12 @@ struct Capture {
     safe: SafeRect,
     life: LifeState,
     window: tauri::WebviewWindow,
+}
+fn rest_allowed(capture: &Capture) -> bool {
+    capture.prefs.desktop_anchors
+        && capture.prefs.allowed_animations.iter().any(|a| a == "rest")
+        && !capture.proof.binding.reduced_motion
+        && capture.proof.binding.station_supported
 }
 fn capture(app: &tauri::AppHandle, bot: &str) -> Result<Capture, String> {
     let state = app.state::<AppState>();
@@ -310,6 +477,11 @@ fn candidates(
                 } else {
                     None
                 },
+                identity: if kind == Kind::Window {
+                    sample.window_identity
+                } else {
+                    None
+                },
             });
         }
     }
@@ -320,7 +492,9 @@ fn target_current(target: &Target, sample: &GeometrySample, candidates: &[Target
         candidate.kind == target.kind
             && match target.kind {
                 Kind::Window => {
-                    candidate.window == target.window && candidate.point == target.point
+                    candidate.window == target.window
+                        && candidate.identity == target.identity
+                        && candidate.point == target.point
                 }
                 Kind::Cursor => {
                     u64::from(candidate.point.x().abs_diff(target.point.x()))
@@ -336,6 +510,89 @@ fn cancel_pending(app: &tauri::AppHandle, pending: Option<Pending>) -> Result<()
     }
     Ok(())
 }
+fn confirmed_window_arrival(
+    life: &LifeState,
+    pending: &Pending,
+    position: Point,
+    allowed: bool,
+) -> bool {
+    pending.activity == Activity::MoveTo
+        && pending.target.kind == Kind::Window
+        && pending.target.identity.is_some()
+        && position == pending.target.point
+        && allowed
+        && life.current_action().is_some_and(|action| {
+            action.intent().id() == &pending.action
+                && action.intent().activity() == Activity::MoveTo
+                && action.phase() == ActionPhase::Completed
+        })
+}
+async fn start_window_rest(
+    app: &tauri::AppHandle,
+    capture: &Capture,
+    pending: &Pending,
+    sample: &GeometrySample,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let runtime = &state.life_runtime;
+    let guard = WindowRestGuard::new(capture, &pending.target, sample, runtime.now())?;
+    {
+        let mut entries = runtime.desktop.entries.lock().map_err(|_| ERROR)?;
+        let entry = entries.get_mut(&capture.bot).ok_or(ERROR)?;
+        if entry.key != capture.key
+            || entry.cancel.load(Ordering::SeqCst)
+            || entry
+                .pending
+                .as_ref()
+                .is_none_or(|old| old.action != pending.action)
+        {
+            return Err(ERROR.into());
+        }
+        entry.rest = Some(guard.clone());
+        entry.admitting = true;
+        entry.proposed = Some(pending.target.point);
+    }
+    let planned =
+        super::start_window_rest_activity(app, &capture.bot, capture.proof.clone(), guard.clone())
+            .await;
+    // Retain an admitted real action before any fallible post-await cleanup.
+    if let Ok(life) = &planned {
+        if let Some(action) = life.current_action() {
+            let mut entries = runtime.desktop.entries.lock().map_err(|_| ERROR)?;
+            if let Some(entry) = entries.get_mut(&capture.bot) {
+                entry.pending = Some(Pending {
+                    action: action.intent().id().clone(),
+                    target: pending.target.clone(),
+                    activity: Activity::Rest,
+                });
+            }
+        }
+    }
+    if planned.is_err()
+        || !current(app, capture)
+        || !guard.current(&capture.bot, &capture.proof, runtime.now())
+    {
+        guard.invalidate();
+        if let Ok(life) = &planned {
+            if let Some(action) = life.current_action() {
+                super::cancel_actor_action_exact(app, &capture.bot, action.intent().id())?;
+            }
+        }
+    }
+    let mut entries = runtime.desktop.entries.lock().map_err(|_| ERROR)?;
+    if let Some(entry) = entries.get_mut(&capture.bot) {
+        entry.admitting = false;
+        entry.proposed = None;
+        entry.next = runtime
+            .now()
+            .saturating_add(u64::from(capture.prefs.initiative_cooldown_ms));
+        if planned.is_err() {
+            entry.rest = None;
+            entry.pending = None;
+        }
+    }
+    planned.map(|_| ())
+}
 fn retire(app: &tauri::AppHandle, bot: &str) -> Result<(), String> {
     let state = app.state::<AppState>();
     let pending = {
@@ -350,6 +607,9 @@ fn retire(app: &tauri::AppHandle, bot: &str) -> Result<(), String> {
         };
         entry.cancel.store(true, Ordering::SeqCst);
         entry.geometry.invalidate();
+        if let Some(guard) = &entry.rest {
+            guard.invalidate();
+        }
         entry.pending.clone()
     };
     cancel_pending(app, pending)?;
@@ -432,6 +692,7 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                     sample_after: 0,
                     sampled: 0,
                     proposed: None,
+                    rest: None,
                 },
             );
         }
@@ -453,6 +714,9 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                     continue;
                 };
                 entry.geometry.invalidate();
+                if let Some(guard) = &entry.rest {
+                    guard.invalidate();
+                }
                 entry.next = runtime
                     .now()
                     .saturating_add(u64::from(capture.prefs.initiative_cooldown_ms));
@@ -483,7 +747,13 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
             entry.sample_after = now.saturating_add(SAMPLE_MS);
             entry.sampled = sample.at_ms;
             if !entry.geometry.observe(sample.clone()) {
+                if let Some(guard) = &entry.rest {
+                    guard.invalidate();
+                }
                 continue;
+            }
+            if let Some(guard) = &entry.rest {
+                guard.observe(&capture, &sample, now);
             }
             let targets = candidates(
                 &entry.geometry,
@@ -524,9 +794,27 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                 .filter(|a| a.intent().id() == &pending.action)
                 .map(|a| a.phase());
             let invalid = cancel.load(Ordering::SeqCst)
-                || !target_current(&pending.target, &sample, &targets);
+                || !target_current(&pending.target, &sample, &targets)
+                || runtime
+                    .desktop
+                    .entries
+                    .lock()
+                    .map_err(|_| ERROR)?
+                    .get(&bot)
+                    .and_then(|entry| entry.rest.as_ref())
+                    .is_some_and(|guard| !guard.current(&bot, &capture.proof, now));
             if invalid {
                 cancel_pending(app, Some(pending))?;
+            } else if confirmed_window_arrival(
+                &capture.life,
+                &pending,
+                capture.position,
+                rest_allowed(&capture),
+            ) {
+                // Completion came from the real MoveTo pipeline; no timer or
+                // coordinate proximity can invent arrival or station dwell.
+                let _ = start_window_rest(app, &capture, &pending, &sample).await;
+                continue;
             }
             if invalid
                 || matches!(
@@ -541,6 +829,9 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                     .map_err(|_| ERROR)?
                     .get_mut(&bot)
                 {
+                    if let Some(guard) = entry.rest.take() {
+                        guard.invalidate();
+                    }
                     entry.pending = None;
                     entry.next =
                         now.saturating_add(u64::from(capture.prefs.initiative_cooldown_ms));
@@ -587,6 +878,7 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                     entry.pending = Some(Pending {
                         action: action.intent().id().clone(),
                         target: target.clone(),
+                        activity: Activity::MoveTo,
                     });
                 }
             }
@@ -618,6 +910,7 @@ async fn drive(app: &tauri::AppHandle) -> Result<(), String> {
                 entry.pending = Some(Pending {
                     action: action.intent().id().clone(),
                     target,
+                    activity: Activity::MoveTo,
                 });
             }
         }
@@ -643,6 +936,10 @@ mod tests {
                 y: 100,
                 width: 400,
                 height: 600,
+            }),
+            window_identity: Some(WindowIdentity {
+                number: 17,
+                owner: 23,
             }),
             cursor: Some((-960, 340)),
         }
@@ -797,6 +1094,7 @@ mod tests {
                 sample_after: 0,
                 sampled: 100,
                 proposed: Some(point),
+                rest: None,
             },
         );
         assert!(places.admission_current("nova", point, 1600));
@@ -806,5 +1104,198 @@ mod tests {
         assert!(!places.admission_current("nova", Point::new(400001, 400000).unwrap(), 100));
         places.cancel_actor("nova");
         assert!(!places.admission_current("nova", point, 100));
+    }
+    #[test]
+    fn window_rest_expiry_is_sticky_and_cancels_the_bound_native_job() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut state = RestFreshness {
+            valid: true,
+            sampled: 100,
+            job: Some(Arc::downgrade(&cancel)),
+        };
+        assert!(state.current(1600));
+        assert!(!cancel.load(Ordering::SeqCst));
+        assert!(!state.current(1601));
+        assert!(cancel.load(Ordering::SeqCst));
+        assert!(
+            !state.observe(1601, 1601, true),
+            "fresh geometry cannot revive a retired rest job"
+        );
+    }
+    #[test]
+    fn only_a_new_matching_native_sample_renews_window_rest() {
+        let mut state = RestFreshness {
+            valid: true,
+            sampled: 100,
+            job: None,
+        };
+        assert!(state.observe(100, 1000, true));
+        assert_eq!(state.sampled, 100);
+        assert!(
+            !state.current(1601),
+            "timestamp reuse does not extend expiry"
+        );
+        let mut state = RestFreshness {
+            valid: true,
+            sampled: 100,
+            job: None,
+        };
+        for sampled in [
+            850, 1600, 2350, 3100, 3850, 4600, 5350, 6100, 6850, 7600, 8350, 9100, 9850, 10600,
+        ] {
+            assert!(state.observe(sampled, sampled, true));
+            assert!(state.current(sampled + 749));
+        }
+        for (sampled, now, matching) in [
+            (99, 100, true),
+            (101, 100, true),
+            (100, 99, true),
+            (100, 100, false),
+        ] {
+            let cancel = Arc::new(AtomicBool::new(false));
+            let mut state = RestFreshness {
+                valid: true,
+                sampled: 100,
+                job: Some(Arc::downgrade(&cancel)),
+            };
+            assert!(!state.observe(sampled, now, matching));
+            assert!(cancel.load(Ordering::SeqCst));
+        }
+    }
+    #[test]
+    fn identical_geometry_from_another_window_or_owner_never_preserves_rest() {
+        let original = sample();
+        let p = prefs();
+        let target = targets(&original, &p, 100).remove(0);
+        for owner_changed in [false, true] {
+            let mut successor = original.clone();
+            let identity = successor.window_identity.as_mut().unwrap();
+            if owner_changed {
+                identity.owner += 1;
+            } else {
+                identity.number += 1;
+            }
+            assert_eq!(successor.window_top, original.window_top);
+            assert!(!target_current(
+                &target,
+                &successor,
+                &targets(&successor, &p, 100)
+            ));
+        }
+        let mut anonymous = original;
+        anonymous.window_identity = None;
+        assert!(!GeometryLease::default().observe(anonymous));
+        let optout = Preferences {
+            desktop_anchors: false,
+            ..p
+        };
+        assert!(!target_current(
+            &target,
+            &sample(),
+            &targets(&sample(), &optout, 100)
+        ));
+    }
+    #[test]
+    fn window_rest_transition_requires_the_exact_confirmed_move_completion() {
+        use crate::life_domain::{
+            reduce, ActorId, LifeEvent, NeedEffect, Needs, RandomState, WorldId,
+        };
+        let initial = LifeState::new(
+            ActorId::new("nova").unwrap(),
+            WorldId::new("world").unwrap(),
+            Needs::new(5000, 5000, 5000, 5000).unwrap(),
+        );
+        let plan = reduce(
+            &initial,
+            0,
+            RandomState::seeded(1),
+            LifeEvent::Plan {
+                activity: Activity::MoveTo,
+                completion_effect: NeedEffect::default(),
+            },
+        )
+        .unwrap();
+        let id = plan.state.current_action().unwrap().intent().id().clone();
+        let target = targets(&sample(), &prefs(), 100).remove(0);
+        let mut pending = Pending {
+            action: id.clone(),
+            target: target.clone(),
+            activity: Activity::MoveTo,
+        };
+        assert!(!confirmed_window_arrival(
+            &plan.state,
+            &pending,
+            target.point,
+            true
+        ));
+        let start = reduce(
+            &plan.state,
+            0,
+            plan.random,
+            LifeEvent::Start {
+                action_id: id.clone(),
+            },
+        )
+        .unwrap();
+        assert!(!confirmed_window_arrival(
+            &start.state,
+            &pending,
+            target.point,
+            true
+        ));
+        let complete = reduce(
+            &start.state,
+            1000,
+            start.random,
+            LifeEvent::Complete { action_id: id },
+        )
+        .unwrap();
+        assert!(confirmed_window_arrival(
+            &complete.state,
+            &pending,
+            target.point,
+            true
+        ));
+        assert!(!confirmed_window_arrival(
+            &complete.state,
+            &pending,
+            target.point,
+            false
+        ));
+        assert!(!confirmed_window_arrival(
+            &complete.state,
+            &pending,
+            Point::new(0, 0).unwrap(),
+            true
+        ));
+        let successor = reduce(
+            &complete.state,
+            0,
+            complete.random,
+            LifeEvent::Plan {
+                activity: Activity::LookAt,
+                completion_effect: NeedEffect::default(),
+            },
+        )
+        .unwrap();
+        assert!(!confirmed_window_arrival(
+            &successor.state,
+            &pending,
+            target.point,
+            true
+        ));
+        pending.target.kind = Kind::Cursor;
+        assert!(!confirmed_window_arrival(
+            &complete.state,
+            &pending,
+            target.point,
+            true
+        ));
+        pending.target = target;
+        pending.activity = Activity::Rest;
+        assert!(
+            !confirmed_window_arrival(&complete.state, &pending, pending.target.point, true),
+            "a completed rest never loops into another rest"
+        );
     }
 }

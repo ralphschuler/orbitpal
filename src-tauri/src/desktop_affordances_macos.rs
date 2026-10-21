@@ -1,5 +1,5 @@
 //! Read-only numeric window/cursor geometry; no titles, images, event taps or input.
-use super::{GeometrySample, ReadContext, Rect};
+use super::{GeometrySample, ReadContext, Rect, WindowIdentity};
 use core_foundation_sys::{
     array::{CFArrayGetCount, CFArrayGetValueAtIndex},
     base::{CFGetTypeID, CFRelease, CFTypeRef},
@@ -14,8 +14,8 @@ use core_graphics::{
     geometry::CGRect,
     window::{
         kCGNullWindowID, kCGWindowBounds, kCGWindowIsOnscreen, kCGWindowLayer,
-        kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowOwnerPID,
-        CGWindowListCopyWindowInfo,
+        kCGWindowListExcludeDesktopElements, kCGWindowListOptionOnScreenOnly, kCGWindowNumber,
+        kCGWindowOwnerPID, CGWindowListCopyWindowInfo,
     },
 };
 use objc2::{
@@ -139,6 +139,7 @@ pub(super) fn read(
         ))
     };
     let mut top = None;
+    let mut identity = None;
     if windows {
         unsafe {
             let raw = CGWindowListCopyWindowInfo(
@@ -163,12 +164,19 @@ pub(super) fn read(
                     continue;
                 };
                 if pid <= 0
+                    || pid > i64::from(u32::MAX)
                     || pid == i64::from(std::process::id())
                     || integer(dict, kCGWindowLayer.cast()) != Some(0)
                     || !onscreen(dict)
                 {
                     continue;
                 }
+                let Some(number) = integer(dict, kCGWindowNumber.cast())
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|n| *n > 0)
+                else {
+                    continue;
+                };
                 let bounds = CFDictionaryGetValue(dict, kCGWindowBounds.cast());
                 if bounds.is_null() || CFGetTypeID(bounds) != CFDictionaryGetTypeID() {
                     continue;
@@ -206,6 +214,10 @@ pub(super) fn read(
                     width: width as u32,
                     height: height as u32,
                 });
+                identity = Some(WindowIdentity {
+                    number,
+                    owner: pid as u32,
+                });
                 break;
             }
             drop(owned);
@@ -228,6 +240,7 @@ pub(super) fn read(
         at_ms: now,
         work_area: context.physical_scene,
         window_top: top,
+        window_identity: identity,
         cursor,
     })
 }

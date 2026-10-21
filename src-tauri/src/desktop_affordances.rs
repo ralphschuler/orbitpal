@@ -95,7 +95,14 @@ pub struct GeometrySample {
     pub at_ms: u64,
     pub work_area: Rect,
     pub window_top: Option<Rect>,
+    /// Ephemeral native identity only. Never serialized, persisted or logged.
+    pub window_identity: Option<WindowIdentity>,
     pub cursor: Option<(i32, i32)>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WindowIdentity {
+    pub(crate) number: u32,
+    pub(crate) owner: u32,
 }
 #[derive(Default)]
 pub struct GeometryLease {
@@ -111,6 +118,10 @@ impl GeometryLease {
             && sample.work_area.height > 0
             && sample.work_area.width <= 65536
             && sample.work_area.height <= 65536
+            && sample.window_top.is_some() == sample.window_identity.is_some()
+            && sample
+                .window_identity
+                .is_none_or(|id| id.number > 0 && id.owner > 0)
             && sample.window_top.is_none_or(|r| {
                 r.width > 0 && r.height > 0 && r.width <= 65536 && r.height <= 65536
             });
@@ -192,6 +203,10 @@ mod tests {
                 y: 100,
                 width: 400,
                 height: 600,
+            }),
+            window_identity: Some(WindowIdentity {
+                number: 17,
+                owner: 23,
             }),
             cursor: Some((-960, 340)),
         }
