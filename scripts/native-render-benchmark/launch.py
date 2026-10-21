@@ -12,6 +12,7 @@ import stat
 import sys
 
 from collect import PinnedDirectory, Refusal, bounded, checked_root, measurement_mode, refuse
+from compositor_diagnostic import checked_write_pipe
 
 
 def environment(root, account, domain, mode, host_net):
@@ -41,8 +42,15 @@ def main():
     if os.geteuid() != 0 or sys.platform != "linux" or any(os.environ.get(key) != value for key, value in (
             ("GITHUB_ACTIONS", "true"), ("RUNNER_ENVIRONMENT", "github-hosted"), ("RUNNER_OS", "Linux"))):
         refuse("not_disposable_launcher")
-    if len(sys.argv) != 7 or sys.argv[2] not in ("app", "compositor"):
+    if len(sys.argv) not in (7, 8) or sys.argv[2] not in ("app", "compositor"):
         refuse("invalid_launcher_arguments")
+    diagnostic_fd = None
+    if len(sys.argv) == 8:
+        if sys.argv[2] != "compositor" or re.fullmatch(r"[1-9][0-9]{0,9}", sys.argv[7]) is None:
+            refuse("invalid_launcher_arguments")
+        diagnostic_fd = int(sys.argv[7])
+        checked_write_pipe(diagnostic_fd)
+        os.set_inheritable(diagnostic_fd, True)
     measurement_mode(sys.argv[5])
     if not re.fullmatch(r"[1-9][0-9]{0,9}", sys.argv[3]) or not re.fullmatch(r"[1-9][0-9]{0,9}", sys.argv[4]):
         refuse("invalid_fixture_identity")
@@ -58,16 +66,16 @@ def main():
     with PinnedDirectory(Path(sys.argv[1]), witness) as files:
         os.close(witness)
         root = checked_root(sys.argv[1], uid, files)
-        run(root, uid, gid, sys.argv[2], sys.argv[5], files)
+        run(root, uid, gid, sys.argv[2], sys.argv[5], files, diagnostic_fd)
 
 
-def run(root, uid, gid, domain, mode, files):
+def run(root, uid, gid, domain, mode, files, diagnostic_fd=None):
     identity = pwd.getpwuid(uid)
     if identity.pw_name != "opr" + root.name[-16:] or identity.pw_gid != gid or identity.pw_dir != str(root / "home"):
         refuse("foreign_fixture_account")
     source = Path(__file__).resolve().parent
     # App UID must never be able to replace the code that root executes.
-    for path in (source, source / "launch.py", source / "session.sh"):
+    for path in (source, source / "launch.py", source / "session.sh", source / "compositor_diagnostic.py"):
         info = path.stat()
         if info.st_uid == uid or info.st_mode & 0o022:
             refuse("untrusted_launcher_source")
@@ -109,7 +117,10 @@ def run(root, uid, gid, domain, mode, files):
         refuse("fixture_uid_drop_failed")
     os.umask(0o077)
     os.chdir(root)
-    os.execve("/bin/bash", ["/bin/bash", "/proc/self/fd/" + str(session_fd)], environment(root, identity.pw_name, domain, mode, host_net))
+    arguments = ["/bin/bash", "/proc/self/fd/" + str(session_fd)]
+    if diagnostic_fd is not None:
+        arguments.append(str(diagnostic_fd))
+    os.execve("/bin/bash", arguments, environment(root, identity.pw_name, domain, mode, host_net))
 
 
 if __name__ == "__main__":

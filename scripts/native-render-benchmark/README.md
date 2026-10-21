@@ -90,9 +90,11 @@ No cgroup controller, hardware/DRM permission, sandbox, renderer quality or
 55-minute inner harness policy is relaxed. Only smoke is invoked; pilot/40-minute
 or120-minute benchmark acceptance cannot be selected in this workflow.
 
-The workflow uploads only the six explicit exported metadata filenames (including
-available validated failure evidence), never raw app/compositor/build logs,
-HOME/XDG contents, binary payloads, screenshots, audio or frames. A successful
+The workflow uploads the six explicit exported metadata filenames (including
+available validated failure evidence). A failed run with confirmed writer drain
+may additionally export the separate bounded/redacted fixed-compositor startup
+diagnostic described below. No raw app/build logs, HOME/XDG contents, binary
+payloads, screenshots, audio or frames are uploaded. A successful
 smoke additionally checks the fixed one-Stage/two-WebView scope, three additional
 cycles, zero live figure/Stage at completion and confirmed cleanup. Missing
 artifacts or an incomplete teardown cannot become success. Software-compositor
@@ -544,3 +546,53 @@ read path, zero-baseline rule, artifact validation or qualification requirement
 changes. Controlled fixtures cover the real base-three/full-ten/reordered forms,
 nonzero optional values, all per-field numeric boundaries and refusals; no live
 host cgroup is read by those tests.
+
+## Failed compositor startup diagnostic
+
+Smoke6, run `39599165236` on `ce554c490cd6816c70ab5a9787eea0cbd263a967`,
+passed the preflight/build and failed at phase 5 with compositor-launcher status
+134, no observed app/collector exit and confirmed cleanup. Its digest-verified
+one-file result contains no native error text. That status alone does not
+establish a particular Mutter/GLib failure, renderer frame or usable capability.
+
+A separate anonymous pipe now carries **only stderr of the fixed `gnome-shell`
+command** from this fresh hosted-VM session. Root retains its read end; only the
+compositor launcher receives the write descriptor. The trusted session script
+closes it for the fixed UID/bus/sleep helpers, duplicates it onto the GNOME
+child's stderr, and closes the extra parent descriptor. App stdout/stderr,
+compositor stdout and all other process output remain discarded. The script
+requires the hosted Linux Bash4+ for these FD-close redirections; macOS Bash3.2
+cannot qualify that Linux-only shell path. This changes no namespace, sandbox,
+cgroup, UID or bus policy. In particular, the compositor still uses the original
+host network namespace; the app alone enters its dedicated network namespace.
+
+A root-owned reader starts before launch and continuously drains the pipe,
+retaining only the last 64KiB of bytes so terminal failures survive earlier
+warnings. After that limit, older bytes are discarded and a closed truncation
+flag is set. The reader uses the original absolute runner deadline and bounded
+cleanup; no retry or deadline renewal is added. Its descriptor is closed only
+by that reader, so a late reader cannot access a reused FD. Only after complete
+owned-child/cgroup/UID drain, pipe EOF and bounded reader completion can text
+be exported for a run that already failed. Missing EOF, a read error or elapsed
+deadline yields only closed incomplete-capture metadata, never invented text.
+
+The two supplementary names are `compositor-startup-diagnostic.json` and
+`compositor-startup-diagnostic.txt`. They are written exclusively through the
+existing pinned output directory after cleanup, separate from the unchanged
+numeric producer export. The text decodes invalid UTF-8 with replacement,
+removes ANSI and Unicode control/format codes (preserving LF/tab), replaces the
+known fixture/checkout/runner-temp/runner-home paths with fixed labels, and is
+again capped to a valid UTF-8 tail of at most 64KiB. Unredacted bytes and unknown
+exceptions are never exported. App output, system logs and core files are never
+read. Arbitrary
+remaining GNOME error text is diagnostic data, never executable instructions.
+
+The JSON labels this as a failed diagnostic with `measurementQualified:false`;
+it records only closed capture/EOF/deadline/truncation flags and the bounded text
+length. Neither file can satisfy native readiness, numeric evidence, cleanup,
+same-source smoke success or pilot qualification. Existing `export_numeric`,
+`require_complete`, pass and cleanup criteria are unchanged. Controlled tests
+exercise actual anonymous pipes and owned synthetic Python/shell producers,
+write-FD inheritance, tail/privacy boundaries, deadline/EOF/drain refusal and
+continued rejection of invalid numeric evidence. They start no service or app,
+read no host logs and do not qualify a real compositor.
