@@ -1549,6 +1549,7 @@ class ModelAcquisitionDiagnosticTests(unittest.TestCase):
         studio.one, studio.action = Mock(side_effect=one), Mock(side_effect=action)
         studio.integration_control = Mock(return_value=lambda: studio.one("Integration", {6}))
         studio.wait = Mock(side_effect=lambda predicate, code: predicate())
+        studio.select_compatible = Mock(side_effect=lambda: events.append(("selection",)))
         real_phase = app.phase
         def observed(code):
             events.append(("phase", code))
@@ -1559,8 +1560,7 @@ class ModelAcquisitionDiagnosticTests(unittest.TestCase):
         self.assertEqual(events, [
             ("phase", self.SITES[0]), ("lookup", "Integration", {6}), ("action", "combo"),
             ("phase", self.SITES[1]), ("phase", self.SITES[2]),
-            ("lookup", "Compatible API · custom endpoint", {7, 8, 9}), ("action", "option"),
-            ("phase", self.SITES[3]),
+            ("selection",), ("phase", self.SITES[3]),
         ])
         self.assertEqual(self.lines(output.getvalue()), list(self.SITES[:4]))
 
@@ -1582,6 +1582,7 @@ class ModelAcquisitionDiagnosticTests(unittest.TestCase):
         studio.integration_control.return_value = native_lookup
         studio.wait.side_effect = lambda predicate, *args, **kwargs: predicate() if predicate is native_lookup else None
         studio.compatible.side_effect = lambda: compatible(studio)
+        studio.select_compatible.side_effect = lambda: studio.one("Compatible API · custom endpoint", {7, 8, 9})
         def entry(name, value):
             app.phase("studio_registry_query")
             if (blocked == "endpoint" and name == "API base URL"
@@ -1701,14 +1702,15 @@ class IntegrationSelectorRevealTests(unittest.TestCase):
             return True
         old.scroll.side_effect = reveal
         errors = io.StringIO()
-        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.sys, "stderr", errors):
+        with patch.object(app, "process_parent", side_effect=self.parents), patch.object(app.Path, "resolve", return_value=studio.root / "acceptance-app"), patch.object(app, "phase"), patch.object(app.sys, "stderr", errors), patch.object(studio, "select_compatible") as selection:
             studio.compatible()
+        selection.assert_called_once_with()
         old.scroll.assert_called_once_with(0)
         old.press.assert_not_called()
         fresh.scroll.assert_not_called()
         fresh.press.assert_called_once_with(0)
-        option.scroll.assert_called_once_with(0)  # Original option action is unchanged.
-        option.press.assert_called_once_with(0)
+        option.scroll.assert_not_called()  # Selection replaces the old option Action route.
+        option.press.assert_not_called()
         frame.queryComponent.assert_not_called()
         self.assertNotIn("active", frame.states)
         self.assertEqual(errors.getvalue(), "")
@@ -1932,6 +1934,292 @@ class IntegrationSelectorRevealTests(unittest.TestCase):
             combo.scroll.assert_not_called()
             diagnostic.assert_not_called()
             self.assertNotIn("app-model-selector:", errors.getvalue())
+
+
+class CompatibleNativeSelectionTests(unittest.TestCase):
+    """Actual production native Selection joins with local AX doubles only."""
+    class Node(SwitchRevealTests.Node):
+        def __init__(self, name, role, states=(), pid=42, children=()):
+            super().__init__(name, role, states, pid)
+            self.parent, self.selection, self.count_override = None, None, None
+            self.set_children(children)
+        def set_children(self, children):
+            self.children = list(children)
+            for child in self.children: child.parent = self
+        @property
+        def childCount(self):
+            return len(self.children) if self.count_override is None else self.count_override
+        def getChildAtIndex(self, index): return self.children[index]
+        def getIndexInParent(self):
+            return self.index_override if hasattr(self, "index_override") else self.parent.children.index(self)
+        def querySelection(self):
+            if self.selection is None: raise NotImplementedError("PRIVATE_UNSUPPORTED_INTERFACE")
+            return self.selection
+
+    class Selection:
+        def __init__(self, parent, indices=(0,), changes=True, result=True):
+            self.parent, self.indices, self.changes, self.result = parent, set(indices), changes, result
+            self.selectChild = Mock(side_effect=self.choose)
+            self.isChildSelected = Mock(side_effect=lambda index: index in self.indices)
+            self.getSelectedChild = Mock(side_effect=lambda index: self.parent.children[sorted(self.indices)[index]])
+        @property
+        def nSelectedChildren(self): return len(self.indices)
+        def choose(self, index):
+            if self.changes: self.indices = {index}
+            return self.result
+
+    def fixture(self, direct=False, selected=False, showing=False):
+        states = ("visible", "enabled", "sensitive") + (("showing",) if showing else ())
+        other = self.Node("PRIVATE_OTHER_PROVIDER", 7, ("visible", "enabled", "sensitive"))
+        target = self.Node("Compatible API · custom endpoint", 7, states)
+        combo = self.Node("Integration", 6, ("visible", "showing", "enabled", "sensitive"))
+        container = combo if direct else self.Node("", 12, ("enabled", "sensitive"))
+        container.set_children([other, target])
+        if not direct: combo.set_children([container])
+        interface = self.Selection(container, indices=(1,) if selected else (0,))
+        container.selection = interface
+        source = SwitchRevealTests()
+        studio, frame, desktop = source.fixture([combo])
+        combo.parent = frame
+        frame.states.discard("active")
+        studio.a.ROLE_COMBO_BOX, studio.a.ROLE_MENU, studio.a.ROLE_LIST_BOX, studio.a.ROLE_LIST = 6, 12, 13, 14
+        studio.a.ROLE_MENU_ITEM, studio.a.ROLE_LIST_ITEM, studio.a.ROLE_RADIO_MENU_ITEM = 7, 8, 9
+        return source, studio, frame, desktop, combo, container, target, other, interface
+
+    def invoke(self, studio, clock=None, method="select_compatible", parent=None, executable=None):
+        clock = [0.0] if clock is None else clock
+        output = io.StringIO()
+        resolve = {"side_effect": executable} if callable(executable) else {"return_value": studio.root / "acceptance-app"}
+        with patch.object(app, "process_parent", side_effect=parent or SwitchRevealTests().parents), patch.object(app.Path, "resolve", **resolve), patch.object(app, "phase") as phases, patch.object(app.time, "monotonic", side_effect=lambda: clock[0]), patch.object(app.time, "sleep", side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)), patch.object(app.sys, "stderr", output):
+            try:
+                getattr(studio, method)()
+            except provider.Refusal as error:
+                return error, output.getvalue(), phases
+        return None, output.getvalue(), phases
+
+    def diagnostic(self, text):
+        lines = text.splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertTrue(lines[0].startswith("app-compatible-selection: "))
+        result = json.loads(lines[0].removeprefix("app-compatible-selection: "))
+        self.assertEqual(set(result), {"version", "scopeCurrent", "supportedContainerCount", "exactOptionCount", "targetNonShowing", "selectedCount", "selectAttempts", "readbackPassed", "expired"})
+        self.assertTrue(all(type(value) is int and 0 <= value <= (32 if key == "exactOptionCount" else 16) for key, value in result.items()))
+        self.assertEqual(result["version"], 1)
+        self.assertNotIn("PRIVATE", text)
+        return result
+
+    def test_native_combo_or_own_menu_selection_uses_ordinary_index_and_selected_list_zero(self):
+        for direct in (False, True):
+            _, studio, frame, _, combo, container, target, other, interface = self.fixture(direct=direct)
+            error, output, _ = self.invoke(studio)
+            with self.subTest(direct=direct):
+                self.assertIsNone(error)
+                self.assertEqual(output, "")
+                interface.selectChild.assert_called_once_with(1)
+                interface.isChildSelected.assert_any_call(1)
+                self.assertGreaterEqual(interface.getSelectedChild.call_count, 2)
+                self.assertTrue(all(item.args == (0,) for item in interface.getSelectedChild.call_args_list))
+                self.assertNotIn("active", frame.states)
+                self.assertNotIn("showing", target.states)
+                for node in (combo, container, target, other):
+                    node.press.assert_not_called()
+                    node.scroll.assert_not_called()
+
+    def test_already_sole_selected_target_skips_input_and_still_rejoins_real_readback(self):
+        _, studio, _, _, _, _, _, _, interface = self.fixture(selected=True)
+        error, output, _ = self.invoke(studio)
+        self.assertIsNone(error)
+        self.assertEqual(output, "")
+        interface.selectChild.assert_not_called()
+        self.assertGreaterEqual(interface.getSelectedChild.call_count, 2)
+
+    def test_full_compatible_preserves_integration_action_then_marks_selected_only_after_readback(self):
+        _, studio, _, _, combo, _, target, _, interface = self.fixture()
+        error, output, phases = self.invoke(studio, method="compatible")
+        self.assertIsNone(error)
+        self.assertEqual(output, "")
+        combo.press.assert_called_once_with(0)
+        combo.scroll.assert_not_called()
+        target.press.assert_not_called()
+        target.scroll.assert_not_called()
+        interface.selectChild.assert_called_once_with(1)
+        self.assertIn((("configure_model_compatible_selected",),), phases.call_args_list)
+
+    def test_singleton_true_is_required_and_uncertain_selection_never_retries(self):
+        for result in (False, 1, None, RuntimeError("PRIVATE_NATIVE_FAILURE")):
+            _, studio, _, _, _, _, _, _, interface = self.fixture()
+            if isinstance(result, BaseException): interface.selectChild.side_effect = result
+            else: interface.result = result
+            error, output, _ = self.invoke(studio)
+            with self.subTest(result_type=type(result).__name__):
+                self.assertEqual(error.code, "app_action_unavailable" if isinstance(result, BaseException) else "app_action_refused")
+                interface.selectChild.assert_called_once_with(1)
+                self.assertEqual(self.diagnostic(output)["selectAttempts"], 1)
+
+    def test_true_without_real_selection_readback_fails_under_one_original_budget(self):
+        _, studio, _, _, _, _, _, _, interface = self.fixture()
+        interface.changes = False
+        clock = [0.0]
+        error, output, phases = self.invoke(studio, clock=clock, method="compatible")
+        self.assertIn(error.code, ("app_control_missing", "app_selection_not_changed"))
+        self.assertGreaterEqual(clock[0], 12)
+        self.assertLess(clock[0], 12.2)
+        interface.selectChild.assert_called_once_with(1)
+        self.assertEqual(self.diagnostic(output)["readbackPassed"], 0)
+        self.assertNotIn((("configure_model_compatible_selected",),), phases.call_args_list)
+
+    def test_unsupported_interface_or_duplicate_target_never_invokes_selection(self):
+        for changed in ("unsupported", "duplicate", "menus"):
+            _, studio, _, _, combo, container, target, _, interface = self.fixture()
+            if changed == "unsupported": container.selection = None
+            elif changed == "duplicate": container.set_children([target, self.Node(target.name, 7, ("visible", "enabled", "sensitive"))])
+            else: combo.set_children([container, self.Node("", 12, ("enabled", "sensitive"))])
+            error, output, _ = self.invoke(studio)
+            with self.subTest(changed=changed):
+                self.assertEqual(error.code, "app_action_unavailable" if changed == "unsupported" else "ambiguous_app_control")
+                interface.selectChild.assert_not_called()
+                self.diagnostic(output)
+
+    def test_exact_offered_child_name_role_visibility_and_enabled_state_remain_mandatory(self):
+        for changed in ("whitespace", "role", "hidden", "disabled", "foreign"):
+            _, studio, _, _, _, _, target, _, interface = self.fixture()
+            if changed == "whitespace": target.name += " "
+            elif changed == "role": target.role = 5
+            elif changed == "hidden": target.states.discard("visible")
+            elif changed == "disabled": target.states.discard("enabled")
+            else: target.pid = 99
+            error, output, _ = self.invoke(studio)
+            with self.subTest(changed=changed):
+                self.assertIn(error.code, ("app_control_missing", "app_control_disabled", "foreign_process"))
+                interface.selectChild.assert_not_called()
+                target.press.assert_not_called()
+                self.diagnostic(output)
+
+    def test_malformed_ordinary_child_count_parent_or_index_is_never_a_selection_ordinal(self):
+        for changed in ("count_bool", "count_large", "parent", "index_bool", "index_wrong"):
+            _, studio, _, _, _, container, target, _, interface = self.fixture()
+            if changed == "count_bool": container.count_override = True
+            elif changed == "count_large": container.count_override = 17
+            elif changed == "parent": target.parent = object()
+            elif changed == "index_bool": target.index_override = True
+            else: target.index_override = 0
+            error, output, _ = self.invoke(studio)
+            with self.subTest(changed=changed):
+                self.assertIn(error.code, ("app_control_missing", "app_action_unavailable"))
+                interface.selectChild.assert_not_called()
+                self.diagnostic(output)
+
+    def test_reordered_index_or_changed_executable_after_selection_preflight_refuses_before_input(self):
+        for changed in ("index", "executable"):
+            _, studio, _, _, _, container, target, other, interface = self.fixture()
+            altered, calls = [False], [0]
+            original_find = studio.find
+            def locate(*args, **kwargs):
+                calls[0] += 1
+                if calls[0] == 3 and changed == "index":
+                    container.set_children([target, other])
+                    interface.indices = {1}  # The same other child stays selected.
+                return original_find(*args, **kwargs)
+            studio.find = locate
+            def check(index):
+                altered[0] = True
+                return index in interface.indices
+            interface.isChildSelected.side_effect = check
+            def executable(**_):
+                return Path("/disposable/foreign-app") if altered[0] and changed == "executable" else studio.root / "acceptance-app"
+            error, output, _ = self.invoke(studio, executable=executable)
+            with self.subTest(changed=changed):
+                self.assertIn(error.code, ("app_control_missing", "unexpected_app_executable"))
+                interface.selectChild.assert_not_called()
+                self.diagnostic(output)
+
+    def test_owner_frame_or_target_replacement_after_input_never_counts_as_readback(self):
+        for changed in ("frame", "target", "process"):
+            source, studio, frame, desktop, combo, container, target, other, interface = self.fixture()
+            altered = [False]
+            def choose(index):
+                interface.indices = {index}
+                altered[0] = True
+                if changed == "frame": desktop.children = [source.Node("OrbitPal", 10, ("visible", "showing"), children=[combo])]
+                if changed == "target": container.set_children([other, self.Node(target.name, 7, target.states)])
+                return True
+            interface.selectChild.side_effect = choose
+            def parent(pid):
+                if altered[0] and changed == "process": raise provider.Refusal("app_process_exited")
+                return source.parents(pid)
+            error, output, _ = self.invoke(studio, parent=parent)
+            with self.subTest(changed=changed):
+                self.assertIn(error.code, ("app_control_missing", "app_process_exited"))
+                interface.selectChild.assert_called_once_with(1)
+                self.assertEqual(self.diagnostic(output)["readbackPassed"], 0)
+
+    def test_wrong_selected_child_or_multiple_selection_never_passes(self):
+        for changed in ("wrong_child", "multiple", "malformed_count"):
+            _, studio, _, _, _, _, target, other, interface = self.fixture(selected=True)
+            if changed == "wrong_child": interface.getSelectedChild.side_effect = lambda index: other
+            elif changed == "multiple": interface.indices = {0, 1}
+            else:
+                class BadCount(type(interface)):
+                    @property
+                    def nSelectedChildren(self): return True
+                interface.__class__ = BadCount
+            error, output, _ = self.invoke(studio)
+            with self.subTest(changed=changed):
+                self.assertIn(error.code, ("app_selection_not_changed", "ambiguous_app_control", "app_action_unavailable"))
+                interface.selectChild.assert_not_called()
+                self.diagnostic(output)
+
+    def test_late_native_capability_selection_or_readback_is_not_success_and_never_retries(self):
+        for late in ("capability", "selection", "readback"):
+            _, studio, _, _, _, container, _, _, interface = self.fixture()
+            clock = [0.0]
+            if late == "capability":
+                def query():
+                    clock[0] = 12.1
+                    return interface
+                container.querySelection = query
+            if late == "selection":
+                def choose(index):
+                    interface.indices = {index}
+                    clock[0] = 12.1
+                    return True
+                interface.selectChild.side_effect = choose
+            if late == "readback":
+                def selected(index):
+                    if interface.selectChild.call_count: clock[0] = 12.1
+                    return index in interface.indices
+                interface.isChildSelected.side_effect = selected
+            error, output, _ = self.invoke(studio, clock=clock)
+            with self.subTest(late=late):
+                self.assertEqual(error.code, "app_control_missing")
+                self.assertEqual(interface.selectChild.call_count, 0 if late == "capability" else 1)
+                counts = self.diagnostic(output)
+                self.assertEqual(counts["expired"], 1)
+                self.assertEqual(counts["readbackPassed"], 0)
+
+    def test_foreign_or_duplicate_frame_cannot_authorize_semantic_selection(self):
+        for changed in ("foreign", "duplicate", "hidden"):
+            source, studio, frame, desktop, _, _, _, _, interface = self.fixture()
+            if changed == "foreign": frame.pid = 99
+            elif changed == "duplicate": desktop.children.append(source.Node("OrbitPal", 10, ("visible", "showing")))
+            else: frame.states.discard("showing")
+            error, output, _ = self.invoke(studio)
+            with self.subTest(changed=changed):
+                self.assertEqual(error.code, "ambiguous_app_window")
+                interface.selectChild.assert_not_called()
+                self.diagnostic(output)
+
+    def test_semantic_route_never_uses_global_option_lookup_or_changes_other_input_methods(self):
+        _, studio, _, desktop, _, _, target, _, interface = self.fixture()
+        outside = self.Node(target.name, 7, ("visible", "showing", "enabled", "sensitive"))
+        desktop.children.append(SwitchRevealTests.Node("avatar-nova", 10, ("visible", "showing"), children=[outside]))
+        with patch.object(studio, "one", side_effect=AssertionError("global option lookup is forbidden")), patch.object(studio, "action", side_effect=AssertionError("generic option Action is forbidden")):
+            error, output, _ = self.invoke(studio)
+        self.assertIsNone(error)
+        self.assertEqual(output, "")
+        interface.selectChild.assert_called_once_with(1)
+        outside.press.assert_not_called()
+        outside.scroll.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

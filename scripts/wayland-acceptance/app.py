@@ -59,7 +59,7 @@ REFUSAL_CODES = frozenset((
     'app_action_unavailable', 'app_control_disabled', 'app_control_missing',
     'app_data_unavailable', 'app_entry_not_editable', 'app_entry_write_failed',
     'app_executable_not_ready', 'app_pid_not_ready', 'app_process_exited',
-    'app_profile_unavailable', 'app_save_not_committed', 'app_switch_not_changed',
+    'app_profile_unavailable', 'app_save_not_committed', 'app_selection_not_changed', 'app_switch_not_changed',
     'app_window_not_active', 'app_window_outside_private_monitor', 'body_limit',
     'cancelled_response_presented', 'disable_not_observed', 'disabled_response_presented',
     'foreign_display', 'foreign_process', 'foreign_session_bus', 'fresh_marker_mismatch',
@@ -508,6 +508,169 @@ class Studio:
                 counts["unavailableMetadataCount"] += 1
         print("app-model-selector: " + json.dumps(counts, sort_keys=True), file=sys.stderr, flush=True)
 
+    def select_compatible(self):
+        """Select one actual native child of this fixed combo, never an Action alias."""
+        deadline = time.monotonic() + 12
+        limit = 16
+        stats = {"version": 1, "scopeCurrent": 0, "supportedContainerCount": 0,
+                 "exactOptionCount": 0, "targetNonShowing": 0, "selectedCount": 0,
+                 "selectAttempts": 0, "readbackPassed": 0, "expired": 0}
+        choices = {self.a.ROLE_MENU_ITEM, self.a.ROLE_LIST_ITEM, self.a.ROLE_RADIO_MENU_ITEM}
+        containers = {getattr(self.a, name, -1) for name in ("ROLE_MENU", "ROLE_LIST_BOX", "ROLE_LIST")}
+        containers.discard(-1)
+
+        def native(call):
+            if time.monotonic() >= deadline:
+                raise Refusal("app_control_missing")
+            result = call()
+            if time.monotonic() >= deadline:
+                raise Refusal("app_control_missing")
+            return result
+
+        def same(first, second):
+            return first is second or (first is not None and second is not None and native(lambda: first == second) is True)
+
+        def owned(node):
+            if node is None or not native(lambda: owned_process(node.get_process_id(), self.pid)):
+                raise Refusal("foreign_process")
+
+        def children(parent):
+            size = native(lambda: parent.childCount)
+            if type(size) is not int or not 0 <= size <= limit:
+                raise Refusal("app_action_unavailable")
+            result = []
+            for index in range(size):
+                child = native(lambda: parent.getChildAtIndex(index))
+                owned(child)
+                actual_index = native(child.getIndexInParent)
+                if (type(actual_index) is not int or actual_index != index
+                        or not same(native(lambda: child.parent), parent)):
+                    raise Refusal("app_control_missing")
+                result.append(child)
+            return result
+
+        def supported(container):
+            try:
+                return native(lambda: container.querySelection())
+            except (NotImplementedError, AttributeError):
+                return None
+
+        def snapshot():
+            stats.update(scopeCurrent=0, supportedContainerCount=0, exactOptionCount=0, targetNonShowing=0)
+            frame = native(lambda: self.studio_frame(active=False))
+            combo = native(lambda: self.find("Integration", {self.a.ROLE_COMBO_BOX}, frame=frame))
+            if combo is None:
+                return None
+            owned(combo)
+            state = native(combo.getState)
+            if not (state.contains(self.a.STATE_VISIBLE) and state.contains(self.a.STATE_SHOWING)
+                    and native(lambda: self.enabled(combo))):
+                raise Refusal("app_control_disabled")
+            direct = children(combo)
+            menu = [child for child in direct if native(child.getRole) in containers]
+            if len(menu) > 1:
+                raise Refusal("ambiguous_app_control")
+            matches = []
+            for container, offered in [(combo, direct)] + [(child, None) for child in menu]:
+                interface = supported(container)
+                if interface is None:
+                    continue
+                stats["supportedContainerCount"] += 1
+                if not native(lambda: self.enabled(container)):
+                    raise Refusal("app_control_disabled")
+                if offered is None:
+                    offered = children(container)
+                for index, option in enumerate(offered):
+                    name, role = native(lambda: option.name), native(option.getRole)
+                    if type(name) is not str or name != "Compatible API · custom endpoint" or role not in choices:
+                        continue
+                    stats["exactOptionCount"] += 1
+                    state = native(option.getState)
+                    if not state.contains(self.a.STATE_VISIBLE) or not native(lambda: self.enabled(option)):
+                        raise Refusal("app_control_disabled")
+                    # SHOWING is unnecessary only for this actual offered child
+                    # of the fixed native Selection container; global gates stay.
+                    stats["targetNonShowing"] = int(not state.contains(self.a.STATE_SHOWING))
+                    matches.append((frame, combo, container, option, index, interface, offered))
+            if not stats["supportedContainerCount"]:
+                raise Refusal("app_action_unavailable")
+            if len(matches) > 1:
+                raise Refusal("ambiguous_app_control")
+            if not matches:
+                return None
+            stats["scopeCurrent"] = 1
+            return matches[0]
+
+        def same_scope(first, second):
+            return second is not None and first[4] == second[4] and all(same(first[i], second[i]) for i in range(4))
+
+        def selected(scope):
+            _, _, container, option, index, interface, offered = scope
+            count = native(lambda: interface.nSelectedChildren)
+            if type(count) is not int or not 0 <= count <= limit:
+                raise Refusal("app_action_unavailable")
+            stats["selectedCount"] = count
+            if count > 1:
+                raise Refusal("ambiguous_app_control")
+            chosen = native(lambda: interface.isChildSelected(index))
+            if type(chosen) is not bool:
+                raise Refusal("app_action_unavailable")
+            if count == 0:
+                if chosen:
+                    raise Refusal("app_selection_not_changed")
+                return False
+            child = native(lambda: interface.getSelectedChild(0))
+            owned(child)
+            if not same(native(lambda: child.parent), container) or not any(same(child, item) for item in offered):
+                raise Refusal("app_control_missing")
+            exact = same(child, option)
+            if chosen != exact:
+                raise Refusal("app_selection_not_changed")
+            return exact
+
+        try:
+            scope = self.wait(snapshot, "app_control_missing", seconds=max(0, deadline - time.monotonic()))
+            current = snapshot()  # Rejoin every identity/index immediately before input.
+            if not same_scope(scope, current):
+                raise Refusal("app_control_missing")
+            already_selected = selected(current)
+            if not already_selected:
+                # Last blocking preflight read is followed by this same deadline.
+                if time.monotonic() >= deadline:
+                    raise Refusal("app_control_missing")
+                before = snapshot()
+                if not same_scope(current, before):
+                    raise Refusal("app_control_missing")
+                current = before
+                def choose():
+                    stats["selectAttempts"] = 1
+                    return current[5].selectChild(current[4])
+                if native(choose) is not True:
+                    raise Refusal("app_action_refused")
+            def readback():
+                fresh = snapshot()
+                if not same_scope(current, fresh):
+                    raise Refusal("app_control_missing")
+                if not selected(fresh):
+                    return False
+                final_frame = native(lambda: self.studio_frame(active=False))
+                if not same(fresh[0], final_frame):
+                    raise Refusal("app_control_missing")
+                return native(lambda: True)
+            self.wait(readback, "app_selection_not_changed", seconds=max(0, deadline - time.monotonic()))
+            native(lambda: True)
+            stats["readbackPassed"] = 1
+        except Refusal:
+            stats["scopeCurrent"] = 0
+            stats["expired"] = int(time.monotonic() >= deadline)
+            print("app-compatible-selection: " + json.dumps(stats, sort_keys=True), file=sys.stderr, flush=True)
+            raise
+        except (RuntimeError, AttributeError, NotImplementedError, TypeError, ValueError):
+            stats["scopeCurrent"] = 0
+            stats["expired"] = int(time.monotonic() >= deadline)
+            print("app-compatible-selection: " + json.dumps(stats, sort_keys=True), file=sys.stderr, flush=True)
+            raise Refusal("app_action_unavailable") from None
+
     def compatible(self):
         phase("configure_model_integration_lookup")
         locate = self.integration_control()
@@ -524,9 +687,8 @@ class Studio:
             raise
         self.action(node, scroll=False)  # The locator owns the only reveal budget.
         phase("configure_model_integration_opened")
-        choices = {self.a.ROLE_MENU_ITEM, self.a.ROLE_LIST_ITEM, self.a.ROLE_RADIO_MENU_ITEM}
         phase("configure_model_compatible_lookup")
-        self.action(self.one("Compatible API · custom endpoint", choices))
+        self.select_compatible()
         phase("configure_model_compatible_selected")
 
     def text_visible(self, text):
