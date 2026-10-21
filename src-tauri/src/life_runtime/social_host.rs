@@ -31,6 +31,7 @@ struct Actor {
     participant: Participant,
     scope: Scope,
     slots: Vec<ActionSlotTarget>,
+    groups: Vec<Vec<SlotId>>,
     life: LifeState,
 }
 #[derive(Clone)]
@@ -155,6 +156,26 @@ fn actors(app: &tauri::AppHandle) -> Vec<Actor> {
         let Ok(snapshot) = state.store.social_snapshot(bot) else {
             continue;
         };
+        let Ok(Some(record)) = state.store.load_world_config() else {
+            continue;
+        };
+        if record.config.revision() != source.context.config_revision
+            || record.config.stage_id() != &source.context.stage
+        {
+            continue;
+        }
+        let groups = record
+            .config
+            .anchors()
+            .iter()
+            .map(|anchor| {
+                anchor
+                    .slots()
+                    .iter()
+                    .map(|slot| slot.id().clone())
+                    .collect()
+            })
+            .collect();
         result.push(Actor {
             participant: Participant {
                 actor: life.actor_id().clone(),
@@ -173,6 +194,7 @@ fn actors(app: &tauri::AppHandle) -> Vec<Actor> {
                 topology: source.context.topology_revision,
             },
             slots,
+            groups,
             life,
         });
     }
@@ -193,7 +215,11 @@ fn choose_slots(a: &Actor, b: &Actor, kind: SceneKind) -> Option<[SlotId; 2]> {
     // Slot IDs are opaque. Geometry and role came from the actual scoped World.
     for left in a.slots.iter().filter(|s| s.kind == kind_anchor(kind)) {
         for right in b.slots.iter().filter(|s| s.kind == kind_anchor(kind)) {
-            if left.id != right.id {
+            if left.id != right.id
+                && a.groups
+                    .iter()
+                    .any(|group| group.contains(&left.id) && group.contains(&right.id))
+            {
                 return Some([left.id.clone(), right.id.clone()]);
             }
         }

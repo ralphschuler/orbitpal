@@ -75,13 +75,13 @@ pub(crate) fn completed(
     c.reserved(&view.id, true, start).unwrap();
     for state in &mut states {
         *state = plan(state, Activity::MoveTo);
-        c.bind_action(&view.id, state, start).unwrap();
+        c.bind_action(&view.id, state, start + 1).unwrap();
         *state = finish(state, 1);
         c.observe(&view.id, state, start + 1).unwrap();
     }
     for state in &mut states {
         *state = plan(state, Activity::Play);
-        c.bind_action(&view.id, state, start + 1).unwrap();
+        c.bind_action(&view.id, state, start + 3001).unwrap();
         *state = finish(state, 3000);
         c.observe(&view.id, state, start + 3001).unwrap();
     }
