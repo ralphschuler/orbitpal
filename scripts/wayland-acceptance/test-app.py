@@ -1509,5 +1509,153 @@ class DirectionalSwitchTargetTests(unittest.TestCase):
                 self.assertEqual("checked" in node.states, target)
                 node.scroll.assert_not_called()
 
+
+class ModelAcquisitionDiagnosticTests(unittest.TestCase):
+    """Production progress only with controlled callees; no desktop/provider IO."""
+    SITES = (
+        "configure_model_integration_lookup", "configure_model_integration_opened",
+        "configure_model_compatible_lookup", "configure_model_compatible_selected",
+        "configure_model_endpoint_entry", "configure_model_name_entry",
+        "configure_model_tools_switch", "configure_model_images_switch",
+        "configure_model_screen_switch", "configure_model_save",
+        "configure_model_saved", "configure_model_source_selection",
+    )
+
+    def lines(self, output):
+        return [line.removeprefix("app-phase: ") for line in output.splitlines()]
+
+    def test_new_model_sites_are_closed_once_and_never_log_runtime_labels_or_values(self):
+        output = io.StringIO()
+        with patch.object(app, "_emitted_phases", set()), patch.object(app, "_current_phase", "controller_entry"), patch.object(app.sys, "stdout", output):
+            for site in self.SITES:
+                self.assertIn(site, app.PHASES)
+                app.phase(site)
+                app.phase(site)
+            with self.assertRaisesRegex(provider.Refusal, "^invalid_diagnostic_phase$"):
+                app.phase("PRIVATE_RUNTIME_LABEL_OR_VALUE")
+        self.assertEqual(self.lines(output.getvalue()), list(self.SITES))
+        self.assertNotIn("PRIVATE", output.getvalue())
+
+    def test_real_compatible_places_lookup_stages_before_input_and_completion_after_actual_actions(self):
+        studio = app.Studio.__new__(app.Studio)
+        studio.a = SimpleNamespace(ROLE_COMBO_BOX=6, ROLE_MENU_ITEM=7, ROLE_LIST_ITEM=8, ROLE_RADIO_MENU_ITEM=9)
+        combo, option = object(), object()
+        events = []
+        def one(name, roles):
+            events.append(("lookup", name, roles))
+            return combo if name == "Integration" else option
+        def action(node):
+            events.append(("action", "combo" if node is combo else "option"))
+        studio.one, studio.action = Mock(side_effect=one), Mock(side_effect=action)
+        real_phase = app.phase
+        def observed(code):
+            events.append(("phase", code))
+            real_phase(code)
+        output = io.StringIO()
+        with patch.object(app, "phase", side_effect=observed), patch.object(app, "_emitted_phases", set()), patch.object(app, "_current_phase", "controller_entry"), patch.object(app.sys, "stdout", output):
+            studio.compatible()
+        self.assertEqual(events, [
+            ("phase", self.SITES[0]), ("lookup", "Integration", {6}), ("action", "combo"),
+            ("phase", self.SITES[1]), ("phase", self.SITES[2]),
+            ("lookup", "Compatible API · custom endpoint", {7, 8, 9}), ("action", "option"),
+            ("phase", self.SITES[3]),
+        ])
+        self.assertEqual(self.lines(output.getvalue()), list(self.SITES[:4]))
+
+    def controller_until(self, blocked):
+        """Run real orchestration/compatible/phase; stop before real source work."""
+        compatible = app.Studio.compatible
+        studio = Mock()
+        studio.a = SimpleNamespace(ROLE_PUSH_BUTTON=5, ROLE_COMBO_BOX=6, ROLE_MENU_ITEM=7, ROLE_LIST_ITEM=8, ROLE_RADIO_MENU_ITEM=9)
+        studio.profile.return_value = {"screenContext": {"enabled": False}}
+        studio.assistant_count.return_value = 0
+        def one(name, roles):
+            app.phase("studio_registry_query")
+            if (blocked == "integration" and name == "Integration"
+                    or blocked == "compatible" and name == "Compatible API · custom endpoint"):
+                raise provider.Refusal("app_control_missing")
+            return object()
+        studio.one.side_effect = one
+        studio.compatible.side_effect = lambda: compatible(studio)
+        def entry(name, value):
+            app.phase("studio_registry_query")
+            if (blocked == "endpoint" and name == "API base URL"
+                    or blocked == "model" and name == "Model"):
+                raise provider.Refusal("app_control_missing")
+        studio.entry.side_effect = entry
+        def switch(name, enabled):
+            app.phase("studio_registry_query")
+            target = {"tools": "Enable tool calls", "images": "Send images to the model",
+                      "screen": "Include the screen with every request"}.get(blocked)
+            if name == target:
+                raise provider.Refusal("app_control_missing")
+        studio.switch.side_effect = switch
+        saves = []
+        def save(predicate):
+            saves.append(predicate)
+            if blocked == "save" and len(saves) == 2:
+                raise provider.Refusal("app_save_not_committed")
+        studio.save.side_effect = save
+        studio.choose.side_effect = provider.Refusal("private_desktop_action_timeout")
+        class ReceiverStub:
+            base_url = "PRIVATE_ENDPOINT_VALUE"
+            state = SimpleNamespace(records=[])
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+        output = io.StringIO()
+        with patch.object(app, "Studio", return_value=studio), patch.object(app, "Receiver", return_value=ReceiverStub()), patch.object(app, "_emitted_phases", set()), patch.object(app, "_current_phase", "controller_entry"), patch.object(app.sys, "stdout", output):
+            try:
+                app.run(Path("/disposable"))
+            except provider.Refusal as error:
+                result = (error.code, app.failure_diagnostic(error))
+            else:
+                raise AssertionError("controlled source boundary must stop this run")
+        self.assertNotIn("PRIVATE", output.getvalue())
+        return studio, self.lines(output.getvalue()), result
+
+    def test_four_actual_lookup_boundaries_remain_identifiable_when_registry_updates_current_phase(self):
+        for blocked, expected in (("integration", self.SITES[0]), ("compatible", self.SITES[2]),
+                                  ("endpoint", self.SITES[4]), ("model", self.SITES[5])):
+            with self.subTest(blocked=blocked):
+                studio, phases, (code, diagnostic) = self.controller_until(blocked)
+                sites = [site for site in phases if site in self.SITES]
+                self.assertEqual(sites[-1], expected)
+                self.assertEqual(code, "app_control_missing")
+                self.assertEqual(diagnostic["stage"], "studio_registry_query")
+                studio.choose.assert_not_called()
+
+    def test_remaining_model_grant_save_and_source_boundaries_have_distinct_fixed_sites(self):
+        for blocked, expected in (("tools", self.SITES[6]), ("images", self.SITES[7]),
+                                  ("screen", self.SITES[8]), ("save", self.SITES[9]),
+                                  ("source", self.SITES[11])):
+            with self.subTest(blocked=blocked):
+                _, phases, (code, _) = self.controller_until(blocked)
+                self.assertEqual([site for site in phases if site in self.SITES][-1], expected)
+                self.assertEqual(code, "app_save_not_committed" if blocked == "save" else "private_desktop_action_timeout" if blocked == "source" else "app_control_missing")
+
+    def test_original_model_calls_reach_source_only_after_ordered_saved_phase(self):
+        studio, phases, (code, _) = self.controller_until("source")
+        self.assertEqual([site for site in phases if site in self.SITES], list(self.SITES))
+        self.assertEqual(code, "private_desktop_action_timeout")
+        self.assertEqual([(item.args, item.kwargs) for item in studio.switch.call_args_list], [
+            (("Enable speech output", False), {}), (("Enable tool calls", False), {}),
+            (("Send images to the model", True), {}), (("Include the screen with every request", True), {}),
+        ])
+        self.assertEqual(studio.save.call_count, 2)
+        studio.choose.assert_called_once_with()
+
+    def test_production_progress_calls_take_only_closed_authored_string_literals(self):
+        tree = ast.parse((DIRECTORY / "app.py").read_text())
+        model_sites = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "phase":
+                self.assertEqual(len(node.args), 1)
+                self.assertIsInstance(node.args[0], ast.Constant)
+                self.assertIs(type(node.args[0].value), str)
+                self.assertIn(node.args[0].value, app.PHASES)
+                if node.args[0].value in self.SITES:
+                    model_sites.append(node.args[0].value)
+        self.assertCountEqual(model_sites, self.SITES)
+
 if __name__ == "__main__":
     unittest.main()

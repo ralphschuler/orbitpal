@@ -23,7 +23,13 @@ PHASES = frozenset((
     "studio_verify_executable", "studio_wait_cold_start", "studio_registry_query",
     "studio_read_initial_state", "actual_studio_coldstart", "configure_real_voice_off",
     "configure_voice_navigation", "configure_voice_navigation_done", "configure_voice_switch",
-    "configure_real_model_and_grants", "actual_portal_ready", "fresh_red_presented",
+    "configure_real_model_and_grants", "configure_model_integration_lookup",
+    "configure_model_integration_opened", "configure_model_compatible_lookup",
+    "configure_model_compatible_selected", "configure_model_endpoint_entry",
+    "configure_model_name_entry", "configure_model_tools_switch",
+    "configure_model_images_switch", "configure_model_screen_switch",
+    "configure_model_save", "configure_model_saved", "configure_model_source_selection",
+    "actual_portal_ready", "fresh_red_presented",
     "fresh_blue_presented", "held_stop_received", "held_stop_cancelled",
     "held_images_off_received", "held_disable_received",
 ))
@@ -421,10 +427,14 @@ class Studio:
         return locate
 
     def compatible(self):
+        phase("configure_model_integration_lookup")
         node = self.one("Integration", {self.a.ROLE_COMBO_BOX})
         self.action(node)
+        phase("configure_model_integration_opened")
         choices = {self.a.ROLE_MENU_ITEM, self.a.ROLE_LIST_ITEM, self.a.ROLE_RADIO_MENU_ITEM}
+        phase("configure_model_compatible_lookup")
         self.action(self.one("Compatible API · custom endpoint", choices))
+        phase("configure_model_compatible_selected")
 
     def text_visible(self, text):
         if not isinstance(text, str) or not 0 < len(text) <= 512:
@@ -575,11 +585,17 @@ def run(root):
         studio.button("Models")
         phase("configure_real_model_and_grants")
         studio.compatible()
+        phase("configure_model_endpoint_entry")
         studio.entry("API base URL", receiver.base_url)
+        phase("configure_model_name_entry")
         studio.entry("Model", "orbitpal-wayland-fixture")
+        phase("configure_model_tools_switch")
         studio.switch("Enable tool calls", False)
+        phase("configure_model_images_switch")
         studio.switch("Send images to the model", True)
+        phase("configure_model_screen_switch")
         studio.switch("Include the screen with every request", True)
+        phase("configure_model_save")
         studio.save(lambda value: value["model"]["provider"] == "compatible"
                     and value["model"]["baseUrl"] == receiver.base_url
                     and value["model"]["model"] == "orbitpal-wayland-fixture"
@@ -587,8 +603,10 @@ def run(root):
                     and value["model"]["toolsEnabled"] is False
                     and value["model"]["visionEnabled"] is True
                     and value["screenContext"]["enabled"] is True)
+        phase("configure_model_saved")
         if receiver.state.records:
             raise Refusal("inference_before_explicit_send")
+        phase("configure_model_source_selection")
         studio.choose()
         phase("actual_portal_ready")
         checks.append("real_ui_grant_and_portal_selection")
