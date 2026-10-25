@@ -46,7 +46,7 @@ axum = "0.8"
 tokio-stream = { version = "0.1", features = ["sync", "net"] }
 # Supply the same Mozilla trust store explicitly: the upstream bundled-root
 # feature still pins the audited webpki-roots 0.26 compatibility wrapper.
-tokio-tungstenite = { version = "0.28", features = ["__rustls-tls"] }
+tokio-tungstenite = { version = "0.30", features = ["__rustls-tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1.0.10"
 futures-util = "0.3"
